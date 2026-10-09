@@ -58,7 +58,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   `Known` = the structure was observed (e.g. `nextn_predict_layers` metadata plus several `blk.N.nextn.*` tensors); `Hypothesis` = one-sided or name-only
   evidence. Neither means the semantics are supported. Ids: `ffn.expert_routed`, `ffn.shared_expert`, `attn.{fused_qkv,separate_qkv,qkv_layout_mixed,qk_norm,gqa,mha,mqa,head_count_per_layer,kv_heads_per_layer,mla_low_rank,sparse_indexer}`,
   `recurrent.{ssm,hybrid_ssm,rwkv_time_mix}`, `mtp.nextn_head`, `rope.{multi_axis,scaling,partial}`, `multimodal.{projector_file,vision_tensors_in_text_file,audio_tensors}`,
-  `quant.low_bit_or_block_fp`, plus the tokenizer findings. Tensor and key names were checked against the pinned `examples/llama.cpp/.../llama-arch.cpp`.
+  `quant.low_bit_or_block_fp`, plus the tokenizer findings. The names are standard GGUF conventions; they were cross-checked by hand against upstream llama.cpp on 2026-10-09 (a local checkout that is not part of this repo), and nothing in scout reads or needs llama.cpp.
   A rule fires only on evidence it can cite; one isolated MTP-like tensor, a projector alone, or `ssm_*` names alone never reach `Known` semantics.
 * **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
   closest three with exact differences (`missing/extra tensor pattern`, `layer coverage`, `rank`, `feature ...`). A signature is **structure only**: tensor-name patterns
@@ -75,9 +75,29 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
     It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
-* Not yet implemented (see plan): `scripts/scout-pretest.ps1`; working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
+* Not yet implemented (see plan): working-set estimates for MLA, hybrid and recurrent families; calibration of the ranking beyond the leave-one-out check.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
+### `scripts/scout-pretest.ps1 -Model <gguf> [-Budget 64G] [-Reserve 8G] [-ContextSize 2048] [-Run] [-Golden <golden.json>]`
+
+Opt-in wrapper that chains existing commands and writes one receipt (JSON, file names only, no paths). It implements no inference and decides nothing about admission.
+
+* **Default is a plan:** `scout`, then the memory gate, then what it *would* run. Nothing executes without `-Run`.
+* **Stages (same names as scout's):** 0 artifact and 1 static contract (from scout), 2 feasibility (scout's gate; anything but `allowed` stops here as **Blocked**), 3 smoke (`-Run`: a real
+  CPU generation for an admitted architecture, otherwise `admit-arch`), 4 internal consistency (always NotRun: no command exposes it), 5 independent reference (`-Run -Golden`: `admit-arch --golden`),
+  6 admission readiness (always NotRun: a person decides). `admission` in the receipt is always `not_decided`.
+* **A pass needs evidence, not just exit 0:** the smoke stage counts only if the output shows weights were loaded (`Pre-faulted` / `Ran cleanly`), per CLAUDE.md rule 12. A golden failure is split into
+  a parity verdict (`NOT YET ADMISSIBLE`, `UNPINNED`...) versus a tool error with no verdict line, because `admit-arch` returns 1 for both.
+* **Feedback into the estimator:** the smoke stage records measured peak working set, the estimate, and `estimate_exceeded`. A `true` means the estimator under-counted and needs recalibrating.
+* **Non-destructive:** writes only the receipt (`-OutDir`, default temp). It never touches the checkpoint, downloads, edits the repo or changes status. `-ComputeHash` additionally lets `stingray hash` write its usual `<file>.sha256`
+  cache beside the model; otherwise an existing cache is only read.
+* **One heavy run at a time:** takes the same named mutex as the heavy test suites and `capture-golden` (`Global\OpenTailStingray.HeavyTests`), waiting `-GateWaitSeconds` (default 600) before reporting Blocked.
+* **Bounded:** each stage has `-TimeoutSeconds` (default 900); on timeout the whole process tree is killed.
+* **Exit codes:** 0 passed or planned only, 1 a stage Failed, 2 Blocked, 64 bad arguments, 66 file missing.
+* **Verified 2026-10-09 (real runs, SmolLM2-135M unless noted):** plan only; `-Run` smoke Passed with peak 263 MiB vs estimate 470 MiB; tiny budget on the 1.7B file Blocked with nothing started; golden captured into scratch and
+  Passed (`GOLDEN MATCH`); a golden for another architecture Failed as a tool error; Mistral-7B with a 3 s limit Failed as a timeout and left no `stingray` process; with another process genuinely holding the gate it reported Blocked and started nothing, then
+  ran normally once released. **Not verified:** Ctrl+C mid-run (PowerShell's `finally` should kill the child and release the gate), and a hard kill of PowerShell itself, which cannot run cleanup and would leave the child running.
+* `capture-golden` needs a llama.cpp you provide (`tools/llama.cpp` is git-ignored and not part of this repo); *checking* a recorded golden needs none.
 ---
 
 ## `stingray pull -r <repo>`

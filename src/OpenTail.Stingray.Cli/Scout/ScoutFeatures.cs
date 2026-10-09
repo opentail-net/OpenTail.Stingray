@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Cli.Scout;
 /// Conservative, explainable feature rules over GGUF metadata keys and tensor names/shapes (plan §4). Each rule fires only on evidence it
 /// can cite. <see cref="Certainty.Known"/> means the structure itself was observed (these tensors / this key exist); it never means the
 /// semantics are understood or supported. <see cref="Certainty.Hypothesis"/> means the evidence is partial, name-only or one-sided.
-/// Tensor and key names below were checked against the pinned reference (examples/llama.cpp src/llama-arch.cpp, 2026-10-09):
+/// The tensor and key names below are the standard GGUF conventions. On 2026-10-09 they were cross-checked by hand against upstream llama.cpp's llama-arch.cpp in a local,\n/// git-ignored checkout (not part of this repo and not available to other contributors); nothing here reads or depends on it at build or run time:
 /// attn_qkv, attn_q_norm/attn_k_norm, ffn_gate_inp, ffn_{gate,up,down}_exps / _shexp, attn_q_a / attn_kv_a_mqa, ssm_a / ssm_conv1d,
 /// time_mix_*, nextn.*, and the keys %s.nextn_predict_layers, %s.expert_shared_count, %s.attention.kv_lora_rank, %s.rope.dimension_sections,
 /// %s.rope.dimension_count, %s.rope.scaling.type, %s.attention.head_count(_kv), %s.attention.indexer.*.

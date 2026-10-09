@@ -76,7 +76,7 @@ Add an agent-oriented, step-by-step document, for example `docs/reference/archit
 
 The playbook must state:
 
-1. Source-of-truth order: repository code/tests and the current pinned upstream reference outrank names, model cards, scout hypotheses, and previous conversational claims.
+1. Source-of-truth order: repository code/tests and a recorded reference implementation (the revision the contributor actually used) outrank names, model cards, scout hypotheses, and previous conversational claims.
 2. Run the scout first and treat its output as evidence and a hypothesis list, never as proof of numerical semantics.
 3. Check the current active backlog, memory budget, installed checkpoints, matching reference binaries, licenses, and existing architecture/quantization support before porting.
 4. Inspect the actual upstream implementation for each semantic difference before coding. Record the exact file, commit/revision and the operation being implemented.
@@ -209,7 +209,7 @@ Qwen3-VL (`rope.multi_axis`), Jais (`attn.fused_qkv`); no spurious findings on d
 `docs/reference/061-coverage-tooling.md`). Chosen over a table generated from llama.cpp's `llama-arch.cpp` because the question that matters for a community variant is
 "which architecture we can already RUN is nearest, and where exactly does it differ?", which needs rank, layer coverage and feature facts that the upstream table does not
 carry (it is names only; required/optional tensors and layer topology live in code), and because it has no dependence on anyone's llama.cpp version or local files. The
-upstream table remains a candidate for a later completeness check ("missing/unexpected tensors for architecture X") on families we have not touched.
+upstream table is not used: llama.cpp is not part of this project (xamples/ and 	ools/llama.cpp are git-ignored, so other contributors do not have it), and a basis for ranking must be something every contributor has. Scout therefore depends on nothing but its own checked-in signatures.
 
 **Leave-one-architecture-out check (2026-10-09, `scripts/scout-leave-one-out.ps1`, 12 structures of 9 families, 12 shipped signatures).** Each real file was scouted with its own architecture's
 signatures removed. Nearest remaining parent and structural difference count: qwen3 <-> qwen3vl 1 (tensors identical, only `rope.multi_axis` differs); llama (3 structures) -> qwen3 3/4/5
@@ -232,6 +232,8 @@ Result: at or above measured in all 7 runs, 1.05-1.07x where the run filled the 
 repack copy. What it does not do: MLA (DeepSeek2), hybrid/GDN and RWKV families stay Unknown and blocked; other MoE families and GPU placement are unmeasured. Costs named per
 CLAUDE.md rule 11: this took a measurement pass (about 10 real runs, one of 245 s because the 18.7 GB MoE loads from the archive disk) before the formula could be trusted, plus one
 discarded run that had silently failed (prompt over the context).
+**`scripts/scout-pretest.ps1` (2026-10-09, built).** Behaviour and the checks it passed are in `docs/reference/061-coverage-tooling.md`. Not yet covered: Ctrl+C mid-run and a hard kill of PowerShell; stage 4 has no
+command to call. It is only as strong as `admit-arch`'s exit codes, which cannot tell a failed check from a tool error, so the script classifies by the printed verdict line.
 ### Phase 3 — memory-gated pretests (superseded by §8.2: implemented as a script, not C#; the points below define its behaviour)
 
 - Implement `--budget`, reserve/headroom handling, estimate provenance and the decision to allow/block each stage.
