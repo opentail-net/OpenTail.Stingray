@@ -165,7 +165,7 @@ internal static partial class OtherAdmittedArchitectures
     };
 
     // afmoe (Arcee Trinity Mini) — admitted 2026-10-04 on a real checkpoint (arcee-ai Q4_K_M only), CPU, contexts below the 2048-token
-    // sliding window only (window masking beyond it is not verified): AfmoeGreedyParityTests teacher-forced against llama-server, all 31
+    // sliding window only (window masking beyond it is not verified): Goldens/afmoe.golden.json teacher-forced against llama-server, all 31
     // confident positions match (13 of 32 on a 183-token prompt, 18 of 22 on a 5-token one), 3 near-tie differences. Needed: the per-layer
     // attention output gate and 3:1 sliding/global pattern with RoPE only on sliding layers (shared with Muse-Glimmer), muP embedding scale
     // sqrt(n_embd), and the afmoe pre-tokenizer (right-aligned digit groups). Not on any GPU path yet.
