@@ -46,6 +46,13 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             return 1;
         }
 
+        var access = OpenTail.Stingray.Core.Net.ExternalAccess.Evaluate();
+        if (!access.Allowed)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] not contacting Hugging Face: {Markup.Escape(access.Reason)}. To allow it: {Markup.Escape(access.HowToEnable ?? "see STINGRAY_ALLOW_EXTERNAL")}.");
+            return ExitCodes.Failure;
+        }
+
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTail.Stingray/pull");
 

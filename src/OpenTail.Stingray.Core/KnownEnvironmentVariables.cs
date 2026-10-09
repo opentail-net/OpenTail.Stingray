@@ -196,6 +196,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MTP_PROBE_STEPS",
         "STINGRAY_NO_THINKING",
         "STINGRAY_N_GPU_LAYERS",
+        "STINGRAY_ALLOW_EXTERNAL",
         "STINGRAY_OFFLINE",
         "STINGRAY_PER_LAYER_HD_PREFILL",
         "STINGRAY_PLE_GPU_DEQUANT",

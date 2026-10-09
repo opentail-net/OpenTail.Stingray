@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-05 — `KnownEnvironmentVariables.All` now contains **271** names**
+**Reconciled again 2026-10-09 — `KnownEnvironmentVariables.All` now contains **272** names** (added `STINGRAY_ALLOW_EXTERNAL`)
 (2026-10-05: registered `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL` and `STINGRAY_MOE_PHASE_TIMING`, both read in `src/` but missing from the registry. Removed `STINGRAY_HANDOFF_TEST_MODEL`: it is read only by `HybridCpuPrefillHandoffTests` under `tests/`, never in `src/`, so the registry — whose tests scan `src/` — cannot justify it, and registering it would make `doctor` accept a name the engine itself never reads. It stays a test-only switch, like `STINGRAY_RUN_HEAVY_TESTS`; optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` (default 4) and `STINGRAY_HANDOFF_TEST_CTX` (default 1024) are read by the same test. Net +1 from the 267 the registry held after the earlier, un-documented edits.)
 
 **Reconciled 2026-10-03 — `KnownEnvironmentVariables.All` contained **266** names**
@@ -238,6 +238,7 @@ dynamically composed names.
 | `STINGRAY_PREFILL_TIMING` | experimental | `1`: Vulkan hybrid prints, per prefill, which path ran and the CPU-prefill / KV-handoff / end-to-end times. |
 | `STINGRAY_MOE_TIMING` | experimental | `1`: Vulkan hybrid (`-g N`) MoE only. On exit prints, per GPU MoE layer-step, where the time went: GPU wait + router, cache lookup, CPU fallback for missed experts, record tail; and per-expert gate/up/down fallback time. |
 | `STINGRAY_MOE_SLOTS` | experimental | Vulkan hybrid (`-g N`) only: caps the GPU expert cache at this many (layer, expert) slots instead of sizing it to hold every expert. Misses are computed on the CPU. For testing eviction on models that would otherwise fit; `VulkanHybridOlmoeParityTests` uses the constructor argument for the same thing. |
+| `STINGRAY_ALLOW_EXTERNAL` | stable | `0`/`false`/`off`/`no`/`deny`: nothing may touch the network (remote scout, quant picker, backlog, triage, and the offline check used by catalog installs). Default (unset) and `1`/`true`/`on`/`yes`/`allow`: allowed. Deny always wins: `STINGRAY_OFFLINE` or `HF_HUB_OFFLINE` still deny, and an unrecognised value is treated as off. Only Hugging Face hosts are ever contacted; `HF_TOKEN` is sent to huggingface.co only. |
 | `STINGRAY_OFFLINE` | stable | `1`/`true`: catalog installs never touch the network (files already present are still hash-checked; a missing one fails with a clear message). `HF_HUB_OFFLINE` is honoured the same way. |
 | `STINGRAY_MOE_WARMPIN_AFTER` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPinAfter`. |
 

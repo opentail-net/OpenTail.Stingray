@@ -10,6 +10,24 @@ reference scripts, which conflicted with that rule.
 
 ---
 
+## External access (one policy for everything that touches the network)
+
+Everything that leaves the machine asks `ExternalAccess.Evaluate()` (`src/OpenTail.Stingray.Core/Net/`). **The default is allowed. Deny wins whenever it is asked for:**
+
+| Setting | Effect |
+|---|---|
+| unset, or `STINGRAY_ALLOW_EXTERNAL=1` (`true`/`on`/`yes`/`allow`) | allowed |
+| `STINGRAY_ALLOW_EXTERNAL=0` (`false`/`off`/`no`/`deny`) | **denied** |
+| `STINGRAY_OFFLINE=1` or `HF_HUB_OFFLINE=1` | **denied** (these predate this policy; they beat an explicit allow) |
+| any other value of `STINGRAY_ALLOW_EXTERNAL` | **denied** (a typo must not silently open the network) |
+
+* The check runs before **every** request, not once at startup, and a refusal says which setting caused it and how to change it. `pull`, catalog installs (`setup`) and all remote features honour it.
+* New network code goes through `ExternalHttpClient` only. It contacts Hugging Face hosts and nothing else (`huggingface.co`, `hf.co` and their subdomains, which covers the CDN and storage hosts a download redirects to), requires https, and follows redirects itself so that every hop is host-checked.
+* `HF_TOKEN` is sent to `huggingface.co` itself and **never** to a CDN or storage host. Tokens, query strings and URLs are never logged; the log keeps only request count, host names and bytes received.
+* Nothing is cached or written to disk by the gateway, and nothing is downloaded unless a command whose purpose is downloading (`pull`, `setup`) is run.
+* Still on its own client, not yet routed through the gateway: `pull`'s file download (it does honour the policy). Moving it is a follow-up.
+---
+
 ## `stingray scout -m <gguf>`
 
 Read-only evidence dossier; run it **first** when triaging or admitting an architecture (agent loop:

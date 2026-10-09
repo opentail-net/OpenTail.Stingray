@@ -93,19 +93,15 @@ public sealed class ModelHashMismatchException(string path, string expected, str
 
 /// <summary>Thrown when a catalog file has to be downloaded but offline mode is on.</summary>
 public sealed class ModelOfflineException(string fileName)
-    : IOException($"{fileName} is not in the model home and offline mode is on (STINGRAY_OFFLINE / HF_HUB_OFFLINE). Run setup without it, or put the file there yourself.")
+    : IOException($"{fileName} is not in the model home and external access is off (STINGRAY_OFFLINE / HF_HUB_OFFLINE / STINGRAY_ALLOW_EXTERNAL=0). Run setup without it, or put the file there yourself.")
 {
 }
 
 /// <summary>Installs catalog entries into a <see cref="ModelHome"/>.</summary>
 public static class ModelInstaller
 {
-    /// <summary>True when <c>STINGRAY_OFFLINE</c> or <c>HF_HUB_OFFLINE</c> is set to 1/true: never touch the network.</summary>
-    public static bool OfflineFromEnvironment() =>
-        IsOn("STINGRAY_OFFLINE") || IsOn("HF_HUB_OFFLINE");
-
-    private static bool IsOn(string name) =>
-        Environment.GetEnvironmentVariable(name) is { } v && (v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase));
+    /// <summary>True when the shared external-access policy denies the network (<c>STINGRAY_OFFLINE</c>, <c>HF_HUB_OFFLINE</c>, or <c>STINGRAY_ALLOW_EXTERNAL</c> switched off): never touch the network.</summary>
+    public static bool OfflineFromEnvironment() => !OpenTail.Stingray.Core.Net.ExternalAccess.Evaluate().Allowed;
 
     /// <summary>Progress of one file: which file, bytes on disk, total size.</summary>
     public delegate void FileProgress(CatalogFile file, long bytes, long total);

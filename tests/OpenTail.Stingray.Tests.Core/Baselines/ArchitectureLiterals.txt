@@ -1,4 +1,4 @@
-src/OpenTail.Stingray.Cli/AdmitArchCommand.cs|2
+src/OpenTail.Stingray.Cli/ArchitectureTriage.cs|3
 src/OpenTail.Stingray.Cli/ImageCommand.cs|1
 src/OpenTail.Stingray.Cli/RunCommand.cs|4
 src/OpenTail.Stingray.Cli/StaticPlanCommand.cs|1
