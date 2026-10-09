@@ -59,6 +59,10 @@ FLUX.2, Qwen Image, SDXL-Turbo, LTX-Video and HunyuanVideo work and are listed i
 the command line covers the models in the table above. For the others use the C# library
 (`OpenTail.Stingray.Diffusion`, see its [README](../../src/OpenTail.Stingray.Diffusion/README.md)).
 
+## From C#
+
+To integrate text-to-image generation directly into a .NET application, see the [Diffusion sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion/) demonstrating `IDiffusionPipeline` and `StableDiffusionPipeline.Load`.
+
 ## Over HTTP
 
 `POST /v1/images/generations`, `/v1/images/edits` and `/v1/images/variations`. See the

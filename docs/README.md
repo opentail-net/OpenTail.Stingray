@@ -17,6 +17,7 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Use the command line | [CLI README](../src/OpenTail.Stingray.Cli/README.md), [reference/cli-option-inventory.md](reference/cli-option-inventory.md) (every option) |
 | Run the OpenAI/Anthropic-compatible server | [Server README](../src/OpenTail.Stingray.Server/README.md) |
 | Use the NuGet package from C# | [Package README](../src/OpenTail.Stingray/README.md) |
+| Run standalone C# code samples (Chat, Speech, Diffusion, Tool Calling) | [Sample Catalogue](../samples/README.md) |
 | Generate images or video | [Diffusion README](../src/OpenTail.Stingray.Diffusion/README.md) |
 | Choose settings for my hardware | [reference/recommended-configurations.md](reference/recommended-configurations.md), [profiles/](profiles) |
 | Look up an environment variable | [reference/env-var-inventory.md](reference/env-var-inventory.md) |

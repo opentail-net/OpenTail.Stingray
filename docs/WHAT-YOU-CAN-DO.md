@@ -76,8 +76,7 @@ even if it happens to load.
 4. **Check it is verified:** [STATUS.md](STATUS.md).
 5. **Command-line options:** `stingray --help`, `stingray <command> --help`, and
    [reference/cli-option-inventory.md](reference/cli-option-inventory.md) for every option.
-6. **Use it from C#:** the [package README](../src/OpenTail.Stingray/README.md) and the samples in
-   [samples/](../samples).
+6. **Use it from C#:** the [package README](../src/OpenTail.Stingray/README.md) and the [sample catalogue](../samples/README.md) (streaming chat, speech synthesis/transcription, image diffusion, tool calling).
 7. **Serve it:** the [Server README](../src/OpenTail.Stingray.Server/README.md).
 8. **Tune for your hardware:** [reference/recommended-configurations.md](reference/recommended-configurations.md).
 9. **Something broke:** run `stingray doctor`, then see the [troubleshooting notes](TROUBLESHOOTING.md).

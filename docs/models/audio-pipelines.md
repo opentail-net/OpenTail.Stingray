@@ -51,19 +51,24 @@ stingray transcribe output.wav
 
 ### Public C# API
 
+For a complete, runnable console application performing roundtrip speech synthesis and transcription, see the [Speech Sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech/).
+
 #### Text to Speech (Piper)
 ```csharp
+using System.Diagnostics;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Piper;
 
 using var tts = PiperPipeline.FromConfigFile("en_US-lessac-medium.onnx.json");
+var sw = Stopwatch.StartNew();
 var result = tts.Generate(new AudioGenerationRequest
 {
     Text = "Hello from local, private speech synthesis.",
     OutputPath = "greeting.wav"
 });
+sw.Stop();
 
-Console.WriteLine($"Generated {result.Duration.TotalSeconds:F2}s audio in {result.GenerationTimeMs}ms.");
+Console.WriteLine($"Generated {result.Duration.TotalSeconds:F2}s audio in {sw.ElapsedMilliseconds}ms.");
 ```
 
 #### Speech to Text (Whisper)

@@ -88,6 +88,33 @@ stingray image \
   -o waves.gif
 ```
 
+### Public C# API
+
+For a complete, runnable console application demonstrating image generation with step-by-step progress callbacks, see the [Diffusion Sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion/).
+
+```csharp
+using OpenTail.Stingray.Diffusion;
+using OpenTail.Stingray.Diffusion.StableDiffusion;
+
+// 1. Resolve compute backend (Vulkan GPU or managed SIMD CPU)
+var (backend, ownsBackend) = DiffusionBackendResolver.Resolve(explicitBackend: null);
+
+// 2. Load the pipeline from a single checkpoint
+using IDiffusionPipeline pipeline = StableDiffusionPipeline.Load("v1-5-pruned-emaonly.safetensors", backend: backend);
+
+// 3. Generate image from prompt
+pipeline.Generate(new ImageGenerationRequest
+{
+    Prompt = "A serene alpine mountain lake at sunrise, highly detailed digital art",
+    Width = 512,
+    Height = 512,
+    Steps = 20,
+    Guidance = 7.5f,
+    OutputPath = "output.png",
+    Progress = (step, total) => Console.Write($"\rStep {step}/{total}...")
+});
+```
+
 ---
 
 ## 4. Hardware Recommendations & Performance

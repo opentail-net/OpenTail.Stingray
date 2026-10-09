@@ -30,5 +30,5 @@ In-depth technical guides for engine internals, memory optimization, and deploym
 
 Picking a model: [MODELS.md](../MODELS.md). The exact command, memory and speed for a particular
 model: [RUNNING.md](../RUNNING.md). How well it was checked: [STATUS.md](../STATUS.md). Architecture
-deep dives: [models/](../models/README.md).
+deep dives: [models/](../models/README.md). Executable C# code samples: [samples/](../../samples/README.md).
 
