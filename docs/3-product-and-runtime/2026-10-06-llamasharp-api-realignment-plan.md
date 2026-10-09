@@ -1,7 +1,7 @@
 # LLamaSharp API Realignment Plan and Archaeology Report (2026-10-06)
 
 **Target Location**: `docs/3-product-and-runtime/2026-10-06-llamasharp-api-realignment-plan.md`  
-**Reference Document**: [`docs/2-coverage/2026-10-05-Realign Stingrays public .NET API toward the LLamaSharp application model.md`](file:///C:/Git-Public/OpenTail.Stingray/docs/2-coverage/2026-10-05-Realign%20Stingrays%20public%20.NET%20API%20toward%20the%20LLamaSharp%20application%20model.md)  
+**Reference Document**: [`docs/done/2026-10-05-Realign Stingrays public .NET API toward the LLamaSharp application model.md`](file:///C:/Git-Public/OpenTail.Stingray/docs/done/2026-10-05-Realign%20Stingrays%20public%20.NET%20API%20toward%20the%20LLamaSharp%20application%20model.md)  
 **Upstream Reference**: [`examples/llama.cpp/llama.cpp`](file:///C:/Git-Public/OpenTail.Stingray/examples/llama.cpp/llama.cpp)  
 **External Reference**: `https://github.com/SciSharp/LLamaSharp` (`master` branch)
 
