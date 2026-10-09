@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**281 option declarations** across 30 command files — the same count the
+**285 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -378,10 +378,14 @@ hoc at each read site rather than in one place.
 | Option | Class | Description |
 |---|---|---|
 | `--budget <SIZE>` | diagnostic | Host RAM budget for execution feasibility, e.g. 64G. Without it, feasibility is not assessed. |
+| `--emit-signature <PATH>` | diagnostic | Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure |
 | `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
 | `--model <PATH>` | diagnostic | Path to a GGUF model file |
+| `--origin-repo <REPO>` | diagnostic | With --emit-signature: Hugging Face repo id the file came from, recorded as provenance (never guessed) |
+| `--origin-revision <REV>` | diagnostic | With --emit-signature: repo revision/commit the file came from |
 | `--output <PATH>` | diagnostic | Write the JSON report to this file (in addition to the chosen stdout format) |
 | `--reserve <SIZE>` | diagnostic | Headroom kept free under the budget (default 8G) |
+| `--signatures <DIR>` | diagnostic | Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set |
 
 ## SetupCommand
 

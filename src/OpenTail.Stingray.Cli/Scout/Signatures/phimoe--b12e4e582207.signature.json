@@ -1,0 +1,157 @@
+{
+  "schema_version": 2,
+  "architecture_id": "phimoe",
+  "declared_architecture": "phimoe",
+  "structure_id": "b12e4e58220726bd268447df8f3392966bb747080eb2a1da8b9059440a222f64",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.bias",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.bias",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "rope_factors_long.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "rope_factors_short.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.separate_qkv",
+      "ffn.expert_routed"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.layer_norm_rms_epsilon",
+      "attention.sliding_window",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_used_count",
+      "feed_forward_length",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "rope.scaling.attn_factor",
+      "rope.scaling.original_context_length",
+      "vocab_size"
+    ],
+    "tokenizer_model": "llama"
+  },
+  "origins": [
+    {
+      "file_name": "Phi-3.5-MoE-instruct-Q3_K_M.gguf",
+      "file_bytes": 20032718688,
+      "sha256": "720f81aa62e296c23990448bf026381983c82c4564fe360efb88506e658f51d0",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

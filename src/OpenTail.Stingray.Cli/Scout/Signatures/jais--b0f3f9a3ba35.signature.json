@@ -1,0 +1,124 @@
+{
+  "schema_version": 2,
+  "architecture_id": "jais",
+  "declared_architecture": "jais",
+  "structure_id": "b0f3f9a3ba3520eafe964cd088dc6a21317f8e9b86d8f4b85a8886af1c3df3b4",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_norm.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_qkv.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_qkv.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.bias",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.fused_qkv"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.layer_norm_epsilon",
+      "attention.max_alibi_bias",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "feed_forward_length",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "jais-family-590m-chat.Q4_K_M.gguf",
+      "file_bytes": 503581952,
+      "sha256": "18b2bbf7c3aaf656eaf183357afd7ebf85523c9c1615ba20f7910dabb76e4a8a",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

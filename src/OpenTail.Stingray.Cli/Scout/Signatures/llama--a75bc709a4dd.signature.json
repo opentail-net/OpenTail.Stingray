@@ -1,0 +1,103 @@
+{
+  "schema_version": 2,
+  "architecture_id": "llama",
+  "declared_architecture": "llama",
+  "structure_id": "a75bc709a4dd038b7faf53e399b173c7db0e65dc2d01cea19b64cf0c3b36aacc",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "rope_freqs.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.separate_qkv"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.layer_norm_rms_epsilon",
+      "attention.value_length",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "feed_forward_length",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "orpheus-3b-0.1-ft.Q4_K_M.gguf",
+      "file_bytes": 2363760640,
+      "sha256": "35cdab03342c26eaad57687c2eb6df4208b29cafbb136405a1eb915192b50198",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

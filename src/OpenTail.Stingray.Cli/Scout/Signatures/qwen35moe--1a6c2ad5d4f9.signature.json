@@ -1,0 +1,193 @@
+{
+  "schema_version": 2,
+  "architecture_id": "qwen35moe",
+  "declared_architecture": "qwen35moe",
+  "structure_id": "1a6c2ad5d4f966f84a438bee2a43f335f9d504d443b33c843c60d520f5aed1d3",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_gate.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_k_norm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_q_norm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_qkv.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp_shexp.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up_shexp.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.post_attention_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ssm_a",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_alpha.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_beta.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_conv1d.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_dt.bias",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_norm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ssm_out.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.qk_norm",
+      "attn.qkv_layout_mixed",
+      "ffn.expert_routed",
+      "ffn.shared_expert",
+      "recurrent.hybrid_ssm",
+      "rope.multi_axis"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.layer_norm_rms_epsilon",
+      "attention.value_length",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_shared_feed_forward_length",
+      "expert_used_count",
+      "full_attention_interval",
+      "rope.dimension_count",
+      "rope.dimension_sections",
+      "rope.freq_base",
+      "ssm.conv_kernel",
+      "ssm.group_count",
+      "ssm.inner_size",
+      "ssm.state_size",
+      "ssm.time_step_rank",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "file_bytes": 29308320736,
+      "sha256": "4fe53b148b46f9b88830e2a3055c5b15c3a4d1e3ddc9a1384a108d8b9d59f043",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

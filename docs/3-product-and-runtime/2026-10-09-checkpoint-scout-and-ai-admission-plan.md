@@ -198,22 +198,26 @@ An opt-in, disposable wrapper, improved iteratively:
 
 ### Phase 2 — feature evidence and architecture relatives
 
-**Status 2026-10-09:** feature rules landed (`Scout/ScoutFeatures.cs`, 29 synthetic positive/negative/ambiguous tests). Relatives ranking NOT started.
+**Status 2026-10-09:** feature rules landed (`Scout/ScoutFeatures.cs`, 29 synthetic positive/negative/ambiguous tests). Relatives ranking landed the same day (below).
 Real-checkpoint check (index-only scout, 13 archived GGUFs + 17 local, 11 s total, no weights read): positives were as expected on
 GLM-4.5-Air (`ffn.expert_routed`, `ffn.shared_expert`, `mtp.nextn_head` Known), EXAONE-4.5 (`mtp.nextn_head` Known), DeepSeek-V2-Lite and GLM-4.7-Flash
 (`attn.mla_low_rank`), Phi-3.5-MoE (routed, correctly no shared expert), Qwen3.6-35B-A3B (`recurrent.hybrid_ssm`, `attn.qkv_layout_mixed`, `rope.multi_axis`),
 Qwen3-VL (`rope.multi_axis`), Jais (`attn.fused_qkv`); no spurious findings on dense llama/qwen3 or the audio/diffusion files. Not covered by any real file:
 `attn.sparse_indexer`, `recurrent.rwkv_time_mix`, `multimodal.projector_file` (synthetic only). This is a smoke audit, not the calibration audit.
 
-**Relatives ranking, open design point:** our `ArchitectureDescriptor`s carry no tensor signature, so there is nothing to compare a new file against.
-The independent source is the pinned llama.cpp `llama-arch.cpp` (154 architectures, each with an explicit tensor list). Proposed: a checked-in, generated,
-data-only signature table (arch -> normalized tensor suffix set) produced once by a small C# generator over that file, so ranking compares against the reference's
-contract, not our own guesses. Needs a decision before building.
+**Relatives ranking (decided 2026-10-09, built):** signatures taken from admitted GGUFs with scout itself, checked in as data, structure kept apart from origin (see
+`docs/reference/061-coverage-tooling.md`). Chosen over a table generated from llama.cpp's `llama-arch.cpp` because the question that matters for a community variant is
+"which architecture we can already RUN is nearest, and where exactly does it differ?", which needs rank, layer coverage and feature facts that the upstream table does not
+carry (it is names only; required/optional tensors and layer topology live in code), and because it has no dependence on anyone's llama.cpp version or local files. The
+upstream table remains a candidate for a later completeness check ("missing/unexpected tensors for architecture X") on families we have not touched.
 
-- Add a small, statically registered or otherwise explicitly composed set of feature-finding rules.
-- Compare tensor signatures against registered descriptors; explain all matches and differences.
-- Unit-test positive, negative, ambiguous and unknown signals.
-- Keep hypotheses and confidence meanings in the report schema/documentation. Do not automatically alter registry behaviour.
+Open risks: the shipped set covers only what had a checkpoint on the maintainer's machine; structural identity says nothing about metadata values, so every relabel
+candidate still needs a golden; the ranking is uncalibrated (counts, not probabilities).
+
+- Add a small, statically registered or otherwise explicitly composed set of feature-finding rules. (done)
+- Compare tensor signatures against registered descriptors; explain all matches and differences. (done, against checked-in admitted-architecture signatures)
+- Unit-test positive, negative, ambiguous and unknown signals. (done)
+- Keep hypotheses and confidence meanings in the report schema/documentation. Do not automatically alter registry behaviour. (done)
 
 ### Phase 3 — memory-gated pretests (superseded by §8.2: implemented as a script, not C#; the points below define its behaviour)
 

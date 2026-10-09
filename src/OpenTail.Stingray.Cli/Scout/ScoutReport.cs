@@ -93,7 +93,19 @@ public sealed record TensorSummary(
     IReadOnlyList<TensorPattern> Patterns,
     IReadOnlyList<TensorIrregularity> Irregularities);
 
-public sealed record ArchitectureCandidate(string Id, string Status, IReadOnlyList<string> Matching, IReadOnlyList<string> Differing);
+public sealed record ArchitectureCandidate(
+    string Id,
+    // Live registry status of the candidate, not the status when the snapshot was taken.
+    string Status,
+    // "identical_structure" (zero differences) or "differs". Structure only: values, rope parameters and activation are not compared.
+    string Kind,
+    int DifferenceCount,
+    // Id of the reference structure matched (SHA-256 of its canonical patterns + features).
+    string StructureId,
+    // Files that demonstrated that structure (name, and a hash prefix when known). Provenance only: it does not affect ranking.
+    IReadOnlyList<string> ReferenceFiles,
+    IReadOnlyList<string> Matching,
+    IReadOnlyList<string> Differing);
 
 public sealed record ArchitectureResolution(
     string? Declared,
@@ -104,7 +116,9 @@ public sealed record ArchitectureResolution(
     string? EvidenceDoc,
     string? ForwardPassFamily,
     string? SupportedBackends,
-    // <summary>Nearest registered relatives. Empty until the relative ranking lands (plan Phase 2); empty means "not computed", not "none".</summary>
+    // "computed" or "not_computed". Not computed means no reference signatures were supplied.
+    string CandidatesState,
+    // Closest admitted architectures by structural signature, fewest differences first: the nearest structural parent, then its siblings.
     IReadOnlyList<ArchitectureCandidate> Candidates);
 
 public sealed record SizeEstimate(Certainty Certainty, long? Bytes, string Source);
@@ -141,4 +155,5 @@ public sealed record ScoutReport(
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true,
     UseStringEnumConverter = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never)]
 [JsonSerializable(typeof(ScoutReport))]
+[JsonSerializable(typeof(ArchSignature))]
 internal partial class ScoutJsonContext : JsonSerializerContext;

@@ -13,7 +13,9 @@ public sealed record ScoutInput(
     IReadOnlyDictionary<string, object> Metadata,
     IReadOnlyList<GgufTensorInfo> Tensors);
 
-public sealed record ScoutOptions(string BuildId, long? BudgetBytes = null, long ReserveBytes = ScoutOptions.DefaultReserveBytes)
+/// <param name="Signatures">Reference signatures of admitted architectures to rank against; null means the ranking is not computed.</param>
+public sealed record ScoutOptions(string BuildId, long? BudgetBytes = null, long ReserveBytes = ScoutOptions.DefaultReserveBytes,
+    IReadOnlyList<ArchSignature>? Signatures = null)
 {
     public const long DefaultReserveBytes = 8L << 30;
 }
@@ -44,6 +46,8 @@ public static class ScoutAnalyzer
         CheckDTypes(input.Tensors, blockers);
         CheckTokenizer(tokenizer, input.Metadata, findings, blockers);
         findings.AddRange(ScoutFeatures.Evaluate(input.Metadata, input.Tensors));
+        if (options.Signatures is { } signatures)
+            arch = RankRelatives(input, arch, signatures, findings);
 
         int shardCount = input.Tensors.Count == 0 ? 1 : input.Tensors.Max(t => t.ShardIndex) + 1;
         var artifact = new ArtifactInfo(input.FileName, input.FileBytes, input.GgufVersion, input.HeaderTensorCount,
@@ -107,6 +111,20 @@ public static class ScoutAnalyzer
         return (name, null, -1);
     }
 
+    /// <summary>Layer sets per layer stack (e.g. "blk" and a vision tower's "v.blk" are separate stacks). Shared with signature building.</summary>
+    internal static Dictionary<string, SortedSet<int>> LayersByStack(IReadOnlyList<GgufTensorInfo> tensors)
+    {
+        var layersByStack = new Dictionary<string, SortedSet<int>>(StringComparer.Ordinal);
+        foreach (var t in tensors)
+        {
+            var norm = Normalize(t.Name);
+            if (norm.Stack is null) continue;
+            if (!layersByStack.TryGetValue(norm.Stack, out var set)) layersByStack[norm.Stack] = set = [];
+            set.Add(norm.Layer);
+        }
+        return layersByStack;
+    }
+
     private static TensorSummary SummarizeTensors(IReadOnlyList<GgufTensorInfo> tensors, List<ScoutBlocker> blockers)
     {
         var sizes = new long[tensors.Count];
@@ -132,14 +150,7 @@ public static class ScoutAnalyzer
             .OrderBy(g => g.Key, StringComparer.Ordinal)
             .ToArray();
 
-        // Layer sets per layer stack (e.g. "blk" and a vision tower's "v.blk" are separate stacks).
-        var layersByStack = new Dictionary<string, SortedSet<int>>(StringComparer.Ordinal);
-        foreach (var (_, norm) in tensors.Select(t => (t, Normalize(t.Name))))
-        {
-            if (norm.Stack is null) continue;
-            if (!layersByStack.TryGetValue(norm.Stack, out var set)) layersByStack[norm.Stack] = set = [];
-            set.Add(norm.Layer);
-        }
+        var layersByStack = LayersByStack(tensors);
 
         var patterns = new List<TensorPattern>();
         var irregularities = new List<TensorIrregularity>();
@@ -312,7 +323,7 @@ public static class ScoutAnalyzer
                 blockers.Add(new ScoutBlocker("scout.arch.not_registered", BlockerKind.Confirmed,
                     $"'{declared}' is not in the text-generation architecture registry; ModelCompatibility refuses it (this says nothing about audio/vision/diffusion pipelines that load the file by other routes).",
                     [new EvidenceItem("metadata", "general.architecture", declared)]));
-            return new ArchitectureResolution(declared, false, null, null, null, null, null, null, []);
+            return new ArchitectureResolution(declared, false, null, null, null, null, null, null, "not_computed", []);
         }
 
         if (d.Status != AdmissionStatus.Admitted)
@@ -321,7 +332,40 @@ public static class ScoutAnalyzer
                 [new EvidenceItem("descriptor", d.Id, d.EvidenceDoc)]));
 
         return new ArchitectureResolution(declared, true, d.Id, d.Status.ToString(), d.RefusalReason, d.EvidenceDoc,
-            d.ForwardPassFamily.ToString(), d.SupportedBackends.ToString(), []);
+            d.ForwardPassFamily.ToString(), d.SupportedBackends.ToString(), "not_computed", []);
+    }
+
+    private static string RefFiles(ArchitectureCandidate c) =>
+        string.Join(", ", c.ReferenceFiles.Take(2)) + (c.ReferenceFiles.Count > 2 ? $" and {c.ReferenceFiles.Count - 2} more" : "");
+
+    private static ArchitectureResolution RankRelatives(ScoutInput input, ArchitectureResolution arch, IReadOnlyList<ArchSignature> signatures, List<ScoutFinding> findings)
+    {
+        var tok = ArchitectureTriage.ClassifyTokenizer(input.Metadata);
+        var ranked = SignatureMatcher.Rank(input.Tensors, findings.Select(f => f.Id), tok.Shape == TokenizerShape.NoModel ? null : tok.Model, signatures);
+        arch = arch with { CandidatesState = "computed", Candidates = ranked };
+        if (ranked.Count == 0) return arch;
+
+        var parent = ranked[0];
+        var ev = new List<EvidenceItem>
+        {
+            new("candidate", parent.Id, $"{parent.Kind}, {parent.DifferenceCount} difference(s), reference {RefFiles(parent)}"),
+        };
+        ev.AddRange(parent.Differing.Take(4).Select(d => new EvidenceItem("difference", d, null)));
+        bool declaredSame = string.Equals(arch.DescriptorId, parent.Id, StringComparison.OrdinalIgnoreCase);
+        const string Caveat = "Structure only: tensor names, rank, layer coverage and structural features. Metadata values (rope, norm epsilon, activation, sliding window) " +
+            "and the tokenizer are not compared, so this is a lead for a golden run, never proof of equivalent maths or admission.";
+
+        if (parent.DifferenceCount == 0 && declaredSame)
+            findings.Add(new ScoutFinding("arch.structural_parent", $"Structurally identical to the admitted '{parent.Id}' reference ({RefFiles(parent)}).",
+                Certainty.Known, ev, Caveat));
+        else if (parent.DifferenceCount == 0)
+            findings.Add(new ScoutFinding("arch.relabel_candidate",
+                $"Structurally identical to admitted '{parent.Id}' but declared as '{arch.Declared ?? "(none)"}'" + (arch.Resolved ? $" (resolved to '{arch.DescriptorId}')." : " (not registered)."),
+                Certainty.Hypothesis, ev, Caveat));
+        else
+            findings.Add(new ScoutFinding("arch.nearest_parent", $"Nearest admitted structural parent: '{parent.Id}' with {parent.DifferenceCount} structural difference(s).",
+                Certainty.Hypothesis, ev, Caveat));
+        return arch;
     }
 
     /// <summary>Mirrors <see cref="ModelCompatibility.ValidateForTextGeneration"/>'s dtype rule so a Confirmed blocker means the engine would refuse.</summary>
@@ -385,7 +429,13 @@ public static class ScoutAnalyzer
 
         if (blockers.Any(b => b.Id == "scout.dtype.unsupported"))
             Add("(no command)", "Storage type is not executable by the portable path; a kernel/dequantizer is needed before any run. Check ModelCompatibility.IsSupportedWeightDType.");
-        if (!arch.Resolved)
+        var parent = arch.Candidates.Count > 0 ? arch.Candidates[0] : null;
+        if (!arch.Resolved && parent is { DifferenceCount: 0 })
+            Add($"capture-golden {model}  then  admit-arch {model} --golden <golden.json>",
+                $"Structurally identical to admitted '{parent.Id}' ({RefFiles(parent)}), declared under another name: a relabel/variant candidate. A golden against llama.cpp decides whether it can share that architecture; adding an alias is a separate, reviewed change.");
+        else if (!arch.Resolved && parent is not null)
+            Add($"admit-arch {model}", $"Not registered; nearest admitted structural parent is '{parent.Id}' with {parent.DifferenceCount} difference(s) (see candidates): read those differences in the reference before coding.");
+        else if (!arch.Resolved)
             Add($"admit-arch {model}", "Architecture is not registered; triage the tokenizer and run the bypassed forward pass (explicit, memory-bounded).");
         else if (arch.Status != nameof(AdmissionStatus.Admitted))
             Add($"admit-arch {model} --golden <golden.json>", $"Registered but {arch.Status}; the missing evidence is described in {arch.EvidenceDoc}.");

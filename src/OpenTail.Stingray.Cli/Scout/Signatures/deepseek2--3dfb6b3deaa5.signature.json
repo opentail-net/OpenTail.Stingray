@@ -1,0 +1,174 @@
+{
+  "schema_version": 2,
+  "architecture_id": "deepseek2",
+  "declared_architecture": "deepseek2",
+  "structure_id": "3dfb6b3deaa5a5b7ec9379ba8bb6180e7b2a5e7ec989f8929fe241c1f0dffa11",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k_b.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_kv_a_mqa.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_kv_a_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q_a.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q_a_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q_b.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v_b.weight",
+        "rank": 3,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.exp_probs_b.bias",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.mla_low_rank",
+      "ffn.expert_routed",
+      "ffn.shared_expert"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.key_length_mla",
+      "attention.kv_lora_rank",
+      "attention.layer_norm_rms_epsilon",
+      "attention.q_lora_rank",
+      "attention.value_length",
+      "attention.value_length_mla",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_gating_func",
+      "expert_group_count",
+      "expert_group_used_count",
+      "expert_shared_count",
+      "expert_used_count",
+      "expert_weights_norm",
+      "expert_weights_scale",
+      "feed_forward_length",
+      "leading_dense_block_count",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "GLM-4.7-Flash-Q2_K.gguf",
+      "file_bytes": 11344720224,
+      "sha256": "96b400bda76c8297a12e6aa4ff894f260baf3e8dd814c8a49cce0d90bf114996",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "schema_version": 2,
+  "architecture_id": "exaone4",
+  "declared_architecture": "exaone4",
+  "structure_id": "648bed416390ec174e2039aa1e7b21e489d90a6e12ac8cd59599cf4c7147685b",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_k_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.nextn.eh_proj.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.enorm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.hnorm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.shared_head_norm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.post_attention_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.post_ffw_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "rope_freqs.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.qk_norm",
+      "attn.separate_qkv",
+      "mtp.nextn_head"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.layer_norm_rms_epsilon",
+      "attention.sliding_window",
+      "attention.sliding_window_pattern",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "feed_forward_length",
+      "nextn_predict_layers",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "EXAONE-4.5-33B-Q4_K_M.gguf",
+      "file_bytes": 20047839424,
+      "sha256": "5ba3839b67dcee5618ea7b2206cedc8f9e2ec90fbcec3c95a8cc8b33967f6baf",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

@@ -29,15 +29,74 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("Headroom kept free under the budget (default 8G)")]
         public string? Reserve { get; init; }
 
+        [CommandOption("--signatures <DIR>")]
+        [Description("Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set")]
+        public string? SignaturesDir { get; init; }
+
+        [CommandOption("--emit-signature <PATH>")]
+        [Description("Write this file's structural signature as JSON. Admitted architectures only; hashes the file (cached beside it); adds an origin if the target already holds the same structure")]
+        public string? EmitSignaturePath { get; init; }
+
+        [CommandOption("--origin-repo <REPO>")]
+        [Description("With --emit-signature: Hugging Face repo id the file came from, recorded as provenance (never guessed)")]
+        public string? OriginRepo { get; init; }
+
+        [CommandOption("--origin-revision <REV>")]
+        [Description("With --emit-signature: repo revision/commit the file came from")]
+        public string? OriginRevision { get; init; }
+
         public override string? Validate()
         {
             if (string.IsNullOrWhiteSpace(ModelPath)) return "Use -m <model.gguf>.";
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";
             if (Reserve is not null && !ScoutSize.TryParse(Reserve, out _)) return $"--reserve '{Reserve}' is not a size (try 8G).";
+            if (SignaturesDir is not null && !Directory.Exists(SignaturesDir)) return $"--signatures directory '{SignaturesDir}' does not exist.";
             return null;
         }
     }
+
+    /// <summary>
+    /// Writes (or extends) a reference signature. This is a deliberate contributor action, so unlike a normal scout run it hashes the file:
+    /// evidence without a hash cannot be tied to one conversion. The hash is cached beside the model exactly as <c>stingray hash</c> does.
+    /// If the target file already holds the same structure, the new file is added to its origins instead of overwriting it.
+    /// </summary>
+    private static int EmitSignature(Settings settings, string path, ScoutInput? input, ScoutReport report, string sigPath)
+    {
+        if (input is null)
+        {
+            Console.Error.WriteLine("error: no signature written: the file could not be read");
+            return ExitCodes.Failure;
+        }
+        // Check admission before hashing: a refused file must not cost minutes of hashing.
+        var origin = new SigOrigin(input.FileName, input.FileBytes, null, Blank(settings.OriginRepo), Blank(settings.OriginRevision), StingrayBuildVersion.Value);
+        var sig = SignatureBuilder.TryBuild(input, report, origin, out string refusal);
+        if (sig is null)
+        {
+            Console.Error.WriteLine("error: no signature written: " + refusal);
+            return ExitCodes.Failure;
+        }
+        var fp = OpenTail.Stingray.Engine.Verification.ModelFingerprinter.Compute(path);
+        sig = sig with { Origins = [origin with { Sha256 = fp.Sha256 }] };
+        if (File.Exists(sigPath))
+        {
+            ArchSignature? existing;
+            try { existing = JsonSerializer.Deserialize(File.ReadAllText(sigPath), ScoutJsonContext.Default.ArchSignature); }
+            catch (JsonException ex) { Console.Error.WriteLine($"error: {Path.GetFileName(sigPath)} exists but is not a signature: {ex.Message}"); return ExitCodes.Failure; }
+            var merged = existing is null ? null : SignatureBuilder.TryMerge(existing, sig, out refusal);
+            if (merged is null)
+            {
+                Console.Error.WriteLine($"error: not overwriting {Path.GetFileName(sigPath)}: {(existing is null ? "it is empty" : refusal)}");
+                return ExitCodes.Failure;
+            }
+            sig = merged;
+        }
+        File.WriteAllText(sigPath, JsonSerializer.Serialize(sig, ScoutJsonContext.Default.ArchSignature) + "\n");
+        Console.Error.WriteLine($"Wrote signature for {sig.ArchitectureId} (structure {sig.StructureId[..12]}, {sig.Origins.Count} origin file(s)): {Path.GetFileName(sigPath)}");
+        return ExitCodes.Success;
+    }
+
+    private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
@@ -47,21 +106,36 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 
         long? budget = settings.Budget is null ? null : (ScoutSize.TryParse(settings.Budget, out long b) ? b : null);
         long reserve = settings.Reserve is not null && ScoutSize.TryParse(settings.Reserve, out long r) ? r : ScoutOptions.DefaultReserveBytes;
-        var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve);
+        var signatures = new List<ArchSignature>(SignatureStore.LoadEmbedded());
+        if (settings.SignaturesDir is { Length: > 0 } dir)
+        {
+            var problems = new List<string>();
+            signatures.AddRange(SignatureStore.LoadDirectory(dir, problems));
+            foreach (string p in problems) Console.Error.WriteLine("warning: signature skipped: " + p);
+        }
+        var options = new ScoutOptions(StingrayBuildVersion.Value, budget, reserve, signatures);
 
         string fileName = Path.GetFileName(path);
         long? fileBytes = new FileInfo(path).Length;
 
         ScoutReport report;
+        ScoutInput? input = null;
         try
         {
             using var model = GgufModel.Open(path);
-            report = ScoutAnalyzer.Analyze(new ScoutInput(fileName, fileBytes, model.Header.Version, model.Header.TensorCount,
-                model.Header.MetadataKvCount, model.Metadata, model.Tensors), options);
+            input = new ScoutInput(fileName, fileBytes, model.Header.Version, model.Header.TensorCount,
+                model.Header.MetadataKvCount, model.Metadata, model.Tensors);
+            report = ScoutAnalyzer.Analyze(input, options);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException or UnauthorizedAccessException or ArgumentException or OverflowException)
         {
             report = ScoutAnalyzer.Unreadable(fileName, fileBytes, $"{ex.GetType().Name}: {ex.Message}", options);
+        }
+
+        if (settings.EmitSignaturePath is { Length: > 0 } sigPath)
+        {
+            int emit = EmitSignature(settings, path, input, report, sigPath);
+            if (emit != ExitCodes.Success) return emit;
         }
 
         string json = JsonSerializer.Serialize(report, ScoutJsonContext.Default.ScoutReport);
@@ -93,6 +167,16 @@ internal static class ScoutTextRenderer
             string status = arch.Resolved ? $"{arch.DescriptorId} ({arch.Status})" : "[yellow]not registered[/]";
             AnsiConsole.MarkupLine($"[bold]Architecture:[/] declared '{Markup.Escape(arch.Declared ?? "(none)")}' -> {status}");
             if (arch.RefusalReason is not null) AnsiConsole.MarkupLine($"  {Markup.Escape(arch.RefusalReason)}");
+            if (arch.CandidatesState == "computed" && arch.Candidates.Count > 0)
+            {
+                AnsiConsole.MarkupLine("[bold]Nearest admitted structural parents[/] [dim](structure only; a lead for a golden run, not admission)[/]");
+                foreach (var cand in arch.Candidates)
+                {
+                    AnsiConsole.MarkupLine($"  {Markup.Escape(cand.Id)} [dim]({Markup.Escape(cand.Status)}, ref {Markup.Escape(string.Join(", ", cand.ReferenceFiles.Take(2)))}{(cand.ReferenceFiles.Count > 2 ? $" +{cand.ReferenceFiles.Count - 2}" : "")})[/]: " +
+                        (cand.DifferenceCount == 0 ? "[green]identical structure[/]" : $"[yellow]{cand.DifferenceCount} difference(s)[/]"));
+                    foreach (var d in cand.Differing.Take(3)) AnsiConsole.MarkupLine($"      [dim]{Markup.Escape(d)}[/]");
+                }
+            }
         }
 
         if (r.Tensors is { } t)

@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "architecture_id": "glm4moe",
+  "declared_architecture": "glm4moe",
+  "structure_id": "86db4fcf95bec0429687b5794173c2fbb2298c1ab4c77e3173b4ea73bdb68dc6",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.bias",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.exp_probs_b.bias",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.eh_proj.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.embed_tokens.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.enorm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.hnorm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.shared_head_head.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.nextn.shared_head_norm.weight",
+        "rank": 1,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.post_attention_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.separate_qkv",
+      "ffn.expert_routed",
+      "ffn.shared_expert",
+      "mtp.nextn_head"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.layer_norm_rms_epsilon",
+      "attention.value_length",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_gating_func",
+      "expert_shared_count",
+      "expert_used_count",
+      "expert_weights_norm",
+      "expert_weights_scale",
+      "feed_forward_length",
+      "leading_dense_block_count",
+      "nextn_predict_layers",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf",
+      "file_bytes": 35732280672,
+      "sha256": "a61230761800f4e8f1309a4098bfe91ff9c6328bc2abd9296bb1f9ef5e130561",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

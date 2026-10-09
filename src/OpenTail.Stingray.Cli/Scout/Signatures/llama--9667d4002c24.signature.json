@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "architecture_id": "llama",
+  "declared_architecture": "llama",
+  "structure_id": "9667d4002c24d4831976b598118158d948694e23c1eeb174b05096f3e7393074",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_k.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_v.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.separate_qkv"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.layer_norm_rms_epsilon",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "feed_forward_length",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "vocab_size"
+    ],
+    "tokenizer_model": "llama"
+  },
+  "origins": [
+    {
+      "file_name": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "file_bytes": 4372812000,
+      "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    },
+    {
+      "file_name": "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf",
+      "file_bytes": 13549293088,
+      "sha256": "21451ba38ab682fc398575e4a86c890f8002ebf1d164dc32e9146c0802c6c9f9",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}

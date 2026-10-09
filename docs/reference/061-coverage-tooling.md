@@ -38,7 +38,22 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   `recurrent.{ssm,hybrid_ssm,rwkv_time_mix}`, `mtp.nextn_head`, `rope.{multi_axis,scaling,partial}`, `multimodal.{projector_file,vision_tensors_in_text_file,audio_tensors}`,
   `quant.low_bit_or_block_fp`, plus the tokenizer findings. Tensor and key names were checked against the pinned `examples/llama.cpp/.../llama-arch.cpp`.
   A rule fires only on evidence it can cite; one isolated MTP-like tensor, a projector alone, or `ssm_*` names alone never reach `Known` semantics.
-* Not yet implemented (see plan): architecture relatives ranking, `scripts/scout-pretest.ps1`.
+* **Nearest admitted structural parent** (`--signatures <dir>` adds your own): scout ranks the file against reference *signatures* of admitted architectures and lists the
+  closest three with exact differences (`missing/extra tensor pattern`, `layer coverage`, `rank`, `feature ...`). A signature is **structure only**: tensor-name patterns
+  (layer index as `*`), tensor rank, layer coverage, structural feature ids, metadata key names. It deliberately ignores quantization, model size, head counts, file name
+  and tensor order, so fine-tunes, merges and re-quantizations of a family land on it. It does **not** see metadata values (rope, norm epsilon, activation, sliding window) or
+  the tokenizer, so a match is a lead for a golden run, never proof of equivalent maths. Findings: `arch.structural_parent` (Known: identical to the family it declares),
+  `arch.relabel_candidate` (Hypothesis: identical structure under an unregistered name), `arch.nearest_parent` (Hypothesis: closest, with N differences).
+  The ranking is a count of differences, not a probability; it has not been calibrated (plan Phase 5).
+  * **Structure and origin are separate.** A signature file holds a `structure` (what the family looks like, plus a `structure_id`, the SHA-256 of its canonical
+    patterns and features) and a list of `origins` (file name, size, SHA-256, optional repo/revision, scout build). Origins never affect ranking. Several files that
+    share a structure are one signature with several origins.
+  * **Shipped set:** `src/OpenTail.Stingray.Cli/Scout/Signatures/*.signature.json`, embedded in the binary; only **Admitted** architectures qualify, and a guard test fails if
+    an architecture is demoted or a file is stale or hand-edited. Independent of any llama.cpp version or of what is on the user's disk.
+  * **Adding a reference** (maintainers or contributors): `stingray scout -m <admitted.gguf> --emit-signature <name>.signature.json [--origin-repo owner/repo --origin-revision <rev>]`.
+    It refuses a file that does not resolve to an Admitted architecture, **hashes the file** (cached beside it as `<file>.sha256`, like `stingray hash`), and if the target file
+    already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
+* Not yet implemented (see plan): `scripts/scout-pretest.ps1`, a real host working-set estimator, calibration of the ranking.
 * Advisory only: nothing in the report admits or promotes an architecture.
 
 ---

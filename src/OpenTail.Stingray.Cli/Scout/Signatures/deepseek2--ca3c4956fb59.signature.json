@@ -1,0 +1,151 @@
+{
+  "schema_version": 2,
+  "architecture_id": "deepseek2",
+  "declared_architecture": "deepseek2",
+  "structure_id": "ca3c4956fb59170b6fc870e8a6e986447adc6a122ba6c57581bda7c65196eb19",
+  "structure": {
+    "patterns": [
+      {
+        "pattern": "blk.*.attn_kv_a_mqa.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_kv_a_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_kv_b.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_output.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.attn_q.weight",
+        "rank": 2,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_down.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_down_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_inp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_gate_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_norm.weight",
+        "rank": 1,
+        "coverage": "all"
+      },
+      {
+        "pattern": "blk.*.ffn_up.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_exps.weight",
+        "rank": 3,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "blk.*.ffn_up_shexp.weight",
+        "rank": 2,
+        "coverage": "subset"
+      },
+      {
+        "pattern": "output.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "output_norm.weight",
+        "rank": 1,
+        "coverage": "unlayered"
+      },
+      {
+        "pattern": "token_embd.weight",
+        "rank": 2,
+        "coverage": "unlayered"
+      }
+    ],
+    "features": [
+      "attn.mla_low_rank",
+      "ffn.expert_routed",
+      "ffn.shared_expert"
+    ],
+    "metadata_keys": [
+      "attention.head_count",
+      "attention.head_count_kv",
+      "attention.key_length",
+      "attention.kv_lora_rank",
+      "attention.layer_norm_rms_epsilon",
+      "attention.value_length",
+      "block_count",
+      "context_length",
+      "embedding_length",
+      "expert_count",
+      "expert_feed_forward_length",
+      "expert_shared_count",
+      "expert_used_count",
+      "expert_weights_scale",
+      "feed_forward_length",
+      "leading_dense_block_count",
+      "rope.dimension_count",
+      "rope.freq_base",
+      "rope.scaling.factor",
+      "rope.scaling.original_context_length",
+      "rope.scaling.type",
+      "rope.scaling.yarn_log_multiplier",
+      "vocab_size"
+    ],
+    "tokenizer_model": "gpt2"
+  },
+  "origins": [
+    {
+      "file_name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+      "file_bytes": 16702518016,
+      "sha256": "1605e8d4d8d93fb1f70aed8272a07caac3629a12e0cd6cfddc5d376563b95830",
+      "source_repo": null,
+      "source_revision": null,
+      "scout_build": "1.0.7\u002Bd34ca48a817a89283a2cb31c155f6bb365baa502"
+    }
+  ]
+}
