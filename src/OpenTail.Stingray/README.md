@@ -41,7 +41,7 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
   * **Neural Voice & Voice Cloning (TTS):** Qwen3-TTS 12Hz (with ERes2NetV2 192-dim voice cloning speaker encoder), Coqui XTTS-v2 (GPT2 autoregressive codec + FiLM-conditioned HiFi-GAN, zero-shot voice cloning), Kokoro-82M, Chatterbox-Turbo, F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Piper VITS, Meta MMS-TTS (Massively Multilingual VITS), and MeloTTS Multilingual VITS.
   * **Broadcast DSP:** Rational windowed-sinc resamplers, ATSC A/85 downmixing, and TPDF dithered 16-bit/24-bit WAV exporter.
 * 🎨 **State-of-the-Art Diffusion & Video:**
-  * **Image Architectures:** SD 1.5, SDXL, SD 3 / 3.5 (MMDiT), FLUX.1 (schnell/dev), FLUX.2 (Klein & Kontext multi-reference), FLUX 3 (3D/4D RoPE Multimodal), and Z-Image-Turbo.
+  * **Image Architectures:** SD 1.5, SDXL, SD 3 / 3.5 (MMDiT), FLUX.1 (schnell/dev), FLUX.2 (Klein & Kontext multi-reference), and Z-Image-Turbo.
   * **Acoustic Diffusion:** Stable Audio 3 (Variable-Length 44.1kHz Stereo DiT).
   * **Video Diffusion:** Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
   * **Real-Time Streaming:** Latent Consistency Models (LCM 1–4 step) and `StreamBatchPipeline` (30–60 FPS real-time webcam/video streaming).

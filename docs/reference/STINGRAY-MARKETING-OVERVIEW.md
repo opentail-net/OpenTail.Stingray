@@ -36,7 +36,7 @@ Stingray is the first inference engine to elevate **Skills, Instructions, and To
 
 ### 🏎️ 5. Extreme Hardware Acceleration
 - **CPU**: Hand-tuned AVX2/AVX-512 SIMD kernels with fused micro-GEMM achieving **15× to 17× micro-kernel speedups**.
-- **GPU**: Native Vulkan compute shaders with SPIR-V Path 2 tiling, cooperative matrix acceleration, and batched prefill/decode.
+- **GPU**: Native Vulkan compute shaders with SPIR-V Path 2 tiling and batched prefill/decode.
 
 ---
 

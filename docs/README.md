@@ -12,6 +12,8 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Fix a problem (slow, out of memory, wrong output, will not load) | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Pick and download a model | [MODELS.md](MODELS.md) |
 | Know what works today, and how well it was checked | [STATUS.md](STATUS.md) |
+| Explore model architecture cards (Qwen, DeepSeek MLA, Vision, Audio, Diffusion) | [models/](models/README.md) |
+| Learn engine internals (SIMD kernels, TurboQuant, backends, NativeAOT) | [guides/](guides/README.md#technical-deep-dives) |
 | Use the command line | [CLI README](../src/OpenTail.Stingray.Cli/README.md), [reference/cli-option-inventory.md](reference/cli-option-inventory.md) (every option) |
 | Run the OpenAI/Anthropic-compatible server | [Server README](../src/OpenTail.Stingray.Server/README.md) |
 | Use the NuGet package from C# | [Package README](../src/OpenTail.Stingray/README.md) |
@@ -22,6 +24,7 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Run a new GGUF from Hugging Face | [reference/061-coverage-tooling.md](reference/061-coverage-tooling.md) (`pull`, `admit-arch`, `gen-vision-scaffold`) |
 | Compare Stingray with other engines | [reference/POSITIONING.md](reference/POSITIONING.md) |
 | See performance numbers | [../PerformanceLeague.md](../PerformanceLeague.md) (full, measured, hardware-specific) |
+| Contribute or build from source | [../DEVELOPMENT.md](../DEVELOPMENT.md), [../CLAUDE.md](../CLAUDE.md) |
 
 ## Understanding the design
 

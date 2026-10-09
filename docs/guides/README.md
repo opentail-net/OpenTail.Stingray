@@ -15,9 +15,20 @@ the options that matter, and the limits. For the overview of everything Stingray
 | Generate images or short video | [images-and-video.md](images-and-video.md) |
 | Serve all of this to OpenAI, Anthropic or Cohere clients | [serve-an-api.md](serve-an-api.md) |
 
-Picking a model: [MODELS.md](../MODELS.md). The exact command, memory and speed for a particular
-model: [RUNNING.md](../RUNNING.md). How well it was checked: [STATUS.md](../STATUS.md).
+## Technical Deep Dives
 
-Not covered here yet: music and sound generation, voice conversion and time-series forecasting
-(library-only today; see WHAT-YOU-CAN-DO.md), and using the engine from C# in depth (see the
-[package README](../../src/OpenTail.Stingray/README.md) and the [samples](../../samples)).
+In-depth technical guides for engine internals, memory optimization, and deployment:
+
+| System / Subsystem | Guide |
+|---|---|
+| KV cache compression, TurboQuant & prefix reuse | [turboquant-kv-cache.md](turboquant-kv-cache.md) |
+| Pure C# vectorization, SIMD intrinsics & thread pools | [managed-simd-kernels.md](managed-simd-kernels.md) |
+| Compute backends (CPU, Vulkan shaders, CUDA) | [hardware-backends.md](hardware-backends.md) |
+| Publishing single-file zero-dependency NativeAOT binaries | [native-aot-deployment.md](native-aot-deployment.md) |
+
+---
+
+Picking a model: [MODELS.md](../MODELS.md). The exact command, memory and speed for a particular
+model: [RUNNING.md](../RUNNING.md). How well it was checked: [STATUS.md](../STATUS.md). Architecture
+deep dives: [models/](../models/README.md).
+

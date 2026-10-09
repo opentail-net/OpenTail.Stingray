@@ -21,14 +21,30 @@ dotnet tool update -g OpenTail.Stingray.Cli
 
 The command is `stingray`.
 
-## Usage
+## Quick Start: Path-Free Front Door
 
+```bash
+# 1. Download verified default model bundles
+stingray setup chat          # Qwen2.5 0.5B Instruct (469 MB)
+stingray setup speak         # Piper en_US-lessac-medium (60 MB)
+stingray setup transcribe    # Whisper base (141 MB)
+stingray models              # check installation status
+
+# 2. Run immediately without typing paths
+stingray chat                # interactive multi-turn terminal chat
+stingray chat "Explain SIMD in one sentence."
+stingray speak "Hello from Stingray." -o hello.wav
+stingray transcribe hello.wav
 ```
-# Text generation (CPU)
+
+## Advanced & Path-Oriented Usage
+
+```bash
+# Text generation with explicit model path (CPU)
 stingray -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p "Once upon a time" --temp 0.7
 
 # All layers on GPU (Vulkan or CUDA, auto-selected)
-stingray -m models/Qwen3-8B-Q4_K_M.gguf -p "Explain mmap" -g -1
+stingray -m models/Qwen3-8B-Q4_K_M.gguf -p "Explain mmap" --backend vulkan -g -1
 
 # Interactive chat (omit -p to enter chat mode)
 stingray -m models/Qwen3-8B-Q4_K_M.gguf
@@ -82,7 +98,7 @@ accepted and quietly does nothing.
 | `--tq` | off | TurboQuant KV-cache compression (~4–8× less KV memory) |
 | `--tq-mode` | `auto` | `auto`, `kvarn` (4-bit K / 2-bit V) or `lloydmax` (3-bit codebooks; degrades quality on QK-norm models such as Qwen3) |
 
-Run `stingray --help` for the full reference.
+Run `stingray --help` or view the [CLI Option Inventory](../../docs/reference/cli-option-inventory.md) for the complete reference across all 29 commands.
 
 ## Requirements
 

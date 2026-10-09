@@ -47,16 +47,15 @@ dotnet new console -n HelloStingray && cd HelloStingray
 dotnet add package OpenTail.Stingray
 ```
 
-**2. Download a small model** (Qwen2.5 0.5B Instruct, 469 MB). The `stingray` command-line tool
-fetches GGUF files from Hugging Face:
+**2. Download a small model** (Qwen2.5 0.5B Instruct, 469 MB). The `stingray` CLI
+fetches verified bundles straight into your local model store:
 
 ```bash
 dotnet tool install -g OpenTail.Stingray.Cli
-stingray pull -r Qwen/Qwen2.5-0.5B-Instruct-GGUF
+stingray setup chat
 ```
 
-This saves `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`. You can also download it from the
-[model page](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) by hand.
+This verifies SHA-256 integrity and stores the model in `ModelHome`. You can also pull any GGUF with `stingray pull -r <repo>` or download it manually.
 
 **3. Replace `Program.cs`**
 
@@ -64,8 +63,13 @@ This saves `models/qwen2.5-0.5b-instruct-q4_k_m.gguf`. You can also download it 
 using OpenTail.Stingray;
 using OpenTail.Stingray.Executors;
 
+// Resolve model from CLI argument or default ModelHome bundle:
+string modelPath = args.Length > 0 
+    ? args[0] 
+    : ModelHome.ResolveModelPath("qwen2.5-0.5b");
+
 // Load the model, allocate execution context, and drive interactive chat:
-using var model = Model.Load("models/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+using var model = Model.Load(modelPath);
 using var context = model.CreateContext(new ContextParams { ContextSize = 4096 });
 var executor = new InteractiveExecutor(context);
 var session = new ChatSession(executor);
@@ -215,11 +219,12 @@ with 64 GB of RAM, CPU only, on Windows 11. Rough guide:
 
 A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
-## What's next
+## Documentation & Architecture
 
-A guided "front door" is under way in [docs/103](docs/3-product-and-runtime/103-front-door-design.md). Done: a small
-catalog of verified models per task and `stingray setup <task>` / `stingray models`. Next: task
-commands that need no file paths, and a one-line C# API.
+- **[docs/README.md](docs/README.md)**: Central documentation index, task guides, and technical references.
+- **[DEVELOPMENT.md](DEVELOPMENT.md)**: Contributor guide for solution layout, SIMD internals, and test harnesses.
+- **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)**: Plain-language capability overview across LLM, vision, audio, and diffusion.
+- **[docs/STATUS.md](docs/STATUS.md)**: Model support matrix with dated verification evidence.
 
 ## Building from source
 

@@ -62,6 +62,7 @@ even if it happens to load.
   but since the Q3_K kernel rewrite `e7b7aa8a` it departs at token 9 on the test prompt
   (decision pending, [bugstofix](1-correctness/bugstofix.md) item 24); CosyVoice 2 can garble the end of a sentence;
   MiMo-VL is partial.
+- **Diffusion pipeline status:** Qwen Image has verified DiT and VAE decode, but text conditioning integration is pending; FLUX.2 is undergoing convergence/patchify debugging; FLUX.3 is speculative code and excluded from coverage.
 - **Music, voice conversion and time-series models are library-only,** with no command-line entry.
 - **Speculative decoding does not speed up this CPU** (it lacks the instructions it needs).
 - **Prefix caching is off for hybrid and recurrent models** (Granite 4.0-H, Nemotron-H, LFM2),
