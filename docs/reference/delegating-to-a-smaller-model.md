@@ -51,6 +51,25 @@ When finished, report: files changed; test counts before/after (whole project); 
 **Done when:** every existing `PullCommandListingTests` test passes unchanged, you add tests for the no-`sha` case, and the whole Cli project passes.
 **Expected effort:** small-medium (2-3 hours).
 
+## Task card D: signature harvest (data only, no code)
+
+**Goal:** add reference signatures for admitted architectures that have none, from hosted models, without downloading any weights.
+**Files you may add:** `src/OpenTail.Stingray.Cli/Scout/Signatures/*.signature.json` only. Do not edit code, tests, or any doc (report results back instead).
+**Find the gaps:** a throwaway local test or script (do not commit it) printing `ArchitectureRegistry.All` ids with `Status == Admitted` that have no file in `Scout/Signatures/` (the file name starts with the architecture id).
+**For each gap:** use the Hub list API (`https://huggingface.co/api/models?filter=gguf&search=<name>&sort=downloads&direction=-1&expand[]=gguf&expand[]=downloads&expand[]=gated`) to find a repo whose `gguf.architecture` equals the id and that is public (not gated), licence apache-2.0 or mit, and has a SINGLE-file (not split) Q4/Q5/Q8 quantisation under about 6 GB. Then emit to a temp path:
+`stingray scout -r <owner/repo> -f <file.gguf> --emit-signature <temp>.json`, read `structure_id` from the JSON, and move it to `Scout/Signatures/<id>--<first 12 chars of structure_id>.signature.json`. If the file for that name already exists, `--emit-signature` merges the origin: that is correct, keep the merge.
+**Rules:** never hand-edit a signature (it carries a content hash and the loader rejects edits); never relax a guard test; if an architecture has no qualifying small public single-file repo, SKIP it and list it in your report; the command refuses non-admitted architectures, so a refusal means the id is not admitted (do not work around it).
+**Done when:** `dotnet build tests/OpenTail.Stingray.Tests.Cli -c Release` and the whole Cli project pass (the guard `Embedded_signatures_are_valid_and_belong_to_admitted_architectures` checks every file), and the report lists: architecture, repo, file, commit, and the skipped ones with the reason.
+**Expected effort:** 2-3 hours, mostly browsing the Hub.
+
+## Task card E: local inventory (`models --local [--verify]`; plan P4)  **start only after other work on `ModelsCommand.cs` and the option inventory has finished**
+
+**Read first:** `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md` sections 3 (G5, G7), 5.2 and P4.
+**Files you may change:** `src/OpenTail.Stingray.Cli/ModelsCommand.cs`, a new `src/OpenTail.Stingray.Cli/LocalInventory.cs`, a new test file, and (last step) `docs/reference/cli-option-inventory.md` regenerated with `scripts/gen-cli-option-inventory.ps1` (Class `stable`).
+**Do:** `stingray models --local` lists (1) each catalogue entry with its state (Missing / Partial / Installed) and (2) every GGUF found in the model home and in `STINGRAY_MODEL_DIRS`, reusing the scanning that `ListModelsCommand` already does (do not write a second scanner). For each GGUF read only its index (`GgufModel.Open`, no weights) and show: architecture, whether it is admitted (`ArchitectureRegistry`; show a ported-not-verified family as plain "not supported", CLAUDE.md rule 14), the dominant quantisation, size, and whether it fits this machine via `LoadPreflight.EvaluateFile`. `--verify` additionally re-hashes catalogue files with `ModelFingerprinter.Compute` (it caches in a `.sha256` sidecar) and reports Intact / Damaged against the catalogue sha256; it is opt-in because hashing is slow. Never modify or delete a model file.
+**Tests:** a temp model home with synthetic GGUFs (`HubFixtures.Gguf`) covering: catalogue states, an admitted and an unregistered architecture, an unreadable file reported as unreadable without stopping the scan, fits / does not fit (inject RAM), `--verify` intact and damaged, no file modified.
+**Done when:** the new tests and the whole Cli project pass, and the option inventory guard passes.
+**Expected effort:** medium (3-4 hours).
 ## After the work comes back
 
 Check: the diff touches only the listed files; test totals went up by about the count added; run the Core guards too (`Tests.Core` classes `ArchitectureCapabilitiesBaselineTests` and `KnownEnvironmentVariablesTests`) because they scan all of `src/`; try one deliberate break to confirm a new test can fail.
