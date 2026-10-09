@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-28**, recording
-**242 option declarations** across 25 command files — the same count the
+**251 option declarations** across 26 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -97,6 +97,8 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--case <NAME>` |  | Name of this case inside the golden (an existing case of the same name is replaced) |
 | `--ctx-size <N>` |  |  |
+| `--expect <LIST>` |  | Hyperparameter guards to pin in the golden, e.g. ropeDim=16,numExperts=8,hasFfnBias=true (ModelHyperparams property=value, comma separated) |
+| `--min-confident <N>` |  | Require at least N matches at positions where the reference itself was confident (evidence requirement for teacher-forced cases) |
 | `--mode <MODE>` |  | How the golden is checked later: free (greedy run compared until it diverges) or teacherForced (reference tokens fed, every position compared) |
 | `--model <PATH>` |  | GGUF to capture a reference for |
 | `--no-hash` |  | Skip the SHA-256 of the model (the golden then cannot pin the file; slow for large checkpoints) |
@@ -437,4 +439,16 @@ hoc at each read site rather than in one place.
 | `--vocab <PATH>` | stable | Custom vocabulary / token file path (F5-TTS vocab.txt). |
 | `--voice <VOICE>` | stable | Voice persona style preset (e.g. af_heart, af_bella, resemble_default, EN-US, EN-BR, ZH). Default: af_heart. |
 | `--voices-dir <PATH>` | stable | Kokoro voice directory containing .bin / .gguf voice vectors. |
+
+## VerifyGoldensCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--baseline <PATH>` |  | Write per-host execution and performance baseline JSON record |
+| `--ctx-size <N>` |  | Context size for execution (default: 2048) |
+| `--diff <PATH>` |  | Compare current verification run against a previously recorded baseline JSON |
+| `--dir <PATH>` |  | Directory containing .golden.json files (defaults to repo tests/.../Goldens) |
+| `--golden <NAME>` |  | Filter to run only matching golden file(s) or architecture(s) |
+| `--strict` |  | Fail with non-zero exit code if any model is unpinned, skipped or divergent |
+| `--verbose` |  | Print detailed per-token and case breakdown |
 

@@ -1,6 +1,6 @@
-# 061 — Coverage tooling: `pull`, `admit-arch`, `gen-vision-scaffold`
+# 061 — Coverage tooling: `pull`, `admit-arch`, `gen-vision-scaffold`, `verify-goldens`
 
-Three CLI commands added 2026-09-02 to speed up the recurring manual work behind this project's
+CLI commands added to speed up the recurring manual work behind this project's
 "run any GGUF from Hugging Face" goal (`docs/00-current-work.md`). None of them change engine
 behavior — they're operator/developer tooling, same tier as `doctor`/`list-tensors`/`plan`.
 
@@ -115,3 +115,30 @@ retroactively removed by it, but no new ones should be added.
 Per CLAUDE.md rule 8, the generated scaffold's TODOs explicitly say to read the real
 `tools/mtmd/models/<arch>.cpp` reference before writing any encoder math — this tool only removes
 the boilerplate, not the need to check the reference.
+
+---
+
+## `stingray verify-goldens [--dir <dir>] [--golden <pattern>] [--baseline <file>] [--diff <file>] [--strict]`
+
+Runs forward-pass parity verification across checked-in `.golden.json` references against locally
+present weights, verifying pinned hashes and hyperparameter invariants, measuring decode speed,
+and optionally recording or diffing against per-host regression baselines.
+
+```
+stingray verify-goldens                                         # verify all goldens whose models exist
+stingray verify-goldens -g smollm                               # filter goldens by pattern
+stingray verify-goldens --baseline host-baseline.json           # record baseline of current run
+stingray verify-goldens --diff host-baseline.json               # diff current results against baseline
+stingray verify-goldens --strict                                # exit 1 on near-ties, divergences or guard failures
+```
+
+What it does:
+1. Enumerates `.golden.json` files from `--dir` (defaults to `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens`).
+2. Discovers matching models using `ModelLocator` (respects `STINGRAY_MODEL_DIRS`). Models not on disk are reported as `Skipped`.
+3. Verifies file integrity against the golden's pinned SHA-256 via cached `ModelFingerprinter`.
+4. Checks all `expectedHyperparameters` guards (e.g. `ropeDim`, `numExperts`) against model metadata before executing.
+5. Runs greedy evaluation with `GoldenParityRunner` on CPU, measuring matched token count, throughput (decode tokens/sec), and elapsed time.
+6. Displays a color-coded Spectre.Console summary table with verdicts (`Exact`, `NearTie`, `Diverged`, `GuardFailed`, `UnpinnedFile`).
+7. With `--baseline <path>`, saves results and hardware environment metadata to JSON.
+8. With `--diff <path>`, compares against a prior baseline run, highlighting status changes (`Unchanged`, `Regressed`, `Improved`, `Diverged`, `New`, `Missing`, `SpeedChange`) and speed differences.
+

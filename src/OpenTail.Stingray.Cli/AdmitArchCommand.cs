@@ -241,7 +241,7 @@ public sealed class AdmitArchCommand : Command<AdmitArchCommand.Settings>
         using var source = new GoldenForwardPassSource(model, Math.Max(settings.CtxSize, 1024));
         using var scope = new GoldenEngineSettingsScope(golden.EngineSettings);
         var hpExpect = HyperparameterExpectations.Check(ArchitectureModelResolver.ResolveHyperparams(model), golden.ExpectedHyperparameters);
-        foreach (var f in hpExpect) AnsiConsole.MarkupLine($"[red]Hyperparameter guard failed:[/] {Markup.Escape(f)}");
+        foreach (var f in hpExpect) AnsiConsole.ErrorLine($"[red]Hyperparameter guard failed:[/] {Markup.Escape(f)}");
         var result = GoldenParityRunner.Run(golden, source.Create, new ParityOptions { RequireStepwiseArgmaxAgreement = false });
 
         AnsiConsole.WriteLine();

@@ -4,7 +4,7 @@
   "model": {
     "fileName": "TinyLLama-4x1.1B-MoE.Q4_K_M.gguf",
     "sizeBytes": 2042385856,
-    "sha256": "c70d9d159e31cd2bec047c8ac568a360a6e8e6ab29e2e9be871cf2b05c517083",
+    "sha256": "c70d9d159e31cd2bec047c8ac568a360a6e8e6ab29e2e9be871cf2b05c517083"
   },
   "reference": {
     "engine": "llama-server",

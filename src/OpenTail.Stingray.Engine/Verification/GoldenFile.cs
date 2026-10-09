@@ -135,6 +135,7 @@ public sealed record GoldenEngineSettings
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(GoldenFile))]
+[JsonSerializable(typeof(GoldenBaselineFile))]
 internal partial class GoldenJsonContext : JsonSerializerContext
 {
 }

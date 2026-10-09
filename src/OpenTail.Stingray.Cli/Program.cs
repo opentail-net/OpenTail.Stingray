@@ -102,6 +102,8 @@ app.Configure(config =>
         .WithDescription("Triage a GGUF whose architecture is not yet allowlisted: tokenizer/tensor inventory, a real bypassed forward-pass run, and (with --reference-tokens) a formatted ADMIT/REJECT verdict.");
     config.AddCommand<GenVisionScaffoldCommand>("gen-vision-scaffold")
         .WithDescription("Print an mmproj's real tensor/metadata inventory and scaffold a new <Arch>VisionEmbedderParityTests.cs (pure C#, no Python).");
+    config.AddCommand<VerifyGoldensCommand>("verify-goldens")
+        .WithDescription("Run recorded golden parity references against available models and report a host baseline (or diff with --diff)");
 });
 
 return app.Run(args);
