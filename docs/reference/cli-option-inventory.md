@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**301 option declarations** across 30 command files — the same count the
+**302 option declarations** across 30 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -402,6 +402,7 @@ hoc at each read site rather than in one place.
 | `--reserve <SIZE>` | diagnostic | Headroom kept free under the budget (default 8G) |
 | `--revision <REV>` | diagnostic | With --repo: commit, branch or tag to inspect (default: the current head). The report records the exact commit. |
 | `--signatures <DIR>` | diagnostic | Extra reference signatures (*.signature.json) to rank against, in addition to the built-in admitted set |
+| `--triage <N>` |  | With --backlog: also remote-scout (index only) the most downloaded repo of each of the top N unregistered families and tabulate the nearest admitted relative. |
 
 ## SetupCommand
 

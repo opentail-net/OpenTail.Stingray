@@ -122,10 +122,31 @@ public sealed class HostMemoryEstimatorTests
         Assert.Equal(Certainty.Unknown, e.Certainty);
     }
 
+    // ── RWKV7: calibrated on G1h 1.5B and 2.9B Q4_K_M peak runs, 2026-10-10 ──
+    [Fact]
+    public void Rwkv_has_no_kv_no_repack_and_a_fixed_size_state_even_when_head_count_is_zero()
+    {
+        // RWKV GGUFs declare attention.head_count 0, which the attention-shaped completeness check would reject.
+        var hp = Hp(h => h with { NumHeads = 0, NumKvHeads = 0, NumLayers = 24, EmbeddingDim = 2048, HeadDim = 64, IntermediateDim = 8192 });
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], hp, "Rwkv", 100, null);
+        var e2 = HostMemoryEstimator.Estimate([Q4K("a")], hp, "Rwkv", 100000, null);
+        Assert.Equal(Certainty.Estimated, e.Certainty);
+        Assert.Equal(0, Part(e, "q4k_repack"));
+        Assert.Equal(0, Part(e, "kv_cache"));
+        Assert.Equal(24L * (2048 * 64 + 2 * 2048) * 4, Part(e, "rwkv_state"));
+        Assert.Equal(e.Bytes, e2.Bytes); // flat in context
+    }
+
+    [Fact]
+    public void Rwkv_without_layers_or_width_is_Unknown()
+    {
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], Hp(h => h with { NumLayers = 0 }), "Rwkv", 100, null);
+        Assert.Equal(Certainty.Unknown, e.Certainty);
+    }
+
     // ── Unknown stays Unknown ──
     [Theory]
     [InlineData("DeepSeek2Mla")]
-    [InlineData("Rwkv")]
     [InlineData(null)]
     public void Families_without_a_modelled_state_layout_are_Unknown_with_null_terms(string? family)
     {

@@ -35,6 +35,8 @@ public static class HostMemoryEstimator
 {
     public const long BaseOverheadBytes = 192L << 20;
     /// <summary>Fixed overhead of the hybrid recurrent path, measured 330-356 MiB beyond file and state.</summary>
+    public const long RwkvBaseOverheadBytes = 128L << 20;
+    private const long RwkvScratchBytes = 32L << 20;
     public const long HybridBaseOverheadBytes = 448L << 20;
     private const double HybridScratchMargin = 1.10;
     private const double RepackFactor = 1216.0 / 1152.0;
@@ -72,6 +74,9 @@ public static class HostMemoryEstimator
             parts.Add(new("prefill_scratch", null, Certainty.Unknown, "hyperparameters could not be resolved from the metadata"));
             return Unknown("hyperparameters could not be resolved", parts);
         }
+        // RWKV declares head_count 0 in its metadata, so it must be handled before the attention-shaped completeness check below.
+        if (family is "Rwkv")
+            return EstimateRwkv(parts, hp, weights);
         // Zero-valued essentials mean the metadata was incomplete and the resolver filled defaults: an estimate built on them would silently under-count.
         var missing = new List<string>();
         if (hp.NumLayers <= 0) missing.Add("block_count");
@@ -128,6 +133,33 @@ public static class HostMemoryEstimator
         long total = parts.Sum(p => p.Bytes ?? 0);
         return new HostWorkingSet(Certainty.Estimated, total,
             "upper bound for a CPU run at the stated context; calibrated on measured dense runs, not a prediction (see 061-coverage-tooling.md)", parts);
+    }
+
+    /// <summary>
+    /// RWKV (recurrent, no KV cache). Measured 2026-10-10 on RWKV7 G1h 1.5B and 2.9B Q4_K_M (CPU, STINGRAY_GC_STATS peakWorkingSet; prompts of 17 / 734 / 1454 tokens):
+    /// 1.5B (file 1039 MiB) 1092 / 1152 / 1143 MiB, 2.9B (file 1959 MiB) 2005 / 2060 / 2041 MiB. Peak is the file plus 46-113 MiB, flat in prompt length (tokens are processed
+    /// sequentially), and there is no Q4_K repack copy. Terms: weights, base 128 MiB, the wkv state, and a fixed 32 MiB for prefill buffers.
+    /// </summary>
+    private static HostWorkingSet EstimateRwkv(List<WorkingSetComponent> parts, ModelHyperparams hp, long weights)
+    {
+        parts.RemoveAll(p => p.Name is "q4k_repack" or "base");
+        parts.Add(new("q4k_repack", 0, Certainty.Estimated, "none: the RWKV path does not build the Q4_K repack cache (measured: peak is file size plus 46-113 MiB)"));
+        parts.Add(new("base", RwkvBaseOverheadBytes, Certainty.Estimated, "runtime, native libraries and fixed buffers; 128 MiB covers the measured 46-113 MiB total overhead"));
+        if (hp.NumLayers <= 0 || hp.EmbeddingDim <= 0)
+        {
+            string why = "block_count or embedding_length missing from the metadata";
+            parts.Add(new("kv_cache", null, Certainty.Unknown, why));
+            parts.Add(new("prefill_scratch", null, Certainty.Unknown, why));
+            return Unknown(why, parts);
+        }
+        int headSize = hp.HeadDim > 0 ? hp.HeadDim : 64;
+        long state = (long)hp.NumLayers * ((long)hp.EmbeddingDim * headSize + 2L * hp.EmbeddingDim) * sizeof(float);
+        parts.Add(new("rwkv_state", state, Certainty.Estimated, $"{hp.NumLayers} layers x ({hp.EmbeddingDim} x head size {headSize} wkv matrix + 2 x {hp.EmbeddingDim} token-shift) floats; does not grow with context"));
+        parts.Add(new("kv_cache", 0, Certainty.Known, "none: RWKV keeps a fixed-size recurrent state, not a KV cache"));
+        parts.Add(new("prefill_scratch", RwkvScratchBytes, Certainty.Estimated, "fixed prefill buffers; measured +55 MiB between a 17-token and 734/1454-token prompt, flat in length; 32 MiB is the residual after the base term"));
+        long total = parts.Sum(p => p.Bytes ?? 0);
+        return new HostWorkingSet(Certainty.Estimated, total,
+            "upper bound for a CPU run; RWKV7 calibrated on two measured models, not a prediction (see 061-coverage-tooling.md)", parts);
     }
 
     /// <summary>The hybrid recurrent family. <paramref name="parts"/> already holds the weights term; the dense repack and base terms are replaced (see the class remarks).</summary>

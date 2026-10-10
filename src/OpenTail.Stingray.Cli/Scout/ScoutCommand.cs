@@ -84,6 +84,10 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         [Description("Query Hugging Face for the most downloaded GGUF architectures and print the backlog of unregistered/unadmitted families.")]
         public bool Backlog { get; init; }
 
+        [CommandOption("--triage <N>")]
+        [Description("With --backlog: also remote-scout (index only) the most downloaded repo of each of the top N unregistered families and tabulate the nearest admitted relative.")]
+        public int? Triage { get; init; }
+
         [CommandOption("--limit <N>")]
         [Description("With --backlog: number of repositories to inspect (default 50, maximum 200).")]
         public int? Limit { get; init; }
@@ -99,10 +103,12 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
                 if (File is not null || Revision is not null || MaxIndexMb is not null) return "-f, --revision and --max-index-mb only apply with -r.";
                 if (MaxQuants is not null) return "--max-quants only applies with --quants.";
                 if (Limit is <= 0) return "--limit must be positive.";
+                if (Triage is <= 0 or > 20) return "--triage must be between 1 and 20.";
             }
             else
             {
                 if (Limit is not null) return "--limit only applies with --backlog.";
+                if (Triage is not null) return "--triage only applies with --backlog.";
                 if (local == remote) return "Use exactly one of -m <model.gguf> or -r <owner/repo>.";
                 if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
                 if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
@@ -200,7 +206,23 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             return ExitCodes.Failure;
         }
 
-        string json = JsonSerializer.Serialize(report, BacklogJsonContext.Default.BacklogReport);
+        IReadOnlyList<TriageRow>? triage = null;
+        if (settings.Triage is int families)
+        {
+            try
+            {
+                triage = BacklogTriage.RunAsync(http, report, families, new ScoutOptions(StingrayBuildVersion.Value), cancellation).GetAwaiter().GetResult();
+            }
+            catch (ExternalAccessDeniedException ex)
+            {
+                Console.Error.WriteLine("error: " + ex.Message);
+                return ExitCodes.Failure;
+            }
+        }
+
+        string json = triage is null
+            ? JsonSerializer.Serialize(report, BacklogJsonContext.Default.BacklogReport)
+            : JsonSerializer.Serialize(new BacklogTriageReport(report, triage), BacklogTriageJsonContext.Default.BacklogTriageReport);
         if (settings.OutputPath is { Length: > 0 } outPath)
         {
             File.WriteAllText(outPath, json + "\n");
@@ -208,7 +230,11 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         }
 
         if (settings.Format == "json") Console.WriteLine(json);
-        else BacklogTextRenderer.Write(report);
+        else
+        {
+            BacklogTextRenderer.Write(report);
+            if (triage is not null) BacklogTriage.Write(triage);
+        }
 
         return ExitCodes.Success;
     }
