@@ -12,8 +12,8 @@ job at a time (shared-memory iGPU); iGPU timings describe this APU, not a discre
 
 ## Deferred on purpose
 
-**Reference per-op timings for the video/large diffusion models (Wan 2.2, HunyuanVideo, FLUX.2) are deferred** until their
-sample images exist and the leads below are done or parked. The method is ready when wanted: run `sd-cli --backend vulkan0`
+**Reference per-op timings for the video/large diffusion models (Wan 2.2, HunyuanVideo, FLUX.2) are explicitly deferred until Leads 1 to 5 below are all done** (Leads 1 to 5 themselves wait for the sample images to finish). They are not to be started before that, even after the
+sample images exist. The method is ready for that day: run `sd-cli --backend vulkan0`
 with `GGML_VK_PERF_LOGGER=1` on the same workload (it prints per-op GPU time and GFLOP/s by shape), compare op by op with our
 stage timings, as was done for Qwen Image. Notes already gathered for that day:
 - Wan's GPU weights (`WanGpuWeights`) are dequantized to FP32 and uploaded as FP16 for every block, with no residency
@@ -74,6 +74,6 @@ CPU SmolLM2 prefill (about 0.7-0.9x per the notes), Qwen Image non-GEMM ops and 
 
 ## Order and checkpoints
 1. Image queue finishes (images committed, README updated).
-2. Lead 1 (cheapest to measure, broadest effect), then Lead 2, then Lead 3; Leads 4 and 5 as time allows.
+2. Leads 1 to 5, in that order, only after step 1 (the images) is complete. Leads 4 and 5 may be parked with a written reason, but the reference timings in step 4 still wait until all five are done or parked.
 3. After each lead: log measured numbers (dated) here, update `PerformanceLeague.md` rows, and commit.
-4. Then, if wanted, the deferred reference timings for Wan 2.2, HunyuanVideo and FLUX.2.
+4. Only after Leads 1 to 5 are all done: the deferred reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2 (and the Wan quantized-weights footprint fix, if wanted).
