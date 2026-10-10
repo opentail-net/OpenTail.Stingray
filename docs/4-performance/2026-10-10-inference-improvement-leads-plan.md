@@ -240,3 +240,15 @@ Decode is a separate cost from prefill, so Path 3 does not touch it. Elimination
 - Next steps: (1) time our single-token attention kernel standalone against ggml's `flash_attn` at this shape (hsk=128, 32 heads, 8 KV heads, 512 keys, 1 query) via `test-backend-ops perf -o FLASH_ATTN_EXT`;
   (2) read our decode attention kernel (`Shaders.Attention*` and the GQA mapping) for the structural cause (serial softmax, per-head KV re-reads for the 4 query heads sharing a KV head, shared score array limiting occupancy);
   (3) fix, A/B on the long-context decode numbers above, parity via greedy text.
+
+### Lead 2b, reference and diagnosis of the decode attention kernel, 2026-10-11
+- Reference (ggml `FLASH_ATTN_EXT`, this GPU, 8 KV heads x 4 query heads (Qwen3-4B's shape), head dim 128, FP16 KV, one query): 1.07 ms per layer at 4,096 keys, 2.15 ms at 8,192, 5.14 ms
+  at 16,384, about 0.26 us per key per layer. At about 520 keys that is roughly 5 ms per token over 36 layers; ours is about 68 ms (about 13x behind).
+- Split-KV decode (`AttentionSplitKvPartial` + `Combine`) is already default-on above 256 positions, so the 6.3 t/s at 500 tokens already includes it (two splits of 256 keys, 64 workgroups).
+  The partial kernel's structure is the cost: (1) QK phase: one key per thread, each looping over its 128 floats with consecutive lanes `kv_dim` floats apart (uncoalesced), `q` re-read from global each iteration;
+  (2) value phase: only `head_dim` of 256 threads work, each walking all 256 positions serially behind a global load; (3) the 4 query heads that share a KV head run in separate workgroups and re-read the same K/V.
+- Design for a replacement partial kernel (fp32 KV first; combine and partial layout unchanged): one workgroup per (KV head, split) handling the whole GQA group (up to 8 query heads); QK phase with 16 lanes per key
+  (each lane 8 dims as two vec4 loads, q for all group heads held in registers, reduction over the 16 lanes), scores for the group in shared memory; value phase with 32 lanes covering the head dim as vec4 and 8 key groups
+  walking interleaved positions, accumulators per group head, then a shared-memory reduction over the key groups. Falls back to the existing kernel for head dim other than 64/128 or groups above 8.
+- Gates: standalone parity against the existing partial+combine on random data across seq lengths 1-2,048 and several group sizes; greedy text identical on Qwen3-4B; A/B on long-context decode (target: attention near 10 ms at 500 tokens,
+  decode after a 493-token prompt from 6.3 to about 10 t/s); then a second model with a different head count. Rollback env switch.
