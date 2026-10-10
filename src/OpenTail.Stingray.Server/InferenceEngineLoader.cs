@@ -28,6 +28,16 @@ public static class InferenceEngineLoader
             throw new InvalidOperationException(
                 $"Execution plan declares model format '{plan.ModelFormat}', but '{plan.ModelPath}' resolves as '{detectedFormat}'.");
 
+        // Memory check before the weights are touched, same evaluator as scout/chat/run. CPU-only GGUF plans only (GPU placement is not
+        // estimated). Only a KNOWN over-budget estimate refuses; STINGRAY_IGNORE_PREFLIGHT=1 loads anyway.
+        if (plan.GpuLayers == 0 && detectedFormat == ModelFormat.Gguf)
+        {
+            var preflight = OpenTail.Stingray.Engine.Scout.LoadPreflight.EvaluateFile(plan.ModelPath, plan.ContextSize);
+            bool ignore = Environment.GetEnvironmentVariable("STINGRAY_IGNORE_PREFLIGHT") == "1";
+            if (!OpenTail.Stingray.Engine.Scout.LoadPreflight.ShouldProceed(preflight, ignore, out string? note))
+                throw new InvalidOperationException("Not loading: " + note + " (set STINGRAY_IGNORE_PREFLIGHT=1 to override)");
+        }
+
         var model = Model.Load(new ModelParams(plan.ModelPath)
         {
             Backend = plan.Backend,

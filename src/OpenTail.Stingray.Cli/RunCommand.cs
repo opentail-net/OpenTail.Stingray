@@ -319,6 +319,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             return null;
         }
 
+        [CommandOption("--ignore-preflight")]
+        [Description("Load even if the memory check says the model will not fit this machine (CPU runs only).")]
+        public bool IgnorePreflight { get; init; }
+
         [CommandOption("--backend")]
         [Description("GPU backend: auto, vulkan, cuda. Default: auto (prefers CUDA when -g is set and CUDA is available, otherwise Vulkan).")]
         [DefaultValue("auto")]
@@ -752,6 +756,20 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
 
         effNGpuLayers = resolvedPlan?.GpuLayers ?? effNGpuLayers;
+
+        // Memory check before anything is loaded, same evaluator as scout/chat/setup. CPU runs only: GPU placement is not estimated.
+        // Only a KNOWN over-budget estimate stops the run; an unknown estimate warns and proceeds.
+        if (effNGpuLayers == 0)
+        {
+            int preflightCtx = settings.CtxSize > 0 ? settings.CtxSize : (resolvedPlan?.ContextSize ?? 2048);
+            var preflight = OpenTail.Stingray.Engine.Scout.LoadPreflight.EvaluateFile(modelPath, preflightCtx);
+            if (!OpenTail.Stingray.Engine.Scout.LoadPreflight.ShouldProceed(preflight, settings.IgnorePreflight, out string? preflightNote))
+            {
+                AnsiConsole.ErrorLine("[red]Not loading:[/] " + Markup.Escape(preflightNote!));
+                { prologue = null!; exitCode = ExitCodes.Failure; return false; }
+            }
+            if (preflightNote is not null) AnsiConsole.MarkupLine("[dim]" + Markup.Escape(preflightNote) + "[/]");
+        }
 
         prologue = new RunPrologue(resolvedPlan, gpuDeviceIndex, deviceNone, effNGpuLayers, modelPath);
         exitCode = ExitCodes.Success;

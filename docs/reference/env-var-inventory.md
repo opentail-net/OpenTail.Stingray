@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-09 — `KnownEnvironmentVariables.All` now contains **273** names** (added `STINGRAY_ALLOW_EXTERNAL`, `STINGRAY_CONFIG_DIR`)
+**Reconciled again 2026-10-09 — `KnownEnvironmentVariables.All` now contains **274** names** (added `STINGRAY_ALLOW_EXTERNAL`, `STINGRAY_CONFIG_DIR`, `STINGRAY_IGNORE_PREFLIGHT`)
 (2026-10-05: registered `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL` and `STINGRAY_MOE_PHASE_TIMING`, both read in `src/` but missing from the registry. Removed `STINGRAY_HANDOFF_TEST_MODEL`: it is read only by `HybridCpuPrefillHandoffTests` under `tests/`, never in `src/`, so the registry — whose tests scan `src/` — cannot justify it, and registering it would make `doctor` accept a name the engine itself never reads. It stays a test-only switch, like `STINGRAY_RUN_HEAVY_TESTS`; optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` (default 4) and `STINGRAY_HANDOFF_TEST_CTX` (default 1024) are read by the same test. Net +1 from the 267 the registry held after the earlier, un-documented edits.)
 
 **Reconciled 2026-10-03 — `KnownEnvironmentVariables.All` contained **266** names**
@@ -236,6 +236,7 @@ dynamically composed names.
 | `STINGRAY_HYBRID_CPU_PREFILL_WARM` | experimental | `0` turns off the post-handoff expert-cache warm-up: after a CPU prefill the hybrid preloads the experts the prompt used most into the GPU slot cache (up to its capacity) so decode does not start cold. |
 | `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS` | experimental | Shortest prompt that takes the CPU-prefill handoff (default 32). |
 | `STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB` | experimental | Largest temporary CPU KV cache the handoff may allocate (default 4096 MiB); above it the sequential prefill runs. |
+| `STINGRAY_IGNORE_PREFLIGHT` | stable | `1` lets the server load a CPU-only GGUF even when the memory check says it will not fit (the `--ignore-preflight` flag of `chat`/`run`). |
 | `STINGRAY_PREFILL_TIMING` | experimental | `1`: Vulkan hybrid prints, per prefill, which path ran and the CPU-prefill / KV-handoff / end-to-end times. |
 | `STINGRAY_MOE_TIMING` | experimental | `1`: Vulkan hybrid (`-g N`) MoE only. On exit prints, per GPU MoE layer-step, where the time went: GPU wait + router, cache lookup, CPU fallback for missed experts, record tail; and per-expert gate/up/down fallback time. |
 | `STINGRAY_MOE_SLOTS` | experimental | Vulkan hybrid (`-g N`) only: caps the GPU expert cache at this many (layer, expert) slots instead of sizing it to hold every expert. Misses are computed on the CPU. For testing eviction on models that would otherwise fit; `VulkanHybridOlmoeParityTests` uses the constructor argument for the same thing. |
