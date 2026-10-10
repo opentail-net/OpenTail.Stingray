@@ -6,7 +6,7 @@
 |---|---|
 | **Provider** | Coqui AI |
 | **Model Formats** | SafeTensors / PyTorch Checkpoint |
-| **Engine Implementations** | `OpenTail.Stingray.Audio.Xtts.XttsPipeline`, `XttsAutoregressiveDecoder` |
+| **Engine Implementations** | `OpenTail.Stingray.Audio.Xtts.XttsPipeline`, `XttsGpt` |
 | **Speaker Conditioning** | Zero-shot voice cloning from 3–6 second reference audio clip |
 | **Architecture** | Autoregressive GPT-2 text-to-codec + FiLM-conditioned HiFi-GAN vocoder |
 | **Output Sample Rate** | 24,000 Hz |

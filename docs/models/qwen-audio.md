@@ -34,10 +34,10 @@ The Qwen Audio family delivers studio-quality speech generation, neural voice cl
 
 | Model | Task | Parameters | Typical Size | Hugging Face Repository |
 |---|---|---|---|---|
-| **Qwen3-TTS-12Hz** | Voice Synthesis & Cloning | ~800M | ~1.6 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
-| **Qwen3-ASR-0.6B** | Speech Recognition | 0.6B | ~1.2 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
-| **Qwen3-ASR-1.7B** | Speech Recognition | 1.7B | ~3.4 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
-| **Qwen3-ForcedAligner** | Word-Level Timestamps | 0.6B | ~1.2 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
+| **Qwen3-TTS-12Hz** | Voice Synthesis & Cloning | ~800M | ~1.6 GB | [Qwen/Qwen3-TTS-12Hz-0.6B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) |
+| **Qwen3-ASR-0.6B** | Speech Recognition | 0.6B | ~1.2 GB | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) |
+| **Qwen3-ASR-1.7B** | Speech Recognition | 1.7B | ~3.4 GB | [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) |
+| **Qwen3-ForcedAligner** | Word-Level Timestamps | 0.6B | ~1.2 GB | [Qwen/Qwen3-ForcedAligner-0.6B](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B) |
 
 ---
 

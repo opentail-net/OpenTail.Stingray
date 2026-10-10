@@ -6,7 +6,7 @@
 |---|---|
 | **Provider** | Alibaba Cloud (Qwen Team) |
 | **GGUF Projector Architecture** | `qwen2vl`, `qwen3vl` (`clip.projector_type = "qwen2vl"`) |
-| **Engine Implementations** | `UnifiedVisionPipeline`, `OpenTail.Stingray.Vision.QwenVlEmbedder` |
+| **Engine Implementations** | `UnifiedVisionPipeline`, `OpenTail.Stingray.Vision.QwenVlVisionEncoder` |
 | **Vision Backbone** | 3D Convolutional stem + Vision Transformer (ViT) |
 | **Spatial Merge Mechanism** | $2\times 2$ spatial patch merge with learned projections |
 | **Positional Encoding** | 3D Rotational Positional Embedding (M-RoPE across time, height, and width) |
@@ -36,9 +36,9 @@ Qwen2.5-VL and Qwen3-VL represent the state of the art in open multimodal vision
 
 | Model | Parameters | Projector GGUF | Recommended Language GGUF | Hugging Face Repository |
 |---|---|---|---|---|
-| **Qwen2.5-VL-3B-Instruct** | 3.8B | `mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf` | `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` (~2.4 GB) | [Qwen/Qwen2.5-VL-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) *(GGUF: [Qwen/Qwen2.5-VL-3B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct-GGUF))* |
-| **Qwen2.5-VL-7B-Instruct** | 7.6B | `mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf` | `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (~4.8 GB) | [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) *(GGUF: [Qwen/Qwen2.5-VL-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct-GGUF))* |
-| **Qwen3-VL-2B-Instruct** | 2.5B | `mmproj-Qwen3-VL-2B-Instruct-f16.gguf` | `Qwen3-VL-2B-Instruct-Q8_0.gguf` (~2.6 GB) | [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) *(or [unsloth/Qwen3-VL-2B-Instruct-GGUF](https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF))* |
+| **Qwen2.5-VL-3B-Instruct** | 3.8B | `mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf` | `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` (~2.4 GB) | [Qwen/Qwen2.5-VL-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) *(GGUF: [ggml-org/Qwen2.5-VL-3B-Instruct-GGUF](https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF))* |
+| **Qwen2.5-VL-7B-Instruct** | 7.6B | `mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf` | `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` (~4.8 GB) | [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) *(GGUF: [ggml-org/Qwen2.5-VL-7B-Instruct-GGUF](https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF))* |
+| **Qwen3-VL-2B-Instruct** | 2.5B | `mmproj-Qwen3-VL-2B-Instruct-f16.gguf` | `Qwen3-VL-2B-Instruct-Q8_0.gguf` (~2.6 GB) | [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct) *(or [unsloth/Qwen3-VL-2B-Instruct-GGUF](https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF))* |
 
 ---
 

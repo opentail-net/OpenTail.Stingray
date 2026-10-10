@@ -32,7 +32,7 @@
 Every performance item requires dispatch proof, isolated control/candidate samples, named-model
 end-to-end measurement, and numerical validation. No single-run result is sufficient.
 
-Historical evidence: [done/cpu-architecture-kernel-opportunities-2026-08.md](../../done/cpu-architecture-kernel-opportunities-2026-08.md).
+Historical evidence: [done/cpu-architecture-kernel-opportunities-2026-08.md](cpu-architecture-kernel-opportunities-2026-08.md).
 
 ## Backlog A — IQ1_S/IQ1_M (2026-08-28, done)
 
@@ -246,7 +246,7 @@ already parity-tested against Qwen3-8B.
 **128/256 head widths: this backlog's premise was stale — the acceptance decision this item asked
 for was already made on 2026-08-07, before this session, and is fully documented.** Written up in
 detail in
-[docs/reference/forwardpass-investigation-log.md](../../reference/forwardpass-investigation-log.md)
+[docs/reference/forwardpass-investigation-log.md](../reference/forwardpass-investigation-log.md)
 ("Flash-128/256 wide attention heads — perplexity investigation"): correctness is resolved
 (cosine 0.999345 vs. the shipped Q8-activation-prefill baseline's 0.999504, identical greedy
 token), and performance IS measured — +14% prefill throughput (25.52 vs 22.35 tok/s, Qwen3-8B,
@@ -279,7 +279,7 @@ would need an internals-visible test harness) if the real-model number stays inc
 ## Measurements — Ministral-8B-Instruct-2410 vs. llama.cpp (2026-08-28)
 
 Collected incidentally while running the Ministral-8B greedy-parity receipt (see
-[01-gguf-model-coverage-plan.md](../../done/01-gguf-model-coverage-plan.md) / `ModelCompatibility.cs`'s
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) / `ModelCompatibility.cs`'s
 `mistral3`/`ministral` entries) — not itself acceptance evidence for any item above, just a data
 point for when this list is picked back up. Prompt `"The capital of France is"`, `-n 64`,
 `--temp 0 --repeat-penalty 1.0`, Q4_K_M, 36L/4096d/headDim=128, this machine (12-core AVX2, AMD
@@ -309,7 +309,7 @@ Follow-up to the Ministral-8B measurement above, on a much larger checkpoint tha
 ~15-20x gap (not the ~1.3-1.8x seen on Ministral-8B) — large enough to actually investigate rather
 than just log. Same checkpoint as the `qwen35` receipt in `ModelCompatibility.cs` (Qwen3.8-27B
 UD-Q3_K_XL, Unsloth Dynamic quant mixing `IQ2_S`/`IQ2_XS`/`IQ3_XXS`/`IQ4_XS` per-tensor — see
-[01-gguf-model-coverage-plan.md](../../done/01-gguf-model-coverage-plan.md) §2). All numbers below: prompt
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §2). All numbers below: prompt
 `"The capital of France is"`, raw completion (`STINGRAY_RAW_PROMPT=1`), `--temp 0
 --repeat-penalty 1.0`, this machine, CPU-only (this model has no dense_moe experts; `IsMoE` is
 false — it uses plain per-layer `ffn_gate/up/down.weight`, not `_exps` tensors, so every layer's

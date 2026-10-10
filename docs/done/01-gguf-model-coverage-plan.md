@@ -1914,7 +1914,7 @@ reference).
 `IQ4_NL`, which predates this list), all copied verbatim from `ggml-quants.c`/`ggml-common.h`'s
 real tables (`IqCodebooks.cs`) rather than reconstructed from a formula. `IQ1_S`/`IQ1_M` were the
 last two, ported same-session as their fast-kernel work — see
-[05-cpu-architecture-kernel-opportunities.md](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)'s
+[05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md)'s
 Backlog A for the full writeup (both admitted and correct; `IQ1_S`'s fast matvec kernel was built,
 measured slower than the fallback, and deliberately not wired in; `IQ1_M` skipped a fast-kernel
 attempt entirely on that adjacent evidence).
@@ -1959,7 +1959,7 @@ Remaining work:
 A SIMD matvec for the IQ formats is a **follow-up**, not part of admission — scalar dequant plus
 the existing F32 path is enough to make the model *run*, which is the goal.
 This keeps item 3 of
-[05-cpu-architecture-kernel-opportunities.md](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md)
+[05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md)
 (native IQ4_NL/MXFP4 kernels) a performance follow-up to this correctness work, not a prerequisite.
 
 ---

@@ -38,4 +38,4 @@ IQ1_S and IQ1_M have independent formula cross-checks and admission/fallback cov
 
 - [GGUF model coverage plan](01-gguf-model-coverage-plan.md) — implementation history and Qwen3.8 receipt.
 - [CPU architecture/kernel opportunities](05-cpu-architecture-kernel-opportunities.md) — IQ1_S/IQ1_M implementation and dispatch decision.
-- [Verification plan](../1-correctness/16-iq-formats-coverage-verification-plan.md) — audit scope and steps.
+- [Verification plan](16-iq-formats-coverage-verification-plan.md) — audit scope and steps.

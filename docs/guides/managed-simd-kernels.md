@@ -47,6 +47,6 @@ stingray -m model.gguf -p "Prompt" -t 8
 
 ### Environment Variable Tuning
 - `STINGRAY_CPU_THREADS`: Sets global default worker thread pool size.
-- `STINGRAY_SIMD_FORCE_AVX2`: Forces AVX2 fallback even when AVX-512 is advertised by hardware (useful for benchmarking thermal throttling).
+- `STINGRAY_CPU_VNNI=0`: Forces the AVX2 dot-product chain even where VNNI exists. This is a test seam for the bit-identical-branch checks, not a tuning knob.
 
 See [`docs/reference/env-var-inventory.md`](../reference/env-var-inventory.md) for full thread and SIMD configuration switches.

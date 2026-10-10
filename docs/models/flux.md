@@ -6,7 +6,7 @@
 |---|---|
 | **Provider** | Black Forest Labs (BFL) |
 | **Model Formats** | GGUF (`flux1-schnell-Q4_K_S.gguf`) & SafeTensors |
-| **Engine Implementations** | `OpenTail.Stingray.Diffusion.Flux.FluxPipeline`, `FluxDiT` |
+| **Engine Implementations** | `OpenTail.Stingray.Diffusion.ImagePipeline`, `FluxDiT` |
 | **Architecture Type** | 12B Rectified Flow Matching DiT with Joint Attention (MMDiT) |
 | **Text Encoders** | Dual CLIP ViT-L/14 + T5-XXL |
 | **Scheduler** | `EulerFlowScheduler` with dynamic resolution shifts |
@@ -51,22 +51,24 @@ FLUX.1, created by Black Forest Labs (the original architects of Stable Diffusio
 
 ```csharp
 using OpenTail.Stingray.Diffusion;
-using OpenTail.Stingray.Diffusion.Flux;
 
-// 1. Initialize FLUX.1 pipeline
-using var pipeline = FluxPipeline.Load("models/flux1-schnell-Q4_K_S.gguf");
+// 1. Load the FLUX.1 components: DiT (GGUF), VAE, CLIP-L and T5-XXL encoders, plus both tokenizers.
+//    Replace the <...> placeholders with your local files. Optional last argument: an IComputeBackend (GPU).
+using var pipeline = ImagePipeline.Load(
+    "models/flux1-schnell-Q4_K_S.gguf",
+    "models/flux-vae/ae.safetensors",
+    "<clip-l encoder file>",  "<clip-l tokenizer file>",
+    "<t5-xxl encoder file>",  "<t5-xxl tokenizer file>");
 
-// 2. Generate 1024x1024 image in 4 steps
-pipeline.Generate(new ImageGenerationRequest
-{
-    Prompt = "A majestic lion crowned in starlight, cinematic lighting, 8k resolution",
-    Width = 1024,
-    Height = 1024,
-    Steps = 4,
-    Guidance = 1.0f, // schnell uses guidance 1.0
-    OutputPath = "lion.png",
-    Progress = (step, total) => Console.Write($"\rStep {step}/{total}")
-});
+// 2. Generate a 1024x1024 image in 4 steps (width/height must be divisible by 16)
+pipeline.Generate(
+    "A majestic lion crowned in starlight, cinematic lighting, 8k resolution",
+    width: 1024,
+    height: 1024,
+    steps: 4,
+    guidance: 1.0f, // schnell uses guidance 1.0; dev uses ~3.5
+    outputPath: "lion.png",
+    progress: (step, total) => Console.Write($"\rStep {step}/{total}"));
 ```
 
 ### CLI Command

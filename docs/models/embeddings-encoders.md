@@ -5,7 +5,7 @@
 | Property | Value |
 |---|---|
 | **Architectures** | `bert`, `xlm-roberta`, `nomic-bert`, `mpnet`, `bge-m3`, `t5` |
-| **Engine Implementations** | `TransformerEncoder`, `BgeM3Pipeline`, `T5Model`, `WordPieceTokenizer`, `UnigramTokenizer` |
+| **Engine Implementations** | `TransformerEncoder`, `BgeM3Pipeline`, `T5Model`, `BertWordPieceTokenizer`, `UnigramTokenizer` |
 | **Model Formats** | Hugging Face SafeTensors (`model.safetensors` + `tokenizer.json`) and GGUF |
 | **Pooling Modes** | Mean pooling, CLS token pooling, and ColBERT multi-vector representation |
 | **Numerical Parity** | 🔬 **Golden-Verified** (Cosine similarity $\ge 0.9999997$ against reference ONNX models) |

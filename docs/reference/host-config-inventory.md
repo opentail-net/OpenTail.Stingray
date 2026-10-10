@@ -60,7 +60,7 @@ parallel mechanism.
 | `PrefixCacheMb` | `long` | | Retained KV-prefix cache budget in MiB for CPU continuous batching. Prefixes are exact canonical token prefixes rounded down to 16-token pages, shared copy-on-write with new req... |
 | `MoeWarmPin` | `int?` | | Pin the top-N hottest experts per layer after warmup. null = disabled (frequency-aware SLRU eviction is sufficient on its own). Mirrors --moe-warmpin / STINGRAY_MOE_WARMPIN. |
 | `MoeWarmPinAfter` | `long` | | Number of expert accesses to observe before warm-pin selects the hot set. Only meaningful when  is set. Mirrors --moe-warmpin-after. |
-| `MoePredictPrefetch` | `bool` | | Next-layer predictive expert prefetch on the Vulkan path. Mirrors --no-moe-predict-prefetch (defaulting to true here — set false to disable, equivalent to STINGRAY_MOE_PREDIC... |
+| `MoePredictPrefetch` | `bool` | | Next-layer predictive expert prefetch on the Vulkan path. Mirrors --no-moe-predict-prefetch (defaulting to true here — set false to disable, equivalent to `STINGRAY_MOE_PREDICT_PREFETCH=0`). |
 | `ExpertStatsPath` | `string?` | | Path to write GPU expert-cache (SLRU) hit-rate stats to on process exit. Mirrors --expert-stats / STINGRAY_EXPERT_STATS. |
 | `CpuMoe` | `bool?` | | Force all routed MoE experts onto the CPU side — the engine's all-or-nothing STINGRAY_CPU_MOE override, read by  and at construction. Server analogue of the CLI's --cpu-moe (... |
 | `GpuMoePrefill` | `bool?` | | GPU op-offload of the CPU-MoE routed prefill — the engine's STINGRAY_MOE_GPU_PREFILL gate, read by  at construction. Uploads each used expert's host-resident weights to the G... |

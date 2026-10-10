@@ -49,7 +49,7 @@ backend/cache family; those remain separate rows rather than being inferred from
 
 ## History and release notes
 
-Use [CHANGELOG.md](../CHANGELOG.md) as the human release index. Pull requests should use a concise,
+Use [CHANGELOG.md](../../CHANGELOG.md) as the human release index. Pull requests should use a concise,
 imperative subject with a component prefix, for example `engine: preserve BF16 KV pages on restore`.
 Avoid generic messages such as `ok`; add a changelog/release-note bullet rather than rewriting
 shared history.

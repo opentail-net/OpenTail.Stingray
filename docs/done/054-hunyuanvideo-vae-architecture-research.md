@@ -8,7 +8,7 @@
 # 054 — HunyuanVideo real VAE architecture (research, ready to implement)
 
 Research pass (subagent-assisted, user-authorized exception to the standing no-subagents rule for
-this one investigation), following up on [the HunyuanVideo audit](diffusion-samples/README.md)
+this one investigation), following up on [the HunyuanVideo audit](../diffusion-samples/README.md)
 that found the DiT structurally sound but blocked on a real VAE decoder. This doc is the
 implementation spec for that decoder — the next step is a direct C# port, same process as
 `WanVaeDecoder3D.cs`.

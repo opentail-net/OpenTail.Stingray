@@ -6,7 +6,7 @@
 |---|---|
 | **Provider** | Stability AI |
 | **Model Formats** | SafeTensors (`.safetensors`) and GGUF |
-| **Engine Implementations** | `OpenTail.Stingray.Diffusion.StableDiffusion.StableDiffusionPipeline`, `SDXLPipeline`, `SD3Pipeline` |
+| **Engine Implementations** | `OpenTail.Stingray.Diffusion.StableDiffusion.StableDiffusionPipeline`, `SdxlPipeline`, `Sd3Pipeline` |
 | **Backbones** | 2D UNet (SD 1.5 / SDXL) and Multimodal Diffusion Transformer (SD 3 / 3.5 MMDiT) |
 | **Text Encoders** | CLIP ViT-L/14, OpenCLIP ViT-bigG, and T5-XXL |
 | **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (All components Level 2 Proven, end-to-end image generation verified) |
@@ -39,7 +39,7 @@ The Stable Diffusion lineage spans three major architectural generations, all na
 
 | Model | Architecture | Native Resolution | File Format | Typical Size | Hugging Face Repository |
 |---|---|---|---|---|---|
-| **SD 1.5 Pruned EMA** | UNet 2D | 512×512 | `v1-5-pruned-emaonly.safetensors` | ~4.27 GB | [runwayml/stable-diffusion-v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5) |
+| **SD 1.5 Pruned EMA** | UNet 2D | 512×512 | `v1-5-pruned-emaonly.safetensors` | ~4.27 GB | [stable-diffusion-v1-5/stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) |
 | **SDXL 1.0 Base** | UNet 2D Dual-CLIP | 1024×1024 | `sd_xl_base_1.0.safetensors` | ~6.94 GB | [stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) |
 | **SD 3.5 Medium** | MMDiT | 1024×1024 | `sd3.5_medium.safetensors` | ~5.80 GB | [stabilityai/stable-diffusion-3.5-medium](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium) |
 | **SD 3.5 Large** | MMDiT | 1024×1024 | `sd3.5_large.safetensors` | ~16.2 GB | [stabilityai/stable-diffusion-3.5-large](https://huggingface.co/stabilityai/stable-diffusion-3.5-large) |
