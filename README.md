@@ -30,6 +30,16 @@ That answer came from a 469 MB model running on an ordinary desktop CPU, in abou
   with llama.cpp. What is verified, and how, is recorded model by model in
   [docs/STATUS.md](docs/STATUS.md).
 
+## Three Ways to Run
+
+Stingray offers three integrated interfaces depending on your workflow:
+
+| Interface | Package / Command | Best For |
+|---|---|---|
+| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with zero native dependencies. |
+| **Command-Line CLI** | `dotnet tool install -g OpenTail.Stingray.Cli` (`stingray`) | Immediate terminal chat, path-free model setup (`stingray setup chat`), local inventory, and batch scripting. |
+| **Local API Server** | `dotnet add package OpenTail.Stingray.Server` | Hosting OpenAI-compatible (`/v1/chat/completions`) endpoints for existing tools and web UIs with zero sidecars. |
+
 **New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
 handles, what you need and where the limits are, and the [task guides](docs/guides/README.md) show how to do
 each one. If something goes wrong, see
@@ -219,12 +229,25 @@ with 64 GB of RAM, CPU only, on Windows 11. Rough guide:
 
 A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
+### Pick a backend
+
+| Your Hardware | Backend (`--backend`) | Execution Details |
+|---|---|---|
+| **CPU Only** (x86-64) | `cpu` | Pure managed C# with AVX2 & AVX-512 SIMD kernels. Runs everywhere with zero GPU required. |
+| **AMD, Intel, or NVIDIA GPU** | `vulkan` | Direct cross-platform SPIR-V compute shaders via Vulkan. Ideal for discrete GPUs and APUs/iGPUs. |
+| **NVIDIA GPU** | `cuda` | Hardware-accelerated cuBLAS and CUDA 12.x kernels for maximum throughput. |
+| **Automatic Selection** | `auto` (default) | Automatically detects available hardware and offloads layers (`-g -1` for all layers). |
+
 ## Documentation & Architecture
 
-- **[docs/README.md](docs/README.md)**: Central documentation index, task guides, and technical references.
-- **[DEVELOPMENT.md](DEVELOPMENT.md)**: Contributor guide for solution layout, SIMD internals, and test harnesses.
-- **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)**: Plain-language capability overview across LLM, vision, audio, and diffusion.
-- **[docs/STATUS.md](docs/STATUS.md)**: Model support matrix with dated verification evidence.
+| Document | What's inside |
+|---|---|
+| **[docs/README.md](docs/README.md)** | Central documentation index, task guides, and technical references. |
+| **[docs/STATUS.md](docs/STATUS.md)** | Model support matrix with dated verification evidence and confidence tiers. |
+| **[docs/RUNNING.md](docs/RUNNING.md)** | Recommended execution commands, memory requirements, and measured speeds. |
+| **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)** | Plain-language tour of capabilities across LLM, vision, speech, and diffusion. |
+| **[docs/MODELS.md](docs/MODELS.md)** | Curated, tested starter models with download links, licenses, and file sizes. |
+| **[DEVELOPMENT.md](DEVELOPMENT.md)** | Contributor guide for solution layout, SIMD internals, and test harnesses. |
 
 ## Building from source
 

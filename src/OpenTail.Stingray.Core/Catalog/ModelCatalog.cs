@@ -103,7 +103,7 @@ public static class ModelCatalog
             Licence: "Apache-2.0",
             LicenceNeedsConsent: false,
             Hardware: "about 1 GB RAM, CPU only",
-            Speed: "about 23 tokens/s on a Ryzen 7 5700G CPU (2026-09-28)",
+            Speed: "about 62-75 tokens/s decode (128 tokens, 5 runs) on a Ryzen 7 5700G CPU (2026-10-10)",
             Evidence: "README quick start, samples/QuickStart; llama.cpp golden Exact 32/32 (2026-10-09)",
             RunTemplate: "stingray chat",
             FamilyId: "qwen2.5-instruct",
