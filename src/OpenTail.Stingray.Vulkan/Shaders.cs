@@ -8289,6 +8289,38 @@ internal static class Shaders
 
         """;
 
+    private const string SgemmQ6KDecode = """
+        #define QBLOCK_BYTES 210u
+        // Q6_K (210 bytes / 256 elements): uint8 ql[128] (low 4 bits), uint8 qh[64] (high 2 bits), int8 scales[16], half d at byte 208.
+        // Element e = 128 n + 32 g + l (n = half 0..1, g = group 0..3, l = 0..31): q = ((g < 2 ? ql[64 n + l + 32 (g & 1)] & 0xF
+        // : ql[64 n + l + 32 (g & 1)] >> 4) | (((qh[32 n + l] >> 2 g) & 3) << 4)) - 32; value = d * scales[8 n + l / 16 + 2 g] * q
+        // (ggml's dequantize_row_q6_K). 16 consecutive elements starting at k % 16 == 0 share one (n, g) and one scale.
+        void dq16(uint row, uint k, out vec4 v[4]) {
+            uint base = row * ((pc.K >> 8) * QBLOCK_BYTES) + (k >> 8) * QBLOCK_BYTES;
+            uint e = k & 255u;
+            uint n = e >> 7;
+            uint g = (e >> 5) & 3u;
+            uint l0 = e & 31u;
+            int sc = int(rb(base + 192u + 8u * n + (l0 >> 4) + 2u * g));
+            sc = sc >= 128 ? sc - 256 : sc;
+            float d = unpackHalf2x16(rw(base + 208u) & 0xFFFFu).x * float(sc);
+            uint qlOff = base + 64u * n + l0 + 32u * (g & 1u);
+            uint qhOff = base + 128u + 32u * n + l0;
+            uint lowShift = g < 2u ? 0u : 4u;
+            [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                uint ql = (rw(qlOff + 4u * i) >> lowShift) & 0x0F0F0F0Fu;
+                uint qh = ((rw(qhOff + 4u * i) >> (2u * g)) & 0x03030303u) << 4;
+                uint q = ql | qh;
+                v[i] = d * (vec4(float(q & 0xFFu), float((q >> 8) & 0xFFu), float((q >> 16) & 0xFFu), float(q >> 24)) - 32.0);
+            }
+        }
+        // Same contract as the Q4_K/Q5_K decoders' stash variant; Q6_K just decodes directly every call.
+        void dq16s(uint row, uint k, out vec4 v[4], inout vec4 stash[4], bool odd) {
+            dq16(row, k, v);
+        }
+
+        """;
+
     private const string SgemmQ3KDecode = """
         #define QBLOCK_BYTES 110u
         // Q3_K: uint8 hmask[32], uint8 qs[64], uint8 scales[12] (16 packed 6-bit), half d.
@@ -8578,6 +8610,8 @@ internal static class Shaders
     internal const string SgemmQ3KSmall = SgemmQSmallHead + SgemmQ3KDecode + SgemmQLoadPlain + SgemmQSmallBody;
     internal const string SgemmQ4KSmall = SgemmQSmallHead + SgemmQ4KDecode + SgemmQLoadPlain + SgemmQSmallBody;
     internal const string SgemmQ5KSmall = SgemmQSmallHead + SgemmQ5KDecode + SgemmQLoadPlain + SgemmQSmallBody;
+    internal const string SgemmQ6K = SgemmQHead + SgemmQ6KDecode + SgemmQLoadPlain + SgemmQBody;
+    internal const string SgemmQ6KSmall = SgemmQSmallHead + SgemmQ6KDecode + SgemmQLoadPlain + SgemmQSmallBody;
 
 
     /// <summary>

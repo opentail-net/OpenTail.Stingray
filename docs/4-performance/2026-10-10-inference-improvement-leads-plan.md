@@ -202,3 +202,23 @@ prompts to the CPU). The slow part is the matmul kernel.
   (the prefill chunk already follows `MaxTokensPerDispatch`; the speculative-decode verify constant `MaxBatchVerifyK` stays 16); (4) keep Path 1 as the default until the A/B proves Path 2.
 - **Gates:** per-kernel CPU-parity tests (extend `VulkanQuantMatVecTests` style to the GEMM), then end-to-end greedy generation identical to Path 1 on Qwen3-4B and one more dense model,
   then the prefill A/B (target: Vulkan prefill at least 2x today's, i.e. at or above CPU) and a Vulkan decode regression check. Rollback: `STINGRAY_VULKAN_MM_PATH=1`.
+
+### Lead 2, Path 3 first result, 2026-10-11 (Qwen3-4B-Q4_K_M, 493-token prompt, Vulkan iGPU, greedy)
+Implemented (all opt-in, `STINGRAY_VULKAN_MM_PATH=3`; the default stays Path 1):
+- `SgemmQ6K` (Q6_K decoder in the shared tiled GEMM; large and small tile) and `VulkanBackend.SgemmQuant` (Q3_K/Q4_K/Q5_K/Q6_K, explicit weight type for the LLM's generic raw tensors);
+  CPU-parity tests `VulkanSgemmQuantEntryTests` (6 cases, M from 1 to 130, N not a tile multiple).
+- `VulkanMatMulPath.Path3` (prefill chunk 128) routed in `MatMulBatched`.
+- Sliced flash attention in the batched trunk (`GpuForwardPass.RecordBatchedFlashAttention`): the flash kernel holds one register accumulator per query and serves at most
+  16 per dispatch, so a 128-token chunk previously fell back to the per-(head, query) `AttentionBatched` kernel, which re-streams the K/V cache for every query.
+  Chunks above 16 now run as 16-query slices of the same flash kernel (`basePos` offset per slice; K/V for the whole chunk are already appended).
+- Measured by elimination (matmuls skipped, cumulative ms for the whole prefill): Path 1 = 10.6 s matmul + 2.15 s other; Path 3 before the slicing fix = 5.1 s matmul + **14.0 s other**
+  (the fallback attention); Path 3 after = 5.1 s matmul + about 1.8 s other.
+
+| Qwen3-4B-Q4_K_M, 493-token prefill, Vulkan | Prefill |
+|---|---|
+| Path 1 (default) | 38.4 t/s (12.8 s) |
+| Path 3 (128-token chunks, tiled quantized GEMM, sliced flash attention) | **71.3 t/s (6.9 s), +86%** |
+| CPU, same prompt (2026-10-10) | 102.8 t/s |
+
+Greedy generation is identical to Path 1. Matmuls are now about 0.8 TFLOP/s effective (4 TFLOP in 5.1 s). Weight traffic fell from 64.2 GB to 8.3 GB (16.8 MiB/token).
+Next: larger chunks (256), a second dense model, decode-regression check, then decide whether Path 3 earns the default.

@@ -1683,6 +1683,8 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             (QuantGemmKind.SgemmSmall, DType.Q3_K) => Shaders.SgemmQ3KSmall,
             (QuantGemmKind.SgemmSmall, DType.Q4_K) => Shaders.SgemmQ4KSmall,
             (QuantGemmKind.SgemmSmall, DType.Q5_K) => Shaders.SgemmQ5KSmall,
+            (QuantGemmKind.Sgemm, DType.Q6_K) => Shaders.SgemmQ6K,
+            (QuantGemmKind.SgemmSmall, DType.Q6_K) => Shaders.SgemmQ6KSmall,
             (QuantGemmKind.MatVec, DType.Q3_K) => Shaders.MatVecDqQ3K,
             (QuantGemmKind.MatVec, DType.Q4_K) => Shaders.MatVecDqQ4K,
             (QuantGemmKind.MatVec, DType.Q5_K) => Shaders.MatVecDqQ5K,
@@ -2904,6 +2906,21 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 $"Q4_K batched matvec requires cols ({cols}) to be a multiple of 256 (the Q4_K block size); " +
                 "the shader derives num_blocks = cols >> 8.", nameof(inputAll));
 
+        // ── Path 3: prefill-sized tiled quantized GEMM (opt-in, STINGRAY_VULKAN_MM_PATH=3) ──
+        // Activations [nTok][cols] and outputs [nTok][rows] already have SgemmQuant's [M,K] / [M,N] layout; the weight tensor is its [N,K] raw B.
+        if (VulkanMatMulPathConfig.UsePath3)
+        {
+            if (weightDType is DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K && cols % 256 == 0)
+            {
+                SgemmQuant(outputAll, inputAll, matrix, nTok, cols, rows, weightDType);
+                VulkanMatMulStats.RecordPath2(nTok, rows, cols, weightDType);   // counted with the tiled path
+                return;
+            }
+            if (nTok > VulkanMatMulPathConfig.Path1MaxTokensPerDispatch)
+                throw new NotSupportedException(
+                    $"Path 3 serves Q3_K/Q4_K/Q5_K/Q6_K with cols % 256 == 0; {weightDType} with cols={cols} cannot take a {nTok}-token chunk (Path 1 is capped at 16).");
+        }
+
         // ── Path 2 seam ──────────────────────────────────────────────────────────────────────
         // Reserved for a shared-memory tiled quantized GEMM (see VulkanMatMulPath). Nothing
         // implements it yet, so this declines every shape and Path 1 runs exactly as before. A
@@ -3861,6 +3878,29 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// Dispatches the best available precision shader (fp8 > bf16 > fp16 > fp32).
     /// A, B, C must already be GPU-resident tensors.
     /// </summary>
+    /// <summary>
+    /// C[M,N] = A[M,K] x B[N,K]^T with B raw block-quantized (Q3_K, Q4_K, Q5_K or Q6_K; K must be a multiple of 256), A and C float32.
+    /// Dequantizes inside the tile loader (no FP16/FP32 copy of the weights ever exists): the 128-row-tile kernel for M above
+    /// <c>STINGRAY_VK_QGEMM_SMALLM</c> (default 32), the 16-row-tile kernel at or below it. This is the prefill-sized quantized GEMM
+    /// (about 1 TFLOP/s at M >= 128 on the Vega 8 iGPU, against about 0.3 TFLOP/s for the multi-token mat-vec).
+    /// </summary>
+    public unsafe void SgemmQuant(Tensor C, Tensor A, Tensor B, int M, int K, int N, DType? weightDType = null)
+    {
+        if (K % 256 != 0) throw new ArgumentException($"K ({K}) must be a multiple of 256 for a K-quant weight.", nameof(K));
+        DType wdt = weightDType ?? B.DType;   // LLM weights are generic raw tensors whose quantization type is passed alongside
+        if (wdt is not (DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K))
+            throw new NotSupportedException($"SgemmQuant does not support {wdt} weights.");
+        var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K, aOffset = 0 };
+        if (M <= QuantGemmSmallMMax)
+        {
+            ComputePipeline small = QuantGemmPipeline(QuantGemmKind.SgemmSmall, wdt);
+            DispatchOrRecord(small, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 15u) / 16u, &p, ((uint)N + 63u) / 64u);
+            return;
+        }
+        ComputePipeline pipe = QuantGemmPipeline(QuantGemmKind.Sgemm, wdt);
+        DispatchOrRecord(pipe, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 127u) / 128u, &p, ((uint)N + 255u) / 256u);
+    }
+
     public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
         => Sgemm(C, A, B, M, K, N, 0);
 

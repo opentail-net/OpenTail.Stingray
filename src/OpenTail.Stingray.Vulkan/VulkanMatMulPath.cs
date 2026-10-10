@@ -33,6 +33,9 @@ public enum VulkanMatMulPath
 
     /// <summary>Shared-memory tiled quantized GEMM (<c>MatMulTiledQ4K</c>/<c>MatMulTiledQ6K</c>). Serves Q4_K and Q6_K; declines other dtypes to Path 1.</summary>
     Path2 = 2,
+
+    /// <summary>Tiled quantized GEMM with a prefill-sized chunk (<see cref="VulkanBackend.SgemmQuant"/>: 128-row tile, dequantizes in the tile loader). Serves Q3_K, Q4_K, Q5_K, Q6_K; opt-in via STINGRAY_VULKAN_MM_PATH=3.</summary>
+    Path3 = 3,
 }
 
 /// <summary>
@@ -53,6 +56,9 @@ public static class VulkanMatMulPathConfig
 
     /// <summary>True when Path 2 should be attempted for this call.</summary>
     public static bool UsePath2 => _current == VulkanMatMulPath.Path2;
+
+    /// <summary>True when the prefill-sized tiled quantized GEMM (Path 3) is active.</summary>
+    public static bool UsePath3 => _current == VulkanMatMulPath.Path3;
 
     /// <summary>
     /// The most tokens the active path's kernels can serve in one dispatch — and therefore the
@@ -75,6 +81,7 @@ public static class VulkanMatMulPathConfig
     public static int MaxTokensPerDispatch => _current switch
     {
         VulkanMatMulPath.Path2 => Path2MaxTokensPerDispatch,
+        VulkanMatMulPath.Path3 => Path3MaxTokensPerDispatch,
         _ => Path1MaxTokensPerDispatch,
     };
 
@@ -92,6 +99,9 @@ public static class VulkanMatMulPathConfig
     /// docs/cpu-architecture-kernel-opportunities.md before raising it again.
     /// </summary>
     public const int Path2MaxTokensPerDispatch = 16;
+
+    /// <summary>Prefill chunk for Path 3 (the M dimension of the tiled quantized GEMM; it is bounded by scratch memory, not by a register array).</summary>
+    public const int Path3MaxTokensPerDispatch = 128;
 
     /// <summary>Whether per-dispatch statistics are collected. Off unless explicitly enabled.</summary>
     /// <remarks>
@@ -117,6 +127,7 @@ public static class VulkanMatMulPathConfig
         if (string.IsNullOrWhiteSpace(v)) return VulkanMatMulPath.Path1;
         v = v.Trim();
         if (v == "2" || v.Equals("path2", StringComparison.OrdinalIgnoreCase)) return VulkanMatMulPath.Path2;
+        if (v == "3" || v.Equals("path3", StringComparison.OrdinalIgnoreCase)) return VulkanMatMulPath.Path3;
         return VulkanMatMulPath.Path1;
     }
 }

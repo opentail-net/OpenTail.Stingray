@@ -225,6 +225,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     private Tensor _kK = default!;             // [K * numKvHeads * headDim]
     private Tensor _vK = default!;             // [K * numKvHeads * headDim]
     private Tensor _attnOutK = default!;       // [K * numHeads * headDim]
+    private Tensor? _flashQSlice;              // [FlashAttentionMaxQueries * numHeads * headDim] scratch for sliced flash attention (prefill chunks above 16 queries)
+    private Tensor? _flashOutSlice;            // same size, the slice kernel's output
     private Tensor _ffnGateK = default!;       // [K * ffnScratchDim]
     private Tensor _ffnUpK = default!;         // [K * ffnScratchDim]
     private Tensor _logitsK = default!;        // [K * vocabSize]
@@ -1430,6 +1432,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             // 16, and a Path 2 tile wide enough to be worth writing would put a stack buffer into
             // four figures. One array per Prefill call is immaterial next to the GPU work.
             int[] chunkBuf = new int[chunkSize];
+            var swChunks = System.Diagnostics.Stopwatch.StartNew();
             for (int off = 0; off < N; off += chunkSize)
             {
                 int take = Math.Min(chunkSize, N - off);
@@ -1440,6 +1443,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                     promptBase: off,
                     snapWStart: snapKvActive ? wStart : -1,
                     snapW: snapKvActive ? W : 0);
+                if (VulkanMatMulPathConfig.StatsEnabled) Console.WriteLine($"[GpuForwardPass] chunk off={off} take={take}: {swChunks.ElapsedMilliseconds} ms cumulative");
             }
 
             if (snapKvActive)
@@ -3064,7 +3068,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             // so it keeps the old path.
             bool flashAttn = !isSwa && allowFlashAttention
                 && _kvDType is DType.Float32 or DType.BFloat16
-                && VulkanBackend.SupportsFlashAttention((uint)_headDim, k);
+                && _headDim <= VulkanBackend.FlashAttentionMaxHeadDim && k >= 1;   // above FlashAttentionMaxQueries it runs as slices (RecordBatchedFlashAttention)
             bool batchedAttn = !isSwa && (flashAttn
                 || (startPos + k <= 4096 && _kvDType is DType.Float32 or DType.BFloat16 or DType.Q8_0));
             if (batchedAttn)
@@ -3076,8 +3080,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                             (uint)kvDim, (uint)startPos, k, (uint)_maxSeqLen);
                         _gpu.RecordBarrier();
                         if (flashAttn)
-                            _gpu.AttentionBatchedFlash(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
-                                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k, (uint)_maxSeqLen);
+                            RecordBatchedFlashAttention(layer, startPos, k, kvBf16: false);
                         else
                             _gpu.AttentionBatched(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
                                 (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k, (uint)_maxSeqLen);
@@ -3087,9 +3090,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                             (uint)kvDim, (uint)startPos, k, (uint)_maxSeqLen);
                         _gpu.RecordBarrier();
                         if (flashAttn)
-                            _gpu.AttentionBatchedFlash(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
-                                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k, (uint)_maxSeqLen,
-                                kvBf16: true);
+                            RecordBatchedFlashAttention(layer, startPos, k, kvBf16: true);
                         else
                             _gpu.AttentionBatchedBf16(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
                                 (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k, (uint)_maxSeqLen);
@@ -3474,11 +3475,48 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     // allocation that threw is freed in EnsureBatchVerifyScratch's catch, not here (the fields
     // would be null/freed). Free dereferences tensor.Handle, so it is NOT null-safe — which is why
     // _logitsK is freed only when _logitsKBuf proves the pair was actually allocated.
+    /// <summary>
+    /// Records the batched flash attention for a chunk of <paramref name="k"/> queries. The flash kernel holds one accumulator per query in
+    /// registers, so it serves at most <see cref="VulkanBackend.FlashAttentionMaxQueries"/> queries per dispatch; a larger prefill chunk
+    /// (the prefill-sized quantized GEMM path) is therefore run as slices of that many queries. Each slice copies its rows of Q into a small
+    /// scratch, runs the same kernel with <c>basePos + sliceStart</c> (K/V for the whole chunk are already appended and the kernel's causal
+    /// mask is relative to <c>basePos</c>, so query <c>i</c> still attends over <c>[0, startPos + i]</c>), and copies its output rows back.
+    /// Falling back instead to the per-(head, query) <c>AttentionBatched</c> kernel re-streams the whole K/V cache for every query and was
+    /// measured to cost about 12 s of a 19 s, 493-token prefill (Qwen3-4B, Vega 8).
+    /// </summary>
+    private void RecordBatchedFlashAttention(int layer, int startPos, int k, bool kvBf16)
+    {
+        int cap = VulkanBackend.FlashAttentionMaxQueries;
+        if (k <= cap)
+        {
+            _gpu.AttentionBatchedFlash(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
+                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k, (uint)_maxSeqLen, kvBf16: kvBf16);
+            return;
+        }
+        int qDim = _numHeads * _headDim;
+        long rowBytes = (long)qDim * sizeof(float);
+        _flashQSlice ??= _gpu.Allocate(TensorShape.D1((long)cap * qDim));
+        _flashOutSlice ??= _gpu.Allocate(TensorShape.D1((long)cap * qDim));
+        for (int i0 = 0; i0 < k; i0 += cap)
+        {
+            int take = Math.Min(cap, k - i0);
+            _gpu.RecordComputeCopyRegion(_flashQSlice, 0, _qK, i0 * rowBytes, take * rowBytes);
+            _gpu.RecordBarrier();
+            _gpu.AttentionBatchedFlash(_flashQSlice, _gpuKCache[layer], _gpuVCache[layer], _flashOutSlice,
+                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)(startPos + i0), take, (uint)_maxSeqLen, kvBf16: kvBf16);
+            _gpu.RecordBarrier();
+            _gpu.RecordComputeCopyRegion(_attnOutK, i0 * rowBytes, _flashOutSlice, 0, take * rowBytes);
+            _gpu.RecordBarrier();
+        }
+    }
+
     private void FreeBatchVerifyScratch()
     {
         _gpu.Free(_hiddenK); _gpu.Free(_residualK); _gpu.Free(_normK);
         if (_parAttnOutK is not null) { _gpu.Free(_parAttnOutK); _parAttnOutK = null; }
         _gpu.Free(_qK); _gpu.Free(_kK); _gpu.Free(_vK); _gpu.Free(_attnOutK);
+        if (_flashQSlice is not null) { _gpu.Free(_flashQSlice); _flashQSlice = null; }
+        if (_flashOutSlice is not null) { _gpu.Free(_flashOutSlice); _flashOutSlice = null; }
         _gpu.Free(_ffnGateK); _gpu.Free(_ffnUpK);
         if (_logitsKBuf is not null) _gpu.Free(_logitsK);
         _logitsKBuf = null;
