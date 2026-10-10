@@ -75,7 +75,9 @@ public static class LoadPreflight
         if (!main.RepoPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) return null;
         try
         {
-            var idx = await RemoteGgufReader.ReadAsync(http, main.Repo, main.Revision, [main.RepoPath], RemoteGgufReader.DefaultMaxIndexBytes, ct).ConfigureAwait(false);
+            // Every GGUF of the bundle: a split model's weights are spread over all shards, so reading only the first would understate the need.
+            string[] shards = entry.Files.Where(f => f.Repo == main.Repo && f.Revision == main.Revision && f.RepoPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).Select(f => f.RepoPath).ToArray();
+            var idx = await RemoteGgufReader.ReadAsync(http, main.Repo, main.Revision, shards, RemoteGgufReader.DefaultMaxIndexBytes, ct).ConfigureAwait(false);
             if (idx.Outcome != RemoteIndexOutcome.Complete || idx.Index is null) return null;
             var i = idx.Index;
             return EvaluateIndex(new ScoutInput(main.FileName, idx.ShardSizes.Sum(), i.Header.Version, i.Header.TensorCount, i.Header.MetadataKvCount, i.Metadata, i.Tensors),

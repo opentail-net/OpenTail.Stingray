@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Core.Net;
 using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core.Catalog;
@@ -91,5 +92,27 @@ public sealed class LoadPreflightTests : IDisposable
         Assert.True(LoadPreflight.ShouldProceed(new(PreflightVerdict.Allowed, "x", 1, 0, 0), false, out var m4));
         Assert.Null(m4);
         Assert.True(LoadPreflight.ShouldProceed(new(PreflightVerdict.NotApplicable, "x", null, 0, 0), false, out _));
+    }
+
+    [Fact]
+    public async Task Catalog_preflight_reads_every_shard_of_a_split_bundle()
+    {
+        byte[] s0 = Gguf("llama", 1), s1 = Gguf("llama", 1);
+        var hub = new FakeHub("o/r", [new RepoFile("big-00001-of-00002.gguf", s0), new RepoFile("big-00002-of-00002.gguf", s1)]);
+        using var http = new ExternalHttpClient(inner: hub, env: _ => null);
+        var split = new CatalogEntry("big", "chat", "t",
+            [new CatalogFile("o/r", Sha, "big-00001-of-00002.gguf", Hash, s0.Length), new CatalogFile("o/r", Sha, "big-00002-of-00002.gguf", Hash, s1.Length)],
+            "MIT", false, "x", "x", "x", "stingray chat");
+        var r = await LoadPreflight.EvaluateCatalogEntryAsync(split, 512, http, default, ramBytes: 64 * Gib);
+        Assert.NotNull(r);
+        Assert.Contains(hub.Requests, q => q.Contains("big-00001-of-00002.gguf"));
+        Assert.Contains(hub.Requests, q => q.Contains("big-00002-of-00002.gguf"));
+
+        // A single-file bundle still reads just its file.
+        var hub1 = new FakeHub("o/r", [new RepoFile("one.gguf", s0)]);
+        using var http1 = new ExternalHttpClient(inner: hub1, env: _ => null);
+        var one = split with { Files = [new CatalogFile("o/r", Sha, "one.gguf", Hash, s0.Length)] };
+        Assert.NotNull(await LoadPreflight.EvaluateCatalogEntryAsync(one, 512, http1, default, ramBytes: 64 * Gib));
+        Assert.DoesNotContain(hub1.Requests, q => q.Contains("00002"));
     }
 }
