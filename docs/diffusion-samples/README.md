@@ -13,6 +13,7 @@ Times are wall-clock for the whole run, one model at a time. "GPU (Vulkan)" mean
 | SDXL-Turbo | ![SDXL-Turbo](sdxl-turbo-apple-512.png) | 512×512, 4 | 42s, GPU (Vulkan) |
 | SDXL base 1.0 (fp16 safetensors) | ![SDXL base](sdxl-base-apple-1024.png) | 1024×1024, 20 | 690s, GPU (Vulkan) |
 | FLUX.1-schnell (Q4_K_S) | ![FLUX.1](flux1-schnell-apple-512.png) | 512×512, 4 | 156s, GPU (Vulkan) |
+| Qwen Image (Q3_K_S + Qwen2.5-VL-7B encoder) | ![Qwen Image](qwen-image-apple-256.png) | 256×256, 8, CFG 4 | 151s, GPU (Vulkan), 60/60 blocks resident |
 | Z-Image-Turbo (Q4_0) | ![Z-Image](zimage-turbo-apple-512.png) | 512×512, 4 | 129s, GPU (Vulkan) |
 | Stable Diffusion 3.5 Medium (Q4_K_M) | ![SD3.5](sd35-medium-apple-512.png) | 512×512, 20 | 203s, GPU (Vulkan) |
 | Wan 2.1 T2V 1.3B (Q4_0), one video frame | ![Wan 2.1](wan21-apple-256.png) | 256×256, 20 | 100s, **CPU** |

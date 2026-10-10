@@ -143,8 +143,10 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         }
         else if (_textEncoderForward is not null && _textEncoderTokenizer is not null)
         {
+            var swEncode = System.Diagnostics.Stopwatch.StartNew();
             (condContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, prompt);
             (uncondContext, _) = QwenImageTextConditioning.Encode(_textEncoderForward, _textEncoderTokenizer, negativePrompt ?? "");
+            QwenImageProfile.Log($"text encode (cond+uncond) {swEncode.ElapsedMilliseconds} ms; cond tokens {condContext.Length / QwenImageModel.ContextDim}, uncond tokens {uncondContext.Length / QwenImageModel.ContextDim}");
             // Parity: compare with stable-diffusion.cpp's SD_DUMP_COND_PATH (positive prompt, [seqLen, 3584]).
             DiffusionParityHooks.DumpToFile("STINGRAY_QWENIMAGE_DUMP_COND_PATH", condContext);
         }
@@ -183,12 +185,16 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
             float tNext = timesteps[step + 1];
             float dt = t - tNext;
 
+            var swFwd = System.Diagnostics.Stopwatch.StartNew();
             var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, latH, latW, refLatent);
+            QwenImageProfile.Log($"step {step + 1}/{steps} cond forward {swFwd.ElapsedMilliseconds} ms");
             float[] velocity;
 
             if (guidance > 1.0f)
             {
+                swFwd.Restart();
                 var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, latH, latW, refLatent);
+                QwenImageProfile.Log($"step {step + 1}/{steps} uncond forward {swFwd.ElapsedMilliseconds} ms");
                 velocity = new float[condVelocity.Length];
                 for (int i = 0; i < velocity.Length; i++)
                     velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
@@ -207,7 +213,9 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         // 6. Decode 16-channel latents to RGB pixels via VAE (single-frame, t=1 -- WanVaeDecoder3D
         // already returns [0,1]-clamped pixels, matching PngWriter's expected convention directly).
         DiffusionParityHooks.DumpToFile("STINGRAY_QWENIMAGE_DUMP_LATENT_PATH", latent);
+        var swVae = System.Diagnostics.Stopwatch.StartNew();
         var pixels = _vae.Decode(latent, 1, latH, latW)[0];
+        QwenImageProfile.Log($"VAE decode {swVae.ElapsedMilliseconds} ms");
 
         // 7. Optional Super-Resolution Upscaling
         int outWidth = width, outHeight = height;
