@@ -11802,7 +11802,7 @@ internal static class Shaders
     /// shared memory. Softmax: max and sum for all G heads reduced together over the slice. Value phase: <c>head_dim/4</c> lanes across the head
     /// dimension (vec4, coalesced) times interleaved key groups, per-head accumulators, shared-memory reduction over the key groups.
     /// Same push constants, partial layout (<c>[head][split][head_dim]</c>, meta <c>[head][split][2]</c>) and combine pass as the original.
-    /// Requires head_dim 64 or 128 and G in 1..4. Dispatch (num_kv_heads, n_splits).
+    /// Requires head_dim 64, 128 or 256 and G in 1..4. Dispatch (num_kv_heads, n_splits).
     /// </summary>
     internal const string AttentionSplitKvPartialGqa = """
         #version 450

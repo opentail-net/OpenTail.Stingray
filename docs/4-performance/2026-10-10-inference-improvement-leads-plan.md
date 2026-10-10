@@ -18,8 +18,8 @@ Order below is "what to look at next" within each group; the groups themselves a
 ### A. Decode on Vulkan (new, top of the list: the attention win generalises)
 - [x] **A0** Diagnose decode: elimination experiment plus the ggml per-op reference showed about 68 ms of a 159 ms token was single-token attention at about 500 context tokens (Qwen3-4B). Evidence log: "Lead 2b".
 - [x] **A1** GQA-group split-KV decode attention kernel (fp32 KV, head dim 64/128, 1-4 query heads per KV head), default on, `STINGRAY_VULKAN_DECODE_ATTN_GQA=0` rolls back. Kernel 11.8x faster (132 vs 1,566 us/layer, ggml about 140); Qwen3-4B decode after a 493-token prompt 6.3 to 12.1 t/s (+88%), text identical. Commit `2624089d`.
-- [ ] **A2** Use the GQA kernel at every length. Below 257 positions decode still runs the old one-workgroup-per-head kernel; at a 94-token context about 13 of the roughly 20 ms per token outside the matmuls is probably attention (extrapolated, to be measured). Expected about +10% at chat-sized contexts.
-- [ ] **A3** Head dimension 256 (Gemma family). The kernel's lane mapping already works for 256; extend `SupportsSplitKvGqa` and add a parity case.
+- [x] **A2** GQA kernel at every context length (`GpuForwardPass.UseSplitKvDecodeFp32`): short-prompt decode (Qwen3-4B, 96 tokens) **10.5-10.6 -> 12.6-12.7 t/s (+20%)**, text identical in both A/B rounds (estimated +10%; attention was a bigger share than extrapolated). Commit in the same change as A3.
+- [x] **A3** Head dimension 256 (Gemma family) accepted by `SupportsSplitKvGqa`; parity cases added (16/4/256 group 4, 8/8/256 group 1), 8 of 8 tests pass. Not yet run end to end on a Gemma model.
 - [ ] **A4** Route the remaining attention call sites (layer-split path, speculative-decode paths, hybrid Qwen3.5/3.6 engine) through `GpuForwardPass.AttentionSplitKvAuto`.
 - [ ] **A5** GQA groups of 5-8 (gpt-oss 8, Qwen2.5-7B 7, the 70B Llamas 8): split the group over two workgroups per KV head (K/V read twice instead of up to 8 times).
 - [ ] **A6** BF16 and Q8_0 KV-cache variants (`AttentionSplitKvPartialBf16`, `AttentionSplitKvPartialQ8`) have the same slow structure: port the design.
@@ -326,3 +326,9 @@ together, value phase as 32 (or 16) vec4 lanes across the head dim times interle
   text identical. Vulkan decode at long context is now level with the CPU (12.2 t/s).
 - Tests: `VulkanSplitKvGqaAttentionTests` (5 shapes x 9 context/window cases plus the support check); shader-drift gate passes.
 - Remaining decode costs at short context (about 20 ms per token outside the matmuls, matmuls near the bandwidth ceiling): fusing norm/RoPE/residual dispatches. bf16/q8 KV caches still use the old kernels.
+
+### Decode attention A2 and A3, 2026-10-11
+- A2: the GQA kernel now serves every fp32-KV decode position when the shape is supported (below 257 positions it is a single split plus the combine pass), instead of the original
+  one-workgroup-per-head kernel. Qwen3-4B-Q4_K_M, Vulkan, 30-token prompt, 96 greedy tokens, alternating A/B: decode 10.6 / 10.5 -> 12.6 / 12.7 t/s (+20%), text identical.
+- A3: `SupportsSplitKvGqa` accepts head dim 256 (the kernel's lane mapping already covered it: 16 lanes per key, 4 key groups in the value phase, 4,096-float shared reduction).
+- Not touched yet: the Gemma-4 per-layer path (`ForwardGemma4`, per-layer head dims and shared KV) and the hybrid Qwen3.5/3.6 engine (head dim 256 but GQA groups of 6-8, which needs A5).

@@ -1941,10 +1941,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 // shared-memory fast path (where the single-workgroup scan collapses), with
                 // headDim a multiple of 32 (matches the CUDA gate) and the partial buffers
                 // allocated (gate + maxSplits≤256). Otherwise the byte-identical spill path runs.
-                if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
+                if (UseSplitKvDecodeFp32(position))
                 {
                     AttentionSplitKvAuto(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                        _splitKvPartialO, _splitKvPartialMeta!,
+                        _splitKvPartialO!, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
                         (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
@@ -3342,9 +3342,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.KvAppend(_k, _v, _gpuKCache[layer], _gpuVCache[layer],
                 (uint)kvDim, (uint)position, (uint)_maxSeqLen);
             _gpu.RecordBarrier();
-            if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
+            if (UseSplitKvDecodeFp32(position))
                 AttentionSplitKvAuto(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                    _splitKvPartialO, _splitKvPartialMeta!,
+                    _splitKvPartialO!, _splitKvPartialMeta!,
                     (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.Attention(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
@@ -3477,6 +3477,16 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     // _logitsK is freed only when _logitsKBuf proves the pair was actually allocated.
     /// <summary>STINGRAY_VULKAN_DECODE_ATTN_GQA=0 keeps the original one-key-per-thread split-KV partial kernel (rollback switch).</summary>
     private static readonly bool SplitKvGqaEnabled = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DECODE_ATTN_GQA") != "0";
+
+    /// <summary>
+    /// Whether fp32-KV decode attention at <paramref name="position"/> takes the split-KV path. Above <see cref="SplitKvMinPosition"/> positions it always does (when enabled and the
+    /// partial buffers exist); at or below it only when the GQA-group kernel can serve the shape, because that kernel is faster than the original single-workgroup-per-head
+    /// kernel at every length (one split at up to 256 keys), while the original split-KV kernel is not worth its second dispatch there.
+    /// </summary>
+    private bool UseSplitKvDecodeFp32(int position) =>
+        _splitKvEnabled && _headDim % 32 == 0 && _splitKvPartialO is not null
+        && (position + 1 > SplitKvMinPosition
+            || (SplitKvGqaEnabled && VulkanBackend.SupportsSplitKvGqa((uint)_numHeads, (uint)_numKvHeads, (uint)_headDim)));
 
     /// <summary>
     /// Split-KV decode attention for fp32 KV: the GQA-group partial kernel when the shape is supported (head_dim 64/128, 1-4 query heads per KV head),
