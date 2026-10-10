@@ -1,0 +1,50 @@
+name: Hardware receipt
+description: A measured result on hardware the maintainers do not have (NVIDIA, discrete GPU, ARM64, other CPUs).
+title: "[receipt] "
+labels: ["hardware-receipt"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See docs/WANTED.md and docs/9-external-hardware/90-external-hardware-work.md for open items.
+        A result from one machine is evidence for that setup only, so please record it exactly.
+  - type: input
+    id: item
+    attributes:
+      label: Which open item is this for?
+      description: Link or name from docs/WANTED.md, or "none, just a measurement".
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit SHA
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Exact model file, quantization and hash (SHA-256 if you have it)
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware and software
+      description: Backend, device, driver version, CPU, RAM, OS, and whether anything else was running.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and warm-up protocol
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Repeated samples (not one run), and the numerical or token-parity result where relevant.
+    validations:
+      required: true

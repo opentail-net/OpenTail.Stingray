@@ -1,0 +1,42 @@
+name: New architecture
+description: A GGUF that Stingray refuses or runs incorrectly.
+title: "[arch] "
+labels: ["new-architecture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with `stingray scout -m <file.gguf> --format json` (reads the header only).
+        See docs/reference/061-coverage-tooling.md. Do not attach model weights.
+  - type: input
+    id: model
+    attributes:
+      label: Hugging Face repo and file
+    validations:
+      required: true
+  - type: textarea
+    id: scout
+    attributes:
+      label: Scout output
+      description: Paste the JSON, or attach it as a file.
+    validations:
+      required: true
+  - type: textarea
+    id: admit
+    attributes:
+      label: admit-arch output (optional)
+      description: If you ran `stingray admit-arch`, with or without a reference token sequence.
+  - type: input
+    id: reference
+    attributes:
+      label: Independent reference available?
+      description: For example llama.cpp support for this architecture, and which build.
+  - type: dropdown
+    id: help
+    attributes:
+      label: How far can you take it?
+      options:
+        - Just reporting
+        - Can capture a llama.cpp reference sequence
+        - Can write the C# port
+        - Not sure

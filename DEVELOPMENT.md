@@ -93,6 +93,8 @@ Stingray is designed to publish as a self-contained, single-file NativeAOT execu
 
 ## 6. Contributing Checklist
 
+New here? [CONTRIBUTING.md](CONTRIBUTING.md) lists the ways to help, including ones that need no code.
+
 Before submitting a pull request or committing changes:
 1. Ensure all Core tests pass: `dotnet test tests/OpenTail.Stingray.Tests.Core`
 2. If changing CLI options, regenerate the inventory: `pwsh ./scripts/gen-cli-option-inventory.ps1`

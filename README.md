@@ -250,7 +250,15 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 | **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)** | Plain-language tour of capabilities across LLM, vision, speech, and diffusion. |
 | **[docs/MODELS.md](docs/MODELS.md)** | Curated, tested starter models with download links, licenses, and file sizes. |
 | **[docs/models/](docs/models/README.md)** | Architecture cards: one page per model family with checkpoints, classes, memory and measured results. |
+| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Ways to help, by what you have, and what happens to your work. |
 | **[DEVELOPMENT.md](DEVELOPMENT.md)** | Contributor guide for solution layout, SIMD internals, and test harnesses. |
+
+## Get involved
+
+Stingray is MIT-licensed and there are several ways to help that need no C#: run a model and tell us
+what happened, measure on hardware we do not have (NVIDIA, a discrete GPU, ARM64), fix a number in the
+docs, or triage a GGUF we do not yet support. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the paths
+and **[docs/WANTED.md](docs/WANTED.md)** for what is open right now.
 
 ## Building from source
 
