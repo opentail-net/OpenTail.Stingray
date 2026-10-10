@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [llava](llava.md), [qwen-vl](qwen-vl.md), [pixtral](pixtral.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | OpenGVLab / Shanghai AI Laboratory |

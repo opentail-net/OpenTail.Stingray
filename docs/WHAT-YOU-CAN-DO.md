@@ -74,6 +74,7 @@ even if it happens to load.
 2. **Pick a model:** [MODELS.md](MODELS.md). It is short and curated.
 3. **Run it properly:** [RUNNING.md](RUNNING.md) has the command, memory and speed for each model.
 4. **Check it is verified:** [STATUS.md](STATUS.md).
+   To see how a model family works inside Stingray, open its [architecture card](models/README.md).
 5. **Command-line options:** `stingray --help`, `stingray <command> --help`, and
    [reference/cli-option-inventory.md](reference/cli-option-inventory.md) for every option.
 6. **Use it from C#:** the [package README](../src/OpenTail.Stingray/README.md) and the [sample catalogue](../samples/README.md) (streaming chat, speech synthesis/transcription, image diffusion, tool calling).

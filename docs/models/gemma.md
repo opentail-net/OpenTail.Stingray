@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [gemma4-vision](gemma4-vision.md), [llama](llama.md), [mistral](mistral.md), [phi](phi.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Google DeepMind |
@@ -39,6 +41,9 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 | **Gemma-2-9B-IT** | [google/gemma-2-9b-it](https://huggingface.co/google/gemma-2-9b-it) *(GGUF: [bartowski/gemma-2-9b-it-GGUF](https://huggingface.co/bartowski/gemma-2-9b-it-GGUF))* | 9.2B | `Q4_K_M` | ~5.8 GB | Strong general-purpose instruction following |
 | **Gemma-3-1B-IT** | [google/gemma-3-1b-it](https://huggingface.co/google/gemma-3-1b-it) | 1.1B | `Q4_K_M` | ~0.8 GB | Ultra-compact edge model |
 | **Gemma-4-E4B-IT** | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) | 4.4B | `Q8_0` / `Q4_K_M` | ~7.5 GB / ~2.9 GB | Google's multimodal reasoning checkpoint |
+
+> **Also measured, not listed above:** Gemma 4 12B Instruct (`gemma-4-12b-it-Q4_K_M.gguf`, about 7.3 GB peak). See [RUNNING.md](../RUNNING.md) for the command and speed.
+
 
 ---
 

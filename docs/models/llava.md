@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [pixtral](pixtral.md), [internvl](internvl.md), [qwen-vl](qwen-vl.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | LLaVA Team / Haotian Liu et al. |

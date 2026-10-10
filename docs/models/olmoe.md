@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [qwen](qwen.md), [mistral](mistral.md), [gpt-oss](gpt-oss.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Allen Institute for AI (Ai2) |

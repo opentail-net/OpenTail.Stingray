@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [qwen](qwen.md), [qwen35](qwen35.md), [gemma4-vision](gemma4-vision.md), [internvl](internvl.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Alibaba Cloud (Qwen Team) |

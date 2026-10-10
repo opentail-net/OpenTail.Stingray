@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [whisper](whisper.md), [kokoro](kokoro.md), [xtts2](xtts2.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Alibaba Cloud (Qwen Team) |

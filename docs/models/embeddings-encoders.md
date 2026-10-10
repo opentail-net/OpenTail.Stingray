@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [llama](llama.md), [qwen](qwen.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Architectures** | `bert`, `xlm-roberta`, `nomic-bert`, `mpnet`, `bge-m3`, `t5` |

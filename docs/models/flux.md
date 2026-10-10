@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [stable-diffusion](stable-diffusion.md), [z-image-turbo](z-image-turbo.md), [wan-video](wan-video.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Black Forest Labs (BFL) |

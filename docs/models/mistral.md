@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [pixtral](pixtral.md), [llama](llama.md), [phi](phi.md), [olmoe](olmoe.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Mistral AI |
@@ -39,6 +41,9 @@ Mistral AI revolutionized open LLMs by combining high-efficiency Sliding-Window 
 | **Ministral-8B-Instruct-2410** | [mistralai/Ministral-8B-Instruct-2410](https://huggingface.co/mistralai/Ministral-8B-Instruct-2410) *(GGUF: [bartowski/Ministral-8B-Instruct-2410-GGUF](https://huggingface.co/bartowski/Ministral-8B-Instruct-2410-GGUF))* | 8.0B | 8.0B | 32k | `Q4_K_M` | ~5.0 GB |
 | **Mixtral-8x7B-Instruct-v0.1** | [mistralai/Mixtral-8x7B-Instruct-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1) *(GGUF: [TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF](https://huggingface.co/TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF))* | 46.7B | 12.9B | 32k | `Q4_K_M` | ~26.4 GB |
 | **Mistral-Small-3.1-24B-Instruct** | [mistralai/Mistral-Small-3.1-24B-Instruct-2503](https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503) *(GGUF: [bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF](https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF))* | 24.0B | 24.0B | 128k | `Q4_K_M` | ~14.3 GB |
+
+> **Also measured, not listed above:** Mistral Small 3.2 24B Instruct 2506 (`Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf`, about 14 GB). The table's 3.1 row is the older release. See [RUNNING.md](../RUNNING.md).
+
 
 ---
 
