@@ -126,3 +126,11 @@ Order is by value per effort; each phase ships on its own and is useful alone.
 | 5 | Layered validation: static, integrity, resources, then execution and goldens; near-tie kept distinct; loading is not qualification | Pieces exist; not wired to the catalogue | P2 and P5 |
 
 **Residual risk, to be stated in the user docs rather than hidden:** a tensor index cannot prove the weights mean what they should; a checksum proves identity relative to a digest, not that the publisher's model is correct; a golden covers its inputs and configuration, not every prompt or path.
+
+## 9. Open issues found in review (2026-10-10), to resolve in this order
+
+| # | Issue | Fix | Status |
+|---|---|---|---|
+| R1 | `LoadPreflight.EvaluateCatalogEntryAsync` reads only `entry.MainFile`'s index, so a sharded model (qwen2.5-7b) is estimated from shard 1 alone, and the smaller-model offer inherits that. | Pass every GGUF shard of the entry to `RemoteGgufReader.ReadAsync` (it accepts a shard list). Regression test: both shards contribute to the combined index and the estimate. | open |
+| R2 | The golden format (`GoldenFile`) records one file name, size and SHA-256, and the catalogue guard checks only `MainFile`, so the 7B receipt does not pin both shards. | Extend the golden evidence to list all files of a split model; the guard validates the whole list against the catalogue. Needs a re-capture or migration of `qwen2.5-7b.golden.json`. | open |
+| R3 | `LocalInventory.Scan` opens every `*.gguf`; `GgufModel.Open` resolves sibling shards, so a complete split model shows twice (each row with a single shard's name and size). | Report a logical split model once: first shard's name and path, summed size; an incomplete set is one unreadable row naming the missing shards; other models unaffected. Reuse `GgufModel.ResolveShardPaths`. Tests with synthetic shards from `HubFixtures.Gguf`. | open |
