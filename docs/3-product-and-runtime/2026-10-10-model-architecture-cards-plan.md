@@ -51,40 +51,40 @@ Each document in `docs/models/*.md` follows this standardized specification:
 
 ### Phase 1: Flagship Core LLM Families
 - [x] `docs/models/llama.md`: Llama 3 / 3.1 / 3.2 / 3.3 / Llama 4
-- [ ] `docs/models/gemma.md`: Gemma 2 / 3 / 4
-- [ ] `docs/models/mistral.md`: Mistral 7B / Mistral 3 / Mixtral MoE / Ministral
-- [ ] `docs/models/phi.md`: Microsoft Phi-2 / Phi-3 / Phi-3.5 / PhiMoE
-- [ ] `docs/models/granite.md`: IBM Granite 3.x / Granite 4.0-H (hybrid recurrent)
-- [ ] `docs/models/smollm.md`: SmolLM2 (135M, 360M, 1.7B) / SmolLM3
+- [x] `docs/models/gemma.md`: Gemma 2 / 3 / 4
+- [x] `docs/models/mistral.md`: Mistral 7B / Mistral 3 / Mixtral MoE / Ministral
+- [x] `docs/models/phi.md`: Microsoft Phi-2 / Phi-3 / Phi-3.5 / PhiMoE
+- [x] `docs/models/granite.md`: IBM Granite 3.x / Granite 4.0-H (hybrid recurrent)
+- [x] `docs/models/smollm.md`: SmolLM2 (135M, 360M, 1.7B) / SmolLM3
 
 ### Phase 2: Recurrent, MoE & Specialized Families
-- [ ] `docs/models/qwen.md`: Qwen 2.5 / Qwen 3 / Qwen 3.5 MoE / Coder
-- [ ] `docs/models/deepseek.md`: DeepSeek-V2 / V3 / R1 (MLA latent attention & MoE)
-- [ ] `docs/models/rwkv.md`: RWKV-6 / RWKV-7 linear attention / RNN
-- [ ] `docs/models/lfm2.md`: Liquid LFM2 Conv/SSM hybrid
-- [ ] `docs/models/olmoe.md`: OLMoE 1B-7B 64-expert sparse MoE
+- [x] `docs/models/qwen.md`: Qwen 2.5 / Qwen 3 / Qwen 3.5 MoE / Coder
+- [x] `docs/models/deepseek.md`: DeepSeek-V2 / V3 / R1 (MLA latent attention & MoE)
+- [x] `docs/models/rwkv.md`: RWKV-6 / RWKV-7 linear attention / RNN
+- [x] `docs/models/lfm2.md`: Liquid LFM2 Conv/SSM hybrid
+- [x] `docs/models/olmoe.md`: OLMoE 1B-7B 64-expert sparse MoE
 
 ### Phase 3: Multimodal Vision & Document OCR
-- [ ] `docs/models/qwen-vl.md`: Qwen2.5-VL / Qwen3-VL
-- [ ] `docs/models/pixtral.md`: Mistral Pixtral 12B
-- [ ] `docs/models/deepseek-ocr.md`: DeepSeek-OCR & DeepSeek-OCR2 SAM+CLIP ViT fusion
-- [ ] `docs/models/llava.md`: LLaVA 1.5 / NeXT / OneVision
-- [ ] `docs/models/internvl.md`: InternVL 2.5 / 3 / 4
-- [ ] `docs/models/gemma4-vision.md`: Gemma 4 UV & ViT
+- [x] `docs/models/qwen-vl.md`: Qwen2.5-VL / Qwen3-VL
+- [x] `docs/models/pixtral.md`: Mistral Pixtral 12B
+- [x] `docs/models/deepseek-ocr.md`: DeepSeek-OCR & DeepSeek-OCR2 SAM+CLIP ViT fusion
+- [x] `docs/models/llava.md`: LLaVA 1.5 / NeXT / OneVision
+- [x] `docs/models/internvl.md`: InternVL 2.5 / 3 / 4
+- [x] `docs/models/gemma4-vision.md`: Gemma 4 UV & ViT
 
 ### Phase 4: Speech & Audio Pipelines
-- [ ] `docs/models/whisper.md`: OpenAI Whisper Tiny to Large-v3 / Turbo
-- [ ] `docs/models/piper.md`: Piper VITS neural text-to-speech
-- [ ] `docs/models/kokoro.md`: Kokoro-82M neural TTS
-- [ ] `docs/models/xtts2.md`: Coqui XTTS-v2 zero-shot voice cloning
-- [ ] `docs/models/qwen-audio.md`: Qwen3-TTS & Qwen3-ASR
+- [x] `docs/models/whisper.md`: OpenAI Whisper Tiny to Large-v3 / Turbo
+- [x] `docs/models/piper.md`: Piper VITS neural text-to-speech
+- [x] `docs/models/kokoro.md`: Kokoro-82M neural TTS
+- [x] `docs/models/xtts2.md`: Coqui XTTS-v2 zero-shot voice cloning
+- [x] `docs/models/qwen-audio.md`: Qwen3-TTS & Qwen3-ASR
 
 ### Phase 5: Diffusion, Video & Embeddings
-- [ ] `docs/models/flux.md`: FLUX.1 (schnell/dev) & FLUX.2
-- [ ] `docs/models/stable-diffusion.md`: Stable Diffusion 1.5 / SDXL / SD 3.5 MMDiT
-- [ ] `docs/models/z-image-turbo.md`: Z-Image-Turbo fast DiT
-- [ ] `docs/models/wan-video.md`: Wan 2.1 / 2.2 Video DiT
-- [ ] `docs/models/embeddings-encoders.md`: BGE, MiniLM, E5, NomicBERT, BGE-M3
+- [x] `docs/models/flux.md`: FLUX.1 (schnell/dev) & FLUX.2
+- [x] `docs/models/stable-diffusion.md`: Stable Diffusion 1.5 / SDXL / SD 3.5 MMDiT
+- [x] `docs/models/z-image-turbo.md`: Z-Image-Turbo fast DiT
+- [x] `docs/models/wan-video.md`: Wan 2.1 / 2.2 Video DiT
+- [x] `docs/models/embeddings-encoders.md`: BGE, MiniLM, E5, NomicBERT, BGE-M3
 
 ### Phase 6: Index Overhaul & Cross-Linking
-- [ ] `docs/models/README.md`: Overhaul model index table with direct links, status badges, and quick summaries.
+- [x] `docs/models/README.md`: Overhaul model index table with direct links, status badges, and quick summaries.

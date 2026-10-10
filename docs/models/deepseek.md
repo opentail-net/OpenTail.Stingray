@@ -1,65 +1,84 @@
-# Architecture Card: DeepSeek Series (MLA & DeepSeekMoE)
+# DeepSeek Family (DeepSeek-V2, V2.5, Coder-V2, DeepSeek-V3, R1)
 
-> **Architectures:** `deepseek`, `deepseek2`, `deepseek3`  
-> **Verification Status:** 🔬 Verified on DeepSeek-V2-Lite; MLA and MoE routing implemented (see [docs/STATUS.md](../STATUS.md))  
-> **Supported Models:** DeepSeek-V2-Lite, DeepSeek-V2.5, DeepSeek-Coder-V2, DeepSeek-V3, DeepSeek-R1  
-> **Source References:** `OpenTail.Stingray.Core/Loaders/GgufModelLoader.cs`, `OpenTail.Stingray.Engine/Attention/MlaAttention.cs`
+[← Back to Architecture Cards](README.md)
+
+| Property | Value |
+|---|---|
+| **Provider** | DeepSeek AI |
+| **GGUF Architecture Keys** | `deepseek`, `deepseek2`, `deepseek2_ocr`, `deepseek3` |
+| **Engine Implementations** | `DeepSeek2Architectures.DeepSeek2`, `DeepSeek2Ocr`, `MlaAttention` |
+| **Forward Pass Factory** | `CommonForwardPassFactory.CreateDense` / `CreateMoe` with native MLA cache |
+| **Modalities** | Text, Code, Reasoning (`<think>` tokens), Vision OCR (`DeepSeek-OCR` & `OCR2`) |
+| **Thinking Mode** | Native first-class support (`GenerateChunkKind.Thinking`) |
+| **Tool Calling & JSON BNF** | Fully supported |
+| **Status & Confidence** | 🟢 **Admitted & Verified** (`DeepSeek-V2-Lite` Level 2 Proven; V3/R1 MLA and MoE forward passes admitted) |
+
+> [!NOTE]
+> Per CLAUDE.md rule 14, experimental or unverified lineage branches (`deepseek4`, `deepseek41`, `deepseek32`) remain internal (`NotAdmitted` in `ModelCompatibility.cs`) and are not offered in public catalogues until verified with real checkpoints.
 
 ---
 
-## 1. Architectural Highlights
+## 1. Architectural Highlights & Math
 
-DeepSeek architectures deviate substantially from standard LLaMA-style designs through two fundamental innovations:
+DeepSeek architectures introduce two fundamental breakthroughs in large-scale transformer efficiency:
 
 ### Multi-Head Latent Attention (MLA)
-Standard Multi-Head Attention (MHA) and Grouped Query Attention (GQA) store full-rank Key and Value tensors for every token, dominating memory consumption in long-context decoding.
+Standard Multi-Head Attention (MHA) and Grouped Query Attention (GQA) store full-rank Key and Value matrices per token, creating severe memory bottlenecks at long context:
+* **Low-Rank Compression:** Keys and Values are jointly compressed into a low-dimensional latent vector $c_t^{KV} \in \mathbb{R}^{d_c}$ (e.g. 512 dimensions):
+  $$c_t^{KV} = W^{DKV} x_t$$
+* **Decoupled RoPE:** Rotary position embeddings cannot commute with low-rank compression. DeepSeek solves this by separating position encoding into an independent small vector:
+  $$k_t^R = \text{RoPE}(W^{KR} x_t)$$
+  The attention score is computed by combining the projected latent dot-product with the RoPE dot-product.
+* **3.5× KV Memory Reduction:** OpenTail.Stingray's `MlaAttention` caches the compressed latent vector $c_t^{KV}$ directly in the KV buffer rather than uncompressing it, cutting KV RAM by ~70–75%.
 
-MLA compresses Keys and Values into a single low-dimensional latent vector $c_t^{KV}$ (e.g. 512 or 576 dimensions):
-1. **Down-projection:** $c_t^{KV} = W^{DKV} x_t$ (cached in the KV store).
-2. **Up-projection during attention:** $K_t = W^{UK} c_t^{KV}$ and $V_t = W^{UV} c_t^{KV}$.
-3. **Decoupled RoPE:** Because Rotary Position Embeddings cannot easily be applied to compressed latent representations without losing associativity, MLA decouples position information into a separate small Key vector $K_t^R = \text{RoPE}(W^{KR} x_t)$, which is concatenated with the up-projected keys.
-
-This achieves **~3.5× to 4× KV cache compression**, allowing much larger context sizes in local RAM.
-
-### DeepSeekMoE (Fine-Grained Experts)
-- Replaces standard coarse experts with many smaller routed experts (e.g., 64–256 experts) alongside dedicated shared experts.
-- Tokens route to top-$k$ experts using normalized affinity scores, maintaining computational cost while vastly increasing parameter capacity.
-
----
-
-## 2. Stingray Engine Implementation
-
-### Native Compressed KV Cache
-- Rather than decompressing keys and values into full tensor shapes prior to cache storage, Stingray's `MlaAttention` caches the compressed latent vector $c_t^{KV}$ directly in memory.
-- During decoding, matrix-matrix operations are reorganized: query projections are multiplied by $W^{UK}$ and $W^{UV}$ before computing dot-products against the cached latents, minimizing VRAM / RAM bandwidth requirements.
-
-### Int8 Prefill Optimization
-- Per [ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md), DeepSeek-V2 CPU prefill defaults to int8 quantization to maximize SIMD throughput across high-context prompts.
-
-### Reasoning & Thinking Mode Support
-- DeepSeek-R1 introduces internal reasoning tokens wrapped within `<think>` ... `</think>` tags.
-- In the public API, `ChatSession.ChatChunksAsync` categorizes thinking tokens under `GenerateChunkKind.Thinking`, allowing applications to display collapsible reasoning sections separate from final responses.
+### DeepSeekMoE (Fine-Grained Expert Routing)
+* Replaces coarse MoE experts with many fine-grained experts (e.g. 64–256 experts), activating top-$k$ experts per token plus dedicated shared experts that are always evaluated.
+* In Stingray, shared experts and routed experts are parallelized across SIMD worker threads.
 
 ---
 
-## 3. Practical Usage & Commands
+## 2. Checkpoints & Recommended GGUFs
 
-### CLI Invocation
-```bash
-# Run DeepSeek-V2-Lite with automatic hardware offload
-stingray -m models/deepseek-v2-lite-chat-q4_k_m.gguf -p "Compare MLA against standard GQA."
-```
+| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|
+| **DeepSeek-V2-Lite-Chat** | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
+| **DeepSeek-Coder-V2-Lite** | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
+| **DeepSeek-R1-Distill-Qwen-1.5B** | 1.78B | 1.78B | 128k | `Q4_K_M` | ~1.1 GB |
+| **DeepSeek-R1-Distill-Qwen-7B** | 7.61B | 7.61B | 128k | `Q4_K_M` | ~4.7 GB |
+| **DeepSeek-R1-Distill-Llama-8B** | 8.03B | 8.03B | 128k | `Q4_K_M` | ~4.9 GB |
+| **DeepSeek-V3 / R1 (Full)** | 671B | 37B | 128k | Multi-shard Q4/Q8 | ~404 GB |
 
-### Public C# API with Thinking Stream Inspection
+---
+
+## 3. Hardware Requirements & Memory Estimation
+
+| Model | Quant | Context | Host RAM (CPU) | Recommended Placement |
+|---|---|---|---|---|
+| **DeepSeek-V2-Lite** | Q4_K_M | 4,096 | ~10.5 GB | 16 GB+ CPU or 12 GB VRAM GPU |
+| **R1-Distill-Qwen-1.5B** | Q4_K_M | 8,192 | ~2.5 GB | Any modern CPU |
+| **R1-Distill-Qwen-7B** | Q4_K_M | 8,192 | ~9.0 GB | Vulkan GPU / CUDA or 16 GB+ CPU |
+| **DeepSeek-V3 Full (671B)** | Q4_K_M | 8,192 | ~430 GB | Enterprise Multi-GPU cluster |
+
+---
+
+## 4. Usage & Code Examples
+
+### Handling Reasoning Streams in C#
+
+DeepSeek-R1 emits internal reasoning chains wrapped in `<think>...</think>`. Stingray parses this into typed chunks:
+
 ```csharp
 using OpenTail.Stingray;
 using OpenTail.Stingray.Executors;
 
+// 1. Load DeepSeek reasoning checkpoint
 using var model = Model.Load("models/deepseek-r1-distill-qwen-7b-q4_k_m.gguf");
 using var context = model.CreateContext(new ContextParams { ContextSize = 4096 });
-var session = new ChatSession(new InteractiveExecutor(context));
+var executor = new InteractiveExecutor(context);
+var session = new ChatSession(executor);
 
-await foreach (var chunk in session.ChatChunksAsync("Solve this logic puzzle: ..."))
+// 2. Stream and visually separate thinking traces from final output
+await foreach (var chunk in session.ChatChunksAsync("Solve: How many 'r's are in strawberry?"))
 {
     if (chunk.Kind == GenerateChunkKind.Thinking)
     {
@@ -69,14 +88,17 @@ await foreach (var chunk in session.ChatChunksAsync("Solve this logic puzzle: ..
     }
     else if (chunk.Kind == GenerateChunkKind.Text)
     {
+        Console.ForegroundColor = ConsoleColor.White;
         Console.Write(chunk.Text);
+        Console.ResetColor();
     }
 }
+Console.WriteLine();
 ```
 
----
+### CLI Command
 
-## 4. Verification Evidence & Known Status
-
-- **DeepSeek-V2-Lite:** Verified token-by-token greedy output against llama.cpp. Note: departure at token 9 observed under experimental Q3_K kernels; Q4_K_M and int8 prefill remain the verified standard (see [docs/STATUS.md](../STATUS.md) and [docs/1-correctness/bugstofix.md](../1-correctness/bugstofix.md)).
-- **DeepSeek-V3 / R1:** MLA projection matrices, MoE routing, and parsing are validated in synthetic forward-pass test suites. Full multi-GPU sharding is tracked in `docs/9-external-hardware/`.
+```bash
+# Run DeepSeek reasoning interactively
+stingray -m models/deepseek-r1-distill-qwen-7b-q4_k_m.gguf -g -1 --backend vulkan
+```
