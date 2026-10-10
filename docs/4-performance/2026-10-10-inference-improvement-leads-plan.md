@@ -1,6 +1,6 @@
 # Inference improvement leads (plan, 2026-10-10)
 
-Status: **proposed, not started.** Order of work: first let the sample-image queue finish (Wan 2.2, HunyuanVideo, FLUX.2; see
+Status: **in progress; the status board below is the source of truth (the intro text after it predates the work).** Order of work: first let the sample-image queue finish (Wan 2.2, HunyuanVideo, FLUX.2; see
 [the samples and Qwen plan](2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)), then take the leads below in
 order. These leads came from reading the performance league ([PerformanceLeague.md](../../PerformanceLeague.md)), the backlog
 ([00-current-work.md](../00-current-work.md)) and the vendored reference code in `examples/`. Several league rows date from
@@ -9,6 +9,69 @@ September, so **each lead starts by re-measuring today's number** before any cod
 Ground rules (from CLAUDE.md and the Qwen work): measure before and after with alternating runs and medians; a change is
 kept only if it is measurably faster and numerically acceptable; every change keeps an environment-switch rollback; one model
 job at a time (shared-memory iGPU); iGPU timings describe this APU, not a discrete GPU (rule 13).
+
+## Status board (living checklist; items may be done in any order)
+
+Tick an item when it is done, add the commit and the measured result next to it, and put the supporting numbers in the evidence log at the end of this file.
+Order below is "what to look at next" within each group; the groups themselves are ordered by expected payoff. Updated 2026-10-11.
+
+### A. Decode on Vulkan (new, top of the list: the attention win generalises)
+- [x] **A0** Diagnose decode: elimination experiment plus the ggml per-op reference showed about 68 ms of a 159 ms token was single-token attention at about 500 context tokens (Qwen3-4B). Evidence log: "Lead 2b".
+- [x] **A1** GQA-group split-KV decode attention kernel (fp32 KV, head dim 64/128, 1-4 query heads per KV head), default on, `STINGRAY_VULKAN_DECODE_ATTN_GQA=0` rolls back. Kernel 11.8x faster (132 vs 1,566 us/layer, ggml about 140); Qwen3-4B decode after a 493-token prompt 6.3 to 12.1 t/s (+88%), text identical. Commit `2624089d`.
+- [ ] **A2** Use the GQA kernel at every length. Below 257 positions decode still runs the old one-workgroup-per-head kernel; at a 94-token context about 13 of the roughly 20 ms per token outside the matmuls is probably attention (extrapolated, to be measured). Expected about +10% at chat-sized contexts.
+- [ ] **A3** Head dimension 256 (Gemma family). The kernel's lane mapping already works for 256; extend `SupportsSplitKvGqa` and add a parity case.
+- [ ] **A4** Route the remaining attention call sites (layer-split path, speculative-decode paths, hybrid Qwen3.5/3.6 engine) through `GpuForwardPass.AttentionSplitKvAuto`.
+- [ ] **A5** GQA groups of 5-8 (gpt-oss 8, Qwen2.5-7B 7, the 70B Llamas 8): split the group over two workgroups per KV head (K/V read twice instead of up to 8 times).
+- [ ] **A6** BF16 and Q8_0 KV-cache variants (`AttentionSplitKvPartialBf16`, `AttentionSplitKvPartialQ8`) have the same slow structure: port the design.
+- [ ] **A7** gpt-oss `AttentionSinks` decode kernel (single workgroup per head today; only its full-attention layers pay the long-context cost).
+- [ ] **A8** Verify on more models and contexts: a head-dim-64 MHA model (SmolLM2-1.7B), Qwen3-8B, and contexts of 2k-4k tokens (the gain should grow with context).
+- [ ] **A9** Short-context per-layer overhead (about 20 ms per token outside the matmuls): fuse norm + RoPE and add + norm dispatches the way ggml does; profile which dispatches dominate first.
+- [ ] **A10** CUDA decode attention (`llm_attention`, `_bf16`, `_q8_0`) has the identical one-block-per-head, one-thread-per-key structure; needs an NVIDIA machine to measure before porting.
+- [ ] **A11** CPU decode attention: league shows CPU decode falling from 0.88x to 0.67x of llama.cpp as context grows (267 to 3,218 tokens); profile first, reference is ggml's CPU flash attention.
+
+### B. Prefill on Vulkan (Lead 2)
+- [x] **B0** Diagnose: the batched prefill runs at about 0.3 TFLOP/s (multi-token mat-vec, 16 tokens per dispatch); a larger chunk silently falls back to a slow attention kernel. Evidence log: "Lead 2".
+- [x] **B1** Opt-in Path 3 (`STINGRAY_VULKAN_MM_PATH=3`): tiled quantized GEMM incl. a new Q6_K decoder, `SgemmQuant`, and flash attention run in 16-query slices. Qwen3-4B prefill 38.4 to 71.3 t/s (+86%), text identical. Commit `eef12b83`.
+- [ ] **B2** Repeat the Path 3 comparison as a proper alternating A/B with medians (the 71.3 is one run).
+- [ ] **B3** Try a 256-token chunk (matmuls are about 0.8 TFLOP/s on 128-row tiles).
+- [ ] **B4** Second dense model and a decode-regression check with Path 3 on.
+- [ ] **B5** Decide whether Path 3 becomes the default (CPU prefill on the same prompt is 102.8 t/s); extend the batched trunk to Q3_K/Q5_K weights, which it excludes today.
+- [ ] **B6** MoE prefill (currently handed to the CPU) and `VulkanLayerSplitForwardPass` per-token prefill: revisit after B5.
+
+### C. Mat-vec kernels (Lead 1)
+- [x] **C1** MXFP4: one block per lane, packed-LUT decode. 14 to 25 GB/s; gpt-oss decode 6.7 to 7.5 t/s (+12%). Commit `c30e455a`.
+- [x] **C2** Q8_0 (33 to 43 GB/s, ggml 45) and Q4_0 (+7%). Qwen3-0.6B-Q8_0 decode +7-10%. Commit `c7bd0f80`.
+- [ ] **C3** Q3_K (16 vs ggml 29 GB/s): needs the cooperative scale-cache structure; parked.
+- [ ] **C4** Residuals: Q6_K and Q5_K (about 1.2x behind), Q4_0 (about 1.2x), MXFP4 (25 vs 35.9 GB/s: six-word funnel loads, several rows per workgroup).
+
+### D. Qwen Image (earlier thread; the plan for it lives in the other plan file)
+- [x] **D1** Small-M quantized GEMM, **D2** chunked MLP: forward 24.5 s to 21.9 s (reference about 20.7 s). Rejected and logged: raster order, split-K, 128x128 tile, unrolled loop.
+- [ ] **D3** FP16-tile GEMM project (the only large-upside item left; carries the numerics decision). Plan: [the quantized GEMM plan](2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md).
+
+### E. Other leads and deferred work
+- [ ] **E1** Lead 3: hybrid-GDN (Qwen3.5/3.6) prefill evaluated token by token (re-measure first; the league figure may be stale).
+- [ ] **E2** Lead 4: MoE decode gap (OLMoE 0.50x).
+- [ ] **E3** Lead 5: FLUX.2 GPU (3,260 s for one 512x512 image).
+- [ ] **E4** Lead 6: diffusion-side `MatVecDq*` kernels (parked, would double the effort).
+- [ ] **E5** Reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2: explicitly deferred until the leads above are done or parked.
+
+## How the wins were found (the playbook; reuse it)
+
+Every win above came from the same loop. The order matters: each step removed a wrong guess before any kernel was written.
+1. **Fix the number and the workload.** One model, one prompt, one machine, greedy decoding; quote the prompt length with any decode figure (decode slows with context, which is what hid the attention problem for a while).
+2. **Get a reference on the same hardware.** ggml's Vulkan backend is vendored (`examples/stable-diffusion.cpp`, `test-backend-ops`): `GGML_VK_PERF_LOGGER=1` gives per-op GPU time and GFLOP/s by shape, and its F16/Q8_0 mat-vec gives the machine's sustained bandwidth ceiling (about 44 GB/s here).
+3. **Measure by elimination.** Temporarily skip a class of work (all matmuls) and time the rest; repeat at a short and a long context. The difference says what that class costs, and what scales with context (here: not the matmuls).
+4. **Compare against a floor.** Bytes that must move divided by the ceiling (K/V read at 500 tokens is 147 MB, 3.5 ms) against the measured time (68 ms) showed the kernel, not the memory system, was the problem: about 19x slower than the floor.
+5. **Read the kernel next to the reference kernel** for structural causes: uncoalesced reads (lanes a whole KV row apart), idle threads (head-dim of 256 threads working), redundant work (each query head re-reading the K/V it shares with three others), and hidden fallbacks (a chunk above 16 queries silently dropped to a much slower attention kernel).
+6. **Rewrite it standalone first**, with a harness that compares the new kernel against the old on random data across the awkward shapes (context lengths around split boundaries, head dims, group sizes, a sliding window) and times it at the real shape. Only then wire it in.
+7. **Wire it behind an environment switch**, A/B it with alternating runs, require the greedy text to be identical, add a repository regression test and run the shader-drift gate.
+8. **Write down every number, including the experiments that failed** (raster order, split-K, 128x128 tile, unrolled loop, 16-weights-per-lane mat-vec): they are why the next person does not repeat them.
+
+Traps met along the way: documentation drifted from code (the "not implemented" Path 2, the "per-token prefill" description); LLM weights are generic raw tensors whose quantization type travels separately; a standalone benchmark that syncs per call hides small kernels under fixed overhead; run-to-run drift is about 5%, so a single run is a direction, not a number; the device has a 64-wide subgroup and an earlier subgroup-reduction bug, so reductions go through shared memory.
+
+---
+
+## Original lead write-ups and evidence log (chronological; the status board above supersedes the ordering)
 
 ## Deferred on purpose
 
@@ -22,7 +85,7 @@ stage timings, as was done for Qwen Image. Notes already gathered for that day:
 - HunyuanVideo (fp8) and FLUX.2 (Q4_K plus a 24B Mistral encoder) are the two heaviest runs; stage timings from the sample
   runs will say where their time goes.
 
-## The leads, ranked
+## The original leads, ranked (history; see the status board for current state)
 
 ### Lead 1: Vulkan raw-quant matvec bandwidth (backlog item 6)
 - **Evidence:** decode is bandwidth-bound and reaches only about 13-18 GB/s here. Our M=1 quantized matvec moved about 13 GB/s
@@ -80,7 +143,7 @@ stage timings, as was done for Qwen Image. Notes already gathered for that day:
 ## Not worth chasing now
 CPU SmolLM2 prefill (about 0.7-0.9x per the notes), Qwen Image non-GEMM ops and VAE (at parity with the reference).
 
-## Order and checkpoints
+## Original order and checkpoints (superseded by the status board)
 1. Image queue finishes (images committed, README updated).
 2. Leads 1 to 5, in that order, only after step 1 (the images) is complete. Leads 4 and 5 may be parked with a written reason, but the reference timings in step 4 still wait until all five are done or parked.
 3. After each lead: log measured numbers (dated) here, update `PerformanceLeague.md` rows, and commit.
