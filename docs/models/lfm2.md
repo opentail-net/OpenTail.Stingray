@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [granite](granite.md), [qwen35](qwen35.md), [rwkv](rwkv.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Liquid AI |
@@ -36,8 +38,8 @@ Liquid AI's LFM2 (Liquid Foundation Model) blends non-transformer recurrent sign
 
 | Model | Hugging Face Repository | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
 |---|---|---|---|---|---|---|
-| **LFM2-1.2B** | [LiquidAI/LFM-1B](https://huggingface.co/LiquidAI/LFM-1B) | 1.2B | 1.2B | 32k | `Q8_0` / `Q4_K_M` | ~1.3 GB / ~0.75 GB |
-| **LFM2-8B-A1B-MoE** | [LiquidAI/LFM-7B](https://huggingface.co/LiquidAI/LFM-7B) | 8.0B | 1.1B | 32k | `Q4_K_M` | ~4.8 GB |
+| **LFM2-1.2B** | [LiquidAI/LFM2-1.2B-GGUF](https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF) | 1.2B | 1.2B | 32k | `Q8_0` / `Q4_K_M` | ~1.3 GB / ~0.75 GB |
+| **LFM2-8B-A1B-MoE** | [LiquidAI/LFM2-8B-A1B](https://huggingface.co/LiquidAI/LFM2-8B-A1B) | 8.0B | 1.1B | 32k | `Q4_K_M` | ~4.8 GB |
 
 ---
 

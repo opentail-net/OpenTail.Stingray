@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [llama](llama.md), [phi](phi.md), [gemma](gemma.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Hugging Face (Loubna Ben Allal et al.) |
@@ -39,7 +41,7 @@ SmolLM2 and SmolLM3 are purpose-built compact language models designed by Huggin
 | **SmolLM2-135M-Instruct** | [HuggingFaceTB/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF) | 135M | 8k | `Q4_K_M` / `Q8_0` | ~95 MB / ~145 MB |
 | **SmolLM2-360M-Instruct** | [HuggingFaceTB/SmolLM2-360M-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF) | 360M | 8k | `Q4_K_M` / `Q8_0` | ~230 MB / ~385 MB |
 | **SmolLM2-1.7B-Instruct** | [HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF) | 1.71B | 8k | `Q4_K_M` | ~1.05 GB |
-| **SmolLM3-Reasoning** | [HuggingFaceTB/SmolLM2-1.7B-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct) | 3.0B | 32k | `Q4_K_M` | ~1.95 GB |
+| **SmolLM3-Reasoning** | [HuggingFaceTB/SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B) | 3.0B | 32k | `Q4_K_M` | ~1.95 GB |
 
 ---
 

@@ -193,7 +193,9 @@ they mean the same thing. Model assets live in a per-user folder (`%LOCALAPPDATA
 per task (chat, images, speech, transcription, image generation, search). Each entry links straight
 to the file on Hugging Face and shows its size, licence and whether we have tested that exact file.
 **[docs/RUNNING.md](docs/RUNNING.md)** then says how to run each one well: the command, the RAM it
-really needs and its measured speed.
+really needs and its measured speed. For how a model family works inside Stingray (the GGUF
+architecture keys it uses, which classes run it, checkpoints and measured results), see the
+**[architecture cards](docs/models/README.md)**.
 
 ## What else it can do
 
@@ -247,7 +249,16 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 | **[docs/RUNNING.md](docs/RUNNING.md)** | Recommended execution commands, memory requirements, and measured speeds. |
 | **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)** | Plain-language tour of capabilities across LLM, vision, speech, and diffusion. |
 | **[docs/MODELS.md](docs/MODELS.md)** | Curated, tested starter models with download links, licenses, and file sizes. |
+| **[docs/models/](docs/models/README.md)** | Architecture cards: one page per model family with checkpoints, classes, memory and measured results. |
+| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Ways to help, by what you have, and what happens to your work. |
 | **[DEVELOPMENT.md](DEVELOPMENT.md)** | Contributor guide for solution layout, SIMD internals, and test harnesses. |
+
+## Get involved
+
+Stingray is MIT-licensed and there are several ways to help that need no C#: run a model and tell us
+what happened, measure on hardware we do not have (NVIDIA, a discrete GPU, ARM64), fix a number in the
+docs, or triage a GGUF we do not yet support. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the paths
+and **[docs/WANTED.md](docs/WANTED.md)** for what is open right now.
 
 ## Building from source
 

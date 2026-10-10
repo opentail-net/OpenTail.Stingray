@@ -6,7 +6,7 @@
 
 This document records the master optimization plan targeting C++ reference performance parity (`examples/stable-diffusion.cpp` / `sd-cli.exe`) across all active diffusion pipelines in `OpenTail.Stingray`.
 
-All target figures, measured baselines, and comparative ratios are sourced directly from [PerformanceLeague.md](file:///c:/Git-Public/OpenTail.Stingray/PerformanceLeague.md#L932-L1001).
+All target figures, measured baselines, and comparative ratios are sourced directly from [PerformanceLeague.md](../../PerformanceLeague.md#L932-L1001).
 
 ---
 
@@ -129,6 +129,6 @@ The following table synthesizes the empirical head-to-head benchmarks against `s
    Get-CimInstance Win32_OperatingSystem | Select-Object @{Name="FreeGB";Expression={[math]::round($_.FreePhysicalMemory/1MB,2)}}
    ```
    Ensure at least 30 GB free RAM before launching diffusion benchmarks.
-4. **Honest Reporting in [PerformanceLeague.md](file:///c:/Git-Public/OpenTail.Stingray/PerformanceLeague.md)**:
+4. **Honest Reporting in [PerformanceLeague.md](../../PerformanceLeague.md)**:
    - Record exact wall-clock times, C++ reference comparators, and exact ratios.
    - Maintain both End-to-End figures and granular stage breakdown rows on separate entries.

@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [Qwen3.5 / 3.6 / 3.8 hybrid card](qwen35.md), [Qwen-VL](qwen-vl.md), [Qwen Audio](qwen-audio.md), [Qwen Series (older overview)](qwen-series.md). Measured commands: [RUNNING.md](../RUNNING.md); verification: [STATUS.md](../STATUS.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Alibaba Cloud (Qwen Team) |
@@ -41,8 +43,18 @@ The Qwen series represents Alibaba's state-of-the-art open model lineage. In Ope
 | **Qwen2.5-1.5B-Instruct** | [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) | 1.54B | Dense | `Q4_K_M` | 986 MB | High-quality compact edge instruction |
 | **Qwen2.5-7B-Instruct** | [Qwen/Qwen2.5-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF) | 7.61B | Dense | `Q4_K_M` (2 shards) | 4.68 GB | Robust reasoning, coding, and tool calling |
 | **Qwen2.5-Coder-7B** | [Qwen/Qwen2.5-Coder-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF) | 7.61B | Dense | `Q4_K_M` | 4.68 GB | Premier open code-generation model |
-| **Qwen3-0.6B-Base** | [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) | 0.6B | Dense | `Q8_0` | ~1.2 GB | Lightweight reasoning model with thinking |
-| **Qwen3.8-27B** | [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) | 27B | Hybrid Gated DeltaNet | `UD-Q3_K_XL` | ~14.8 GB | Ultra-fast hybrid recurrent architecture |
+| **Qwen3-0.6B-Base** | [Qwen/Qwen3-0.6B-GGUF](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) | 0.6B | Dense | `Q8_0` | ~1.2 GB | Lightweight reasoning model with thinking |
+| **Qwen3.8-27B** | [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) | 27B | Hybrid Gated DeltaNet | `UD-Q3_K_XL` | ~14.8 GB | Hybrid recurrent reasoning model; see the [hybrid card](qwen35.md) |
+
+### Qwen3-Coder 30B-A3B
+
+Sparse MoE coding model (`qwen3moe`, 128 experts, ~3B active per token; top-k weights normalised). It runs on the dense forward-pass path, not the hybrid one.
+
+| Repository | File | Measured |
+|---|---|---|
+| [unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF](https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF) | `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf` | About 17.6 GB peak RAM; decode 8.1-15.4 tok/s over 108 tokens (2026-10-01, large spread across passes); load about 35 s |
+
+It is one of the two models verified on the Vulkan partial-offload MoE path (`-g N`, experts through a slot cache; logits within cosine 0.996-0.999 of CPU at 16 slots, 2026-10-03) and on CPU-prefill + KV handoff (2026-10-04). See [STATUS](../STATUS.md).
 
 ---
 

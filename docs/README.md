@@ -25,7 +25,8 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Run a new GGUF from Hugging Face | [reference/061-coverage-tooling.md](reference/061-coverage-tooling.md) (`pull`, `admit-arch`, `gen-vision-scaffold`) |
 | Compare Stingray with other engines | [reference/POSITIONING.md](reference/POSITIONING.md) |
 | See performance numbers | [../PerformanceLeague.md](../PerformanceLeague.md) (full, measured, hardware-specific) |
-| Contribute or build from source | [../DEVELOPMENT.md](../DEVELOPMENT.md), [../CLAUDE.md](../CLAUDE.md) |
+| Contribute, or see what is open | [../CONTRIBUTING.md](../CONTRIBUTING.md), [WANTED.md](WANTED.md) |
+| Build from source | [../DEVELOPMENT.md](../DEVELOPMENT.md), [../CLAUDE.md](../CLAUDE.md) |
 
 ## Understanding the design
 

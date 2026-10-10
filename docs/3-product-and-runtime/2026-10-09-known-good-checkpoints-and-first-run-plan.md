@@ -105,7 +105,7 @@ Order is by value per effort; each phase ships on its own and is useful alone.
 
 ## 7. Risks and open questions
 
-- **Where do favourites live?** Proposal: per-user config directory (`%APPDATA%\stingray`, `$XDG_CONFIG_HOME/stingray`), `STINGRAY_CONFIG` override. Needs the user's decision.
+- **Where do favourites live?** Proposal: per-user config directory (`%APPDATA%\stingray`, `$XDG_CONFIG_HOME/stingray`), `STINGRAY_CONFIG_DIR` override. Needs the user's decision.
 - **Keep "ask before downloading" the default for task commands?** Recommended yes. `--yes` already exists for scripts.
 - **First qualification scope.** CPU chat only is the honest start. Vulkan and tool-calling get their own columns when someone runs them, not before.
 - **Non-catalogue favourites and licences.** The Hub's licence field is a hint, not a guarantee; show it and require one explicit yes for anything not plainly permissive, as the catalogue does.

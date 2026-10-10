@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [qwen-audio](qwen-audio.md), [piper](piper.md), [kokoro](kokoro.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | OpenAI |

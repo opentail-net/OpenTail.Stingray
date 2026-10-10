@@ -1,0 +1,55 @@
+name: Model report
+description: Tell us what happened when you ran a model, working or not.
+title: "[model] "
+labels: ["model-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A plain report is enough. Failures are as useful as successes.
+        Please do not attach model weights; link the Hugging Face repo and name the file.
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: Hugging Face repo and exact file name (and quantization).
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Worked, matches the documented behaviour
+        - Worked, but speed or memory differs from the docs
+        - Loaded but the output is wrong or repetitive
+        - Refused to load
+        - Crashed
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What you saw
+      description: Output, error text, speed (tok/s), peak RAM. Paste what is relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: machine
+    attributes:
+      label: Machine
+      description: CPU, RAM, GPU and driver, OS. `stingray doctor -m <model.gguf>` prints most of this.
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Support bundle (optional)
+      description: "`stingray doctor --bundle support.zip` writes a redacted bundle. Look inside before attaching."

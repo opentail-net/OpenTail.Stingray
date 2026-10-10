@@ -13,7 +13,7 @@ Quality verification done at both the greedy-token level
 (§13) and now corpus-level perplexity (§14, prefill-routed tool built and run: gate on shows
 a −0.4% perplexity delta, noise-level) — still only one model/one corpus, so default-on is not
 yet decided. One earlier kernel-level attempt was made and
-reverted (see [Attempt 1](#attempt-1--failed-measured-reverted)); its cause was never fully
+reverted (see [Attempt 1](#3-attempt-1--failed-measured-reverted)); its cause was never fully
 identified despite direct profiling (§11), but is superseded — the `_4In` design that shipped
 is structurally different and unaffected by whatever attempt 1's issue was. Runtime-config
 tuning (§9) landed a real ~25-30% win with zero kernel risk, prior to the `_4In` work.

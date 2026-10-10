@@ -325,7 +325,7 @@ STATUS rows). Still open, with the original entry's number:
 - **#6 CPU greedy-decode non-determinism** (2 non-reproducing sightings under CPU contention).
 - **#7 HunyuanVideo numeric verification** (item 13 of [102-status-open-items-plan.md](102-status-open-items-plan.md)).
 - **#11 ACE-Step 1.5 Turbo.** The archived entry says "not started", which is stale:
-  [064-acestep-implementation-plan.md](../2-coverage/064-acestep-implementation-plan.md) records V1 working
+  [064-acestep-implementation-plan.md](064-acestep-implementation-plan.md) records V1 working
   end to end on 2026-09-03. ACE-Step has no STATUS row yet.
 - **#12 NaN in `ForwardPass`'s f16 qwen3 path** (last layer, one position; Q8_0 is fine). Not root-caused.
 - **#14 Newer LTX families** (LTX-2.3/2.5), a later campaign.
@@ -334,12 +334,12 @@ STATUS rows). Still open, with the original entry's number:
 
 1. [01 — GGUF model coverage](01-gguf-model-coverage-plan.md) — architectures, IQ quant formats,
    tokenizer pre-types, chat templates. **The goal, restated as work.**
-2. [02 — Qwen3.5 MoE / Gated DeltaNet](../2-coverage/02-qwen35moe-plan.md) — a large, popular GGUF family whose
+2. [02 — Qwen3.5 MoE / Gated DeltaNet](02-qwen35moe-plan.md) — a large, popular GGUF family whose
    hybrid path exists but is not fully evidenced.
-3. [03 — Gemma 4 E4B vision](../2-coverage/03-gemma4-e4b-vision-plan.md) — multimodal coverage; blocked on a
+3. [03 — Gemma 4 E4B vision](03-gemma4-e4b-vision-plan.md) — multimodal coverage; blocked on a
    usable reference implementation, see the doc.
 4. [04 — configuration and operator quality](../3-product-and-runtime/04-quality-of-life-improvements-plan.md).
-5. [05 — CPU architecture kernel coverage](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md) —
+5. [05 — CPU architecture kernel coverage](05-cpu-architecture-kernel-opportunities.md) —
    performance only, except its scalar-fallback-format item, which §2 of plan 01 supersedes.
 
 Work needing hardware this machine does not have is in
@@ -368,7 +368,7 @@ constrained-choice sampling, which the deletion re-check found was implemented *
 `InferenceSession` — ported into `ContinuousBatchingEngine`'s batched decode loop
 (`HotSessionChoiceConstraintTests.cs`) rather than silently lost.
 
-**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](done/051-hotsession-capability-wiring-plan.md)
+**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md)
 (now in `docs/done/`; the live `docs/051-hotsession-capability-wiring-plan.md` holds only the
 remaining TODOs — LoRA, real new engine work; `OnTokenGenerated`/`ToolCallParser`, deliberately not
 wired since the Server layer already does this independently; and `Fork()` skill/instruction
@@ -427,7 +427,7 @@ work. The three findings that justify its position at the top:
    preprocessing, ViT encoder forward pass, token-reduction pool, and projector are now all
    implemented (`Gemma4VVisionEncoder.cs`), architecture fully reverse-engineered against the real
    mmproj + local llama.cpp source (not guessed from tensor names — see
-   [03-gemma4-e4b-vision-plan.md](../2-coverage/03-gemma4-e4b-vision-plan.md)'s current implementation contract).
+   [03-gemma4-e4b-vision-plan.md](03-gemma4-e4b-vision-plan.md)'s current implementation contract).
    Passes a real-mmproj structural sanity test but is **not numerically parity-verified**: the
    local llama.cpp build still rejects the paired `gemma4` text GGUF, so no oracle exists yet for
    end-to-end comparison — that is a parity blocker, not an implementation blocker, and does not
@@ -445,7 +445,7 @@ work. The three findings that justify its position at the top:
    against the real `models/mmproj-gemma-3-4b-it-f16.gguf`; structural sanity test passes
    (1/1, 604.9s — attention parallelized across heads since it's ~21x gemma4v's compute at 4096
    patches). Two real, non-obvious findings from this checkpoint's export, documented in
-   [03-gemma4-e4b-vision-plan.md](../2-coverage/03-gemma4-e4b-vision-plan.md)'s addendum: a different metadata
+   [03-gemma4-e4b-vision-plan.md](03-gemma4-e4b-vision-plan.md)'s addendum: a different metadata
    key convention (`clip.projector_type`, not `clip.vision.projector_type`) and a NAME-vs-FUNCTION
    swap on the `ffn_up`/`ffn_down` tensors (proven via bias-length evidence, not a storage
    transpose). Same caveat as `gemma4v`: not numerically parity-verified, no oracle available.
@@ -503,7 +503,7 @@ ownership Phase 0 deliverable 1 (both inventories) is now **DONE, 2026-08-15**:
 
 ## Priority 4 — performance
 
-[05-cpu-architecture-kernel-opportunities.md](../4-performance/cpu/05-cpu-architecture-kernel-opportunities.md). All of
+[05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md). All of
 it is performance-only; none of it unlocks a model. Its item 3 (native IQ4_NL/MXFP4 kernels) is now
 downstream of plan 01 §2 — correctness first, kernels after.
 

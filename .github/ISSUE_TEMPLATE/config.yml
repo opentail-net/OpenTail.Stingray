@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Not sure where to start?
+    url: https://github.com/opentail-net/OpenTail.Stingray/blob/main/CONTRIBUTING.md
+    about: Ways to help, by what you have (a machine, a model, some time).
+  - name: Troubleshooting
+    url: https://github.com/opentail-net/OpenTail.Stingray/blob/main/docs/TROUBLESHOOTING.md
+    about: Common problems and the diagnostics to collect.

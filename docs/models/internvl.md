@@ -2,11 +2,13 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [llava](llava.md), [qwen-vl](qwen-vl.md), [pixtral](pixtral.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | OpenGVLab / Shanghai AI Laboratory |
 | **GGUF Projector Architecture** | `clip.projector_type = "internvl"` |
-| **Engine Implementations** | `UnifiedVisionPipeline`, `InternVlEmbedder` |
+| **Engine Implementations** | `UnifiedVisionPipeline`, `InternVlVisionEncoder` |
 | **Vision Backbone** | InternViT-300M / InternViT-6B |
 | **Spatial Downsampling** | PixelShuffle $2\times 2$ downsampling + MLP |
 | **Dynamic Tiling** | Native 448-pixel dynamic grid partitioning ($N \times 448\times 448$) |

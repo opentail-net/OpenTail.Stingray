@@ -125,5 +125,5 @@ Diffusion and video pipelines are compute-intensive. While pure CPU execution is
 |---|---|---|---|---|---|
 | **Z-Image-Turbo** | 512×512 | 4 | CPU (Ryzen 7 5700G) | ~28 seconds | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
 | **FLUX.1-schnell** | 512×512 | 4 | Vulkan GPU | ~4.2 seconds | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) |
-| **SD 1.5** | 512×512 | 20 | CPU (AVX2) | ~18 seconds | [runwayml/stable-diffusion-v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5) |
+| **SD 1.5** | 512×512 | 20 | CPU (AVX2) | ~18 seconds | [stable-diffusion-v1-5/stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) |
 | **Wan 2.1 (1.3B)** | 256×256 | 16 frames | CPU (AVX2) | ~6.1 minutes | [Wan-AI/Wan2.1-T2V-1.3B](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) |

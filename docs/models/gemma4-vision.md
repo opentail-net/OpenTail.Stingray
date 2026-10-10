@@ -2,11 +2,13 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [gemma](gemma.md), [qwen-vl](qwen-vl.md), [llava](llava.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Google DeepMind |
 | **GGUF Projector Architecture** | `gemma4uv`, `gemma4v`, `gemma3` |
-| **Engine Implementations** | `UnifiedVisionPipeline`, `Gemma4VisionEmbedder` |
+| **Engine Implementations** | `UnifiedVisionPipeline`, `Gemma4VVisionEncoder`, `GemmaUvVisionEmbedder` |
 | **Vision Backbone** | Google SigLIP SO400M / Gemma 4 Unified Vision (UV) |
 | **Projection Type** | Direct Concat + Linear Projection |
 | **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (`Gemma 4 E4B vision`, Level 2 Proven) |

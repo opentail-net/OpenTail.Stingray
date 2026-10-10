@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [lfm2](lfm2.md), [qwen35](qwen35.md), [rwkv](rwkv.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | IBM Research |
@@ -40,10 +42,13 @@ IBM's Granite series delivers enterprise-grade models with verified Apache-2.0 g
 
 | Model | Hugging Face Repository | Parameters | Architecture | Recommended Quantization | Size | Purpose |
 |---|---|---|---|---|---|---|
-| **Granite-3.1-2B-Instruct** | [ibm-granite/granite-3.1-2b-instruct-GGUF](https://huggingface.co/ibm-granite/granite-3.1-2b-instruct-GGUF) | 2.5B | Dense | `Q4_K_M` / `Q8_0` | ~1.6 GB / ~2.7 GB | Edge enterprise instruction |
-| **Granite-3.1-8B-Instruct** | [ibm-granite/granite-3.1-8b-instruct-GGUF](https://huggingface.co/ibm-granite/granite-3.1-8b-instruct-GGUF) | 8.2B | Dense | `Q4_K_M` | ~4.9 GB | General language & reasoning |
-| **Granite-3.0-1B-A400M** | [ibm-granite/granite-3.0-1b-a400m-instruct-GGUF](https://huggingface.co/ibm-granite/granite-3.0-1b-a400m-instruct-GGUF) | 1.4B | MoE | `Q4_K_M` | ~1.1 GB | Lightweight high-speed MoE |
-| **Granite-4.0-H-1B** | [ibm-granite/granite-3.1-2b-instruct-GGUF](https://huggingface.co/ibm-granite) | 1.5B | Hybrid Mamba-2 | `Q8_0` / `Q4_K_M` | ~1.6 GB / ~0.9 GB | Next-gen hybrid state space |
+| **Granite-3.1-2B-Instruct** | [lmstudio-community/granite-3.1-2b-instruct-GGUF](https://huggingface.co/lmstudio-community/granite-3.1-2b-instruct-GGUF) | 2.5B | Dense | `Q4_K_M` / `Q8_0` | ~1.6 GB / ~2.7 GB | Edge enterprise instruction |
+| **Granite-3.1-8B-Instruct** | [lmstudio-community/granite-3.1-8b-instruct-GGUF](https://huggingface.co/lmstudio-community/granite-3.1-8b-instruct-GGUF) | 8.2B | Dense | `Q4_K_M` | ~4.9 GB | General language & reasoning |
+| **Granite-3.0-1B-A400M** | [ibm-granite/granite-3.0-1b-a400m-instruct](https://huggingface.co/ibm-granite/granite-3.0-1b-a400m-instruct) | 1.4B | MoE | `Q4_K_M` | ~1.1 GB | Lightweight high-speed MoE |
+| **Granite-4.0-H-1B** | [ibm-granite/granite-4.0-h-1b](https://huggingface.co/ibm-granite/granite-4.0-h-1b) | 1.5B | Hybrid Mamba-2 | `Q8_0` / `Q4_K_M` | ~1.6 GB / ~0.9 GB | Next-gen hybrid state space |
+
+> **Also measured, not listed above:** Granite 4.0-H 350M (`granite-4.0-h-350m-Q8_0.gguf`) and Granite 4.0-H Small MoE (`granite-4.0-h-small-Q2_K.gguf`). See [RUNNING.md](../RUNNING.md) for commands and speeds.
+
 
 ---
 

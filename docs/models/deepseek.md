@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [deepseek-ocr](deepseek-ocr.md), [qwen](qwen.md), [gpt-oss](gpt-oss.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | DeepSeek AI |

@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [piper](piper.md), [xtts2](xtts2.md), [qwen-audio](qwen-audio.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Hexgrad / StyleTTS 2 Community |

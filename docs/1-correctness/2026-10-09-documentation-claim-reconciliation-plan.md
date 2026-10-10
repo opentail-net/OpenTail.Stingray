@@ -7,7 +7,7 @@
 
 ## 1. Purpose and boundary
 
-The [Documentation Architecture Plan](2026-10-09-documentation-architecture-plan.md) should not be expanded into a general model-documentation project to settle these questions. This is a separate, bounded evidence pass whose output is a short reconciliation report and, only after conclusions are supported, a list of targeted documentation corrections or follow-up engineering tasks.
+The [Documentation Architecture Plan](../3-product-and-runtime/2026-10-09-documentation-architecture-plan.md) should not be expanded into a general model-documentation project to settle these questions. This is a separate, bounded evidence pass whose output is a short reconciliation report and, only after conclusions are supported, a list of targeted documentation corrections or follow-up engineering tasks.
 
 Some earlier evidence may be stale. A historical failure may have been fixed since its entry was written; a newer success may cover only one component or a weaker test than the public claim; and a source file or test name may have changed. The audit must establish which is true for each item.
 

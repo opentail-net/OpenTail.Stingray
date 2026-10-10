@@ -2,6 +2,8 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [deepseek](deepseek.md), [pixtral](pixtral.md), [qwen-vl](qwen-vl.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | DeepSeek AI |
@@ -34,8 +36,8 @@ DeepSeek-OCR and DeepSeek-OCR2 are specialized vision-language architectures opt
 
 | Model | Projector GGUF | Size | Primary Function | Hugging Face Repository |
 |---|---|---|---|---|
-| **DeepSeek-OCR-2-Q8** | `mmproj-deepseek-ocr-2-q8_0.gguf` | ~850 MB | Document & invoice parsing | [deepseek-ai/deepseek-vl2](https://huggingface.co/deepseek-ai/deepseek-vl2) |
-| **DeepSeek-OCR-2-F16** | `mmproj-deepseek-ocr-2-f16.gguf` | ~1.6 GB | Full precision dense text OCR | [deepseek-ai/deepseek-vl2](https://huggingface.co/deepseek-ai/deepseek-vl2) |
+| **DeepSeek-OCR-2-Q8** | `mmproj-deepseek-ocr-2-q8_0.gguf` | ~850 MB | Document & invoice parsing | [deepseek-ai/DeepSeek-OCR-2](https://huggingface.co/deepseek-ai/DeepSeek-OCR-2) |
+| **DeepSeek-OCR-2-F16** | `mmproj-deepseek-ocr-2-f16.gguf` | ~1.6 GB | Full precision dense text OCR | [deepseek-ai/DeepSeek-OCR-2](https://huggingface.co/deepseek-ai/DeepSeek-OCR-2) |
 
 ---
 

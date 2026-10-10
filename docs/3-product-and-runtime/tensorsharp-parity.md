@@ -1,6 +1,6 @@
 # TensorSharp parity matrix (Phase 0 of the selective-port plan)
 
-Written 2026-10-03 for [examples/tensorsharp-parity-selective-port-plan.md](../../examples/tensorsharp-parity-selective-port-plan.md).
+Written 2026-10-03 for `examples/tensorsharp-parity-selective-port-plan.md` (local-only, not tracked).
 This is the anti-scope-creep fence: every TensorSharp capability gets one row, a Stingray status, and a
 decision. It is internal; do not describe Stingray externally as "TensorSharp parity".
 

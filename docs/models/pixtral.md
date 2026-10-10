@@ -2,11 +2,13 @@
 
 [← Back to Architecture Cards](README.md)
 
+Related: [mistral](mistral.md), [llava](llava.md), [internvl](internvl.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).
+
 | Property | Value |
 |---|---|
 | **Provider** | Mistral AI |
 | **GGUF Projector Architecture** | `clip.projector_type = "pixtral"` |
-| **Engine Implementations** | `UnifiedVisionPipeline`, `Mistral3VisionEncoder` |
+| **Engine Implementations** | `UnifiedVisionPipeline`, `PixtralVisionEncoder` |
 | **Vision Backbone** | Vision Transformer with 2D Continuous RoPE |
 | **Patch Resolution** | Dynamic arbitrary resolution with SwiGLU projection |
 | **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (Encoder verified against Hugging Face Pixtral reference) |
