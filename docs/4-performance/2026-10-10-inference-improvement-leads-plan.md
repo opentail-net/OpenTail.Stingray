@@ -122,3 +122,8 @@ word loads, all block scales decoded with a few packed bit operations, the scale
 then one multiply per sub-block) instead of dequantizing each weight, and several rows per workgroup so activation loads are
 shared. The experiment of decoding 16 weights per lane in our diffusion-side mat-vec was slower (13.8-25 GB/s vs 15.8-26),
 so decode amortisation alone does not help; access pattern and ALU per weight are what to change.
+
+### Scope note, 2026-10-10: diffusion-side mat-vec kernels are parked
+The `MatVecDq*` family (diffusion M=1 projections) also trails ggml (Q3_K 15.8 vs 29 GB/s, Q4_K 23.6 vs 42.6) and could use the same
+ggml-style rewrite, but it is a separate body of work that would double the effort and matters little for diffusion speed today
+(Qwen's M=1 products are about 1% of a forward). Deferred; revisit after the LLM-decode kernels below.
