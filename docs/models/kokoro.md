@@ -33,10 +33,10 @@ Kokoro-82M is an open-weights, ultra-compact text-to-speech model derived from t
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Format | Recommended File | Typical Size |
-|---|---|---|---|
-| **Kokoro-82M v0.19** | GGUF | `kokoro-v0_19-Q8_0.gguf` | ~85 MB |
-| **Kokoro-82M Voices** | Tensor pack | `voices.bin` / `voices.json` | ~5 MB |
+| Model | Format | Recommended File | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|
+| **Kokoro-82M v0.19** | GGUF | `kokoro-v0_19-Q8_0.gguf` | ~85 MB | [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) |
+| **Kokoro-82M Voices** | Tensor pack | `voices.bin` / `voices.json` | ~5 MB | [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) |
 
 ---
 

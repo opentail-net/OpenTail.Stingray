@@ -39,9 +39,21 @@ The Qwen model family uses a decoder-only Transformer with several key character
   ```
 - Stingray includes a built-in Jinja chat template engine that parses the embedded GGUF template metadata `tokenizer.chat_template`, automatically formatting multi-turn messages, system prompts, and structured tool calls into the model's native format.
 
+## 3. Checkpoints & Recommended GGUFs
+
+| Model | Parameters | Context | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **Qwen2.5-0.5B-Instruct** | 0.5B | 32,768 | `Q4_K_M` / `Q8_0` | ~398 MB / ~530 MB | [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) |
+| **Qwen2.5-1.5B-Instruct** | 1.5B | 32,768 | `Q4_K_M` / `Q8_0` | ~986 MB / ~1.6 GB | [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) |
+| **Qwen2.5-7B-Instruct** | 7.6B | 32,768 | `Q4_K_M` / `Q8_0` | ~4.7 GB / ~8.1 GB | [Qwen/Qwen2.5-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF) |
+| **Qwen2.5-Coder-7B-Instruct** | 7.6B | 32,768 | `Q4_K_M` | ~4.7 GB | [Qwen/Qwen2.5-Coder-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF) |
+| **Qwen2.5-14B-Instruct** | 14.7B | 32,768 | `Q4_K_M` | ~9.0 GB | [Qwen/Qwen2.5-14B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF) |
+| **Qwen2.5-32B-Instruct** | 32.5B | 32,768 | `Q4_K_M` | ~19.8 GB | [Qwen/Qwen2.5-32B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GGUF) |
+| **Qwen2.5-72B-Instruct** | 72.7B | 32,768 | `Q4_K_M` | ~43.5 GB | [Qwen/Qwen2.5-72B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-GGUF) |
+
 ---
 
-## 3. Practical Usage & Commands
+## 4. Practical Usage & Commands
 
 ### CLI Quick Start
 ```bash
@@ -74,7 +86,7 @@ await foreach (var token in session.ChatAsync("What is SwiGLU?"))
 
 ---
 
-## 4. Verification Evidence
+## 5. Verification Evidence
 
 - **Golden Parity:** Verified token-by-token against `llama-cli` on `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` and `Qwen2.5-7B-Instruct-Q4_K_M.gguf`.
 - **Fast Forward Pass Tests:** `QwenForwardPassTests` in `tests/OpenTail.Stingray.Tests.ForwardPass.Fast`.

@@ -34,12 +34,12 @@ The Llama architecture family is the foundation of modern open-weights generativ
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Context Window | Recommended Quantization | Typical Size |
-|---|---|---|---|---|
-| **Llama-3.2-1B-Instruct** | 1.23B | 128k tokens | `Q4_K_M` / `Q8_0` | ~0.8 GB / ~1.3 GB |
-| **Llama-3.2-3B-Instruct** | 3.21B | 128k tokens | `Q4_K_M` | ~2.0 GB |
-| **Llama-3.1-8B-Instruct** | 8.03B | 128k tokens | `Q4_K_M` / `Q5_K_M` | ~4.9 GB / ~5.7 GB |
-| **Llama-3.3-70B-Instruct** | 70.6B | 128k tokens | `Q4_K_M` (Multi-shard) | ~42.5 GB |
+| Model | Hugging Face Repository | Parameters | Context Window | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|
+| **Llama-3.2-1B-Instruct** | [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) *(GGUF: [bartowski/Llama-3.2-1B-Instruct-GGUF](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF))* | 1.23B | 128k tokens | `Q4_K_M` / `Q8_0` | ~0.8 GB / ~1.3 GB |
+| **Llama-3.2-3B-Instruct** | [meta-llama/Llama-3.2-3B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) *(GGUF: [bartowski/Llama-3.2-3B-Instruct-GGUF](https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF))* | 3.21B | 128k tokens | `Q4_K_M` | ~2.0 GB |
+| **Llama-3.1-8B-Instruct** | [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) *(GGUF: [bartowski/Meta-Llama-3.1-8B-Instruct-GGUF](https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF))* | 8.03B | 128k tokens | `Q4_K_M` / `Q5_K_M` | ~4.9 GB / ~5.7 GB |
+| **Llama-3.3-70B-Instruct** | [meta-llama/Llama-3.3-70B-Instruct](https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct) *(GGUF: [bartowski/Llama-3.3-70B-Instruct-GGUF](https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF))* | 70.6B | 128k tokens | `Q4_K_M` (Multi-shard) | ~42.5 GB |
 
 *Multi-shard files (e.g. `Llama-3.3-70B-Instruct-Q4_K_M-00001-of-00009.gguf`) are automatically discovered and assembled into a unified tensor map by `GgufModel.Open`.*
 

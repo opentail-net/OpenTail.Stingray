@@ -32,12 +32,12 @@ The Qwen Audio family delivers studio-quality speech generation, neural voice cl
 
 ## 2. Checkpoints & Recommended Models
 
-| Model | Task | Parameters | Typical Size |
-|---|---|---|---|
-| **Qwen3-TTS-12Hz** | Voice Synthesis & Cloning | ~800M | ~1.6 GB |
-| **Qwen3-ASR-0.6B** | Speech Recognition | 0.6B | ~1.2 GB |
-| **Qwen3-ASR-1.7B** | Speech Recognition | 1.7B | ~3.4 GB |
-| **Qwen3-ForcedAligner** | Word-Level Timestamps | 0.6B | ~1.2 GB |
+| Model | Task | Parameters | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|
+| **Qwen3-TTS-12Hz** | Voice Synthesis & Cloning | ~800M | ~1.6 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
+| **Qwen3-ASR-0.6B** | Speech Recognition | 0.6B | ~1.2 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
+| **Qwen3-ASR-1.7B** | Speech Recognition | 1.7B | ~3.4 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
+| **Qwen3-ForcedAligner** | Word-Level Timestamps | 0.6B | ~1.2 GB | [Qwen/Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) |
 
 ---
 

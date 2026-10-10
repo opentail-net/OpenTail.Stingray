@@ -35,14 +35,14 @@ The Qwen series represents Alibaba's state-of-the-art open model lineage. In Ope
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Architecture | Recommended Quant | Size | Purpose |
-|---|---|---|---|---|---|
-| **Qwen2.5-0.5B-Instruct** | 0.49B | Dense | `Q4_K_M` | 469 MB | **Stingray Default Chat** (`stingray setup chat`) |
-| **Qwen2.5-1.5B-Instruct** | 1.54B | Dense | `Q4_K_M` | 986 MB | High-quality compact edge instruction |
-| **Qwen2.5-7B-Instruct** | 7.61B | Dense | `Q4_K_M` (2 shards) | 4.68 GB | Robust reasoning, coding, and tool calling |
-| **Qwen2.5-Coder-7B** | 7.61B | Dense | `Q4_K_M` | 4.68 GB | Premier open code-generation model |
-| **Qwen3-0.6B-Base** | 0.6B | Dense | `Q8_0` | ~1.2 GB | Lightweight reasoning model with thinking |
-| **Qwen3.8-27B** | 27B | Hybrid Gated DeltaNet | `UD-Q3_K_XL` | ~14.8 GB | Ultra-fast hybrid recurrent architecture |
+| Model | Hugging Face Repository | Parameters | Architecture | Recommended Quant | Size | Purpose |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-0.5B-Instruct** | [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) | 0.49B | Dense | `Q4_K_M` | 469 MB | **Stingray Default Chat** (`stingray setup chat`) |
+| **Qwen2.5-1.5B-Instruct** | [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) | 1.54B | Dense | `Q4_K_M` | 986 MB | High-quality compact edge instruction |
+| **Qwen2.5-7B-Instruct** | [Qwen/Qwen2.5-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF) | 7.61B | Dense | `Q4_K_M` (2 shards) | 4.68 GB | Robust reasoning, coding, and tool calling |
+| **Qwen2.5-Coder-7B** | [Qwen/Qwen2.5-Coder-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF) | 7.61B | Dense | `Q4_K_M` | 4.68 GB | Premier open code-generation model |
+| **Qwen3-0.6B-Base** | [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) | 0.6B | Dense | `Q8_0` | ~1.2 GB | Lightweight reasoning model with thinking |
+| **Qwen3.8-27B** | [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) | 27B | Hybrid Gated DeltaNet | `UD-Q3_K_XL` | ~14.8 GB | Ultra-fast hybrid recurrent architecture |
 
 ---
 

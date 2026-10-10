@@ -30,10 +30,10 @@ Google's Gemma 4 and Gemma 3 multimodal vision architectures natively embed visu
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Modality | Projector GGUF | Language Model GGUF |
-|---|---|---|---|
-| **Gemma 4 E4B-IT** | Vision + Text | `mmproj-gemma-4-E4B-it-f16.gguf` | `gemma-4-E4B-it-Q4_K_M.gguf` (~2.9 GB) |
-| **Gemma 3 4B-IT** | Vision + Text | `mmproj-gemma-3-4b-it-f16.gguf` | `gemma-3-4b-it-Q4_K_M.gguf` (~2.7 GB) |
+| Model | Modality | Projector GGUF | Language Model GGUF | Hugging Face Repository |
+|---|---|---|---|---|
+| **Gemma 4 E4B-IT** | Vision + Text | `mmproj-gemma-4-E4B-it-f16.gguf` | `gemma-4-E4B-it-Q4_K_M.gguf` (~2.9 GB) | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) |
+| **Gemma 3 4B-IT** | Vision + Text | `mmproj-gemma-3-4b-it-f16.gguf` | `gemma-3-4b-it-Q4_K_M.gguf` (~2.7 GB) | [google/gemma-3-4b-it](https://huggingface.co/google/gemma-3-4b-it) *(GGUF: [bartowski/gemma-3-4b-it-GGUF](https://huggingface.co/bartowski/gemma-3-4b-it-GGUF))* |
 
 ---
 

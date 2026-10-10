@@ -30,10 +30,10 @@ Wan 2.1 and 2.2 are cutting-edge open video generation models based on a 3D Spat
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Resolution | Frames | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **Wan2.1-T2V-1.3B** | 1.3B | 480p / 720p | 16–81 frames | `Q4_K_M` | ~1.1 GB |
-| **Wan2.1-T2V-14B** | 14.2B | 720p | 16–81 frames | `Q4_K_M` | ~9.2 GB |
+| Model | Parameters | Resolution | Frames | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|---|
+| **Wan2.1-T2V-1.3B** | 1.3B | 480p / 720p | 16–81 frames | `Q4_K_M` | ~1.1 GB | [Wan-AI/Wan2.1-T2V-1.3B](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) *(GGUF: [city96/Wan2.1-T2V-1.3B-gguf](https://huggingface.co/city96/Wan2.1-T2V-1.3B-gguf))* |
+| **Wan2.1-T2V-14B** | 14.2B | 720p | 16–81 frames | `Q4_K_M` | ~9.2 GB | [Wan-AI/Wan2.1-T2V-14B](https://huggingface.co/Wan-AI/Wan2.1-T2V-14B) *(GGUF: [city96/Wan2.1-T2V-14B-gguf](https://huggingface.co/city96/Wan2.1-T2V-14B-gguf))* |
 
 ---
 

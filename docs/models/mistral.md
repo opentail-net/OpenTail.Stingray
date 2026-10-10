@@ -33,12 +33,12 @@ Mistral AI revolutionized open LLMs by combining high-efficiency Sliding-Window 
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **Mistral-7B-Instruct-v0.3** | 7.2B | 7.2B | 32k | `Q4_K_M` | ~4.4 GB |
-| **Ministral-8B-Instruct-2410** | 8.0B | 8.0B | 32k | `Q4_K_M` | ~5.0 GB |
-| **Mixtral-8x7B-Instruct-v0.1** | 46.7B | 12.9B | 32k | `Q4_K_M` | ~26.4 GB |
-| **Mistral-Small-3.1-24B-Instruct** | 24.0B | 24.0B | 128k | `Q4_K_M` | ~14.3 GB |
+| Model | Hugging Face Repository | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|---|
+| **Mistral-7B-Instruct-v0.3** | [mistralai/Mistral-7B-Instruct-v0.3](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3) *(GGUF: [bartowski/Mistral-7B-Instruct-v0.3-GGUF](https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF))* | 7.2B | 7.2B | 32k | `Q4_K_M` | ~4.4 GB |
+| **Ministral-8B-Instruct-2410** | [mistralai/Ministral-8B-Instruct-2410](https://huggingface.co/mistralai/Ministral-8B-Instruct-2410) *(GGUF: [bartowski/Ministral-8B-Instruct-2410-GGUF](https://huggingface.co/bartowski/Ministral-8B-Instruct-2410-GGUF))* | 8.0B | 8.0B | 32k | `Q4_K_M` | ~5.0 GB |
+| **Mixtral-8x7B-Instruct-v0.1** | [mistralai/Mixtral-8x7B-Instruct-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1) *(GGUF: [TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF](https://huggingface.co/TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF))* | 46.7B | 12.9B | 32k | `Q4_K_M` | ~26.4 GB |
+| **Mistral-Small-3.1-24B-Instruct** | [mistralai/Mistral-Small-24B-Instruct-2501](https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501) *(GGUF: [bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF](https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF))* | 24.0B | 24.0B | 128k | `Q4_K_M` | ~14.3 GB |
 
 ---
 

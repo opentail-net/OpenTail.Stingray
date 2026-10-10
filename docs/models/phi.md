@@ -36,12 +36,12 @@ Microsoft's Phi series prioritizes "textbook quality" synthetic and curated pre-
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **Phi-2** | 2.7B | 2.7B | 2k | `Q4_K_M` | ~1.7 GB |
-| **Phi-3-mini-4k-instruct** | 3.8B | 3.8B | 4k | `Q4_K_M` | ~2.3 GB |
-| **Phi-3.5-mini-instruct** | 3.8B | 3.8B | 128k | `Q4_K_M` | ~2.3 GB |
-| **Phi-3.5-MoE-instruct** | 41.9B | 6.6B | 128k | `Q3_K_M` / `Q4_K_M` | ~18.5 GB / ~24.0 GB |
+| Model | Hugging Face Repository | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|---|
+| **Phi-2** | [microsoft/phi-2](https://huggingface.co/microsoft/phi-2) *(GGUF: [TheBloke/phi-2-GGUF](https://huggingface.co/TheBloke/phi-2-GGUF))* | 2.7B | 2.7B | 2k | `Q4_K_M` | ~1.7 GB |
+| **Phi-3-mini-4k-instruct** | [microsoft/Phi-3-mini-4k-instruct-gguf](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf) | 3.8B | 3.8B | 4k | `Q4_K_M` | ~2.3 GB |
+| **Phi-3.5-mini-instruct** | [microsoft/Phi-3.5-mini-instruct](https://huggingface.co/microsoft/Phi-3.5-mini-instruct) *(GGUF: [bartowski/Phi-3.5-mini-instruct-GGUF](https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF))* | 3.8B | 3.8B | 128k | `Q4_K_M` | ~2.3 GB |
+| **Phi-3.5-MoE-instruct** | [microsoft/Phi-3.5-MoE-instruct](https://huggingface.co/microsoft/Phi-3.5-MoE-instruct) *(GGUF: [bartowski/Phi-3.5-MoE-instruct-GGUF](https://huggingface.co/bartowski/Phi-3.5-MoE-instruct-GGUF))* | 41.9B | 6.6B | 128k | `Q3_K_M` / `Q4_K_M` | ~18.5 GB / ~24.0 GB |
 
 ---
 

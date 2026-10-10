@@ -29,12 +29,12 @@ Z-Image-Turbo is an ultra-fast, adversarial/distilled diffusion transformer desi
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Component | Recommended File | Quantization | Size |
-|---|---|---|---|
-| **DiT Model** | `z_image_turbo-Q5_K_M.gguf` | `Q5_K_M` | ~1.4 GB |
-| **Qwen Encoder** | `Z-Image-AbliteratedV1.Q5_K_M.gguf` | `Q5_K_M` | ~1.2 GB |
-| **Tokenizer** | `tokenizer.json` | — | ~2 MB |
-| **VAE** | `vae/` | FP16 | ~335 MB |
+| Component | Recommended File | Quantization | Size | Hugging Face Repository |
+|---|---|---|---|---|
+| **DiT Model** | `z_image_turbo-Q5_K_M.gguf` | `Q5_K_M` | ~1.4 GB | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
+| **Qwen Encoder** | `Z-Image-AbliteratedV1.Q5_K_M.gguf` | `Q5_K_M` | ~1.2 GB | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
+| **Tokenizer** | `tokenizer.json` | — | ~2 MB | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
+| **VAE** | `vae/` | FP16 | ~335 MB | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
 
 ---
 

@@ -39,14 +39,14 @@ Standard Multi-Head Attention (MHA) and Grouped Query Attention (GQA) store full
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **DeepSeek-V2-Lite-Chat** | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
-| **DeepSeek-Coder-V2-Lite** | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
-| **DeepSeek-R1-Distill-Qwen-1.5B** | 1.78B | 1.78B | 128k | `Q4_K_M` | ~1.1 GB |
-| **DeepSeek-R1-Distill-Qwen-7B** | 7.61B | 7.61B | 128k | `Q4_K_M` | ~4.7 GB |
-| **DeepSeek-R1-Distill-Llama-8B** | 8.03B | 8.03B | 128k | `Q4_K_M` | ~4.9 GB |
-| **DeepSeek-V3 / R1 (Full)** | 671B | 37B | 128k | Multi-shard Q4/Q8 | ~404 GB |
+| Model | Hugging Face Repository | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|---|
+| **DeepSeek-V2-Lite-Chat** | [deepseek-ai/DeepSeek-V2-Lite-Chat](https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite-Chat) *(GGUF: [bartowski/DeepSeek-V2-Lite-Chat-GGUF](https://huggingface.co/bartowski/DeepSeek-V2-Lite-Chat-GGUF))* | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
+| **DeepSeek-Coder-V2-Lite** | [deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct](https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct) *(GGUF: [bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF](https://huggingface.co/bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF))* | 15.7B | 2.4B | 32k | `Q4_K_M` | ~8.9 GB |
+| **DeepSeek-R1-Distill-Qwen-1.5B** | [deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B) *(GGUF: [bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF))* | 1.78B | 1.78B | 128k | `Q4_K_M` | ~1.1 GB |
+| **DeepSeek-R1-Distill-Qwen-7B** | [deepseek-ai/DeepSeek-R1-Distill-Qwen-7B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B) *(GGUF: [bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF))* | 7.61B | 7.61B | 128k | `Q4_K_M` | ~4.7 GB |
+| **DeepSeek-R1-Distill-Llama-8B** | [deepseek-ai/DeepSeek-R1-Distill-Llama-8B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B) *(GGUF: [bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF))* | 8.03B | 8.03B | 128k | `Q4_K_M` | ~4.9 GB |
+| **DeepSeek-V3 / R1 (Full)** | [deepseek-ai/DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) · [R1](https://huggingface.co/deepseek-ai/DeepSeek-R1) *(GGUF: [unsloth/DeepSeek-V3-GGUF](https://huggingface.co/unsloth/DeepSeek-V3-GGUF))* | 671B | 37B | 128k | Multi-shard Q4/Q8 | ~404 GB |
 
 ---
 

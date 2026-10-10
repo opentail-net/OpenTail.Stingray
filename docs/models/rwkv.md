@@ -35,12 +35,12 @@ RWKV (Receptance Weighted Key Value) combines the parallelizable training advant
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Version | Recommended Quantization | Typical Size |
-|---|---|---|---|---|
-| **RWKV-6-World-1.6B** | 1.6B | Finch v6 | `Q8_0` / `Q4_K_M` | ~1.7 GB / ~1.0 GB |
-| **RWKV-7-Goose-World3-1.5B** | 1.5B | Goose v7 | `Q8_0` / `Q4_K_M` | ~1.6 GB / ~0.95 GB |
-| **RWKV-6-World-3B** | 3.0B | Finch v6 | `Q4_K_M` | ~1.9 GB |
-| **RWKV-6-World-7B** | 7.0B | Finch v6 | `Q4_K_M` | ~4.3 GB |
+| Model | Hugging Face Repository | Parameters | Version | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|
+| **RWKV-6-World-1.6B** | [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world) | 1.6B | Finch v6 | `Q8_0` / `Q4_K_M` | ~1.7 GB / ~1.0 GB |
+| **RWKV-7-Goose-World3-1.5B** | [BlinkDL/rwkv-7-world](https://huggingface.co/BlinkDL/rwkv-7-world) | 1.5B | Goose v7 | `Q8_0` / `Q4_K_M` | ~1.6 GB / ~0.95 GB |
+| **RWKV-6-World-3B** | [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world) | 3.0B | Finch v6 | `Q4_K_M` | ~1.9 GB |
+| **RWKV-6-World-7B** | [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world) | 7.0B | Finch v6 | `Q4_K_M` | ~4.3 GB |
 
 ---
 

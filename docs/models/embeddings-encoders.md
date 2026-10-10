@@ -36,14 +36,14 @@ In addition to generative autoregressive LLMs, OpenTail.Stingray provides native
 
 ## 2. Checkpoints & Recommended Models
 
-| Model | Task | Parameters | Typical Size |
-|---|---|---|---|
-| **all-MiniLM-L6-v2** | General Text Embedding | 22M | ~80 MB |
-| **bge-small-en-v1.5** | High-Accuracy Retrieval | 33M | ~130 MB |
-| **bge-reranker-v2-m3** | Cross-Encoder Reranking | 560M | ~2.1 GB |
-| **BGE-M3** | Dense + Sparse + ColBERT | 560M | ~2.2 GB |
-| **nomic-embed-text-v1.5** | Long-Context Embedding (8k) | 137M | ~540 MB |
-| **flan-t5-small** | Seq2Seq Translation / Reasoning | 77M | ~300 MB |
+| Model | Task | Parameters | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|
+| **all-MiniLM-L6-v2** | General Text Embedding | 22M | ~80 MB | [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) |
+| **bge-small-en-v1.5** | High-Accuracy Retrieval | 33M | ~130 MB | [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) |
+| **bge-reranker-v2-m3** | Cross-Encoder Reranking | 560M | ~2.1 GB | [BAAI/bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) |
+| **BGE-M3** | Dense + Sparse + ColBERT | 560M | ~2.2 GB | [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) |
+| **nomic-embed-text-v1.5** | Long-Context Embedding (8k) | 137M | ~540 MB | [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) |
+| **flan-t5-small** | Seq2Seq Translation / Reasoning | 77M | ~300 MB | [google/flan-t5-small](https://huggingface.co/google/flan-t5-small) |
 
 ---
 

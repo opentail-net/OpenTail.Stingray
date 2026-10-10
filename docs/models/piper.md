@@ -33,12 +33,12 @@ Piper is an ultra-fast, local neural text-to-speech engine based on the VITS (Va
 
 ## 2. Checkpoints & Recommended Voices
 
-| Voice | Language | Quality | ONNX Model File | Config File | Size |
-|---|---|---|---|---|---|
-| **en_US-lessac-medium** | English (US) | Medium (22 kHz) | `en_US-lessac-medium.onnx` | `en_US-lessac-medium.onnx.json` | ~60 MB (**Default Catalogue**) |
-| **en_US-libritts-high** | English (US) | High (22 kHz) | `en_US-libritts-high.onnx` | `en_US-libritts-high.onnx.json` | ~110 MB |
-| **en_GB-alba-medium** | English (UK) | Medium (22 kHz) | `en_GB-alba-medium.onnx` | `en_GB-alba-medium.onnx.json` | ~60 MB |
-| **de_DE-eva_k-x_low** | German | Low (16 kHz) | `de_DE-eva_k-x_low.onnx` | `de_DE-eva_k-x_low.onnx.json` | ~25 MB |
+| Voice | Language | Quality | ONNX Model File | Config File | Size | Hugging Face Repository |
+|---|---|---|---|---|---|---|
+| **en_US-lessac-medium** | English (US) | Medium (22 kHz) | `en_US-lessac-medium.onnx` | `en_US-lessac-medium.onnx.json` | ~60 MB (**Default Catalogue**) | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) |
+| **en_US-libritts-high** | English (US) | High (22 kHz) | `en_US-libritts-high.onnx` | `en_US-libritts-high.onnx.json` | ~110 MB | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) |
+| **en_GB-alba-medium** | English (UK) | Medium (22 kHz) | `en_GB-alba-medium.onnx` | `en_GB-alba-medium.onnx.json` | ~60 MB | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) |
+| **de_DE-eva_k-x_low** | German | Low (16 kHz) | `de_DE-eva_k-x_low.onnx` | `de_DE-eva_k-x_low.onnx.json` | ~25 MB | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) |
 
 ---
 

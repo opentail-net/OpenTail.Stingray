@@ -33,12 +33,12 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Quantization | Size | Purpose |
-|---|---|---|---|---|
-| **Gemma-2-2B-IT** | 2.6B | `Q4_K_M` | ~1.7 GB | Fast on-device chat and CPU edge inference |
-| **Gemma-2-9B-IT** | 9.2B | `Q4_K_M` | ~5.8 GB | Strong general-purpose instruction following |
-| **Gemma-3-1B-IT** | 1.1B | `Q4_K_M` | ~0.8 GB | Ultra-compact edge model |
-| **Gemma-4-E4B-IT** | 4.4B | `Q8_0` / `Q4_K_M` | ~7.5 GB / ~2.9 GB | Google's multimodal reasoning checkpoint |
+| Model | Hugging Face Repository | Parameters | Quantization | Size | Purpose |
+|---|---|---|---|---|---|
+| **Gemma-2-2B-IT** | [google/gemma-2-2b-it](https://huggingface.co/google/gemma-2-2b-it) *(GGUF: [bartowski/gemma-2-2b-it-GGUF](https://huggingface.co/bartowski/gemma-2-2b-it-GGUF))* | 2.6B | `Q4_K_M` | ~1.7 GB | Fast on-device chat and CPU edge inference |
+| **Gemma-2-9B-IT** | [google/gemma-2-9b-it](https://huggingface.co/google/gemma-2-9b-it) *(GGUF: [bartowski/gemma-2-9b-it-GGUF](https://huggingface.co/bartowski/gemma-2-9b-it-GGUF))* | 9.2B | `Q4_K_M` | ~5.8 GB | Strong general-purpose instruction following |
+| **Gemma-3-1B-IT** | [google/gemma-3-1b-it](https://huggingface.co/google/gemma-3-1b-it) | 1.1B | `Q4_K_M` | ~0.8 GB | Ultra-compact edge model |
+| **Gemma-4-E4B-IT** | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) | 4.4B | `Q8_0` / `Q4_K_M` | ~7.5 GB / ~2.9 GB | Google's multimodal reasoning checkpoint |
 
 ---
 

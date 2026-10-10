@@ -32,14 +32,14 @@ OpenAI's Whisper is the industry standard for robust multi-lingual speech-to-tex
 
 ## 2. Checkpoints & Recommended Models
 
-| Model | Parameters | Mel Channels | Recommended File | Typical Size | Relative Speed (RTF) |
-|---|---|---|---|---|---|
-| **Whisper-Tiny** | 39M | 80 | `ggml-tiny.bin` | ~75 MB | **~0.15×** (Ultra-fast) |
-| **Whisper-Base** | 74M | 80 | `ggml-base.bin` | ~141 MB | **~0.48×** (**Default Catalogue**) |
-| **Whisper-Small** | 244M | 80 | `ggml-small.bin` | ~465 MB | **~0.95×** |
-| **Whisper-Medium** | 769M | 80 | `ggml-medium.bin` | ~1.46 GB | **~1.80×** |
-| **Whisper-Large-v3** | 1.55B | 128 | `ggml-large-v3.bin` | ~3.09 GB | **~2.72×** |
-| **Whisper-Turbo** | 809M | 128 | `ggml-large-v3-turbo.bin` | ~1.62 GB | **~0.85×** (Fast Large-v3) |
+| Model | Parameters | Mel Channels | Recommended File | Typical Size | Relative Speed (RTF) | Hugging Face Repository |
+|---|---|---|---|---|---|---|
+| **Whisper-Tiny** | 39M | 80 | `ggml-tiny.bin` | ~75 MB | **~0.15×** (Ultra-fast) | [openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
+| **Whisper-Base** | 74M | 80 | `ggml-base.bin` | ~141 MB | **~0.48×** (**Default Catalogue**) | [openai/whisper-base](https://huggingface.co/openai/whisper-base) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
+| **Whisper-Small** | 244M | 80 | `ggml-small.bin` | ~465 MB | **~0.95×** | [openai/whisper-small](https://huggingface.co/openai/whisper-small) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
+| **Whisper-Medium** | 769M | 80 | `ggml-medium.bin` | ~1.46 GB | **~1.80×** | [openai/whisper-medium](https://huggingface.co/openai/whisper-medium) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
+| **Whisper-Large-v3** | 1.55B | 128 | `ggml-large-v3.bin` | ~3.09 GB | **~2.72×** | [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
+| **Whisper-Turbo** | 809M | 128 | `ggml-large-v3-turbo.bin` | ~1.62 GB | **~0.85×** (Fast Large-v3) | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) *(GGML: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))* |
 
 ---
 

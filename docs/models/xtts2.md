@@ -37,11 +37,11 @@ Coqui XTTS-v2 is a state-of-the-art multilingual voice cloning pipeline capable 
 
 ## 2. Checkpoints & Recommended Models
 
-| Model | Format | Size | Function |
-|---|---|---|---|
-| **XTTS-v2 Main Model** | `model.safetensors` | ~1.8 GB | GPT-2 codec predictor & Vocoder |
-| **XTTS-v2 Speaker Encoder** | `speaker_encoder.safetensors` | ~45 MB | Voice embedding extractor |
-| **XTTS-v2 Vocoder Config** | `config.json` | ~4 KB | Hyperparameters & sample rate |
+| Model | Format | Size | Function | Hugging Face Repository |
+|---|---|---|---|---|
+| **XTTS-v2 Main Model** | `model.safetensors` | ~1.8 GB | GPT-2 codec predictor & Vocoder | [coqui/XTTS-v2](https://huggingface.co/coqui/XTTS-v2) |
+| **XTTS-v2 Speaker Encoder** | `speaker_encoder.safetensors` | ~45 MB | Voice embedding extractor | [coqui/XTTS-v2](https://huggingface.co/coqui/XTTS-v2) |
+| **XTTS-v2 Vocoder Config** | `config.json` | ~4 KB | Hyperparameters & sample rate | [coqui/XTTS-v2](https://huggingface.co/coqui/XTTS-v2) |
 
 ---
 

@@ -32,11 +32,11 @@ The LLaVA (Large Language and Vision Assistant) series is the pioneer of open vi
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Projector GGUF | Language Model GGUF | Size |
-|---|---|---|---|---|
-| **LLaVA-1.5-7B** | 7.0B | `mmproj-model-f16.gguf` | `ggml-model-q4_k.gguf` | ~4.5 GB |
-| **LLaVA-1.5-13B** | 13.0B | `mmproj-model-f16.gguf` | `ggml-model-q4_k.gguf` | ~7.8 GB |
-| **LLaVA-NeXT-8B** | 8.0B | `mmproj-llava-next-8b-f16.gguf` | `llava-next-8b-q4_k_m.gguf` | ~5.1 GB |
+| Model | Parameters | Projector GGUF | Language Model GGUF | Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **LLaVA-1.5-7B** | 7.0B | `mmproj-model-f16.gguf` | `ggml-model-q4_k.gguf` | ~4.5 GB | [liuhaotian/llava-v1.5-7b](https://huggingface.co/liuhaotian/llava-v1.5-7b) *(GGUF: [mys/ggml_llava-v1.5-7b](https://huggingface.co/mys/ggml_llava-v1.5-7b))* |
+| **LLaVA-1.5-13B** | 13.0B | `mmproj-model-f16.gguf` | `ggml-model-q4_k.gguf` | ~7.8 GB | [liuhaotian/llava-v1.5-13b](https://huggingface.co/liuhaotian/llava-v1.5-13b) *(GGUF: [mys/ggml_llava-v1.5-13b](https://huggingface.co/mys/ggml_llava-v1.5-13b))* |
+| **LLaVA-NeXT-8B** | 8.0B | `mmproj-llava-next-8b-f16.gguf` | `llava-next-8b-q4_k_m.gguf` | ~5.1 GB | [lmms-lab/llama3-llava-next-8b](https://huggingface.co/lmms-lab/llama3-llava-next-8b) |
 
 ---
 

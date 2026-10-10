@@ -11,18 +11,18 @@
 
 Stingray provides a unified multimodal vision subsystem capable of processing images, OCR documents, and video frames without external Python or C++ libraries. It abstracts the vision encoder pipeline across 11+ distinct architectures:
 
-| Architecture | Vision Backbone | Projector / Spatial Merger Type | Dynamic Tiling / Resolution |
-|---|---|---|---|
-| **Qwen2.5-VL / Qwen3-VL** | 3D Conv stem + ViT | $2\times 2$ spatial merge with learned weights | Arbitrary aspect ratio native 2D windowing |
-| **DeepSeek-OCR / OCR2** | Dual SAM + CLIP ViT fusion | Dense Conv2D + Linear Projection | Fixed $1024\times 1024$ multi-scale grid |
-| **Pixtral (Mistral AI)** | 2D Continuous RoPE ViT | SwiGLU Projection MLP | Dynamic image token budgeting |
-| **LLaVA-1.5 / NeXT / OneVision** | CLIP / SigLIP ViT | 2-layer GELU MLP | AnyRes multi-crop tiling |
-| **InternVL 2.5 / 3 / 4** | InternViT-6B | PixelShuffle $2\times 2$ downsampling + MLP | Dynamic patch slicing ($N \times 448\times 448$) |
-| **MiniCPM-V 2.6** | SigLIP ViT | 2D sinusoidal cross-attention Resampler | HD 9-slice grid |
-| **GLM-4V / GLM-OCR** | Dual Conv2D stem + ViT | Conv2D patch merger + 2D M-RoPE | Multi-resolution aspect ratio bucketing |
-| **Nemotron-VL** | Learned register token ViT | Squared ReLU MLP | Multi-crop image grids |
-| **Dots-OCR / PaddleOCR-VL** | Lightweight ViT | Patch merger + GELU MLP | High-density text layout grids |
-| **Gemma 3 / 4** | SigLIP / Gemma 4 UV | Concat + Linear Projection | Fixed resolution single/multi-crop |
+| Architecture | Vision Backbone | Projector / Spatial Merger Type | Dynamic Tiling / Resolution | Hugging Face Repository |
+|---|---|---|---|---|
+| **Qwen2.5-VL / Qwen3-VL** | 3D Conv stem + ViT | $2\times 2$ spatial merge with learned weights | Arbitrary aspect ratio native 2D windowing | [Qwen/Qwen2.5-VL-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct-GGUF) |
+| **DeepSeek-OCR / OCR2** | Dual SAM + CLIP ViT fusion | Dense Conv2D + Linear Projection | Fixed $1024\times 1024$ multi-scale grid | [deepseek-ai/deepseek-vl2](https://huggingface.co/deepseek-ai/deepseek-vl2) |
+| **Pixtral (Mistral AI)** | 2D Continuous RoPE ViT | SwiGLU Projection MLP | Dynamic image token budgeting | [mistralai/Pixtral-12B-2409](https://huggingface.co/mistralai/Pixtral-12B-2409) |
+| **LLaVA-1.5 / NeXT / OneVision** | CLIP / SigLIP ViT | 2-layer GELU MLP | AnyRes multi-crop tiling | [liuhaotian/llava-v1.5-7b](https://huggingface.co/liuhaotian/llava-v1.5-7b) |
+| **InternVL 2.5 / 3 / 4** | InternViT-6B | PixelShuffle $2\times 2$ downsampling + MLP | Dynamic patch slicing ($N \times 448\times 448$) | [OpenGVLab/InternVL2_5-8B](https://huggingface.co/OpenGVLab/InternVL2_5-8B) |
+| **MiniCPM-V 2.6** | SigLIP ViT | 2D sinusoidal cross-attention Resampler | HD 9-slice grid | [openbmb/MiniCPM-V-2_6](https://huggingface.co/openbmb/MiniCPM-V-2_6) |
+| **GLM-4V / GLM-OCR** | Dual Conv2D stem + ViT | Conv2D patch merger + 2D M-RoPE | Multi-resolution aspect ratio bucketing | [THUDM/glm-4v-9b](https://huggingface.co/THUDM/glm-4v-9b) |
+| **Nemotron-VL** | Learned register token ViT | Squared ReLU MLP | Multi-crop image grids | [nvidia/Llama-3.1-Nemotron-70B-Instruct-HF](https://huggingface.co/nvidia/Llama-3.1-Nemotron-70B-Instruct-HF) |
+| **Dots-OCR / PaddleOCR-VL** | Lightweight ViT | Patch merger + GELU MLP | High-density text layout grids | [PaddlePaddle/PaddleOCR](https://huggingface.co/PaddlePaddle/PaddleOCR) |
+| **Gemma 3 / 4** | SigLIP / Gemma 4 UV | Concat + Linear Projection | Fixed resolution single/multi-crop | [google/gemma-3-4b-it](https://huggingface.co/google/gemma-3-4b-it) |
 
 ---
 

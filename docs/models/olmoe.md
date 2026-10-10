@@ -34,10 +34,10 @@ OLMoE (Open Language Model of Experts), developed by the Allen Institute for AI 
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **OLMoE-1B-7B-0924-Instruct** | 6.9B | 1.3B | 4,096 | `Q4_K_M` / `Q8_0` | ~4.3 GB / ~7.2 GB |
-| **OLMoE-1B-7B-0924 (Base)** | 6.9B | 1.3B | 4,096 | `Q4_K_M` | ~4.3 GB |
+| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|---|
+| **OLMoE-1B-7B-0924-Instruct** | 6.9B | 1.3B | 4,096 | `Q4_K_M` / `Q8_0` | ~4.3 GB / ~7.2 GB | [allenai/OLMoE-1B-7B-0924-Instruct-GGUF](https://huggingface.co/allenai/OLMoE-1B-7B-0924-Instruct-GGUF) |
+| **OLMoE-1B-7B-0924 (Base)** | 6.9B | 1.3B | 4,096 | `Q4_K_M` | ~4.3 GB | [allenai/OLMoE-1B-7B-0924-GGUF](https://huggingface.co/allenai/OLMoE-1B-7B-0924-GGUF) |
 
 ---
 

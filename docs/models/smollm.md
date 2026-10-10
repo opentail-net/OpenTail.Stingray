@@ -34,12 +34,12 @@ SmolLM2 and SmolLM3 are purpose-built compact language models designed by Huggin
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|
-| **SmolLM2-135M-Instruct** | 135M | 8k | `Q4_K_M` / `Q8_0` | ~95 MB / ~145 MB |
-| **SmolLM2-360M-Instruct** | 360M | 8k | `Q4_K_M` / `Q8_0` | ~230 MB / ~385 MB |
-| **SmolLM2-1.7B-Instruct** | 1.71B | 8k | `Q4_K_M` | ~1.05 GB |
-| **SmolLM3-Reasoning** | 3.0B | 32k | `Q4_K_M` | ~1.95 GB |
+| Model | Hugging Face Repository | Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|
+| **SmolLM2-135M-Instruct** | [HuggingFaceTB/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF) | 135M | 8k | `Q4_K_M` / `Q8_0` | ~95 MB / ~145 MB |
+| **SmolLM2-360M-Instruct** | [HuggingFaceTB/SmolLM2-360M-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF) | 360M | 8k | `Q4_K_M` / `Q8_0` | ~230 MB / ~385 MB |
+| **SmolLM2-1.7B-Instruct** | [HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF) | 1.71B | 8k | `Q4_K_M` | ~1.05 GB |
+| **SmolLM3-Reasoning** | [HuggingFaceTB/SmolLM2-1.7B-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct) | 3.0B | 32k | `Q4_K_M` | ~1.95 GB |
 
 ---
 

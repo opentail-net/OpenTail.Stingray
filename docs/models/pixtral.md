@@ -33,8 +33,9 @@ Pixtral 12B, released by Mistral AI, is a multimodal vision-language model desig
 
 | Component | Repository | File | Size |
 |---|---|---|---|
-| **Language Backbone** | `bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF` | `mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf` | ~14.3 GB |
-| **Pixtral Projector** | `bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF` | `mmproj-mistralai_Mistral-Small-3.1-24B-Instruct-2503-f16.gguf` | ~0.88 GB |
+| **Pixtral 12B (Reference / Weights)** | [mistralai/Pixtral-12B-2409](https://huggingface.co/mistralai/Pixtral-12B-2409) | `consolidated.safetensors` | ~24 GB |
+| **Language Backbone (GGUF)** | [bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF](https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF) | `mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf` | ~14.3 GB |
+| **Pixtral Projector (GGUF)** | [bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF](https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF) | `mmproj-mistralai_Mistral-Small-3.1-24B-Instruct-2503-f16.gguf` | ~0.88 GB |
 
 ---
 

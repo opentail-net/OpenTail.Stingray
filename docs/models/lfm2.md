@@ -34,10 +34,10 @@ Liquid AI's LFM2 (Liquid Foundation Model) blends non-transformer recurrent sign
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
-|---|---|---|---|---|---|
-| **LFM2-1.2B** | 1.2B | 1.2B | 32k | `Q8_0` / `Q4_K_M` | ~1.3 GB / ~0.75 GB |
-| **LFM2-8B-A1B-MoE** | 8.0B | 1.1B | 32k | `Q4_K_M` | ~4.8 GB |
+| Model | Hugging Face Repository | Parameters | Active Parameters | Context | Recommended Quantization | Typical Size |
+|---|---|---|---|---|---|---|
+| **LFM2-1.2B** | [LiquidAI/LFM-1B](https://huggingface.co/LiquidAI/LFM-1B) | 1.2B | 1.2B | 32k | `Q8_0` / `Q4_K_M` | ~1.3 GB / ~0.75 GB |
+| **LFM2-8B-A1B-MoE** | [LiquidAI/LFM-7B](https://huggingface.co/LiquidAI/LFM-7B) | 8.0B | 1.1B | 32k | `Q4_K_M` | ~4.8 GB |
 
 ---
 

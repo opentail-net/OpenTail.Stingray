@@ -30,12 +30,12 @@ InternVL is OpenGVLab's flagship multimodal foundation model, widely recognized 
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Model | Total Parameters | Vision Backbone | Recommended Quantization | Typical Size |
-|---|---|---|---|---|
-| **InternVL2_5-1B** | 1.2B | InternViT-300M | `Q4_K_M` | ~0.9 GB |
-| **InternVL2_5-2B** | 2.2B | InternViT-300M | `Q4_K_M` | ~1.6 GB |
-| **InternVL2_5-8B** | 8.1B | InternViT-300M | `Q4_K_M` | ~5.2 GB |
-| **InternVL2_5-26B** | 25.5B | InternViT-6B | `Q4_K_M` | ~16.5 GB |
+| Model | Total Parameters | Vision Backbone | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **InternVL2_5-1B** | 1.2B | InternViT-300M | `Q4_K_M` | ~0.9 GB | [OpenGVLab/InternVL2_5-1B](https://huggingface.co/OpenGVLab/InternVL2_5-1B) |
+| **InternVL2_5-2B** | 2.2B | InternViT-300M | `Q4_K_M` | ~1.6 GB | [OpenGVLab/InternVL2_5-2B](https://huggingface.co/OpenGVLab/InternVL2_5-2B) |
+| **InternVL2_5-8B** | 8.1B | InternViT-300M | `Q4_K_M` | ~5.2 GB | [OpenGVLab/InternVL2_5-8B](https://huggingface.co/OpenGVLab/InternVL2_5-8B) |
+| **InternVL2_5-26B** | 25.5B | InternViT-6B | `Q4_K_M` | ~16.5 GB | [OpenGVLab/InternVL2_5-26B](https://huggingface.co/OpenGVLab/InternVL2_5-26B) |
 
 ---
 

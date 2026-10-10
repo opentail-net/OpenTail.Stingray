@@ -94,12 +94,12 @@ Console.WriteLine($"Transcription: {result.Text}");
 
 Benchmarks recorded on an AMD Ryzen 7 5700G (AVX2, CPU only, single test phrase "Hello, I will make some lunch, darling!"):
 
-| Engine | Architecture | Sample Rate | Latency | RTF (Lower is faster) | Status |
-|---|---|---|---|---|---|
-| **Piper** | VITS (lessac-medium) | 22,050 Hz | 0.32 s | **0.129× 🚀** | 🔬 Verified |
-| **MMS-TTS** | VITS (mms-tts-eng) | 16,000 Hz | 1.30 s | **0.356× ⚡** | 🔬 Verified |
-| **Kokoro-82M** | Flow / Style | 24,000 Hz | 2.10 s | **0.580×** | 🔬 Verified |
-| **Whisper Base** | Transformer Enc-Dec | 16,000 Hz | 1.20 s | **~0.48×** | 🔬 Verified |
-| **Whisper Large-v3** | Transformer Enc-Dec | 16,000 Hz | 6.80 s | **~2.72×** | 🔬 Verified |
+| Engine | Architecture | Sample Rate | Latency | RTF (Lower is faster) | Status | Hugging Face Repository |
+|---|---|---|---|---|---|---|
+| **Piper** | VITS (lessac-medium) | 22,050 Hz | 0.32 s | **0.129× 🚀** | 🔬 Verified | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) |
+| **MMS-TTS** | VITS (mms-tts-eng) | 16,000 Hz | 1.30 s | **0.356× ⚡** | 🔬 Verified | [facebook/mms-tts-eng](https://huggingface.co/facebook/mms-tts-eng) |
+| **Kokoro-82M** | Flow / Style | 24,000 Hz | 2.10 s | **0.580×** | 🔬 Verified | [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) |
+| **Whisper Base** | Transformer Enc-Dec | 16,000 Hz | 1.20 s | **~0.48×** | 🔬 Verified | [openai/whisper-base](https://huggingface.co/openai/whisper-base) |
+| **Whisper Large-v3** | Transformer Enc-Dec | 16,000 Hz | 6.80 s | **~2.72×** | 🔬 Verified | [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) |
 
 Detailed evidence logs and benchmark recordings are maintained in [docs/STATUS.md](../STATUS.md).

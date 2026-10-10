@@ -37,11 +37,11 @@ FLUX.1, created by Black Forest Labs (the original architects of Stable Diffusio
 
 ## 2. Checkpoints & Recommended GGUFs
 
-| Variant | Parameters | Steps | Recommended Quantization | Typical Size |
-|---|---|---|---|---|
-| **FLUX.1-schnell** | 12B | 4 steps | `Q4_K_S` / `Q5_K_M` | ~7.2 GB / ~8.9 GB |
-| **FLUX.1-dev** | 12B | 20–50 steps | `Q4_K_S` | ~7.2 GB |
-| **VAE (AE)** | 83M | — | `ae.safetensors` | ~335 MB |
+| Variant | Parameters | Steps | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **FLUX.1-schnell** | 12B | 4 steps | `Q4_K_S` / `Q5_K_M` | ~7.2 GB / ~8.9 GB | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) *(GGUF: [city96/FLUX.1-schnell-gguf](https://huggingface.co/city96/FLUX.1-schnell-gguf))* |
+| **FLUX.1-dev** | 12B | 20–50 steps | `Q4_K_S` | ~7.2 GB | [black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) *(GGUF: [city96/FLUX.1-dev-gguf](https://huggingface.co/city96/FLUX.1-dev-gguf))* |
+| **VAE (AE)** | 83M | — | `ae.safetensors` | ~335 MB | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) |
 
 ---
 

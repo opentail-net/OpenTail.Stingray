@@ -37,12 +37,12 @@ The Stable Diffusion lineage spans three major architectural generations, all na
 
 ## 2. Checkpoints & Recommended Models
 
-| Model | Architecture | Native Resolution | File Format | Typical Size |
-|---|---|---|---|---|
-| **SD 1.5 Pruned EMA** | UNet 2D | 512×512 | `v1-5-pruned-emaonly.safetensors` | ~4.27 GB |
-| **SDXL 1.0 Base** | UNet 2D Dual-CLIP | 1024×1024 | `sd_xl_base_1.0.safetensors` | ~6.94 GB |
-| **SD 3.5 Medium** | MMDiT | 1024×1024 | `sd3.5_medium.safetensors` | ~5.80 GB |
-| **SD 3.5 Large** | MMDiT | 1024×1024 | `sd3.5_large.safetensors` | ~16.2 GB |
+| Model | Architecture | Native Resolution | File Format | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **SD 1.5 Pruned EMA** | UNet 2D | 512×512 | `v1-5-pruned-emaonly.safetensors` | ~4.27 GB | [runwayml/stable-diffusion-v1-5](https://huggingface.co/runwayml/stable-diffusion-v1-5) |
+| **SDXL 1.0 Base** | UNet 2D Dual-CLIP | 1024×1024 | `sd_xl_base_1.0.safetensors` | ~6.94 GB | [stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) |
+| **SD 3.5 Medium** | MMDiT | 1024×1024 | `sd3.5_medium.safetensors` | ~5.80 GB | [stabilityai/stable-diffusion-3.5-medium](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium) |
+| **SD 3.5 Large** | MMDiT | 1024×1024 | `sd3.5_large.safetensors` | ~16.2 GB | [stabilityai/stable-diffusion-3.5-large](https://huggingface.co/stabilityai/stable-diffusion-3.5-large) |
 
 ---
 
