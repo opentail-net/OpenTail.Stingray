@@ -267,3 +267,17 @@ limits MLP-up; the reference's 65 ms there likely comes from its inner-loop form
   same-noise 512x512 image PSNR 79.1 dB with a maximum channel difference of 1 of 255 (631 of 262,144 pixels differ);
   `QwenImageSdCppParityTests` velocity cosine 0.999676 / relative L2 0.0255 and `QwenImageGpuParityTests` cosine 0.996550 /
   max diff 0.3071 are unchanged to the printed precision with the switch on or off.
+
+### Checkpoint after Phases 1 and 2(c), 2026-10-10 (same session, alternating A/B, 512x512, GPU, 3 steps, CFG 1)
+Steady forward block time (the first forward is 3-4 s slower in both builds because of cold weights, and is excluded):
+
+| Build | Round 1 | Round 2 | Typical |
+|---|---|---|---|
+| Original (small-M kernel and chunked MLP both off) | 24.45 s | 24.55 s | about 24.5 s |
+| Current (both on) | 21.41 s | 22.37 s | about 21.9 s |
+| `sd-cli --backend vulkan0`, same workload | n/a | n/a | 20.9 s average over 3 forwards including its lazy weight load; about 20.6 s measured earlier |
+
+That is about 2.6 s (10.7%) faster, and the gap to the reference falls from about 18% to about 6% (G1 target: 20.6 s). Run-to-run
+drift is about 5%, so treat the gain as 2-3 s and the remaining gap as 1-1.5 s. The plan's five-run median is still outstanding.
+Per-shape reference deficits left: MLP-up at M=1024 (65 ms vs about 78 ms: roughly 0.8 s per forward) and the QKV/out shapes
+(about 1 ms each: 0.3 s); the reference has no advantage on MLP-down, which our chunking now beats.
