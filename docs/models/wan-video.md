@@ -18,6 +18,8 @@ Related: [flux](flux.md), [stable-diffusion](stable-diffusion.md). Verification:
 
 ## 1. Overview & Architectural Highlights
 
+**Backends:** CPU, Vulkan and CUDA (see [STATUS](../STATUS.md)). Measured 2026-10-10 on a Ryzen 5700G iGPU (AMD Radeon, shared memory): single frame, 256×256, 20 steps, Vulkan: 100 s (soft output at that size).
+
 Wan 2.1 and 2.2 are cutting-edge open video generation models based on a 3D Spatio-Temporal Diffusion Transformer. The architecture synthesizes temporally coherent video clips directly from text descriptions or reference starter images.
 
 ### Key Architectural Characteristics

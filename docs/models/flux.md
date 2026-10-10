@@ -22,6 +22,8 @@ Related: [stable-diffusion](stable-diffusion.md), [z-image-turbo](z-image-turbo.
 
 ## 1. Overview & Architectural Highlights
 
+**Backends:** CPU and Vulkan GPU (see [STATUS](../STATUS.md)). Measured 2026-10-10 on a Ryzen 5700G iGPU (AMD Radeon, shared memory): FLUX.1-schnell Q4_K_S, 512×512, 4 steps, Vulkan: 158 s.
+
 FLUX.1, created by Black Forest Labs (the original architects of Stable Diffusion), is the preeminent open-weights image generation model. It produces photorealistic imagery, accurate text rendering, and complex prompt adherence through a 12-billion-parameter rectified flow matching transformer.
 
 ### Key Architectural Characteristics

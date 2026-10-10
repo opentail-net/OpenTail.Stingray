@@ -9,7 +9,7 @@ Related: [flux](flux.md), [stable-diffusion](stable-diffusion.md). Verification:
 | **Provider** | Community / Distilled DiT Foundation |
 | **Model Formats** | GGUF (`z_image_turbo-Q5_K_M.gguf`) |
 | **Engine Implementations** | `OpenTail.Stingray.Diffusion.ZImagePipeline` |
-| **Synthesis Speed** | **4 Steps** to high-detail 512×512 synthesis (~28s on CPU, ~1.2s on GPU) |
+| **Synthesis Speed** | **4 Steps** to high-detail 512×512 synthesis. **Backends:** CPU and Vulkan GPU (`--device none` forces CPU). Measured 2026-10-10 on a Ryzen 5700G iGPU (AMD Radeon, shared memory): 512×512, 4 steps, Vulkan: 129s. Not a discrete-GPU figure. |
 | **Text Conditioning** | Qwen-based text encoder (`Z-Image-AbliteratedV1.Q5_K_M.gguf`) |
 | **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (Tested with real checkpoints, documented in CLI README) |
 

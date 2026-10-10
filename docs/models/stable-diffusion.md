@@ -23,7 +23,7 @@ The Stable Diffusion lineage spans three major architectural generations, all na
 * **Resolution:** Native $512\times 512$ synthesis.
 * **UNet Backbone:** 860M parameter cross-attention UNet operating in an $8\times$ downsampled latent space ($64\times 64\times 4$).
 * **Text Encoder:** Single OpenAI CLIP ViT-L/14.
-* **Performance:** Generates in ~18 seconds on modern AVX2 CPUs, sub-second on Vulkan / CUDA GPUs.
+* **Performance:** **Backends:** CPU (AVX2/AVX-512) and Vulkan GPU (`--device none` forces CPU). Measured 2026-10-10 on a Ryzen 5700G iGPU (AMD Radeon, shared memory): 512×512, 20 steps, Vulkan: 162s. Not a discrete-GPU figure.
 
 ### Generation 2: SDXL (Stable Diffusion XL)
 * **Resolution:** Native $1024\times 1024$ synthesis.

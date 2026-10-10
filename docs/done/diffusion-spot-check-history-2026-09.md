@@ -2,6 +2,8 @@
 
 Archived engineering log: bugs found and fixed during early diffusion bring-up. The images it names are no longer kept; current proof samples live in [docs/diffusion-samples](../diffusion-samples/README.md).
 
+> **Status note (2026-10-10):** the "Z-Image-Turbo produces a solid black image on the Vulkan GPU backend" finding below is outdated. It was fixed on 2026-09-24 (see [STATUS.md](../STATUS.md)), and on 2026-10-10 Z-Image-Turbo (Q4_0) ran on Vulkan (`GPU (Vulkan SGEMM)`, AMD Radeon iGPU) and produced a correct image: [zimage-turbo-apple-512.png](../diffusion-samples/zimage-turbo-apple-512.png).
+
 
 ## Bugs found and fixed this pass
 

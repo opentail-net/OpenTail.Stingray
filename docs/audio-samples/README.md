@@ -49,7 +49,10 @@ Speech and ASR use the CLI (`-o` sets the output file):
 
 ```powershell
 stingray tts -e qwentts -t "Hello from Qwen3 TTS on OpenTail Stingray." -o tts-qwen3-tts.wav
-stingray tts -e cosyvoice|orpheus|parler|mms ...            # same shape, -t "Hello from <model> on OpenTail Stingray."
+stingray tts -e cosyvoice -t "Hello from CosyVoice 3 on OpenTail Stingray." -o tts-cosyvoice3.wav
+stingray tts -e orpheus -t "Hello from Orpheus on OpenTail Stingray." -o tts-orpheus.wav
+stingray tts -e parler -t "Hello from Parler TTS on OpenTail Stingray." -o tts-parler.wav
+stingray tts -e mms -t "Hello from MMS on OpenTail Stingray." -o tts-mms.wav
 stingray tts -e fish -m K:/_other_models/s2-pro-q8_0.gguf -t "..." -o tts-fish-speech-s2-pro.wav
 stingray stt -m base --model-file models/ggml-base.bin -i tts-qwen3-tts.wav
 ```

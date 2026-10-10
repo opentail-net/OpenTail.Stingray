@@ -121,9 +121,11 @@ pipeline.Generate(new ImageGenerationRequest
 
 Diffusion and video pipelines are compute-intensive. While pure CPU execution is supported, GPU acceleration via Vulkan or CUDA is strongly recommended for production use:
 
+Supported backends per model are in the [STATUS matrix](../STATUS.md). Times below were measured on a 5700G integrated GPU (shared memory), so a discrete GPU will be much faster. The Wan row is an older CPU figure, and the 2026-10-10 single-frame 256×256/20-step Vulkan run took 100 s.
+
 | Model | Resolution | Steps | Hardware | Wall-Clock Generation Time | Hugging Face Repository |
 |---|---|---|---|---|---|
-| **Z-Image-Turbo** | 512×512 | 4 | CPU (Ryzen 7 5700G) | ~28 seconds | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
-| **FLUX.1-schnell** | 512×512 | 4 | Vulkan GPU | ~4.2 seconds | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) |
-| **SD 1.5** | 512×512 | 20 | CPU (AVX2) | ~18 seconds | [stable-diffusion-v1-5/stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) |
+| **Z-Image-Turbo** | 512×512 | 4 | Vulkan (5700G iGPU) | 129 s (2026-10-10) | [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) |
+| **FLUX.1-schnell** | 512×512 | 4 | Vulkan (5700G iGPU) | 158 s (2026-10-10) | [black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell) |
+| **SD 1.5** | 512×512 | 20 | Vulkan (5700G iGPU) | 162 s (2026-10-10) | [stable-diffusion-v1-5/stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) |
 | **Wan 2.1 (1.3B)** | 256×256 | 16 frames | CPU (AVX2) | ~6.1 minutes | [Wan-AI/Wan2.1-T2V-1.3B](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) |
