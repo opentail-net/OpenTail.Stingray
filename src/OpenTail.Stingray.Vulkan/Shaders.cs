@@ -11797,12 +11797,12 @@ internal static class Shaders
     /// Split-KV decode attention partial pass for fp32 KV caches that serves a whole GQA group per workgroup. Replaces the one-key-per-thread
     /// <see cref="AttentionSplitKvPartial"/> (uncoalesced K reads with lanes <c>kv_dim</c> floats apart, a value phase using only
     /// <c>head_dim</c> of 256 threads walking every position serially, and a separate workgroup per query head re-reading the same K/V).
-    /// One workgroup per (KV head, split); it handles the <c>G = num_heads / num_kv_heads</c> (1 to 4) query heads that share that KV head.
+    /// One workgroup per (KV head, group chunk, split); it handles up to 4 of the <c>Gt = num_heads / num_kv_heads</c> (1 to 8) query heads that share that KV head (ceil(Gt/4) workgroups per KV head).
     /// QK phase: <c>head_dim/16</c> lanes per key read contiguous vec4s, dot against the group's Q held in registers, partial dots reduced through
     /// shared memory. Softmax: max and sum for all G heads reduced together over the slice. Value phase: <c>head_dim/4</c> lanes across the head
     /// dimension (vec4, coalesced) times interleaved key groups, per-head accumulators, shared-memory reduction over the key groups.
     /// Same push constants, partial layout (<c>[head][split][head_dim]</c>, meta <c>[head][split][2]</c>) and combine pass as the original.
-    /// Requires head_dim 64, 128 or 256 and G in 1..4. Dispatch (num_kv_heads, n_splits).
+    /// Requires head_dim 64, 128 or 256 and Gt in 1..8. Dispatch (num_kv_heads * ceil(Gt/4), n_splits).
     /// </summary>
     internal const string AttentionSplitKvPartialGqa = """
         #version 450
@@ -11834,12 +11834,15 @@ internal static class Shaders
 
         void main() {
             uint tid = gl_LocalInvocationID.x;
-            uint kvh = gl_WorkGroupID.x;
+            uint Gt = num_heads / num_kv_heads;                  // query heads per KV head (1..8); groups above 4 are served by ceil(Gt/4) workgroups per KV head
+            uint nchunks = (Gt + 3u) / 4u;
+            uint kvh = gl_WorkGroupID.x / nchunks;
+            uint gchunk = gl_WorkGroupID.x % nchunks;
             uint s = gl_WorkGroupID.y;
             if (kvh >= num_kv_heads || s >= n_splits) return;
 
-            uint G = num_heads / num_kv_heads;
-            uint h0 = kvh * G;
+            uint G = min(4u, Gt - gchunk * 4u);                 // query heads this workgroup serves
+            uint h0 = kvh * Gt + gchunk * 4u;
             uint start_seq = (window != 0u && window < seq_len) ? (seq_len - window) : 0u;
             uint t0 = s * CHUNK;
             uint t1 = t0 + CHUNK; if (t1 > seq_len) t1 = seq_len;

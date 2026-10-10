@@ -25,6 +25,11 @@ public sealed class VulkanSplitKvGqaAttentionTests
     [InlineData(12u, 4u, 64u)]    // group 3, head dim 64
     [InlineData(16u, 4u, 256u)]   // group 4, head dim 256 (Gemma family)
     [InlineData(8u, 8u, 256u)]    // group 1, head dim 256
+    [InlineData(40u, 8u, 128u)]   // group 5 (two workgroups per KV head: 4 + 1)
+    [InlineData(24u, 4u, 128u)]   // group 6 (4 + 2)
+    [InlineData(28u, 4u, 128u)]   // group 7, Qwen2.5-7B style (4 + 3)
+    [InlineData(64u, 8u, 128u)]   // group 8, gpt-oss style (4 + 4)
+    [InlineData(32u, 4u, 256u)]   // group 8, head dim 256 (hybrid Qwen3.5 style)
     public void MatchesOriginalSplitKvKernel(uint numHeads, uint numKvHeads, uint headDim)
     {
         using var vk = TryCreateVulkan();
@@ -72,13 +77,14 @@ public sealed class VulkanSplitKvGqaAttentionTests
     }
 
     [Fact]
-    public void SupportCheck_AcceptsGroupsOneToFourAndHeadDim64Or128Or256Only()
+    public void SupportCheck_AcceptsGroupsOneToEightAndHeadDim64Or128Or256Only()
     {
         Assert.True(VulkanBackend.SupportsSplitKvGqa(32, 8, 128));
         Assert.True(VulkanBackend.SupportsSplitKvGqa(8, 8, 64));
         Assert.True(VulkanBackend.SupportsSplitKvGqa(12, 4, 64));      // group 3
-        Assert.False(VulkanBackend.SupportsSplitKvGqa(40, 8, 128));    // group 5
-        Assert.False(VulkanBackend.SupportsSplitKvGqa(28, 4, 128));    // group 7
+        Assert.True(VulkanBackend.SupportsSplitKvGqa(40, 8, 128));     // group 5
+        Assert.True(VulkanBackend.SupportsSplitKvGqa(64, 8, 128));     // group 8
+        Assert.False(VulkanBackend.SupportsSplitKvGqa(72, 8, 128));    // group 9
         Assert.True(VulkanBackend.SupportsSplitKvGqa(16, 4, 256));     // head dim 256
         Assert.False(VulkanBackend.SupportsSplitKvGqa(32, 8, 96));     // head dim 96
         Assert.False(VulkanBackend.SupportsSplitKvGqa(28, 8, 128));    // not a whole number of query heads per KV head

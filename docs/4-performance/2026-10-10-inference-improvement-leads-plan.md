@@ -21,7 +21,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [x] **A2** GQA kernel at every context length (`GpuForwardPass.UseSplitKvDecodeFp32`): short-prompt decode (Qwen3-4B, 96 tokens) **10.5-10.6 -> 12.6-12.7 t/s (+20%)**, text identical in both A/B rounds (estimated +10%; attention was a bigger share than extrapolated). Commit in the same change as A3.
 - [x] **A3** Head dimension 256 (Gemma family) accepted by `SupportsSplitKvGqa`; parity cases added (16/4/256 group 4, 8/8/256 group 1), 8 of 8 tests pass. Not yet run end to end on a Gemma model.
 - [ ] **A4** Route the remaining attention call sites (layer-split path, speculative-decode paths, hybrid Qwen3.5/3.6 engine) through `GpuForwardPass.AttentionSplitKvAuto`.
-- [ ] **A5** GQA groups of 5-8 (gpt-oss 8, Qwen2.5-7B 7, the 70B Llamas 8): split the group over two workgroups per KV head (K/V read twice instead of up to 8 times).
+- [x] **A5** GQA groups of 5-8: groups above 4 use ceil(G/4) workgroups per KV head (`SupportsSplitKvGqa` now accepts 1-8). 13 of 13 parity cases pass (groups 5, 6, 7, 8; head dim 256 with group 8). End to end, Qwen2.5-VL-7B (28 heads / 4 KV heads, group 7), 493-token prompt, alternating A/B: **decode 6.5 -> 7.5 t/s (+15%)**, text identical; its per-token prefill 7.0 -> 7.6 t/s.
 - [ ] **A6** BF16 and Q8_0 KV-cache variants (`AttentionSplitKvPartialBf16`, `AttentionSplitKvPartialQ8`) have the same slow structure: port the design.
 - [ ] **A7** gpt-oss `AttentionSinks` decode kernel (single workgroup per head today; only its full-attention layers pay the long-context cost).
 - [ ] **A8** Verify on more models and contexts: a head-dim-64 MHA model (SmolLM2-1.7B), Qwen3-8B, and contexts of 2k-4k tokens (the gain should grow with context).
@@ -37,6 +37,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **B4** Second dense model and a decode-regression check with Path 3 on.
 - [ ] **B5** Decide whether Path 3 becomes the default (CPU prefill on the same prompt is 102.8 t/s); extend the batched trunk to Q3_K/Q5_K weights, which it excludes today.
 - [ ] **B6** MoE prefill (currently handed to the CPU) and `VulkanLayerSplitForwardPass` per-token prefill: revisit after B5.
+- [ ] **B7** (new) Batched prefill for models with Q/K/V biases (the Qwen2.5 family): the batched trunk excludes them (`_canBatchedTrunk`), so Qwen2.5-VL-7B prefills token by token at about 7 t/s. The trunk code already has the bias adds for batched rows; check whether the exclusion is stale and enable it for Path 3 (parity against the per-token path first).
 
 ### C. Mat-vec kernels (Lead 1)
 - [x] **C1** MXFP4: one block per lane, packed-LUT decode. 14 to 25 GB/s; gpt-oss decode 6.7 to 7.5 t/s (+12%). Commit `c30e455a`.
@@ -332,3 +333,8 @@ together, value phase as 32 (or 16) vec4 lanes across the head dim times interle
   one-workgroup-per-head kernel. Qwen3-4B-Q4_K_M, Vulkan, 30-token prompt, 96 greedy tokens, alternating A/B: decode 10.6 / 10.5 -> 12.6 / 12.7 t/s (+20%), text identical.
 - A3: `SupportsSplitKvGqa` accepts head dim 256 (the kernel's lane mapping already covered it: 16 lanes per key, 4 key groups in the value phase, 4,096-float shared reduction).
 - Not touched yet: the Gemma-4 per-layer path (`ForwardGemma4`, per-layer head dims and shared KV) and the hybrid Qwen3.5/3.6 engine (head dim 256 but GQA groups of 6-8, which needs A5).
+
+### Decode attention A5, 2026-10-11
+Groups of 5-8 query heads per KV head are served by `ceil(G/4)` workgroups per KV head (`AttentionSplitKvPartialGqa`: group chunk from `gl_WorkGroupID.x`, `G = min(4, Gt - 4 * chunk)`), reading K/V twice instead of once per query head.
+Parity against the original kernel: groups 5, 6, 7, 8 at head dim 128 and group 8 at head dim 256, plus all earlier cases (13 of 13). Qwen2.5-VL-7B-Instruct-Q4_K_M (group 7), Vulkan, 493-token prompt, 48 greedy tokens, alternating A/B:
+decode 6.5 / 6.5 -> 7.5 / 7.5 t/s (+15%), text identical in both rounds. Finding while testing: this model prefills at about 7 t/s because the batched trunk excludes Q/K/V-bias models (new item B7).
