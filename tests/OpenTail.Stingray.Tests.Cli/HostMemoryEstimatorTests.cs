@@ -95,6 +95,33 @@ public sealed class HostMemoryEstimatorTests
         Assert.Equal(atLimit, beyond);
     }
 
+    // ── MLA (DeepSeek2): calibrated on DeepSeek-V2-Lite (fit) and Kimi-VL (slope blind), 2026-10-10; see 061-coverage-tooling.md ──
+    [Fact]
+    public void Mla_kv_is_the_expanded_fp32_K_plus_V_per_head_and_the_estimate_is_Estimated()
+    {
+        var hp = Hp(h => h with { KvLoraRank = 512, MlaVHeadDim = 128, HeadDim = 192, NumHeads = 16 });
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], hp, "DeepSeek2Mla", 100, null);
+        Assert.Equal(Certainty.Estimated, e.Certainty);
+        Assert.Equal(2L * 16 * (192 + 128) * 100 * 4, Part(e, "kv_cache"));
+        Assert.Contains(e.Components, c => c.Name == "mla_base");
+        Assert.DoesNotContain(e.Components, c => c.Name == "mla_absorbed_expansion");
+    }
+
+    [Fact]
+    public void Mla_with_split_kv_b_tensors_adds_the_fixed_expansion_term()
+    {
+        var hp = Hp(h => h with { KvLoraRank = 512, MlaVHeadDim = 128, HeadDim = 192, NumHeads = 16 });
+        var e = HostMemoryEstimator.Estimate([Q4K("blk.0.attn_k_b.weight")], hp, "DeepSeek2Mla", 100, null);
+        Assert.Equal(2L * 512 * 16 * (192 + 128) * 4, Part(e, "mla_absorbed_expansion"));
+    }
+
+    [Fact]
+    public void Mla_without_latent_rank_stays_Unknown()
+    {
+        var e = HostMemoryEstimator.Estimate([Q4K("a")], Hp(h => h with { KvLoraRank = 0, MlaVHeadDim = 128 }), "DeepSeek2Mla", 100, null);
+        Assert.Equal(Certainty.Unknown, e.Certainty);
+    }
+
     // ── Unknown stays Unknown ──
     [Theory]
     [InlineData("DeepSeek2Mla")]

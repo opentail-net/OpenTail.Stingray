@@ -17,7 +17,7 @@ public sealed record HostWorkingSet(Certainty Certainty, long? Bytes, string Sou
 ///             (ForwardPass.ResolveQ4Kx8CacheBudget). Available memory is taken to be the budget. This is what makes a Q4_K_M file cost ~1.8x its size.
 ///   base      runtime, native libraries, tokenizer, rope tables: 130-140 MiB measured on 135M and 360M models; 192 MiB is used.
 ///   kv        fp32 K and V for every non-aliased layer at the requested context. Real runs touch only the used part of the allocation, so this is
-///             an upper bound. Only computed for the plain-attention families; MLA, hybrid and recurrent families have different state and are Unknown.
+///             an upper bound. Only computed for the plain-attention families; MLA (DeepSeek2) is modelled below; other recurrent families have different state and are Unknown.
 ///   scratch   batched-prefill buffers, scaled to the tokens in flight: 1.5 x ctx x (3 x ffn + 4 x hidden) x 4 bytes (measured: Mistral-7B, 608 tokens, 179 MiB
 ///             against 144 MiB for the formula without the 1.5).
 ///
@@ -89,7 +89,8 @@ public static class HostMemoryEstimator
         }
         if (family is "HybridGdn")
             return EstimateHybridGdn(parts, hp, contextTokens, weights, budgetBytes);
-        if (family is not "Dense")
+        bool mla = family is "DeepSeek2Mla" && hp.KvLoraRank > 0 && hp.MlaVHeadDim > 0;
+        if (family is not "Dense" && !mla)
         {
             string why = family is null
                 ? "the architecture is not registered, so its state layout is unknown"
@@ -100,8 +101,17 @@ public static class HostMemoryEstimator
         }
 
         int ctx = hp.ContextLength > 0 ? Math.Min(contextTokens, hp.ContextLength) : contextTokens;
-        long kv = KvBytes(hp, ctx);
-        parts.Add(new("kv_cache", kv, Certainty.Estimated, $"fp32 K+V for {ctx} tokens over the non-aliased layers; an upper bound (only the used part is touched)"));
+        // MLA (DeepSeek2): the engine caches the EXPANDED per-head K (key_length) and V (value_length) in fp32, not the compressed latent (measured: slope 0.88-0.96 MiB per token on
+        // DeepSeek-V2-Lite, of which 0.53 is this term).
+        long kv = mla ? (long)hp.NumLayers * hp.NumHeads * (hp.HeadDim + hp.MlaVHeadDim) * ctx * sizeof(float) : KvBytes(hp, ctx);
+        if (mla) parts.Add(new("mla_base", 96L << 20, Certainty.Estimated, "extra fixed overhead of the MLA path: 267 MiB measured at a 15-token prompt on V2-Lite against the 192 MiB base"));
+        // Absorbed-MLA GGUFs (split attn_k_b / attn_v_b, e.g. Kimi-VL / Moonlight) cost a further fixed ~275 MiB: measured 543 MiB over the file at a 24-token prompt, against 267 on V2-Lite.
+        // The expansion of the kv_b projection to fp32 explains it (27 x 512 x 16 x 256 x 4 = 226 MiB); (key + value) per head instead of 256 adds the safety margin.
+        if (mla && tensors.Any(t => t.Name.EndsWith(".attn_k_b.weight", StringComparison.Ordinal)))
+            parts.Add(new("mla_absorbed_expansion", (long)hp.NumLayers * hp.KvLoraRank * hp.NumHeads * (hp.HeadDim + hp.MlaVHeadDim) * sizeof(float), Certainty.Estimated, "fp32 expansion of the kv_b projection for split attn_k_b / attn_v_b layouts; measured +276 MiB on Kimi-VL"));
+        parts.Add(new("kv_cache", kv, Certainty.Estimated, mla
+            ? $"fp32 expanded K ({hp.HeadDim}) + V ({hp.MlaVHeadDim}) per head for {ctx} tokens over {hp.NumLayers} layers; an upper bound"
+            : $"fp32 K+V for {ctx} tokens over the non-aliased layers; an upper bound (only the used part is touched)"));
 
         long ffn = hp.IsMoE
             ? Math.Max(hp.IntermediateDim, (long)Math.Max(1, hp.NumActiveExperts) * hp.ExpertIntermediateDim + hp.SharedExpertIntermediateDim)
@@ -109,7 +119,9 @@ public static class HostMemoryEstimator
         // MoE batched prefill also holds per-token expert buffers: topk x (gate + up of the expert FFN, plus a hidden-sized down output). Measured directly on the hybrid MoE
         // (they explain its extra ~160 MiB at ~1700 tokens); the dense-family MoE (Phi-3.5-MoE) fit its measurement without the term (1.016x) but the buffers exist there too.
         long moeFloats = hp.IsMoE ? (long)Math.Max(1, hp.NumActiveExperts) * (2L * hp.ExpertIntermediateDim + hp.EmbeddingDim) : 0;
-        long scratch = (long)(1.5 * ctx * (3 * ffn + 4L * hp.EmbeddingDim) * sizeof(float)) + ctx * moeFloats * sizeof(float);
+        // MLA runs carry a further 25% (the MLA projections hold extra per-token buffers); with a 288 MiB base this keeps the estimate 0.5-1.5% above the measured peak on V2-Lite.
+        double scratchFactor = mla ? 1.25 : 1.0;
+        long scratch = (long)(scratchFactor * 1.5 * ctx * (3 * ffn + 4L * hp.EmbeddingDim) * sizeof(float)) + ctx * moeFloats * sizeof(float);
         parts.Add(new("prefill_scratch", scratch, Certainty.Estimated,
             $"1.5 x {ctx} tokens x (3 x ffn {ffn} + 4 x hidden {hp.EmbeddingDim}) x 4 bytes" + (hp.IsMoE ? $" + {ctx} x expert buffers {moeFloats} x 4 bytes" : "")));
 

@@ -56,6 +56,17 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
 dotnet add package OpenTail.Stingray
 ```
 
+Stingray is 100% managed C# and ships everything (Core SIMD kernels, Vulkan, CUDA, Audio, Vision, Diffusion) in one library package. No CMake, no C++ compilers, and zero native sidecars.
+
+### Hardware & Backend Selection
+
+| Hardware | `Backend` Setting | Execution Details |
+|---|---|---|
+| **CPU Only** (x86-64) | `Backend = "cpu"` | Managed C# with AVX2 & AVX-512 SIMD kernels. |
+| **AMD, Intel, or NVIDIA GPU** | `Backend = "vulkan"` | Direct cross-platform Vulkan compute shaders. |
+| **NVIDIA GPU (CUDA 12.x)** | `Backend = "cuda"` | Native cuBLAS and CUDA kernels for maximum throughput. |
+| **Auto-Detect** | `Backend = "auto"` | Automatically selects available GPU acceleration (`GpuLayerCount = -1`). |
+
 ---
 
 ## Quick Starts
