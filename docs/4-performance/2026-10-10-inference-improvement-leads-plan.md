@@ -173,3 +173,16 @@ Q4_K is already at parity with ggml (42.2 vs 42.6 GB/s). Parked:
   end-to-end gain is a few percent each.
 - **MXFP4 residual (25 vs 35.9 GB/s):** untried ideas are six-word funnel loads and several rows per workgroup.
 Revisit if a profile shows one of these types dominating a model we care about. Next: Lead 2 (batched prefill on the Vulkan LLM path).
+
+### Lead 2, first measurement, 2026-10-10 (Vulkan iGPU vs CPU, same build, ~500-token benchmark prompt, 8 generated tokens)
+
+| Model | CPU prefill | Vulkan prefill | CPU decode | Vulkan decode |
+|---|---|---|---|---|
+| Qwen3-4B-Q4_K_M (dense, 36 layers) | 102.8 t/s | 38.0 t/s (2.7x slower) | 12.2 t/s | 6.0 t/s |
+| OLMoE-1B-7B-Q4_K_M (MoE) | 175.0 t/s | 155.7 t/s (near parity) | 30.8 t/s | 14.2 t/s |
+
+Reading: the September finding (dense-model Vulkan prefill much slower than CPU) still holds, while MoE prefill is near parity. Vulkan decode is about half
+of CPU decode on both models even though the Q4_K mat-vec kernel is at ggml parity (42.2 vs 42.6 GB/s), so Vulkan decode on this machine looks overhead-bound
+(per-token dispatches, syncs, non-mat-vec kernels, lm_head), not mat-vec-bound. Caveat: only 8 decode tokens, which is a noisy basis; re-measure with 48+.
+No decode profiler exists for `GpuForwardPass` (`STINGRAY_PROFILE_DECODE` is the hybrid-GDN path's), so the first step of Lead 2 is to add one: per-stage
+GPU/host time for a decode token and for a prefill chunk, then decide between batched prefill, fewer syncs, or kernel work.
