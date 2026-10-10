@@ -49,10 +49,11 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Kokoro;
 
 // 1. Initialize Kokoro-82M pipeline
-using var kokoro = KokoroPipeline.Load("models/kokoro-v0_19-Q8_0.gguf");
+using var model = KokoroModel.Load("models/kokoro-v0_19-Q8_0.gguf");
+using var kokoro = new KokoroPipeline(model);
 
 // 2. Synthesize with chosen speaker style
-var result = kokoro.Generate(new KokoroRequest
+var result = kokoro.Generate(new AudioGenerationRequest
 {
     Text = "Kokoro delivers 24kHz expressive voice synthesis at just 82 million parameters.",
     Voice = "af_bella", // e.g. Bella (American Female), Adam, Emma

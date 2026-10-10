@@ -66,6 +66,7 @@ On the reference AMD Ryzen 7 5700G (CPU AVX2 SIMD):
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Load IBM Granite 4.0-H Hybrid Mamba-2

@@ -6,7 +6,7 @@
 |---|---|
 | **Provider** | Black Forest Labs (BFL) |
 | **Model Formats** | GGUF (`flux1-schnell-Q4_K_S.gguf`) & SafeTensors |
-| **Engine Implementations** | `OpenTail.Stingray.Diffusion.Flux.FluxPipeline`, `FluxDiT` |
+| **Engine Implementations** | `OpenTail.Stingray.Diffusion.ImagePipeline`, `FluxDiT` |
 | **Architecture Type** | 12B Rectified Flow Matching DiT with Joint Attention (MMDiT) |
 | **Text Encoders** | Dual CLIP ViT-L/14 + T5-XXL |
 | **Scheduler** | `EulerFlowScheduler` with dynamic resolution shifts |
@@ -51,10 +51,15 @@ FLUX.1, created by Black Forest Labs (the original architects of Stable Diffusio
 
 ```csharp
 using OpenTail.Stingray.Diffusion;
-using OpenTail.Stingray.Diffusion.Flux;
 
 // 1. Initialize FLUX.1 pipeline
-using var pipeline = FluxPipeline.Load("models/flux1-schnell-Q4_K_S.gguf");
+using var pipeline = ImagePipeline.Load(
+    ditPath: "models/flux1-schnell-Q4_K_S.gguf",
+    vaePath: "models/ae.safetensors",
+    clipPath: "models/clip_l.safetensors",
+    clipTokenizerPath: "models/clip_tokenizer.json",
+    t5Path: "models/t5xxl_fp16.safetensors",
+    t5TokenizerPath: "models/t5_tokenizer.json");
 
 // 2. Generate 1024x1024 image in 4 steps
 pipeline.Generate(new ImageGenerationRequest

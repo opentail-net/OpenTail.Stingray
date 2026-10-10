@@ -62,6 +62,7 @@ Because RWKV requires no growing KV cache, host memory requirements are strictly
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Load RWKV-7 checkpoint (runs on CPU SIMD)

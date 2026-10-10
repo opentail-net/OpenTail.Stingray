@@ -57,11 +57,10 @@ using OpenTail.Stingray.Audio.Xtts;
 using var xtts = XttsPipeline.Load("models/xtts-v2");
 
 // 2. Clone voice from a reference audio clip
-var result = xtts.Generate(new XttsRequest
+var result = xtts.Generate(new AudioGenerationRequest
 {
     Text = "This voice was synthesized by matching a six-second reference sample.",
-    SpeakerAudioPath = "samples/my_voice_reference.wav",
-    Language = "en",
+    ReferenceAudioPath = "samples/my_voice_reference.wav",
     OutputPath = "cloned_speech.wav"
 });
 

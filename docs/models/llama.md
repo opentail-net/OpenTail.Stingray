@@ -65,6 +65,7 @@ $$\text{Peak RAM} \approx \text{Weight Bytes} + \text{Q4\_K Repack Copy} + \text
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Load model with automatic hardware acceleration

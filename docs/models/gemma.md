@@ -59,6 +59,7 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Initialize Gemma 4 E4B with auto GPU offload

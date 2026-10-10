@@ -63,6 +63,7 @@ On the reference AMD Ryzen 7 5700G (CPU AVX2 SIMD):
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Load Mistral 7B with CPU SIMD or auto GPU offload

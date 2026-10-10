@@ -52,14 +52,20 @@ In addition to generative autoregressive LLMs, OpenTail.Stingray provides native
 ### C# Text Embeddings
 
 ```csharp
-using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Core.Embeddings;
+using OpenTail.Stingray.Engine.Encoders;
 
-// 1. Initialize TransformerEncoder from local SafeTensors folder
-using var encoder = TransformerEncoder.Load("models/bge-small-en-v1.5");
+// 1. Initialize text embedding pipeline from local SafeTensors folder
+using var pipeline = HfEncoderEmbeddingPipeline.Load("models/bge-small-en-v1.5");
 
 // 2. Generate normalized semantic embedding vector
-float[] embedding = encoder.Encode("How do I evaluate embedding models in .NET?");
+var result = pipeline.Embed(new EmbeddingRequest
+{
+    Inputs = ["How do I evaluate embedding models in .NET?"],
+    Normalize = true
+});
 
+float[] embedding = result.Data[0].Vector;
 Console.WriteLine($"Generated embedding vector with {embedding.Length} dimensions.");
 ```
 

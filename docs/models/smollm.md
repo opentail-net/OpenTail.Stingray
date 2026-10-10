@@ -66,6 +66,7 @@ On the reference AMD Ryzen 7 5700G (CPU AVX2 SIMD):
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Initialize SmolLM2 1.7B for low-memory edge chat

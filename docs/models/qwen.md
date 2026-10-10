@@ -68,6 +68,7 @@ On reference AMD Ryzen 7 5700G (CPU AVX2 SIMD):
 
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Executors;
 
 // 1. Resolve default catalogue model or path
