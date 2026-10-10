@@ -532,3 +532,6 @@ examples/
 /voxcpm2-audiovae-tensor-names.txt
 /voxcpm2-config.json
 /tests/OpenTail.Stingray.Tests.Diffusion/ZZ_ScratchSd3PosEmbedBisectTest.cs
+
+# Failed or tainted sample images are kept locally, not tracked.
+/docs/diffusion-samples/scratch/
