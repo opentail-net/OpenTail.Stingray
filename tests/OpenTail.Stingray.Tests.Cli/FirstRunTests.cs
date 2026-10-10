@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using System.Net;
 using System.Security.Cryptography;
 using OpenTail.Stingray.Cli.Scout;

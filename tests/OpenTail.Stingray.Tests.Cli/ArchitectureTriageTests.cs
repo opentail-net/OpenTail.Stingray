@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 namespace OpenTail.Stingray.Tests.Cli;
 
 /// <summary>The triage rules shared by admit-arch and scout.</summary>

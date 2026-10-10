@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Core.Catalog;
 using Xunit;
 
@@ -190,12 +191,12 @@ public sealed class CatalogGuardTests
     public void OfferSmallerQualified_PicksLargestFittingSameFamilyEntry_OrNothing()
     {
         var big = ModelCatalog.Find("qwen2.5-7b")!;
-        static OpenTail.Stingray.Cli.Scout.PreflightResult Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict v) => new(v, "t", 1L << 30, 8L << 30, 1L << 30);
-        var onlySmallestFits = (CatalogEntry e, CancellationToken _) => Res(e.Id == "qwen2.5-0.5b" ? OpenTail.Stingray.Cli.Scout.PreflightVerdict.Allowed : OpenTail.Stingray.Cli.Scout.PreflightVerdict.Blocked);
+        static OpenTail.Stingray.Engine.Scout.PreflightResult Res(OpenTail.Stingray.Engine.Scout.PreflightVerdict v) => new(v, "t", 1L << 30, 8L << 30, 1L << 30);
+        var onlySmallestFits = (CatalogEntry e, CancellationToken _) => Res(e.Id == "qwen2.5-0.5b" ? OpenTail.Stingray.Engine.Scout.PreflightVerdict.Allowed : OpenTail.Stingray.Engine.Scout.PreflightVerdict.Blocked);
         Assert.Equal("qwen2.5-0.5b", OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, onlySmallestFits, default)?.Id);
-        var nothingFits = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict.Blocked);
+        var nothingFits = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Engine.Scout.PreflightVerdict.Blocked);
         Assert.Null(OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, nothingFits, default));
-        var unknown = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Cli.Scout.PreflightVerdict.Unknown);
+        var unknown = (CatalogEntry e, CancellationToken _) => Res(OpenTail.Stingray.Engine.Scout.PreflightVerdict.Unknown);
         Assert.Null(OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, unknown, default));
     }
 

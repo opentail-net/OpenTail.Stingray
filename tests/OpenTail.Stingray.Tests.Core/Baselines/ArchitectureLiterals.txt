@@ -1,4 +1,3 @@
-src/OpenTail.Stingray.Cli/ArchitectureTriage.cs|3
 src/OpenTail.Stingray.Cli/ImageCommand.cs|1
 src/OpenTail.Stingray.Cli/RunCommand.cs|4
 src/OpenTail.Stingray.Cli/StaticPlanCommand.cs|1
@@ -24,6 +23,7 @@ src/OpenTail.Stingray.Engine/Qwen4ExpAlpha.cs|1
 src/OpenTail.Stingray.Engine/Rwkv6ForwardPass.cs|1
 src/OpenTail.Stingray.Engine/Rwkv7ForwardPass.cs|1
 src/OpenTail.Stingray.Engine/RwkvForwardPassBase.cs|4
+src/OpenTail.Stingray.Engine/Scout/ArchitectureTriage.cs|3
 src/OpenTail.Stingray.Server/ChatTemplate.cs|1
 src/OpenTail.Stingray.Server/Endpoints/LlamaCompatEndpoints.cs|2
 src/OpenTail.Stingray.Server/OpenTailStingrayServerOptions.cs|1

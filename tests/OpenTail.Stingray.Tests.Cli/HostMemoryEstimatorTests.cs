@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Cli.Scout;
 
 namespace OpenTail.Stingray.Tests.Cli;

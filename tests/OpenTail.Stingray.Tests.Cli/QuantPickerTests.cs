@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core.Net;
 using static OpenTail.Stingray.Tests.Cli.HubFixtures;
@@ -234,7 +235,7 @@ public sealed class QuantPickerTests
         var hub = new FakeHub("o/r", [new RepoFile("a.gguf", Gguf("deepseek2", 2))], hubArch: "deepseek2");
         using var c = Client(hub);
         var (r, _) = await Run(c, budget: 1L << 40);
-        string json = System.Text.Json.JsonSerializer.Serialize(r, ScoutJsonContext.Default.QuantReport);
+        string json = System.Text.Json.JsonSerializer.Serialize(r, QuantJsonContext.Default.QuantReport);
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         var row = doc.RootElement.GetProperty("rows")[0];
         Assert.Equal("Unknown", row.GetProperty("verdict").GetString());

@@ -245,4 +245,151 @@ public sealed class LocalInventoryTests : IDisposable
         var settings3 = new ModelsCommand.Settings { Local = true, Verify = true };
         Assert.Null(settings3.Validate());
     }
+
+    [Fact]
+    public void Complete_two_shard_model_produces_one_row_identifying_first_shard_and_combined_size()
+    {
+        string modelsDir = Path.Combine(_tempRoot, "split_complete");
+        Directory.CreateDirectory(modelsDir);
+
+        byte[] shard1Bytes = Gguf("llama", blocks: 1);
+        byte[] shard2Bytes = Gguf("llama", blocks: 1);
+
+        string s1Path = Path.Combine(modelsDir, "split-model-00001-of-00002.gguf");
+        string s2Path = Path.Combine(modelsDir, "split-model-00002-of-00002.gguf");
+
+        File.WriteAllBytes(s1Path, shard1Bytes);
+        File.WriteAllBytes(s2Path, shard2Bytes);
+
+        var report = LocalInventory.Scan(home: new ModelHome(Path.Combine(_tempRoot, "empty_home")), extraDirs: [modelsDir]);
+        Assert.Single(report.LocalGgufs);
+
+        var item = report.LocalGgufs[0];
+        Assert.Equal("split-model-00001-of-00002.gguf", item.FileName);
+        Assert.Equal(Path.GetFullPath(s1Path), item.Path);
+        Assert.Equal(shard1Bytes.Length + shard2Bytes.Length, item.SizeBytes);
+        Assert.True(item.IsReadable);
+        Assert.Equal("llama", item.Architecture);
+        Assert.Equal("admitted", item.AdmissionStatus);
+        Assert.Null(item.ErrorMessage);
+
+        // Ensure the synthetic shard fixture can actually be opened by the existing loader when complete
+        using var opened = GgufModel.Open(item.Path);
+        Assert.NotNull(opened);
+        Assert.Equal("llama", opened.Metadata["general.architecture"]);
+    }
+
+    [Fact]
+    public void Missing_second_shard_produces_single_incomplete_row_with_useful_error()
+    {
+        string modelsDir = Path.Combine(_tempRoot, "split_missing_shard2");
+        Directory.CreateDirectory(modelsDir);
+
+        byte[] shard1Bytes = Gguf("llama", blocks: 1);
+        string s1Path = Path.Combine(modelsDir, "split-model-00001-of-00002.gguf");
+        File.WriteAllBytes(s1Path, shard1Bytes);
+
+        var report = LocalInventory.Scan(home: new ModelHome(Path.Combine(_tempRoot, "empty_home")), extraDirs: [modelsDir]);
+        Assert.Single(report.LocalGgufs);
+
+        var item = report.LocalGgufs[0];
+        Assert.Equal("split-model-00001-of-00002.gguf", item.FileName);
+        Assert.Equal(Path.GetFullPath(s1Path), item.Path);
+        Assert.Equal(shard1Bytes.Length, item.SizeBytes);
+        Assert.False(item.IsReadable);
+        Assert.Equal("unreadable", item.Architecture);
+        Assert.Equal("not supported", item.AdmissionStatus);
+        Assert.NotNull(item.ErrorMessage);
+        Assert.Contains("missing", item.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("split-model-00002-of-00002.gguf", item.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Missing_first_shard_identifies_first_shard_and_produces_single_incomplete_row()
+    {
+        string modelsDir = Path.Combine(_tempRoot, "split_missing_shard1");
+        Directory.CreateDirectory(modelsDir);
+
+        byte[] shard2Bytes = Gguf("llama", blocks: 1);
+        string s1ExpectedPath = Path.Combine(modelsDir, "split-model-00001-of-00002.gguf");
+        string s2Path = Path.Combine(modelsDir, "split-model-00002-of-00002.gguf");
+        File.WriteAllBytes(s2Path, shard2Bytes);
+
+        var report = LocalInventory.Scan(home: new ModelHome(Path.Combine(_tempRoot, "empty_home")), extraDirs: [modelsDir]);
+        Assert.Single(report.LocalGgufs);
+
+        var item = report.LocalGgufs[0];
+        // Identifies canonical first shard
+        Assert.Equal("split-model-00001-of-00002.gguf", item.FileName);
+        Assert.Equal(Path.GetFullPath(s1ExpectedPath), item.Path);
+        Assert.Equal(shard2Bytes.Length, item.SizeBytes);
+        Assert.False(item.IsReadable);
+        Assert.Equal("unreadable", item.Architecture);
+        Assert.Equal("not supported", item.AdmissionStatus);
+        Assert.NotNull(item.ErrorMessage);
+        Assert.Contains("missing", item.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("split-model-00001-of-00002.gguf", item.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Incomplete_split_model_does_not_prevent_separate_valid_single_file_from_being_inventoried()
+    {
+        string modelsDir = Path.Combine(_tempRoot, "split_incomplete_with_valid_single");
+        Directory.CreateDirectory(modelsDir);
+
+        byte[] shard1Bytes = Gguf("llama", blocks: 1);
+        byte[] singleBytes = Gguf("llama", blocks: 1);
+
+        string s1Path = Path.Combine(modelsDir, "split-model-00001-of-00002.gguf");
+        string singlePath = Path.Combine(modelsDir, "valid-single.gguf");
+
+        File.WriteAllBytes(s1Path, shard1Bytes);
+        File.WriteAllBytes(singlePath, singleBytes);
+
+        var report = LocalInventory.Scan(home: new ModelHome(Path.Combine(_tempRoot, "empty_home")), extraDirs: [modelsDir]);
+        Assert.Equal(2, report.LocalGgufs.Count);
+
+        var incompleteItem = report.LocalGgufs.First(g => g.FileName == "split-model-00001-of-00002.gguf");
+        Assert.False(incompleteItem.IsReadable);
+        Assert.NotNull(incompleteItem.ErrorMessage);
+        Assert.Contains("missing", incompleteItem.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("split-model-00002-of-00002.gguf", incompleteItem.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+
+        var validItem = report.LocalGgufs.First(g => g.FileName == "valid-single.gguf");
+        Assert.True(validItem.IsReadable);
+        Assert.Equal("llama", validItem.Architecture);
+        Assert.Equal("admitted", validItem.AdmissionStatus);
+        Assert.Equal(singleBytes.Length, validItem.SizeBytes);
+        Assert.Null(validItem.ErrorMessage);
+
+        using var opened = GgufModel.Open(validItem.Path);
+        Assert.NotNull(opened);
+    }
+
+    [Fact]
+    public void Incomplete_three_shard_model_with_two_shards_present_produces_single_row_with_combined_size()
+    {
+        string modelsDir = Path.Combine(_tempRoot, "split_three_shards");
+        Directory.CreateDirectory(modelsDir);
+
+        byte[] b2 = Gguf("llama", blocks: 1);
+        byte[] b3 = Gguf("llama", blocks: 1);
+
+        string s2Path = Path.Combine(modelsDir, "multi-00002-of-00003.gguf");
+        string s3Path = Path.Combine(modelsDir, "multi-00003-of-00003.gguf");
+        string s1Expected = Path.Combine(modelsDir, "multi-00001-of-00003.gguf");
+
+        File.WriteAllBytes(s2Path, b2);
+        File.WriteAllBytes(s3Path, b3);
+
+        var report = LocalInventory.Scan(home: new ModelHome(Path.Combine(_tempRoot, "empty_home")), extraDirs: [modelsDir]);
+        Assert.Single(report.LocalGgufs);
+
+        var item = report.LocalGgufs[0];
+        Assert.Equal("multi-00001-of-00003.gguf", item.FileName);
+        Assert.Equal(Path.GetFullPath(s1Expected), item.Path);
+        Assert.Equal(b2.Length + b3.Length, item.SizeBytes);
+        Assert.False(item.IsReadable);
+        Assert.Contains("multi-00001-of-00003.gguf", item.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+    }
 }

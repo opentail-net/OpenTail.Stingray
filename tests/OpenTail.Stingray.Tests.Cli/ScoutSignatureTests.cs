@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using System.Text.Json;
 using OpenTail.Stingray.Cli.Scout;
 
