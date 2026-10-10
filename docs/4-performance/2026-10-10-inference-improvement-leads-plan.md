@@ -186,3 +186,19 @@ of CPU decode on both models even though the Q4_K mat-vec kernel is at ggml pari
 (per-token dispatches, syncs, non-mat-vec kernels, lm_head), not mat-vec-bound. Caveat: only 8 decode tokens, which is a noisy basis; re-measure with 48+.
 No decode profiler exists for `GpuForwardPass` (`STINGRAY_PROFILE_DECODE` is the hybrid-GDN path's), so the first step of Lead 2 is to add one: per-stage
 GPU/host time for a decode token and for a prefill chunk, then decide between batched prefill, fewer syncs, or kernel work.
+
+### Lead 2, diagnosis, 2026-10-10: the batched prefill exists but runs at about 0.3 TFLOP/s; the fix is a prefill-sized tiled quantized GEMM
+Correction to the backlog wording: `GpuForwardPass` already has a weight-amortising batched prefill (chunked trunk, `_canBatchedTrunk`: dense models with
+Q4_K/Q6_K weights) and records each decode token into one command buffer; "prefills per token" describes `VulkanLayerSplitForwardPass` and the MoE path (which hands
+prompts to the CPU). The slow part is the matmul kernel.
+- Measured (Qwen3-4B-Q4_K_M, 493-token prompt, Vulkan, `STINGRAY_VULKAN_MM_STATS=1`): Path 1 (default) 38.3 t/s, Path 2 (the existing tiled `MatMulTiledQ4K/Q6K`,
+  capped at 16 tokens per dispatch) 38.8 t/s. Weight traffic is 64,197 MiB (130 MiB/token) in both, versus a GEMM floor of about 5 MiB/token.
+- That traffic is not the bottleneck: 64 GB at the measured 44 GB/s ceiling is about 1.5 s, but the prefill takes 12.9 s. About 4 TFLOP in 12.9 s is **0.3 TFLOP/s**, so both
+  paths are compute/kernel-bound. A tiled quantized GEMM with a 128-row tile (`SgemmQ3K/Q4K/Q5K`, which reach about 1 TFLOP/s at M >= 128 in the Qwen Image work)
+  would take the same prefill to roughly 4 s (about 120 t/s), CPU parity (CPU: 102.8 t/s).
+- **Design:** (1) add a Q6_K decoder and `SgemmQ6K` (Q4_K_M models keep Q6_K for ffn_down in many layers and the output matrix; without it those layers pin the chunk at 16);
+  (2) implement Path 2 for Q3_K/Q4_K/Q5_K/Q6_K by routing to `VulkanBackend.Sgemm` (activations [nTok, K] and outputs [nTok, N] already match its layout);
+  (3) raise `Path2MaxTokensPerDispatch` from 16 to a prefill-sized chunk (128-256) and check the scratch buffers and batched attention/KV-append kernels accept it
+  (the prefill chunk already follows `MaxTokensPerDispatch`; the speculative-decode verify constant `MaxBatchVerifyK` stays 16); (4) keep Path 1 as the default until the A/B proves Path 2.
+- **Gates:** per-kernel CPU-parity tests (extend `VulkanQuantMatVecTests` style to the GEMM), then end-to-end greedy generation identical to Path 1 on Qwen3-4B and one more dense model,
+  then the prefill A/B (target: Vulkan prefill at least 2x today's, i.e. at or above CPU) and a Vulkan decode regression check. Rollback: `STINGRAY_VULKAN_MM_PATH=1`.
