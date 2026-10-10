@@ -90,6 +90,8 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     private readonly Tensor _gpuV;           // [numKvHeads * headDim] = 512
     private readonly Tensor _gpuAttnOut;     // [numHeads * headDim] = 4096
     private readonly Tensor _gpuAttnScratch; // attention scores spill scratch (>4096 ctx) or 1-float placeholder
+    private readonly Tensor? _gpuSplitKvPartialO;    // GQA split-KV partials [numHeads * maxSplits * headDim] (null when the shape is unsupported or the switch is off)
+    private readonly Tensor? _gpuSplitKvPartialMeta;  // [numHeads * maxSplits * 2]
     private readonly Tensor _gpuLogits;
     private readonly Tensor _pinnedHidden;   // host-mappable embDim float buffer for CPU↔GPU sync
 
@@ -447,6 +449,15 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         // Attention scores scratch — only needed when ctx > 4096 (HybridForwardPass.cs:297-300).
         long scratchElems = _maxSeqLen > 4096 ? (long)_numHeads * _maxSeqLen : 1L;
         _gpuAttnScratch = gpu.Allocate(TensorShape.D1(scratchElems));
+        // GQA-group split-KV decode attention (see AttentionAuto): the full-attention layers of the hybrid models (head dim 256, 4-8 query heads per KV head).
+        if (Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DECODE_ATTN_GQA") != "0"
+            && VulkanBackend.SupportsSplitKvGqa((uint)_numHeads, (uint)_numKvHeads, (uint)_headDim)
+            && _maxSeqLen <= (int)VulkanBackend.SplitKvMaxSeqLen)
+        {
+            int maxSplits = (_maxSeqLen + (int)VulkanBackend.SplitKvChunk - 1) / (int)VulkanBackend.SplitKvChunk;
+            _gpuSplitKvPartialO = gpu.Allocate(TensorShape.D1((long)_numHeads * maxSplits * _headDim));
+            _gpuSplitKvPartialMeta = gpu.Allocate(TensorShape.D1((long)_numHeads * maxSplits * 2));
+        }
         _gpuLogits = gpu.Allocate(TensorShape.D1(hp.VocabSize));
         _pinnedHidden = gpu.AllocatePinned(TensorShape.D1(_embDim));
 
@@ -1657,6 +1668,20 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     //  Mirror of GpuAttnBlockAt :4060-4129.
     // ================================================================
 
+    /// <summary>
+    /// Single-token decode attention over this engine's fp32 KV cache: the GQA-group split-KV kernel when its partial buffers exist (supported shape, switch on),
+    /// else the original one-workgroup-per-head kernel. Full attention (no window) in both cases.
+    /// </summary>
+    private void AttentionAuto(Tensor kCache, Tensor vCache, uint seqLen)
+    {
+        if (_gpuSplitKvPartialO is not null)
+            _gpu.AttentionSplitKvGqa(_gpuQ, kCache, vCache, _gpuAttnOut, _gpuSplitKvPartialO, _gpuSplitKvPartialMeta!,
+                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+        else
+            _gpu.Attention(_gpuQ, kCache, vCache, _gpuAttnOut, _gpuAttnScratch,
+                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+    }
+
     private void GpuAttnBlock(int layer, int position)
     {
         int kvDim = _numKvHeads * _headDim;
@@ -1688,8 +1713,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
 
         // GQA scaled-dot-product attention (:4122). window:0 = full causal.
         int seqLen = kvPosition + 1;
-        _gpu.Attention(_gpuQ, _gpuKCache[layer]!, _gpuVCache[layer]!, _gpuAttnOut, _gpuAttnScratch,
-            (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)seqLen, (uint)_maxSeqLen, window: 0u);
+        AttentionAuto(_gpuKCache[layer]!, _gpuVCache[layer]!, (uint)seqLen);
         _gpu.RecordBarrier();
 
         // Fused sigmoid GLU gate: attnOut *= sigmoid(gate) (:4126).
@@ -1970,8 +1994,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _gpu.RecordBarrier();
 
         int seqLen = kvPosition + 1;
-        _gpu.Attention(_gpuQ, kCache, vCache, _gpuAttnOut, _gpuAttnScratch,
-            (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)seqLen, (uint)_maxSeqLen, window: 0u);
+        AttentionAuto(kCache, vCache, (uint)seqLen);
         _gpu.RecordBarrier();
 
         // Fused sigmoid GLU gate.
@@ -3167,6 +3190,8 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _gpu.Free(_gpuV);
         _gpu.Free(_gpuAttnOut);
         _gpu.Free(_gpuAttnScratch);
+        if (_gpuSplitKvPartialO is not null) _gpu.Free(_gpuSplitKvPartialO);
+        if (_gpuSplitKvPartialMeta is not null) _gpu.Free(_gpuSplitKvPartialMeta);
         _gpu.Free(_gpuLogits);
         _gpu.Free(_pinnedHidden);
 
