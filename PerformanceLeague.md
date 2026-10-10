@@ -1495,3 +1495,12 @@ gate-off vs gate-on medians, run alone and alternating (5 runs each), CPU, Relea
 Fidelity side of the trade (paired per-token NLL vs llama.cpp, rms off -> on): GLM-4.5 0.328 -> 0.204, phi-2 0.121 -> 0.091,
 Phi-3-mini 0.127 -> 0.112, jais-590M 0.205 -> 0.169, Ornith-9B 0.066 -> 0.063, SmolLM2 0.142 -> 0.148. See
 `docs/103-quickest-first-plan.md` item 19. The gate stays off by default.
+
+## Scratch arena experiment, phase P0 (2026-10-10): no-go
+
+Plan: `docs/4-performance/2026-10-09-scratch-arena-experiment-plan.md`. Question: does reusing scratch memory across prefill calls make CPU prefill measurably faster (go threshold about 2%)?
+
+* **Per-call matmul scratch is not on the hot path here.** The three per-call `NativeMemory.Alloc`/`Free` sites in `SimdKernels` (`TryMatMulBatchedQ8`, `TryMatMulBatchedDualQ8`, `TryMatMulBatchedQ4Kx8`) were temporarily routed through a counting wrapper. An 835-token prefill saw zero calls on Qwen2.5-1.5B Q4_K_M, Qwen2.5-7B Q4_K_M, Gemma-3-4B Q4_K_M and Qwen3-VL-2B Q8_0. The other matmul scratch buffers (`RepackedGemmPath2`, `Q6KPrefillGemm`) are already thread-local and reused. The "about 120 alloc/free pairs of 1-10 MB per chunk" premise does not hold for these paths.
+* **What does allocate per call: `ForwardPass.PrefillCore`**, about ten large `AllocZeroed` buffers once per prefill call (not per layer). Sizes at N=835: Qwen2.5-1.5B about 95 MiB, Qwen2.5-7B about 200 MiB.
+* **Upper bound on the saving = the whole alloc+zero+touch+free cost.** Measured (median of 25, alloc, touch every page, free; Ryzen 7 5700G, quiet machine): 95 MiB 8.3 ms, 200 MiB 17.9 ms. Against prefill times of 3170 ms (1.5B, 263 t/s) and 14.4 s (7B, 58 t/s): **0.26% and 0.12%**. A reuse scheme cannot save more than that, so it is far under the 2% threshold.
+* **Decision:** stop at P0, close the item. No arena, no env switches kept (the instrumentation was reverted). Scope: CPU prefill on dense Q4_K_M/Q8_0 models, one CPU, Windows allocator; hybrid-GDN and MoE prefill paths and GPU backends were not measured (rule 13).
