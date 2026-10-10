@@ -61,6 +61,20 @@ Verified in the vendored source, not assumed:
 ## 4. Phases (each is a separate, reversible change with its own A/B)
 
 ### Phase 0: harness and safety net (no behaviour change)
+- **Establish the baseline properly.** The 24.4 s and 20.6 s figures come from single runs (an earlier uninstrumented
+  run took 138.2 s against 115.4 s instrumented), so first record the median and spread of at least five
+  uninstrumented runs of both Stingray and the reference, keeping one-time weight upload separate from steady-state
+  forward time, and keep instrumented numbers out of the comparison.
+- **Record the environment with every benchmark row:** GPU name, driver and ICD, subgroup size, the real
+  `maxComputeSharedMemorySize` (the reference's device line reports 32768 while our kernel declares about 48 KiB of
+  shared arrays, so query it directly rather than assume), FP16 and storage-16 support, whether
+  `VK_VALVE_shader_mixed_float_dot_product` (the dot2 path) and integer-dot are exposed, model file hashes, dimensions,
+  seed, CFG and the reference build.
+- **Find out which shader variant the reference really runs on this GPU.** Its device line (2026-10-10) says
+  `uma 1, fp16 1, bf16 0, warp size 64, shared memory 32768, int dot 0, matrix cores none`. Use ggml's pipeline logging
+  (`GGML_VK_PERF_LOGGER`, `VK_KHR_pipeline_executable_properties`, or its debug log) to see whether it picks the FP16
+  matmul, the dot2 variant or the FP32 one, and which tile (s/m/l) each Qwen shape uses. The "FP16 tiles explain the
+  gap" idea stays a hypothesis until that is known.
 - Move the throwaway GEMM microbenchmark into the repo (`tools/kernel-bench-cs` exists) with the Qwen, FLUX.2, Wan and
   Z-Image shapes (M, K, N) at the M values they actually use, for Q3_K, Q4_K, Q5_K and the F16 path.
 - Per-op GPU timing via Vulkan timestamp queries (`timestampValidBits`, `timestampPeriod`), modelled on the ggml logger,
@@ -70,29 +84,60 @@ Verified in the vendored source, not assumed:
 - Enumerate every caller of the quantized GEMM (Qwen, FLUX.1/2, SD3.5/MMDiT, Wan, Z-Image, Vulkan LLM prefill) and give
   each a before-snapshot (speed and output).
 
-### Phase 1: small-M kernel (expected about 1.9 s per forward, about 8%; lowest risk)
-- A dedicated quantized kernel for M up to about 16 (single tile of rows per workgroup, weights decoded once, memory
-  bound), selected by shape the way ggml selects its small tile. Candidates: extend the existing matvec to several rows,
-  or a 32-row tile variant.
-- Keep M=1 on the existing matvec. Gate on parity and on the benchmark table; the target is within 1.5x of weight-read
-  bandwidth for M of 5 to 16.
+### Phase 1: small-M kernel (provisional estimate: about 1.9 s per forward, about 8%; lowest risk)
+The saving is an estimate to test, not an expected result: it compares today's M=12 GEMM time with one-row matvec
+time, and a one-row matvec is not a prediction for a kernel that handles several rows while reusing decoded weights
+(twelve separate matvecs would re-read the weights twelve times).
+- A dedicated quantized kernel for small M (a single tile of rows per workgroup, weights decoded once, memory bound),
+  selected by shape the way ggml selects its small tile. Candidates: extend the existing matvec to several rows, or a
+  32-row tile variant.
+- Benchmark current GEMM, a one-row-matvec loop and each prototype across **M = 1, 2, 4, 5, 8, 12, 16, 32, 64, 128** on
+  the real Qwen shapes (K=3072 and K=12288 included). The comparison that matters is the whole M-row product.
+- Keep M=1 on the existing matvec. Success is defined by effective bandwidth: quantised-weight bytes read divided by
+  measured kernel time, compared with a separately measured sustained-memory-bandwidth benchmark on the same device
+  (target: a stated fraction of that ceiling, fixed after the ceiling is measured). Gate on parity and on end-to-end
+  forward time.
 
 ### Phase 2: tile and layout fix for long K (expected 6-8%)
-- Try, in order: (a) a 128x128 / 128-thread config with higher occupancy (2+ workgroups per CU), (b) the same tile with
-  the K loop reordered, (c) the chunked-MLP layout (hidden activation kept as four contiguous 3072-wide chunks; weights
-  re-laid out at upload; partial sums added). Measure each against the sweep table; keep the best.
+- Try, in order, isolating the simple reversible changes before the invasive one: (a) a 128x128 / 128-thread config
+  with higher occupancy (2+ workgroups per CU); (b) a K-loop-order change on its own; (c) the chunked-MLP layout.
+- (c) must pay its whole cost. The 112 ms to 77.6 ms result is an isolated GEMM measurement. The production path has to
+  produce the contiguous activation chunks (ideally by making the MLP-up projection write that layout directly, or by
+  fusing the rearrangement into it) and has to add the partial outputs. If a copy or a separate add is needed, benchmark
+  it and include it; do not treat packing as free. Weights are re-laid out once at upload, so that part is not a
+  per-forward cost.
+- Measure each against the sweep table and the end-to-end forward; keep the best.
 - Decide split-K only if a config leaves tiles under-filling the 8 CUs.
 
-### Phase 3: new tiled kernel family, FP16 shared tiles (the big-upside phase; uncertain)
-- Parameterise the kernel with specialisation constants (BM, BN, BK, WM, WN, WMITER, TM, TN) like `mul_mm.comp`, with a
-  dot-product inner loop and FP16 LDS (FP32 accumulate), plus an FP32-LDS variant selectable by environment switch as
-  the rollback.
-- Sweep configs on this machine for each Qwen shape and pick per shape; record the table.
-- Success: GEMM throughput above 1.2 TFLOP/s on the large shapes, or phase abandoned (see stop rules).
-- **Numerics decision (needs sign-off before merge):** FP16 activation tiles can overflow (range 65504) if the
-  residual stream has outliers, and weights lose 5e-4 relative precision (small next to Q3_K's own quantisation noise).
-  Validation: same-noise latent cosine and PSNR versus the current FP32 path and versus `sd-cli`; per CLAUDE.md the
-  decision is recorded in code, tests, a decision note and the performance docs, with an environment-switch rollback.
+### Phase 3: new tiled kernel family (the big-upside phase; uncertain)
+Two different ideas were bundled in the first draft and are now separate experiments, because FP16 shared storage and
+FP16-pair dot products are different optimisations and the benefit of either depends on the generated shader, the
+device features and compiler behaviour (vectorisation, conversion overhead and occupancy all matter).
+- Parameterise the kernel with specialisation constants (BM, BN, BK, WM, WN, WMITER, TM, TN), like `mul_mm.comp`, so the
+  sweep is data, not code.
+
+| Experiment | Implementation | What it tests |
+|---|---|---|
+| A | FP32 shared tiles, FP32 accumulate | baseline (today's arithmetic, new tile parameters) |
+| B | FP16 shared tiles, convert to FP32 for the multiply and accumulate | whether narrower shared tiles improve occupancy or data movement |
+| C | FP16 shared tiles plus FP16-pair dot products with FP32 accumulate, only where the device exposes it | whether the arithmetic path adds a further gain |
+
+- FP16 accumulation is out of scope: it is a separate and riskier numerical change.
+- For each variant record resource usage and, where tooling permits, register pressure and occupancy, and use the same
+  operation-count convention and methodology as the baseline so GFLOP/s figures are comparable.
+- Keep an FP32-LDS variant selectable by an environment switch as the rollback.
+- Sweep configs on this machine for each Qwen shape, pick per shape, and record the table.
+
+**Numerical gate for any FP16 variant (needs sign-off before merge).** The FP32 parity tests use synthetic activations in
+[-1, 1], which does not show how FP16 behaves on real Qwen Image activations, and an FP16 path should not be expected
+to meet the FP32 tolerance automatically. So:
+- Measure first: actual activation ranges, any non-finite values, and error growth at several layers and timesteps, on
+  real weights with captured real activations. Do not add a clamp pre-emptively (it would itself change the maths);
+  overflow past 65,504 is an unproven risk, and rounding drift across 60 blocks matters more to investigate.
+- GEMM output relative-L2 and maximum absolute error against the existing FP32 quantised path, on real data.
+- A one-block comparison with identical inputs, then a full-model same-noise generation.
+- A documented, evidence-based acceptance threshold (latent cosine and PSNR) against both the current Stingray path and
+  the reference, recorded in code, tests, a decision note and the performance docs, with the switch above as rollback.
 
 ### Phase 4: fusions and epilogues (each small, each measured)
 - Bias add and GELU into the GEMM epilogue (the MLP group has two extra passes over a 1024x12288 buffer).
@@ -130,10 +175,13 @@ discrete GPU, which this machine cannot show.
 
 ## 7. Stop rules
 
-- Each phase has a measured gate; a phase that does not beat the previous best by a margin larger than run-to-run noise
+- Each phase has a measured gate; a phase that does not beat the previous best by more than run-to-run noise
   (about 2-3% on the forward) is reverted.
-- Abandon Phase 3 if a prototype FP16-tile kernel is not at least 15% faster than the best Phase 2 kernel on the
-  large Qwen shapes in the standalone benchmark.
+- **One gate for Phase 3** (replaces the earlier two that could disagree): keep it only if it is (1) at least 15% faster
+  than the best Phase 2 kernel on the target large shapes in the benchmark, **and** (2) measurably faster on the
+  end-to-end Qwen forward, not just the microbenchmark, **and** (3) numerically accepted on the real model workload, **and**
+  (4) shows no material regression in the other representative models. Otherwise abandon it. Throughput above
+  1.2 TFLOP/s is reported, not gated.
 - Stop the whole effort at reference parity (G1) unless the user asks for the stretch target.
 
 ## 8. Questions for the second opinion
@@ -147,3 +195,17 @@ discrete GPU, which this machine cannot show.
 4. Anything in the list of ggml techniques in section 3 that should be higher priority, or something missing?
 5. Is FP16 activation overflow a realistic risk for MM-DiT residual streams, and what is the cheapest guard?
 6. Reasonable stop criteria for a kernel project on a non-representative GPU.
+
+## 9. Second opinion received (ChatGPT, 2026-10-10: 8/10, keep the plan and revise in place)
+
+Incorporated above: (1) Phase 0 now establishes a repeatable median baseline, records the environment and finds the
+reference's actual shader variant on this GPU before the FP16 explanation is trusted; (2) the Phase 1 saving is marked
+provisional and benchmarked across M = 1 to 128 with a defined bandwidth success criterion; (3) the chunked-layout
+experiment must include activation-layout production and partial-sum costs and comes after the simpler tile and loop
+changes; (4) FP16 shared storage and FP16-pair dot products are separate experiments, FP16 accumulation stays out of
+scope, and the numerical gate uses real activations and measures ranges before any guard is added; (5) Phase 3 has a
+single stop gate. Its answers to section 8: the phase order is right; FP16 benefit on Vega 8 is plausible but not
+established by FP16 support alone (dot2 is a separate extension from integer-dot); a K-contiguous dot loop is not
+assumed better; shape-specific tiling and the small-M path are the immediate priorities; integer-dot is not the first
+target for this device; FP16 overflow is unproven and must be measured, not guarded pre-emptively; the stop criteria
+are reasonable once unified. Not expanding into attention or unrelated fusions while the GEMM work is unmeasured.
