@@ -200,6 +200,26 @@ public sealed class CatalogGuardTests
         Assert.Null(OpenTail.Stingray.Cli.SetupFlow.OfferSmallerQualified(big, unknown, default));
     }
 
+    [Fact]
+    public void DocsAndReadme_OnlyCiteCatalogueIdsAndTasksThatExist()
+    {
+        var rx = new System.Text.RegularExpressions.Regex(@"(?:stingray setup|ResolveModelPath\(""|stingray models use [a-z]+) ?([a-z0-9][a-z0-9._-]*)", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var known = ModelCatalog.Entries.Select(e => e.Id).Concat(ModelCatalog.Tasks).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        int cited = 0;
+        foreach (var rel in new[] { "README.md", "docs/STATUS.md", "docs/RUNNING.md", "docs/WHAT-YOU-CAN-DO.md" })
+        {
+            string path = Path.Combine(RepoRoot(), rel);
+            if (!File.Exists(path)) continue;
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(File.ReadAllText(path)))
+            {
+                cited++;
+                string id = m.Groups[1].Value;
+                Assert.True(known.Contains(id) || id is "chat" or "speak" or "transcribe", $"{rel} cites catalogue id or task '{id}', which is not in ModelCatalog.");
+            }
+        }
+        Assert.True(cited > 0, "expected at least one catalogue citation in README/docs; the scan pattern may have rotted");
+    }
+
     private static string RepoRoot()
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
