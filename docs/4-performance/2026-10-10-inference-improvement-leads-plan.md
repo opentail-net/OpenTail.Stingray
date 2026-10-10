@@ -222,3 +222,21 @@ Implemented (all opt-in, `STINGRAY_VULKAN_MM_PATH=3`; the default stays Path 1):
 
 Greedy generation is identical to Path 1. Matmuls are now about 0.8 TFLOP/s effective (4 TFLOP in 5.1 s). Weight traffic fell from 64.2 GB to 8.3 GB (16.8 MiB/token).
 Next: larger chunks (256), a second dense model, decode-regression check, then decide whether Path 3 earns the default.
+
+### Lead 2b (new): Vulkan decode, where the time goes, 2026-10-11 (Qwen3-4B-Q4_K_M, greedy, GPU)
+Decode is a separate cost from prefill, so Path 3 does not touch it. Elimination experiment (single-vector matmuls skipped temporarily, so the elapsed time shows everything else; hook removed again):
+
+| Context | Decode | Matmuls | Everything else (per token) |
+|---|---|---|---|
+| short (30-token prompt) | 10.8-10.9 t/s (92 ms) | about 72 ms (about 35 GB/s on 2.5 GB, close to the 42-44 GB/s ceiling) | 49 t/s without matmuls, so about 20 ms |
+| after a 493-token prompt | 6.3 t/s (159 ms) | about 71 ms (unchanged) | 11.3-11.5 t/s without matmuls, so **about 88 ms** |
+
+- The matmul share is near the memory ceiling and the Q4_K mat-vec is at ggml parity, so little is left there.
+- **About 68 ms per token is attention (and KV handling) at about 500 context tokens.** The K/V traffic for this model at that context is about 147 MB per token
+  (36 layers x 500 positions x 8 KV heads x 128 x 4 B x 2), about 3.5 ms at 42 GB/s: the single-token attention kernel is roughly 19x slower than the bandwidth floor.
+  Target: attention near 10 ms at 500 tokens would lift decode after a long prompt from 6.3 to about 10 t/s (+57%), and the gain grows with context.
+- About 20 ms per token (22% at short context) is the rest: per-layer norms, RoPE, residual adds, SwiGLU, KV append, sampling readback, plus dispatch/barrier overhead
+  (ggml fuses RMS-norm+mul(+RoPE), add+RMS-norm; we issue them separately).
+- Next steps: (1) time our single-token attention kernel standalone against ggml's `flash_attn` at this shape (hsk=128, 32 heads, 8 KV heads, 512 keys, 1 query) via `test-backend-ops perf -o FLASH_ATTN_EXT`;
+  (2) read our decode attention kernel (`Shaders.Attention*` and the GQA mapping) for the structural cause (serial softmax, per-head KV re-reads for the 4 query heads sharing a KV head, shared score array limiting occupancy);
+  (3) fix, A/B on the long-context decode numbers above, parity via greedy text.
