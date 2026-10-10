@@ -252,3 +252,14 @@ Decode is a separate cost from prefill, so Path 3 does not touch it. Elimination
   walking interleaved positions, accumulators per group head, then a shared-memory reduction over the key groups. Falls back to the existing kernel for head dim other than 64/128 or groups above 8.
 - Gates: standalone parity against the existing partial+combine on random data across seq lengths 1-2,048 and several group sizes; greedy text identical on Qwen3-4B; A/B on long-context decode (target: attention near 10 ms at 500 tokens,
   decode after a 493-token prompt from 6.3 to about 10 t/s); then a second model with a different head count. Rollback env switch.
+
+### Lead 2b, decode attention kernel shipped, 2026-10-11 (default on, `STINGRAY_VULKAN_DECODE_ATTN_GQA=0` rolls back)
+`AttentionSplitKvPartialGqa` (`Shaders.cs`) and `VulkanBackend.AttentionSplitKvGqa`, wired through `GpuForwardPass.AttentionSplitKvAuto` (both decode call sites; fp32 KV; head dim 64/128; 1-4 query heads per KV head;
+anything else keeps the original kernel). One workgroup per (KV head, split) serving the whole GQA group: 8 (or 4) lanes per key with contiguous vec4 K reads and the group's Q in registers, softmax statistics for all group heads
+together, value phase as 32 (or 16) vec4 lanes across the head dim times interleaved key groups with a shared-memory reduction. Same partial layout and combine pass.
+- Standalone, 32 heads / 8 KV heads / head dim 128, 520 keys, 36 layers per submission: old 56.4 ms (1,566 us/layer) -> **new 4.8 ms (132 us/layer), 11.8x**; ggml's `flash_attn` is about 140 us/layer at 512 keys (FP16 KV).
+  Parity vs the old kernel across seq 1-2,048, head dims 64/128, groups 1/2/4: max difference about 1e-7.
+- End to end, Qwen3-4B-Q4_K_M, Vulkan, greedy, 64 tokens, alternating A/B: **decode after a 493-token prompt 6.5 / 6.3 -> 12.0 / 12.2 t/s (+88%)**, generated text identical in both rounds; with a 30-token prompt 10.7 -> 10.9 t/s,
+  text identical. Vulkan decode at long context is now level with the CPU (12.2 t/s).
+- Tests: `VulkanSplitKvGqaAttentionTests` (5 shapes x 9 context/window cases plus the support check); shader-drift gate passes.
+- Remaining decode costs at short context (about 20 ms per token outside the matmuls, matmuls near the bandwidth ceiling): fusing norm/RoPE/residual dispatches. bf16/q8 KV caches still use the old kernels.

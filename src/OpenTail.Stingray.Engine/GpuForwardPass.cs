@@ -1943,7 +1943,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 // allocated (gate + maxSplits≤256). Otherwise the byte-identical spill path runs.
                 if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
                 {
-                    _gpu.AttentionSplitKv(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                    AttentionSplitKvAuto(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _splitKvPartialO, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
                         (uint)(position + 1), (uint)_maxSeqLen, window: window);
@@ -3343,7 +3343,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 (uint)kvDim, (uint)position, (uint)_maxSeqLen);
             _gpu.RecordBarrier();
             if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
-                _gpu.AttentionSplitKv(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                AttentionSplitKvAuto(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _splitKvPartialO, _splitKvPartialMeta!,
                     (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
@@ -3475,6 +3475,22 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     // allocation that threw is freed in EnsureBatchVerifyScratch's catch, not here (the fields
     // would be null/freed). Free dereferences tensor.Handle, so it is NOT null-safe — which is why
     // _logitsK is freed only when _logitsKBuf proves the pair was actually allocated.
+    /// <summary>STINGRAY_VULKAN_DECODE_ATTN_GQA=0 keeps the original one-key-per-thread split-KV partial kernel (rollback switch).</summary>
+    private static readonly bool SplitKvGqaEnabled = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DECODE_ATTN_GQA") != "0";
+
+    /// <summary>
+    /// Split-KV decode attention for fp32 KV: the GQA-group partial kernel when the shape is supported (head_dim 64/128, 1-4 query heads per KV head),
+    /// else the original kernel. Same partial buffers and combine pass either way.
+    /// </summary>
+    private void AttentionSplitKvAuto(Tensor q, Tensor kCache, Tensor vCache, Tensor output, Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen, uint window = 0u)
+    {
+        if (SplitKvGqaEnabled && VulkanBackend.SupportsSplitKvGqa(numHeads, numKvHeads, headDim))
+            _gpu.AttentionSplitKvGqa(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
+        else
+            _gpu.AttentionSplitKv(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
+    }
+
     /// <summary>
     /// Records the batched flash attention for a chunk of <paramref name="k"/> queries. The flash kernel holds one accumulator per query in
     /// registers, so it serves at most <see cref="VulkanBackend.FlashAttentionMaxQueries"/> queries per dispatch; a larger prefill chunk

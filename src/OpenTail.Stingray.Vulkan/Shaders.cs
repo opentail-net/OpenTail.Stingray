@@ -11794,6 +11794,166 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Split-KV decode attention partial pass for fp32 KV caches that serves a whole GQA group per workgroup. Replaces the one-key-per-thread
+    /// <see cref="AttentionSplitKvPartial"/> (uncoalesced K reads with lanes <c>kv_dim</c> floats apart, a value phase using only
+    /// <c>head_dim</c> of 256 threads walking every position serially, and a separate workgroup per query head re-reading the same K/V).
+    /// One workgroup per (KV head, split); it handles the <c>G = num_heads / num_kv_heads</c> (1 to 4) query heads that share that KV head.
+    /// QK phase: <c>head_dim/16</c> lanes per key read contiguous vec4s, dot against the group's Q held in registers, partial dots reduced through
+    /// shared memory. Softmax: max and sum for all G heads reduced together over the slice. Value phase: <c>head_dim/4</c> lanes across the head
+    /// dimension (vec4, coalesced) times interleaved key groups, per-head accumulators, shared-memory reduction over the key groups.
+    /// Same push constants, partial layout (<c>[head][split][head_dim]</c>, meta <c>[head][split][2]</c>) and combine pass as the original.
+    /// Requires head_dim 64 or 128 and G in 1..4. Dispatch (num_kv_heads, n_splits).
+    /// </summary>
+    internal const string AttentionSplitKvPartialGqa = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Q4         { vec4 q4[]; };
+        layout(binding = 1) readonly buffer KCache4    { vec4 k4[]; };
+        layout(binding = 2) readonly buffer VCache4    { vec4 v4[]; };
+        layout(binding = 3) buffer PartialO            { float partial_o[]; };
+        layout(binding = 4) buffer PartialMeta         { float partial_meta[]; };
+
+        layout(push_constant) uniform Params {
+            uint num_heads;
+            uint num_kv_heads;
+            uint head_dim;
+            uint seq_len;
+            uint n_splits;
+            uint window;
+        };
+
+        const uint CHUNK = 256u;
+        const uint MAXG = 4u;
+        shared float sk[MAXG][CHUNK];          // scores, then probabilities, for the slice (indexed t - t0)
+        shared float sh_dp[256 * MAXG];        // per-lane partial dots
+        shared float sred[MAXG][CHUNK];        // softmax reductions
+        shared float red_o[4096];              // value-phase reduction over key groups: [kg][g][head_dim]
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint kvh = gl_WorkGroupID.x;
+            uint s = gl_WorkGroupID.y;
+            if (kvh >= num_kv_heads || s >= n_splits) return;
+
+            uint G = num_heads / num_kv_heads;
+            uint h0 = kvh * G;
+            uint start_seq = (window != 0u && window < seq_len) ? (seq_len - window) : 0u;
+            uint t0 = s * CHUNK;
+            uint t1 = t0 + CHUNK; if (t1 > seq_len) t1 = seq_len;
+            if (t0 >= seq_len || t1 <= start_seq) {
+                if (tid < G) { uint mo = ((h0 + tid) * n_splits + s) * 2u; partial_meta[mo] = -1.0 / 0.0; partial_meta[mo + 1u] = 0.0; }
+                return;
+            }
+            if (t0 < start_seq) t0 = start_seq;
+            uint n = t1 - t0;
+
+            uint kv_dim = num_kv_heads * head_dim;
+            uint rs4 = kv_dim >> 2;                       // row stride in vec4
+            uint hv = head_dim >> 2;                      // vec4 per head row (32 or 16)
+            uint kv_base4 = (t0 * kv_dim + kvh * head_dim) >> 2;
+            float scale = inversesqrt(float(head_dim));
+
+            // Phase 1: scores
+            uint LPK = hv >> 2;                           // lanes per key (8 or 4); each lane covers 4 vec4 = 16 dims
+            uint lane = tid % LPK;
+            uint kslot = tid / LPK;
+            uint KPP = 256u / LPK;                        // keys per pass
+            vec4 qv[MAXG][4];
+            [[unroll]] for (uint g = 0u; g < MAXG; g++)
+                [[unroll]] for (uint i = 0u; i < 4u; i++)
+                    qv[g][i] = g < G ? q4[(((h0 + g) * head_dim) >> 2) + lane + LPK * i] : vec4(0.0);
+            for (uint kb = 0u; kb < n; kb += KPP) {
+                uint t = kb + kslot;
+                float dp[MAXG];
+                [[unroll]] for (uint g = 0u; g < MAXG; g++) dp[g] = 0.0;
+                if (t < n) {
+                    uint row4 = kv_base4 + t * rs4;
+                    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                        vec4 kk = k4[row4 + lane + LPK * i];
+                        [[unroll]] for (uint g = 0u; g < MAXG; g++) dp[g] += dot(qv[g][i], kk);
+                    }
+                }
+                [[unroll]] for (uint g = 0u; g < MAXG; g++) sh_dp[tid * MAXG + g] = dp[g];
+                barrier();
+                if (tid < KPP * G) {
+                    uint ks = tid / G;
+                    uint g = tid % G;
+                    float sum = 0.0;
+                    for (uint l = 0u; l < LPK; l++) sum += sh_dp[(ks * LPK + l) * MAXG + g];
+                    if (kb + ks < n) sk[g][kb + ks] = sum * scale;
+                }
+                barrier();
+            }
+
+            // Phase 2: softmax statistics for all group heads together (n <= 256: one key per thread)
+            float v[MAXG];
+            [[unroll]] for (uint g = 0u; g < MAXG; g++) {
+                v[g] = (g < G && tid < n) ? sk[g][tid] : -1.0 / 0.0;
+                sred[g][tid] = v[g];
+            }
+            barrier();
+            [[unroll]] for (uint r = 128u; r > 0u; r >>= 1) {
+                if (tid < r) {
+                    [[unroll]] for (uint g = 0u; g < MAXG; g++) sred[g][tid] = max(sred[g][tid], sred[g][tid + r]);
+                }
+                barrier();
+            }
+            float m[MAXG];
+            [[unroll]] for (uint g = 0u; g < MAXG; g++) m[g] = sred[g][0];
+            barrier();
+            [[unroll]] for (uint g = 0u; g < MAXG; g++) {
+                float e = (g < G && tid < n) ? exp(v[g] - m[g]) : 0.0;
+                sk[g][tid] = e;
+                sred[g][tid] = e;
+            }
+            barrier();
+            [[unroll]] for (uint r = 128u; r > 0u; r >>= 1) {
+                if (tid < r) {
+                    [[unroll]] for (uint g = 0u; g < MAXG; g++) sred[g][tid] += sred[g][tid + r];
+                }
+                barrier();
+            }
+            if (tid < G) {
+                uint mo = ((h0 + tid) * n_splits + s) * 2u;
+                float mm = m[0], ll = sred[0][0];
+                if (tid == 1u) { mm = m[1]; ll = sred[1][0]; }
+                if (tid == 2u) { mm = m[2]; ll = sred[2][0]; }
+                if (tid == 3u) { mm = m[3]; ll = sred[3][0]; }
+                partial_meta[mo] = mm;
+                partial_meta[mo + 1u] = ll;
+            }
+
+            // Phase 3: un-normalised weighted V for each group head
+            uint dv = tid % hv;                            // vec4 index within the head row
+            uint kg = tid / hv;                            // key group
+            uint KG = 256u / hv;
+            vec4 acc[MAXG];
+            [[unroll]] for (uint g = 0u; g < MAXG; g++) acc[g] = vec4(0.0);
+            for (uint t = kg; t < n; t += KG) {
+                vec4 vv = v4[kv_base4 + t * rs4 + dv];
+                [[unroll]] for (uint g = 0u; g < MAXG; g++) acc[g] += sk[g][t] * vv;
+            }
+            [[unroll]] for (uint g = 0u; g < MAXG; g++) {
+                if (g < G) {
+                    uint o = (kg * G + g) * head_dim + dv * 4u;
+                    red_o[o] = acc[g].x; red_o[o + 1u] = acc[g].y; red_o[o + 2u] = acc[g].z; red_o[o + 3u] = acc[g].w;
+                }
+            }
+            barrier();
+            for (uint idx = tid; idx < G * head_dim; idx += 256u) {
+                uint g = idx / head_dim;
+                uint d = idx - g * head_dim;
+                float sum = 0.0;
+                for (uint k2 = 0u; k2 < KG; k2++) sum += red_o[(k2 * G + g) * head_dim + d];
+                partial_o[((h0 + g) * n_splits + s) * head_dim + d] = sum;
+            }
+        }
+        """;
+
+    /// <summary>
     /// Flash-decoding combine (issue #312) — the Vulkan mirror of the CUDA
     /// <c>llm_attention_combine</c> kernel. One workgroup per query head; LSE-merges the
     /// <c>n_splits</c> per-slice partials emitted by <see cref="AttentionSplitKvPartial"/> into

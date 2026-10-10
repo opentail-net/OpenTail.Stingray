@@ -1638,6 +1638,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _kvAppendQ8Pipeline;
     private ComputePipeline? _attentionQ8Pipeline;
     private ComputePipeline? _splitKvPartialPipeline;
+    private ComputePipeline? _splitKvPartialGqaPipeline;
     private ComputePipeline? _splitKvPartialBf16Pipeline;
     private ComputePipeline? _splitKvPartialQ8Pipeline;
     private ComputePipeline? _splitKvCombinePipeline;
@@ -3512,6 +3513,46 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_attentionBatchedQ8Pipeline,
             [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
             numHeads, &p, groupY: (uint)numQueries);
+    }
+
+    /// <summary>True when <see cref="AttentionSplitKvGqa"/> can serve this shape: head_dim 64 or 128 and a GQA group of 1 to 4 query heads per KV head.</summary>
+    public static bool SupportsSplitKvGqa(uint numHeads, uint numKvHeads, uint headDim) =>
+        numKvHeads > 0 && numHeads % numKvHeads == 0 && numHeads / numKvHeads is >= 1 and <= 4 && headDim is 64 or 128;
+
+    /// <summary>
+    /// <see cref="AttentionSplitKv"/> with the GQA-group partial pass (<see cref="Shaders.AttentionSplitKvPartialGqa"/>): one workgroup per
+    /// (KV head, split) serving all query heads that share the KV head, with coalesced vec4 K/V reads. Same combine pass, same partial
+    /// buffers, same split count. Check <see cref="SupportsSplitKvGqa"/> first; fp32 KV caches only.
+    /// </summary>
+    public void AttentionSplitKvGqa(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        if (!SupportsSplitKvGqa(numHeads, numKvHeads, headDim))
+            throw new NotSupportedException($"AttentionSplitKvGqa serves head_dim 64/128 with 1-4 query heads per KV head; got heads={numHeads}, kvHeads={numKvHeads}, headDim={headDim}.");
+        if (seqLen > SplitKvMaxSeqLen)
+            throw new ArgumentOutOfRangeException(nameof(seqLen),
+                $"split-KV supports up to 256 splits (chunk={SplitKvChunk} => seqLen <= {SplitKvMaxSeqLen}); got seqLen={seqLen}.");
+        uint nSplits = (seqLen + SplitKvChunk - 1) / SplitKvChunk;
+        _splitKvPartialGqaPipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvPartialGqa, 5, pushConstantSize: sizeof(SplitKvPartialParams));
+        _splitKvCombinePipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombine, 3, pushConstantSize: sizeof(SplitKvCombineParams));
+
+        var pp = new SplitKvPartialParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, nSplits = nSplits, window = window
+        };
+        DispatchOrRecord(_splitKvPartialGqaPipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(partialO), GetBuffer(partialMeta)],
+            numKvHeads, &pp, groupY: nSplits);
+
+        if (_recording) RecordBarrier();
+
+        var cp = new SplitKvCombineParams { numHeads = numHeads, headDim = headDim, nSplits = nSplits };
+        DispatchOrRecord(_splitKvCombinePipeline,
+            [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output)],
+            numHeads, &cp);
     }
 
     /// <summary>
