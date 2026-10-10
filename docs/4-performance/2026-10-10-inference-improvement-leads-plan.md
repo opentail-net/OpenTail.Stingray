@@ -162,3 +162,14 @@ Q8_0 bytes converted with `bitfieldExtract`, input read as vec4s, scale read onc
 - Correctness gate added: `VulkanQuantMatVecTests` (Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K against the CPU dequantizer with a double-precision dot; 16 cases,
   new and old kernels both pass). Rollback: `STINGRAY_VK_MATVEC_V2=0`.
 - Remaining Lead 1 order: Q3_K (1.8x behind), Q4_0 (18%), Q6_K (1.23x), Q5_K (1.2x); MXFP4 still 25 vs 35.9 GB/s.
+
+### Lead 1 status, 2026-10-10: the large wins are shipped; the rest is parked with reasons
+Shipped: MXFP4 (1.75x kernel, gpt-oss decode +12%) and Q8_0 (+31% kernel, within 4% of ggml; Qwen3-0.6B-Q8_0 decode +7-10%), plus Q4_0 (+7%).
+Q4_K is already at parity with ggml (42.2 vs 42.6 GB/s). Parked:
+- **Q3_K (1.8x behind):** ggml's kernel uses 16 cooperating threads per block with the 16 sub-block scales decoded cooperatively into shared memory
+  (barrier per block); even so it reaches only 29 GB/s. Our kernel issues about a dozen small, partly unaligned loads per 8 elements. A faithful port is a
+  restructuring, for an audience limited to Q3_K checkpoints (for example Qwen3.6-27B-UD-Q3_K_XL, which does not fit the GPU budget anyway).
+- **Q6_K, Q5_K (about 1.2x behind), Q4_0 (about 1.2x):** each is a modest share of a typical model's bytes (Q6_K is roughly a fifth of a Q4_K_M model), so the
+  end-to-end gain is a few percent each.
+- **MXFP4 residual (25 vs 35.9 GB/s):** untried ideas are six-word funnel loads and several rows per workgroup.
+Revisit if a profile shows one of these types dominating a model we care about. Next: Lead 2 (batched prefill on the Vulkan LLM path).
