@@ -69,6 +69,14 @@ stage timings, as was done for Qwen Image. Notes already gathered for that day:
 - **First step:** after the FLUX.2 sample run, read its stage timings and check whether the kernel-family changes already
   help it (a switch A/B with `STINGRAY_VK_QGEMM_SMALLM`).
 
+### Lead 6 (deferred follow-on): diffusion-side mat-vec kernels
+- **Evidence:** the `MatVecDq*` family (Qwen, FLUX, SD3.5 and other diffusion M=1 projections) trails ggml too: Q3_K 15.8 vs 29.0 GB/s,
+  Q4_K 23.6 vs 42.6, Q5_K about 26 vs 42.9 (same 4096x14336 shape, kernel time only, 2026-10-10). A 16-weights-per-lane variant was tried
+  and was slower, so decode amortisation alone does not help.
+- **Why deferred:** it is a separate body of work that would double the effort, and its end-to-end effect on diffusion is small today
+  (Qwen's M=1 products are about 1% of a forward). Taken after Leads 1-5, using whatever structure the LLM-decode work settles on
+  (aligned word loads, packed scale decode, scale factored out of the dot product, several rows per workgroup, whole blocks per lane).
+
 ## Not worth chasing now
 CPU SmolLM2 prefill (about 0.7-0.9x per the notes), Qwen Image non-GEMM ops and VAE (at parity with the reference).
 
@@ -127,3 +135,10 @@ so decode amortisation alone does not help; access pattern and ALU per weight ar
 The `MatVecDq*` family (diffusion M=1 projections) also trails ggml (Q3_K 15.8 vs 29 GB/s, Q4_K 23.6 vs 42.6) and could use the same
 ggml-style rewrite, but it is a separate body of work that would double the effort and matters little for diffusion speed today
 (Qwen's M=1 products are about 1% of a forward). Deferred; revisit after the LLM-decode kernels below.
+
+### Lead 1, MXFP4 first result, 2026-10-10
+New `MatVecMxfp4V2` (`Shaders.cs`): one 17-byte block per lane (five unaligned 32-bit loads), the 32 values decoded with a packed 4-bit
+magnitude constant (no dynamically indexed array), input read as aligned vec4s, same push constants and dispatch. Standalone, 4096x14336:
+**14.1-14.3 GB/s -> 24.3-25.1 GB/s (about 1.75x)**, output sum of |c| identical to 8 digits (summation order differs, first element agrees to
+6 digits). ggml reaches 35.9 GB/s, so further room remains. Switch: `STINGRAY_VK_MXFP4_V2=1` (experiment; default flips after end-to-end
+gpt-oss parity and speed checks below).
