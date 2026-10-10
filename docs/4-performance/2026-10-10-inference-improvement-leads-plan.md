@@ -99,3 +99,26 @@ Our rates are flat across the Qwen shapes (3072x3072, 3072x12288, 12288x3072: 15
 kernel's inner structure, not a shape effect. Verdict: Lead 1 is confirmed, with up to about 1.8x available on Q3_K/Q4_K
 mat-vec and about 2x on MXFP4. Next: compare our `MatVecDqQ3K/Q4K/Q5K` shaders with ggml's `mul_mat_vec_q3_k/q4_k.comp`
 (workgroup size, rows per workgroup, vector loads, reduction), try the cheapest structural change, and A/B it.
+
+### Lead 1, correction and the real picture, 2026-10-10: LLM-decode kernels measured
+The first table above measured the diffusion-side `MatVecDq*` family. The Vulkan LLM decode path uses a different, older
+family (`MatVecQ3K/Q4K/Q5K/Q6K/Q8_0/Q4_0/Mxfp4`, entry `VulkanBackend.MatMul(..., weightDType)` and `MatVecMxfp4`). Measured with
+the same method (4096 x 14336 mat-vec, 50 calls per submission, effective GB/s on the quantized bytes) against ggml on the same GPU
+(ggml's mat-vec ceiling on this machine is about 44 GB/s):
+
+| Type | Ours | ggml | ggml faster by | Notes |
+|---|---|---|---|---|
+| Q4_K | 42.2 GB/s | 42.6 | 1.0x | parity: the most common LLM quant needs nothing |
+| Q5_K | 35.8 | 42.9 | 1.2x | |
+| Q6_K | 36.6 | 45.0 | 1.23x | part of every Q4_K_M / Q5_K_M model (ffn_down, output) |
+| Q8_0 | 32.7 | 45.1 | 1.38x | many small models ship as Q8_0 |
+| Q4_0 | 31.2 | 41.4 | 1.33x | |
+| Q3_K | 16.1 | 29.1 | 1.8x | the Q3_K_S/M/XL checkpoints, for example Qwen3.6-27B |
+| MXFP4 | 14.3 | 35.9 | 2.5x | gpt-oss-20B decode is MXFP4 mat-vec-bound |
+
+Impact: any Vulkan LLM using these weight types, in proportion to the bytes they hold; Q4_K-only models are unaffected. Priority by
+gap x how many models: MXFP4, then Q8_0, Q3_K, Q4_0, Q6_K, Q5_K. ggml's Q4_K kernel (for reference, reading it): aligned 32-bit
+word loads, all block scales decoded with a few packed bit operations, the scale factored out of the dot product (q.y first,
+then one multiply per sub-block) instead of dequantizing each weight, and several rows per workgroup so activation loads are
+shared. The experiment of decoding 16 weights per lane in our diffusion-side mat-vec was slower (13.8-25 GB/s vs 15.8-26),
+so decode amortisation alone does not help; access pattern and ALU per weight are what to change.
