@@ -77,3 +77,25 @@ CPU SmolLM2 prefill (about 0.7-0.9x per the notes), Qwen Image non-GEMM ops and 
 2. Leads 1 to 5, in that order, only after step 1 (the images) is complete. Leads 4 and 5 may be parked with a written reason, but the reference timings in step 4 still wait until all five are done or parked.
 3. After each lead: log measured numbers (dated) here, update `PerformanceLeague.md` rows, and commit.
 4. Only after Leads 1 to 5 are all done: the deferred reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2 (and the Wan quantized-weights footprint fix, if wanted).
+
+## Progress log
+
+### Lead 1, first measurement, 2026-10-10 (done): the reference is about 1.8x faster, with large headroom
+Method: ggml `test-backend-ops perf -o MUL_MAT -b Vulkan0` (vendored in `examples/stable-diffusion.cpp/build/bin/`) for the
+reference; our own standalone benchmark for Stingray (one-row quantized mat-vec, 50 calls per submission so fixed overhead
+drops out, effective GB/s = quantized-weight bytes / kernel time). Same GPU (Radeon iGPU, `uma 1, fp16 1, warp 64`).
+
+Sustained-bandwidth ceiling on this machine (ggml, 4096 x 14336 mat-vec): F16 42.6, BF16 44.7, F32 44.1, Q8_0 45.1, Q4_0 41.4
+GB/s, so about 44 GB/s is the practical ceiling.
+
+| Type | Ours | ggml | Ours as share of ceiling | ggml as share |
+|---|---|---|---|---|
+| Q3_K, 4096x14336 | 1596 us, 15.8 GB/s | 868 us, 29.0 GB/s | 36% | 66% |
+| Q4_K, 4096x14336 | 1400 us, 23.6 GB/s | 775 us, 42.6 GB/s | 54% | 97% |
+| Q5_K, 4096x14336 | 1551 us, 26.0 GB/s | not in the log | 59% | n/a |
+| MXFP4 | about 18 GB/s (league doc, gpt-oss) | 35.9 GB/s | about 41% | 82% |
+
+Our rates are flat across the Qwen shapes (3072x3072, 3072x12288, 12288x3072: 15.6-15.9 GB/s Q3_K, 23.5-25.4 Q4_K), so it is the
+kernel's inner structure, not a shape effect. Verdict: Lead 1 is confirmed, with up to about 1.8x available on Q3_K/Q4_K
+mat-vec and about 2x on MXFP4. Next: compare our `MatVecDqQ3K/Q4K/Q5K` shaders with ggml's `mul_mat_vec_q3_k/q4_k.comp`
+(workgroup size, rows per workgroup, vector loads, reduction), try the cheapest structural change, and A/B it.
