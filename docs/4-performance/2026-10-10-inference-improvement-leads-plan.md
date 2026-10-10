@@ -38,7 +38,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **B4** Second dense model and a decode-regression check with Path 3 on.
 - [ ] **B5** Decide whether Path 3 becomes the default (CPU prefill on the same prompt is 102.8 t/s); extend the batched trunk to Q3_K/Q5_K weights, which it excludes today.
 - [ ] **B6** MoE prefill (currently handed to the CPU) and `VulkanLayerSplitForwardPass` per-token prefill: revisit after B5.
-- [ ] **B7** (new) Batched prefill for models with Q/K/V biases (the Qwen2.5 family): the batched trunk excludes them (`_canBatchedTrunk`), so Qwen2.5-VL-7B prefills token by token at about 7 t/s. The trunk code already has the bias adds for batched rows; check whether the exclusion is stale and enable it for Path 3 (parity against the per-token path first).
+- [ ] **B7** (corrected) Batched prefill for text-only prompts on M-RoPE models (Qwen2-VL / Qwen2.5-VL / Qwen3-VL). Not a bias problem (batched bias adds have worked since 2026-09-26): `ComputeCanBatchedTrunk` returns false whenever `_mropePairPos` is set, because positions shift after images and only the per-token trunk applies them. With no images in the context the three position streams are equal, so the batched trunk should be exact; the gate is computed once at construction, so it needs a per-prefill check (no images present) plus a parity test against the per-token path. Qwen2.5-VL-7B prefills at about 7 t/s today.
 
 ### C. Mat-vec kernels (Lead 1)
 - [x] **C1** MXFP4: one block per lane, packed-LUT decode. 14 to 25 GB/s; gpt-oss decode 6.7 to 7.5 t/s (+12%). Commit `c30e455a`.
