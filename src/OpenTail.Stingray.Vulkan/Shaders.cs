@@ -6782,6 +6782,133 @@ internal static class Shaders
         """;
 
     /// <summary>
+    /// Q8_0 mat-vec, one 34-byte block per lane: the 32 int8 values are read as eight 32-bit words (block starts are even, so the
+    /// bytes are either word-aligned or shifted by exactly 16 bits), converted with <c>bitfieldExtract</c>, and dotted against the
+    /// input read as aligned vec4s; the half-precision scale is read once per block. Replaces the one-byte-per-lane kernel
+    /// (<see cref="MatVecQ8_0"/>). Same bindings, push constants and dispatch (8 rows x 32 lanes per workgroup). Requires cols % 32 == 0.
+    /// </summary>
+    internal const string MatVecQ8_0V2 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer InputV  { vec4 in4[]; };
+        layout(binding = 2) writeonly buffer Output { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        shared float sdata[256];
+
+        vec4 i8x4(uint q) {
+            return vec4(float(bitfieldExtract(int(q), 0, 8)), float(bitfieldExtract(int(q), 8, 8)),
+                        float(bitfieldExtract(int(q), 16, 8)), float(bitfieldExtract(int(q), 24, 8)));
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint lane = tid & 31u;
+            uint row = gl_WorkGroupID.x * 8u + (tid >> 5);
+            float acc = 0.0;
+            if (row < rows) {
+                uint nb = cols >> 5;
+                uint boff = row * nb * 34u;
+                for (uint blk = lane; blk < nb; blk += 32u) {
+                    uint b0 = boff + blk * 34u;                       // even
+                    uint sw = weights_data[b0 >> 2];
+                    float d = unpackHalf2x16((b0 & 2u) != 0u ? (sw >> 16) : (sw & 0xFFFFu)).x;
+                    uint o = b0 + 2u;                                 // start of the 32 int8 values, also even
+                    uint i0 = o >> 2;
+                    uint sh = (o & 2u) * 8u;                          // 0 or 16
+                    uint w[9];
+                    [[unroll]] for (uint j = 0u; j < 9u; j++) w[j] = (sh == 0u && j == 8u) ? 0u : weights_data[i0 + j];
+                    uint ib = blk * 8u;
+                    float s = 0.0;
+                    [[unroll]] for (uint j = 0u; j < 8u; j++) {
+                        uint q = sh == 0u ? w[j] : ((w[j] >> 16) | (w[j + 1u] << 16));
+                        s += dot(i8x4(q), in4[ib + j]);
+                    }
+                    acc += d * s;
+                }
+            }
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16u; s > 0u; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0u && row < rows) output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
+    /// Q4_0 mat-vec, one 18-byte block per lane: the 16 packed bytes are read as four words, low nibbles are elements 0-15 and high
+    /// nibbles elements 16-31 (value = (nibble - 8) * d), input read as aligned vec4s. Replaces the one-element-per-lane kernel
+    /// (<see cref="MatVecQ4_0"/>). Same bindings, push constants and dispatch. Requires cols % 32 == 0.
+    /// </summary>
+    internal const string MatVecQ4_0V2 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer InputV  { vec4 in4[]; };
+        layout(binding = 2) writeonly buffer Output { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+        };
+
+        shared float sdata[256];
+
+        vec4 nib4(uint q, uint shift) {
+            return vec4(float(int((q >> shift) & 0xFu) - 8), float(int((q >> (shift + 8u)) & 0xFu) - 8),
+                        float(int((q >> (shift + 16u)) & 0xFu) - 8), float(int((q >> (shift + 24u)) & 0xFu) - 8));
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint lane = tid & 31u;
+            uint row = gl_WorkGroupID.x * 8u + (tid >> 5);
+            float acc = 0.0;
+            if (row < rows) {
+                uint nb = cols >> 5;
+                uint boff = row * nb * 18u;
+                for (uint blk = lane; blk < nb; blk += 32u) {
+                    uint b0 = boff + blk * 18u;                       // even
+                    uint sw = weights_data[b0 >> 2];
+                    float d = unpackHalf2x16((b0 & 2u) != 0u ? (sw >> 16) : (sw & 0xFFFFu)).x;
+                    uint o = b0 + 2u;
+                    uint i0 = o >> 2;
+                    uint sh = (o & 2u) * 8u;
+                    uint w[5];
+                    [[unroll]] for (uint j = 0u; j < 5u; j++) w[j] = (sh == 0u && j == 4u) ? 0u : weights_data[i0 + j];
+                    uint ib = blk * 8u;
+                    float s = 0.0;
+                    [[unroll]] for (uint j = 0u; j < 4u; j++) {
+                        uint q = sh == 0u ? w[j] : ((w[j] >> 16) | (w[j + 1u] << 16));
+                        s += dot(nib4(q, 0u), in4[ib + j]) + dot(nib4(q, 4u), in4[ib + 4u + j]);
+                    }
+                    acc += d * s;
+                }
+            }
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16u; s > 0u; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0u && row < rows) output_data[row] = sdata[tid];
+        }
+        """;
+
+    /// <summary>
     /// Matrix-vector multiply with Q8_0 dequantization.
     /// Each workgroup computes 8 output rows (8 rows × 32 lanes = 256 threads).
     /// Push constants: { uint rows, uint cols }.

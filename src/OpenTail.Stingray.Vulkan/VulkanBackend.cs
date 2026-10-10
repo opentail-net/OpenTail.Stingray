@@ -1664,6 +1664,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private readonly Dictionary<(QuantGemmKind, DType), ComputePipeline> _quantGemmPipelines = new();
     private enum QuantGemmKind { Sgemm, MatVec, SiluGate, SgemmSmall }
 
+    /// <summary>STINGRAY_VK_MATVEC_V2=0 restores the original one-byte-per-lane Q8_0/Q4_0 mat-vec kernels (rollback switch).</summary>
+    private static readonly bool MatVecV2Disabled = Environment.GetEnvironmentVariable("STINGRAY_VK_MATVEC_V2") == "0";
+
     /// <summary>Largest M routed to the small-M quantized GEMM (16-row x 64-weight-row tiles). 0 disables it. STINGRAY_VK_QGEMM_SMALLM overrides.</summary>
     private static readonly int QuantGemmSmallMMax = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_VK_QGEMM_SMALLM"), out int smallM) ? smallM : 32;
 
@@ -2830,11 +2833,11 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 DispatchOrRecord(_matVecQ5KPipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
             case DType.Q8_0:
-                _matVecQ8_0Pipeline ??= new ComputePipeline(this, Shaders.MatVecQ8_0, 3, pushConstantSize: sizeof(MatVecParams));
+                _matVecQ8_0Pipeline ??= new ComputePipeline(this, MatVecV2Disabled ? Shaders.MatVecQ8_0 : Shaders.MatVecQ8_0V2, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecQ8_0Pipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
             case DType.Q4_0:
-                _matVecQ4_0Pipeline ??= new ComputePipeline(this, Shaders.MatVecQ4_0, 3, pushConstantSize: sizeof(MatVecParams));
+                _matVecQ4_0Pipeline ??= new ComputePipeline(this, MatVecV2Disabled ? Shaders.MatVecQ4_0 : Shaders.MatVecQ4_0V2, 3, pushConstantSize: sizeof(MatVecParams));
                 DispatchOrRecord(_matVecQ4_0Pipeline, bufs, (totalRows + 7) / 8, &p);
                 break;
             case DType.Q2_K:

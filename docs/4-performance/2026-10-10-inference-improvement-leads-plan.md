@@ -151,3 +151,14 @@ gpt-oss parity and speed checks below).
 - `STINGRAY_VK_MXFP4_V2=0` restores the old kernel. Remaining gap to ggml on this shape: 25 vs 35.9 GB/s. Ideas not yet tried: load the
   17-byte block as six consecutive words and funnel-shift once instead of five unaligned two-word reads; several rows per workgroup to share
   the activation loads.
+
+### Lead 1, Q8_0 and Q4_0, 2026-10-10: kept
+`MatVecQ8_0V2` and `MatVecQ4_0V2` (`Shaders.cs`): one block per lane, block bytes read as aligned or 16-bit-shifted 32-bit words (block starts are even),
+Q8_0 bytes converted with `bitfieldExtract`, input read as vec4s, scale read once per block. Same bindings, push constants and dispatch.
+- Standalone, 4096x14336 (ggml in brackets): **Q8_0 33.0 -> 43.0-43.3 GB/s (+31%) [45.1]**, Q4_0 31.2-31.4 -> 33.5-33.9 (+7%) [41.4].
+  Q8_0 is within 4% of the reference; Q4_0's per-nibble integer decode is ALU-bound and still about 18% behind.
+- Real model, Qwen3-0.6B-Q8_0, Vulkan, greedy, 96 tokens, alternating A/B: decode **23.6 / 23.6 -> 25.3 / 25.9 t/s (+7-10%)**, prefill 27.4-27.6 -> 29.6-30.8
+  t/s (+8-12%), text identical in both rounds. A 0.6B model is overhead-heavy, so larger Q8_0 models should gain more (not yet measured).
+- Correctness gate added: `VulkanQuantMatVecTests` (Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K against the CPU dequantizer with a double-precision dot; 16 cases,
+  new and old kernels both pass). Rollback: `STINGRAY_VK_MATVEC_V2=0`.
+- Remaining Lead 1 order: Q3_K (1.8x behind), Q4_0 (18%), Q6_K (1.23x), Q5_K (1.2x); MXFP4 still 25 vs 35.9 GB/s.
