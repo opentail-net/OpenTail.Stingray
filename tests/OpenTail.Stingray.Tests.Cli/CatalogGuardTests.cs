@@ -221,6 +221,13 @@ public sealed class CatalogGuardTests
             Assert.Equal(entry.MainFile.FileName, model.GetProperty("fileName").GetString());
             Assert.Equal(entry.MainFile.Sha256, model.GetProperty("sha256").GetString());
             Assert.Equal(entry.MainFile.Size, model.GetProperty("sizeBytes").GetInt64());
+            if (entry.Files.Count(f => f.FileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) > 1)
+            {
+                // A split bundle: the receipt must pin every shard, matching the catalogue name, size and hash one for one.
+                var pinned = model.GetProperty("files").EnumerateArray().Select(x => $"{x.GetProperty("fileName").GetString()}|{x.GetProperty("sizeBytes").GetInt64()}|{x.GetProperty("sha256").GetString()}").ToArray();
+                var expected = entry.Files.Where(f => f.FileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).Select(f => $"{f.FileName}|{f.Size}|{f.Sha256}").ToArray();
+                Assert.Equal(expected, pinned);
+            }
             Assert.False(string.IsNullOrWhiteSpace(q.Result) || string.IsNullOrWhiteSpace(q.Engine) || string.IsNullOrWhiteSpace(q.Date));
             checkedCount++;
         }

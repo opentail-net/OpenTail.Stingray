@@ -30,6 +30,11 @@ stingray setup speak         # Piper en_US-lessac-medium (60 MB)
 stingray setup transcribe    # Whisper base (141 MB)
 stingray models              # check installation status
 
+# Optional: choose a qualified alternative or view local inventory
+stingray models chat         # view chat choices (qwen2.5-0.5b, qwen2.5-1.5b, qwen2.5-7b)
+stingray models use chat qwen2.5-1.5b  # set persistent favourite for chat
+stingray models --local      # list installed models on disk (multi-shard GGUFs deduplicated)
+
 # 2. Run immediately without typing paths
 stingray chat                # interactive multi-turn terminal chat
 stingray chat "Explain SIMD in one sentence."

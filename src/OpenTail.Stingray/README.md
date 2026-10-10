@@ -141,12 +141,12 @@ Console.WriteLine($"Synthesized {result.Duration.TotalSeconds:F2}s of audio to o
 
 We provide tested, standalone C# console applications demonstrating the public API:
 
-* **[Chat Sample (`samples/OpenTail.Stingray.Sample.Chat`)](../../samples/OpenTail.Stingray.Sample.Chat/):** Streaming multi-turn conversation with automatic `ModelHome` resolution and cancellation support.
-* **[Speech Sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech/):** High-speed text-to-speech synthesis (Piper) and audio transcription (Whisper) in a single in-process pipeline.
-* **[Diffusion Sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion/):** Text-to-image synthesis using `IDiffusionPipeline` and unified checkpoints with real-time progress callbacks.
-* **[ASP.NET Core Server (`samples/ChatServer`)](../../samples/ChatServer/):** Serving OpenAI-compatible endpoints directly from your .NET application.
+* **[Chat Sample (`samples/OpenTail.Stingray.Sample.Chat`)](https://github.com/opentail-net/OpenTail.Stingray/tree/main/samples/OpenTail.Stingray.Sample.Chat):** Streaming multi-turn conversation with automatic `ModelHome` resolution and cancellation support.
+* **[Speech Sample (`samples/OpenTail.Stingray.Sample.Speech`)](https://github.com/opentail-net/OpenTail.Stingray/tree/main/samples/OpenTail.Stingray.Sample.Speech):** High-speed text-to-speech synthesis (Piper) and audio transcription (Whisper) in a single in-process pipeline.
+* **[Diffusion Sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](https://github.com/opentail-net/OpenTail.Stingray/tree/main/samples/OpenTail.Stingray.Sample.Diffusion):** Text-to-image synthesis using `IDiffusionPipeline` and unified checkpoints with real-time progress callbacks.
+* **[ASP.NET Core Server (`samples/ChatServer`)](https://github.com/opentail-net/OpenTail.Stingray/tree/main/samples/ChatServer):** Serving OpenAI-compatible endpoints directly from your .NET application.
 
-See the complete **[Sample Catalogue](../../samples/README.md)** for detailed running instructions and CLI examples.
+See the complete **[Sample Catalogue](https://github.com/opentail-net/OpenTail.Stingray/blob/main/samples/README.md)** for detailed running instructions and CLI examples.
 
 ---
 

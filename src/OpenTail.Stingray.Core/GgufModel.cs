@@ -255,7 +255,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     /// Detects the *-00001-of-NNNNN.gguf naming convention used by llama.cpp split models.
     /// Falls back to [path] for single-file models.
     /// </summary>
-    private static string[] ResolveShardPaths(string path)
+    public static string[] ResolveShardPaths(string path)
     {
         var name = Path.GetFileName(path);
         // Match pattern like "Model-00001-of-00002.gguf"

@@ -81,7 +81,12 @@ public sealed record GoldenModel
     public string? Sha256 { get; init; }
     /// <summary>Hugging Face repo id (or other origin) the file was obtained from.</summary>
     public string? Source { get; init; }
+    /// <summary>Every file of a split model (shard order, the first equals the fields above); null for a single-file model. The pin checks all of them, so the receipt names the complete set that was run.</summary>
+    public IReadOnlyList<GoldenModelFile>? Files { get; init; }
 }
+
+/// <summary>One file of a split model: bare name, size and SHA-256.</summary>
+public sealed record GoldenModelFile(string FileName, long SizeBytes, string Sha256);
 
 public sealed record GoldenReference
 {

@@ -333,11 +333,11 @@ stingray verify-goldens --strict                                # strict regress
 Configures persistent per-user default model preferences for tasks (`chat`, `speak`, `transcribe`), avoiding the need to pass `--model <id>` on every command or rely solely on catalogue defaults.
 
 ```
-stingray models use chat qwen2.5-coder-7b        # configure favourite for chat
-stingray models use chat --clear                 # remove favourite for chat
-stingray models                                  # lists tasks and marks active favourites
-stingray models chat                             # lists chat options and badges (favourite)
-stingray models --local                          # shows catalogue models with (favourite) badge
+stingray models use chat qwen2.5-1.5b          # configure favourite for chat
+stingray models use chat --clear               # remove favourite for chat
+stingray models                                # lists tasks and marks active favourites
+stingray models chat                           # lists chat options and badges (favourite)
+stingray models --local                        # shows catalogue models with (favourite) badge
 ```
 
 ### Storage and Configuration
@@ -345,7 +345,7 @@ stingray models --local                          # shows catalogue models with (
   - Windows: `%APPDATA%\stingray\favourites.json`
   - Linux / macOS: `$XDG_CONFIG_HOME/stingray/favourites.json` (fallback: `~/.config/stingray/favourites.json`)
 - **Override**: `STINGRAY_CONFIG_DIR` environment variable overrides the directory path.
-- **Format**: JSON object mapping task name to catalogue model id (e.g. `{"chat": "qwen2.5-coder-7b"}`).
+- **Format**: JSON object mapping task name to catalogue model id (e.g. `{"chat": "qwen2.5-1.5b"}`).
 - **Atomic updates**: Writes are atomic (writes to temporary file in the same directory and renames). Corrupt files are never silently overwritten; updates throw a named error.
 
 ### Resolution Order
@@ -359,5 +359,23 @@ When running task-driven commands (e.g. `stingray chat`, `stingray speak`, `stin
 - Favourites map to catalogue ids only. Setting a favourite validates that `<id>` exists in the catalogue and serves `<task>`.
 - **Stale favourite**: If a favourite points to a model id that no longer exists or does not match the task, resolution fails with a named error directing the user to fix or clear it (`stingray models use <task> <id>` or `stingray models use <task> --clear`). It never silently falls back to the catalogue default.
 - **Corrupt file**: If `favourites.json` exists but cannot be parsed as valid JSON, resolution fails with a named error. It never silently ignores the file or falls back to the default.
+
+---
+
+## Local Inventory: `stingray models --local [--verify]`
+
+Inspects all locally available models without loading weights or constructing forward passes.
+
+```
+stingray models --local                        # scans model home and STINGRAY_MODEL_DIRS
+stingray models --local --verify               # re-hashes installed catalogue files against pinned SHA-256
+```
+
+### Features & Output
+- **Catalogue State**: Lists catalogue entries with their disk status (`Installed`, `Partial`, or `Missing`).
+- **Disk Discovery**: Scans the model cache directory and any paths configured in `STINGRAY_MODEL_DIRS`, reading GGUF header/tensor metadata index (`GgufModel.Open`, weights unread).
+- **Split-GGUF Deduplication**: Multi-shard GGUFs matching the shard naming pattern (`<stem>-00001-of-00002.gguf`) are grouped into a single logical model entry. The inventory reports the canonical first shard path, combines the file sizes across all shards, and verifies shard completeness. If any sibling shard is missing or damaged, an `InvalidEntry` row names the missing shard rather than silently showing a partial model.
+- **Safety Preflight**: Evaluates each discovered model against host RAM via `LoadPreflight.EvaluateFile` to report whether the model fits this machine.
+- **Opt-in Hash Verification (`--verify`)**: Re-computes SHA-256 hashes for installed catalogue entries against their pinned catalogue hashes, using `.sha256` sidecars (`ModelFingerprinter`) to avoid redundant work.
 
 

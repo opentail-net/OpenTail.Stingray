@@ -52,6 +52,19 @@ public static class ModelFingerprinter
     /// <summary>Compares a golden's recorded hash with the file's.</summary>
     public static PinResult CheckPin(GoldenFile golden, string modelPath, Action<double>? progress = null)
     {
+        if (golden.Model.Files is { Count: > 1 } files)
+        {
+            // A split model: every shard must be present next to the first and match its recorded hash.
+            string dir = Path.GetDirectoryName(Path.GetFullPath(modelPath)) ?? ".";
+            foreach (var f in files)
+            {
+                string p = Path.Combine(dir, f.FileName);
+                if (!File.Exists(p)) return new PinResult(PinStatus.Mismatch, f.Sha256, new string('0', 64));
+                string got = Compute(p, progress).Sha256;
+                if (!string.Equals(f.Sha256, got, StringComparison.OrdinalIgnoreCase)) return new PinResult(PinStatus.Mismatch, f.Sha256, got);
+            }
+            return new PinResult(PinStatus.Verified, files[0].Sha256, files[0].Sha256);
+        }
         string? expected = golden.Model.Sha256;
         if (string.IsNullOrWhiteSpace(expected)) return new PinResult(PinStatus.NotRecorded, null, null);
         string actual = Compute(modelPath, progress).Sha256;

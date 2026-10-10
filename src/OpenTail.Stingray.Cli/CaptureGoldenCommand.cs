@@ -182,6 +182,12 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
             }
             else AnsiConsole.MarkupLine("[yellow]--no-hash:[/] the golden will not pin the checkpoint.");
 
+            // A split model: record every shard so the receipt names the complete set that was run.
+            IReadOnlyList<GoldenModelFile>? shardFiles = null;
+            var shardPaths = GgufModel.ResolveShardPaths(modelPath);
+            if (shardPaths.Length > 1 && sha is not null)
+                shardFiles = shardPaths.Select(p => { var f = ModelFingerprinter.Compute(p); return new GoldenModelFile(Path.GetFileName(p), f.SizeBytes, f.Sha256); }).ToArray();
+
             // 2. Prompt ids: the oracle, or as given.
             int[] promptIds;
             string oracle;
@@ -291,7 +297,7 @@ public sealed class CaptureGoldenCommand : Command<CaptureGoldenCommand.Settings
                 {
                     Architecture = arch,
                     Notes = s.Notes,
-                    Model = new GoldenModel { FileName = fileName, SizeBytes = size, Sha256 = sha, Source = s.Source },
+                    Model = new GoldenModel { FileName = fileName, SizeBytes = size, Sha256 = sha, Source = s.Source, Files = shardFiles },
                     Reference = new GoldenReference
                     {
                         Engine = "llama-server",
