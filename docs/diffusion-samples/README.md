@@ -16,14 +16,12 @@ Times are wall-clock for the whole run, one model at a time. "GPU (Vulkan)" mean
 | Qwen Image (Q3_K_S + Qwen2.5-VL-7B encoder) | ![Qwen Image](qwen-image-apple-256.png) | 256×256, 8, CFG 4 | 151s, GPU (Vulkan), 60/60 blocks resident |
 | Z-Image-Turbo (Q4_0) | ![Z-Image](zimage-turbo-apple-512.png) | 512×512, 4 | 129s, GPU (Vulkan) |
 | Stable Diffusion 3.5 Medium (Q4_K_M) | ![SD3.5](sd35-medium-apple-512.png) | 512×512, 20 | 203s, GPU (Vulkan) |
-| Wan 2.2 T2V 14B (Q4_K_S, high-noise expert only), one video frame | ![Wan 2.2](wan22-apple-256.png) | 256×256, 10 | 410s total (DiT 17.5 s/step), GPU (Vulkan) |
 
 SDXL base is shown at its native 1024×1024: at 512×512 it produced a two-panel collage, which is expected for a model trained at 1024. The Q4_0 SDXL-base GGUF uses sd.cpp-style tensor names that our loader does not read yet, so the safetensors file was used.
 
 
-Wan 2.2 14B (only its high-noise expert is used, for all steps) gives a clean, recognisable result even as a single frame at 256×256.
 
-Other video models were tried the same way (Wan 2.1, LTX-Video, HunyuanVideo) but their single-frame results were not good enough to show here; they and their details are kept locally in `scratch/` (not tracked).
+Video models were tried the same way (Wan 2.1, Wan 2.2, LTX-Video, HunyuanVideo) but their single-frame results were not good enough to show here; they and their details are kept locally in `scratch/` (not tracked).
 
 
 ## Commands
