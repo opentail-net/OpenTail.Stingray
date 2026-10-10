@@ -200,7 +200,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         public string? SdCliPath { get; init; }
 
         [CommandOption("--text-encoder")]
-        [Description("(sd-cli mode only) Path to LLM-style text encoder GGUF")]
+        [Description("Path to the LLM-style text encoder GGUF (FLUX.2: Mistral-Small; also used by sd-cli mode)")]
         public string? TextEncoderPath { get; init; }
     }
 
@@ -239,6 +239,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             return 1;
         }
 
+        if (IsFlux2(modelPath))
+            return RunFlux2(s, modelPath, deviceIndex, deviceNone);
+        if (IsQwenImage(modelPath))
+            return RunQwenImage(s, modelPath, deviceIndex, deviceNone);
         if (IsZImage(modelPath))
             return RunZImage(s, modelPath, deviceIndex, deviceNone);
         if (IsSd3(modelPath))
@@ -1106,6 +1110,68 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         return null;
     }
 
+    private static bool IsFlux2(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("flux2") || n.Contains("flux.2") || n.Contains("flux-2");
+    }
+
+    private static int RunFlux2(Settings s, string modelPath, int deviceIndex, bool deviceNone)
+    {
+        string output = s.OutputPath ?? "output.png";
+        int steps = s.Steps > 0 ? s.Steps : 20;
+        float guidance = s.CfgScale >= 0 ? s.CfgScale : 3.5f;
+
+        if (string.IsNullOrWhiteSpace(s.TextEncoderPath) || string.IsNullOrWhiteSpace(s.VaePath))
+        {
+            AnsiConsole.ErrorLine("[red]Error:[/] FLUX.2 needs [yellow]--text-encoder <Mistral-Small GGUF>[/] and [yellow]--vae <flux2-vae.safetensors>[/].");
+            return 1;
+        }
+
+        IComputeBackend? gpu = null;
+        if (!deviceNone && deviceIndex >= 0)
+        {
+            try { gpu = new VulkanBackend(deviceIndex); }
+            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
+        }
+
+        AnsiConsole.MarkupLine("[bold]FLUX.2 (MM-DiT + Mistral-Small conditioning)[/]");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height}  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
+        AnsiConsole.WriteLine();
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            using var pipeline = OpenTail.Stingray.Diffusion.Flux2.Flux2Pipeline.Load(modelPath, s.TextEncoderPath, s.VaePath, ditBackend: gpu);
+            string target = gpu is not null ? gpu.Name : "CPU";
+            pipeline.Generate(new OpenTail.Stingray.Diffusion.Flux2.Flux2GenerationRequest
+            {
+                Prompt = s.Prompt!,
+                Width = s.Width,
+                Height = s.Height,
+                Steps = steps,
+                Guidance = guidance,
+                Seed = s.Seed,
+                OutputPath = output,
+                Progress = (step, total) => Console.Error.WriteLine($"[FLUX.2] step {step}/{total} on {target}"),
+            });
+            sw.Stop();
+            AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        finally
+        {
+            (gpu as IDisposable)?.Dispose();
+        }
+    }
+
     private static bool IsQwenImage(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -1140,8 +1206,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             RRDBNet? upscaler = null;
             if (s.UpscalerPath is not null)
                 upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
-
-            using var pipeline = OpenTail.Stingray.Diffusion.QwenImage.QwenImagePipeline.Load(modelPath, s.VaePath, gpu);
+            using var pipeline = s.QwenEncoderPath is { Length: > 0 } qwenEncoder
+                ? OpenTail.Stingray.Diffusion.QwenImage.QwenImagePipeline.Load(modelPath, qwenEncoder, s.VaePath, gpu)
+                : OpenTail.Stingray.Diffusion.QwenImage.QwenImagePipeline.Load(modelPath, s.VaePath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";
             AnsiConsole.Status()

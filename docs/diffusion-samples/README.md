@@ -3,18 +3,24 @@
 Real, weight-driven generations from OpenTail Stingray's native C# pipelines. No placeholders, no mock latents, no Python.
 Every image uses the **same prompt and seed** so the models can be compared directly:
 
-> **Prompt:** `a red apple on a wooden table` &nbsp;·&nbsp; **Seed:** 42 &nbsp;·&nbsp; **Backend:** auto (Vulkan on a Ryzen 5700G integrated GPU, no discrete GPU) &nbsp;·&nbsp; generated 2026-10-10
+> **Prompt:** `a red apple on a wooden table` &nbsp;·&nbsp; **Seed:** 42 &nbsp;·&nbsp; **Hardware:** Ryzen 5700G with integrated Radeon graphics (no discrete GPU); each row says which backend produced it &nbsp;·&nbsp; generated 2026-10-10
 
-Times are wall-clock for the whole run on that iGPU, one model at a time. A discrete GPU will be much faster.
+Times are wall-clock for the whole run, one model at a time. "GPU (Vulkan)" means the integrated Radeon, confirmed from the run log; a discrete GPU would be much faster. Wan 2.1 ran on CPU (it only uses the GPU when given `--device 0`).
 
 | Model | Image | Size / steps | Time |
 |---|---|---|---|
-| Stable Diffusion 1.5 | ![SD1.5](sd15-apple-512.png) | 512×512, 20 | 162s |
-| SDXL-Turbo | ![SDXL-Turbo](sdxl-turbo-apple-512.png) | 512×512, 4 | 42s |
-| FLUX.1-schnell (Q4_K_S) | ![FLUX.1](flux1-schnell-apple-512.png) | 512×512, 4 | 158s |
-| Z-Image-Turbo (Q4_0) | ![Z-Image](zimage-turbo-apple-512.png) | 512×512, 4 | 129s |
-| Stable Diffusion 3.5 Medium (Q4_K_M) | ![SD3.5](sd35-medium-apple-512.png) | 512×512, 20 | 203s |
-| Wan 2.1 T2V 1.3B (Q4_0), one video frame | ![Wan 2.1](wan21-apple-256.png) | 256×256, 20 | 100s |
+| Stable Diffusion 1.5 | ![SD1.5](sd15-apple-512.png) | 512×512, 20 | 162s, GPU (Vulkan) |
+| SDXL-Turbo | ![SDXL-Turbo](sdxl-turbo-apple-512.png) | 512×512, 4 | 42s, GPU (Vulkan) |
+| SDXL base 1.0 (fp16 safetensors) | ![SDXL base](sdxl-base-apple-1024.png) | 1024×1024, 20 | 690s, GPU (Vulkan) |
+| FLUX.1-schnell (Q4_K_S) | ![FLUX.1](flux1-schnell-apple-512.png) | 512×512, 4 | 156s, GPU (Vulkan) |
+| Z-Image-Turbo (Q4_0) | ![Z-Image](zimage-turbo-apple-512.png) | 512×512, 4 | 129s, GPU (Vulkan) |
+| Stable Diffusion 3.5 Medium (Q4_K_M) | ![SD3.5](sd35-medium-apple-512.png) | 512×512, 20 | 203s, GPU (Vulkan) |
+| Wan 2.1 T2V 1.3B (Q4_0), one video frame | ![Wan 2.1](wan21-apple-256.png) | 256×256, 20 | 100s, **CPU** |
+| LTX-Video 2B v0.9.1, one video frame | ![LTX-Video](ltx-video-apple-512.png) | 512×512, 20 | 155s, GPU requested (`--device 0`); the run log prints no backend line |
+
+SDXL base is shown at its native 1024×1024: at 512×512 it produced a two-panel collage, which is expected for a model trained at 1024. The Q4_0 SDXL-base GGUF uses sd.cpp-style tensor names that our loader does not read yet, so the safetensors file was used.
+
+LTX-Video's single frame is abstract colour blobs with a few red round shapes, not a recognisable apple: the pipeline runs end to end, but this output is weak, and one frame is not what a video model is designed for.
 
 Wan 2.1 is a video model; this is a single frame at low resolution, so it is softer than the image models. It is a smooth red apple-like object on wood: it proves the pipeline runs end to end, not that it matches the image models for quality.
 
