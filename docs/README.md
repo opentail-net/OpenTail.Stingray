@@ -55,7 +55,7 @@ citing "docs/094" and similar still find them.
 
 Also here: [tts-benchmark-log.txt](tts-benchmark-log.txt) (appended to by the audio perf-baseline
 debug tests), [profiles/](profiles) (read by tests), [diffusion-samples/](diffusion-samples) and
-`audio-samples/` (local-only sample output, git-ignored), [research/](research) (papers).
+[audio-samples/](audio-samples) (curated proof samples demonstrating active audio and diffusion generation), [research/](research) (papers).
 
 ## Archive rule
 

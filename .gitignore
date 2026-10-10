@@ -516,17 +516,8 @@ examples/
 /dump_*.cs
 /*_tensors.txt
 
-# docs/audio-samples/ and docs/diffusion-samples/ are local-only as of 2026-09-03 (previous
-# convention tracked real fixtures here in git; reversed -- these accumulate large binary media
-# and bloat the repo). Keep generating real samples into these directories locally as before,
-# just don't commit them. A doc that needs to CITE a specific sample should link to it by
-# filename/path in prose; the file itself stays uncommitted. Excluding directory CONTENTS (not
-# the directories themselves) so the one real (non-media) doc that lives inside
-# diffusion-samples/ can be un-ignored below and stay tracked as normal -- gitignore can't
-# re-include a file whose parent directory is itself excluded.
-/docs/audio-samples/*
-/docs/diffusion-samples/*
-!/docs/diffusion-samples/README.md
+# Curated proof samples in docs/audio-samples/ and docs/diffusion-samples/ are tracked in git
+# to provide audible and visual proof that audio and diffusion pipelines work.
 /moss-tts-audio_tokenizer_config.json
 /moss-tts-config.json
 /moss-tts-meta.txt

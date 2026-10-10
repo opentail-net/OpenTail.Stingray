@@ -209,6 +209,8 @@ The tables below provide both the GPU acceleration command and its verified CPU 
 
 ### 2. Text-to-Music Audio Diffusion
 
+Playable sample clips for every music and sound-effect engine (ACE-Step, Stable Audio 3, MiniMax-Music3, MusicGen, AudioGen) are in [audio-samples](audio-samples/README.md).
+
 | Model and file | Command / Invocation | RAM / VRAM needed | Speed on the reference machine | Notes |
 |---|---|---|---|---|
 | ACE-Step 1.5 Turbo (GPU), `models/acestep-v15/` | `dotnet test --filter Bench_Generate_2sAudio_VulkanGpu` | 1.9 GB peak | 10s audio in 17.3-17.8s (2026-09-28) | DiT runs on Vulkan GPU; VAE decode 6.5s via tiled GEMM. |

@@ -208,7 +208,7 @@ levels of polish:
   Speech and Chatterbox; speech recognition with Whisper, Parakeet and Qwen3-ASR.
 - **Image and video generation**: FLUX.1 / FLUX.2, Stable Diffusion 1.5 / XL / 3.5, Z-Image-Turbo, Qwen Image, Wan, LTX-Video,
   HunyuanVideo. These need several model files each; a guided setup is on the way.
-- **Music and sound**: Stable Audio 3, ACE-Step 1.5, MiniMax-Music3, MusicGen and AudioGen.
+- **Music and sound effects**: ACE-Step 1.5, Stable Audio 3 (music and SFX), MiniMax-Music3 (with vocals), MusicGen and AudioGen. **Listen to real clips in [docs/audio-samples](docs/audio-samples/README.md)**; see the [image and video samples](docs/diffusion-samples/README.md) too.
 
 What is verified, what is partial and what is experimental is tracked per model, with dated
 evidence, in **[docs/STATUS.md](docs/STATUS.md)**. Speed comparisons between the speech engines

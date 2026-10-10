@@ -36,7 +36,7 @@ Confidence is *how* that was checked, since an exact numerical match, a golden t
 | 🔵 Unexecuted | Real, non-stubbed implementation (reads genuine named weight tensors) that has never actually been run — no checkpoint downloaded/tested, so it's unknown whether it produces correct output, garbage, or crashes |
 | 🔴 Placeholder | Not functional — stubbed, unwired, or synthetic data standing in for a real component |
 
-Sourced from [`docs/done/audio-review-new-progress.md`](done/audio-review-new-progress.md) (older history: [`docs/done/audio-review-old-progress-DO-NOT-BOTHER-READING.md`](done/audio-review-old-progress-DO-NOT-BOTHER-READING.md)), [`docs/diffusion-samples/README.md`](diffusion-samples/README.md), and [`docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md`](2-coverage/058-deepseek-full-lineage-implementation-plan.md); dates are when each was last verified.
+Sourced from [`docs/done/audio-review-new-progress.md`](done/audio-review-new-progress.md) (older history: [`docs/done/audio-review-old-progress-DO-NOT-BOTHER-READING.md`](done/audio-review-old-progress-DO-NOT-BOTHER-READING.md)), [`docs/audio-samples/README.md`](audio-samples/README.md), [`docs/diffusion-samples/README.md`](diffusion-samples/README.md), and [`docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md`](2-coverage/058-deepseek-full-lineage-implementation-plan.md); dates are when each was last verified.
 
 | Capability | Status | Confidence | Backend | Notes |
 |---|:---:|:---:|---|---|
@@ -217,7 +217,7 @@ Re-measured 2026-09-25 (all 22 benchmarks of `TtsPerformanceBaselineDebugTest`, 
 previous table 2026-08-31). Since then CosyVoice 3 went 7.48× → 4.24×, FishSpeech 16.29× → 7.76×, F5-TTS 12.97× → 10.30×,
 XTTS-v2 2.93× → 2.64×. **Regression found:** Kokoro's and MeloTTS's streaming now deliver all audio at once
 (time-to-first-audio = total time; they were 1.27s and 671ms), so their streaming path needs a look. Samples live in
-`docs/audio-samples/` (local only, gitignored).
+`docs/audio-samples/` (the perf-turn clips named here are not all kept; current proof clips are in [audio-samples](audio-samples/README.md)).
 
 Raw run data: [docs/tts-benchmark-log.txt](tts-benchmark-log.txt).
 
