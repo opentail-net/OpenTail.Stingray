@@ -281,3 +281,14 @@ That is about 2.6 s (10.7%) faster, and the gap to the reference falls from abou
 drift is about 5%, so treat the gain as 2-3 s and the remaining gap as 1-1.5 s. The plan's five-run median is still outstanding.
 Per-shape reference deficits left: MLP-up at M=1024 (65 ms vs about 78 ms: roughly 0.8 s per forward) and the QKV/out shapes
 (about 1 ms each: 0.3 s); the reference has no advantage on MLP-down, which our chunking now beats.
+
+### Phase 2 MLP-up follow-ups, 2026-10-10: nothing cheap left, stopped
+- Fully unrolling the 32-step compute loop (the kernel keeps an 8-step inner unroll with `dont_unroll` on the outer): checksums
+  bit-identical, no speed change (3072x3072 chunk 18.7 ms vs 18.7-19.3; MLP-up 78 ms vs 78-79 ms). Rejected, reverted.
+- Together with the raster-order swap, split-K, and the 128x128 / 256-thread tile (all rejected above), the cheap structural
+  changes to the existing outer-product kernel are exhausted. MLP-up chunked (4 x 18.5 ms = 74 ms) is within about 12% of the
+  reference (65 ms) and the same-shape chunk is within 4% (18.5 vs 17.7 ms). The reference's 1189 GFLOP/s on that shape
+  (60% of FP32 peak) is higher than the plain-FP32 loop has reached here, which points at packed FP16 arithmetic or a
+  different inner-loop structure: Phase 3 territory, with its numerics decision.
+- Observation: the unchanged Q3_K kernel at K=12288 (MLP-down) varied between 96 and 117 ms across repeated runs, while the
+  K=3072 shapes were stable to about 1 ms. Long-K behaviour is cache/TLB sensitive, one more reason the chunked layout helps.
