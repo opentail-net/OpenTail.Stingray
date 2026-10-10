@@ -22,6 +22,8 @@ SDXL base is shown at its native 1024×1024: at 512×512 it produced a two-panel
 
 
 
+FLUX.2-dev is the heaviest image model here (a roughly 32B-parameter DiT plus a 24B text encoder) and by far the slowest on this iGPU; its speed is a tracked improvement lead.
+
 Video models were tried the same way (Wan 2.1, Wan 2.2, LTX-Video, HunyuanVideo) but their single-frame results were not good enough to show here; they and their details are kept locally in `scratch/` (not tracked).
 
 
@@ -42,6 +44,6 @@ stingray image -m models/_models/z_image_turbo-Q4_0.gguf --vae models/z-image-tu
 stingray image -m models/_models/sd3.5_medium-Q4_K_M.gguf --clip-l models/sd35-medium-aux/text_encoder/model.fp16.safetensors --clip-g models/sd35-medium-aux/text_encoder_2/model.fp16.safetensors --vae models/sd35-medium-aux/vae/diffusion_pytorch_model.safetensors --clip-tokenizer models/clip_tokenizer.json -W 512 -H 512 --steps 20 ...
 ```
 
-More models (FLUX.2, Qwen Image, and the other video models) and their verification status are in [STATUS.md](../STATUS.md). The engineering history of early bring-up is archived in [docs/done/diffusion-spot-check-history-2026-09.md](../done/diffusion-spot-check-history-2026-09.md).
+More models and their verification status are in [STATUS.md](../STATUS.md). The engineering history of early bring-up is archived in [docs/done/diffusion-spot-check-history-2026-09.md](../done/diffusion-spot-check-history-2026-09.md).
 
 For audio samples (speech, **music** and **sound effects**) see [audio-samples](../audio-samples/README.md).
