@@ -1,4 +1,4 @@
-namespace OpenTail.Stingray.Cli;
+namespace OpenTail.Stingray.Engine.Scout;
 
 /// <summary>Tokenizer metadata shapes that have historically decided whether an "unknown" architecture runs at all.</summary>
 public enum TokenizerShape

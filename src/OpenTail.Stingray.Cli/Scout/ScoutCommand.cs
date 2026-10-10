@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Core.Net;
 
 namespace OpenTail.Stingray.Cli.Scout;
@@ -279,7 +280,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
             return ExitCodes.Failure;
         }
 
-        string json = JsonSerializer.Serialize(report, ScoutJsonContext.Default.QuantReport);
+        string json = JsonSerializer.Serialize(report, QuantJsonContext.Default.QuantReport);
         if (settings.OutputPath is { Length: > 0 } outPath)
         {
             File.WriteAllText(outPath, json + "\n");

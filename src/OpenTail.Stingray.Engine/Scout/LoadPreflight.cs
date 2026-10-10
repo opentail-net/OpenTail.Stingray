@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core.Catalog;
 using OpenTail.Stingray.Core.Net;
 
-namespace OpenTail.Stingray.Cli.Scout;
+namespace OpenTail.Stingray.Engine.Scout;
 
 public enum PreflightVerdict
 {

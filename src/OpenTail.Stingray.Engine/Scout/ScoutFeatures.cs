@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace OpenTail.Stingray.Cli.Scout;
+namespace OpenTail.Stingray.Engine.Scout;
 
 /// <summary>
 /// Conservative, explainable feature rules over GGUF metadata keys and tensor names/shapes (plan §4). Each rule fires only on evidence it

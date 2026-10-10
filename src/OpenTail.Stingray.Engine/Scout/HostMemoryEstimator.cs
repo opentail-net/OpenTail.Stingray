@@ -1,4 +1,4 @@
-namespace OpenTail.Stingray.Cli.Scout;
+namespace OpenTail.Stingray.Engine.Scout;
 
 /// <summary>One term of the host-RAM estimate. <see cref="Bytes"/> is null when the term could not be established (never 0 as a stand-in).</summary>
 public sealed record WorkingSetComponent(string Name, long? Bytes, Certainty Certainty, string Basis);

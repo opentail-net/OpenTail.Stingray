@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using System.ComponentModel;
 using OpenTail.Stingray;
 using OpenTail.Stingray.Executors;
@@ -74,8 +75,8 @@ public sealed class ChatCommand : Command<ChatCommand.Settings>
         bool cpuRun = s.Backend.Equals("cpu", StringComparison.OrdinalIgnoreCase) || s.GpuLayers == 0;
         if (cpuRun)
         {
-            var preflight = OpenTail.Stingray.Cli.Scout.LoadPreflight.EvaluateFile(resolved!.ModelPath, s.ContextSize);
-            bool proceed = OpenTail.Stingray.Cli.Scout.LoadPreflight.ShouldProceed(preflight, s.IgnorePreflight, out string? note);
+            var preflight = OpenTail.Stingray.Engine.Scout.LoadPreflight.EvaluateFile(resolved!.ModelPath, s.ContextSize);
+            bool proceed = OpenTail.Stingray.Engine.Scout.LoadPreflight.ShouldProceed(preflight, s.IgnorePreflight, out string? note);
             if (!proceed) { AnsiConsole.ErrorLine("[red]Not loading:[/] " + Markup.Escape(note!)); return ExitCodes.Failure; }
             if (note is not null) AnsiConsole.MarkupLine("[dim]" + Markup.Escape(note) + "[/]");
         }

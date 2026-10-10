@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Core.Net;
 
 namespace OpenTail.Stingray.Cli.Scout;

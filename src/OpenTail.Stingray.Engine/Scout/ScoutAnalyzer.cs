@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace OpenTail.Stingray.Cli.Scout;
+namespace OpenTail.Stingray.Engine.Scout;
 
 /// <summary>Everything scout needs from a checkpoint: the index and metadata only, never tensor values.</summary>
 public sealed record ScoutInput(

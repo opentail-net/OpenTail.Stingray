@@ -24,6 +24,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cli" />
+    <InternalsVisibleTo Include="stingray" />
+    <EmbeddedResource Include="Scout/Signatures/*.signature.json" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass.Fast" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Core" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />

@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Cli;
@@ -116,7 +117,7 @@ public static class CatalogTaskResolver
         string taskName, string? modelId, string? modelFile,
         out ResolvedModelTask? resolved, out string? errorMessage, CancellationToken ct,
         bool? interactive = null, ISetupPrompt? prompt = null, ModelHome? customHome = null, Func<HttpClient>? httpFactory = null,
-        CatalogEntry? entryOverride = null, Func<string, string?>? env = null, Func<CatalogEntry, CancellationToken, OpenTail.Stingray.Cli.Scout.PreflightResult?>? feasibility = null,
+        CatalogEntry? entryOverride = null, Func<string, string?>? env = null, Func<CatalogEntry, CancellationToken, OpenTail.Stingray.Engine.Scout.PreflightResult?>? feasibility = null,
         string? customConfigDir = null)
     {
         if (TryResolve(taskName, modelId, modelFile, out resolved, out errorMessage, customHome, entryOverride, customConfigDir, env))

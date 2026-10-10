@@ -90,10 +90,6 @@
     <ProjectReference Include="..\..\..\OpenTail.TUI\OpenTail.TUI.csproj" />
   </ItemGroup>
 
-  <!-- Reference structural signatures of admitted architectures for `scout` ranking (data only; see Scout/ArchSignature.cs). -->
-  <ItemGroup>
-    <EmbeddedResource Include="Scout\Signatures\*.signature.json" />
-  </ItemGroup>
 
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />

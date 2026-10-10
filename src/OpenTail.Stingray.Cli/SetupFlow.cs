@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Core.Catalog;
 using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core.Net;

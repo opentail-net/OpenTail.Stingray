@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using OpenTail.Stingray.Engine.Verification;
 using OpenTail.Stingray.Cpu;
 

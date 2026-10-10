@@ -1,7 +1,8 @@
+using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace OpenTail.Stingray.Cli.Scout;
+namespace OpenTail.Stingray.Engine.Scout;
 
 // Structural signatures of ADMITTED architectures, used to rank "which architecture we can already run does this file most resemble".
 //

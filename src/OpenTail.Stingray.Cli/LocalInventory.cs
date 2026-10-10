@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine.Scout;
+using System.Text.RegularExpressions;
 using OpenTail.Stingray.Cli.Scout;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Catalog;
@@ -39,9 +41,12 @@ public sealed record InventoryReport(
 /// Scans the catalogue state and local directories for GGUF models on disk.
 /// Implements Plan P4 (local inventory and integrity verification).
 /// </summary>
-public static class LocalInventory
+public static partial class LocalInventory
 {
     public const string ModelDirsEnvVar = "STINGRAY_MODEL_DIRS";
+
+    [GeneratedRegex(@"^(.+)-(\d+)-of-(\d+)(\.gguf)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ShardPattern();
 
     /// <summary>
     /// Scans catalogue state and GGUF files found in <paramref name="home"/> and in <paramref name="extraDirs"/> (or STINGRAY_MODEL_DIRS).
@@ -124,52 +129,148 @@ public static class LocalInventory
                 string fullPath = System.IO.Path.GetFullPath(file);
                 if (!seenFiles.Add(fullPath)) continue;
 
-                long size;
-                try { size = new FileInfo(fullPath).Length; }
-                catch { size = 0; }
-
-                try
+                string fileName = System.IO.Path.GetFileName(fullPath);
+                var m = ShardPattern().Match(fileName);
+                if (m.Success &&
+                    int.TryParse(m.Groups[2].Value, out int shardNum) &&
+                    int.TryParse(m.Groups[3].Value, out int total) &&
+                    total > 1 &&
+                    shardNum >= 1 &&
+                    shardNum <= total)
                 {
-                    using var model = GgufModel.Open(fullPath);
-                    string arch = model.Metadata.TryGetValue("general.architecture", out object? a)
-                        ? Convert.ToString(a) ?? "unknown" : "unknown";
+                    string prefix = m.Groups[1].Value;
+                    string ext = m.Groups[4].Value;
+                    string fileDir = System.IO.Path.GetDirectoryName(fullPath) ?? ".";
 
-                    var desc = ArchitectureRegistry.Find(arch);
-                    // CLAUDE.md rule 14: show a ported-not-verified family as plain "not supported"
-                    string admissionStatus = (desc is not null && desc.Status == AdmissionStatus.Admitted)
-                        ? "admitted"
-                        : "not supported";
-
-                    string quant = model.Tensors.Count > 0
-                        ? model.Tensors.GroupBy(t => t.DType.ToString())
-                            .Select(g => (
-                                DType: g.Key,
-                                Bytes: g.Sum(t => { try { return t.ByteSize; } catch { return 0L; } }),
-                                Count: g.Count()))
-                            .OrderByDescending(x => x.Bytes)
-                            .ThenByDescending(x => x.Count)
-                            .FirstOrDefault().DType ?? "unknown"
-                        : "unknown";
-
-                    var preflight = LoadPreflight.EvaluateFile(fullPath, contextTokens, ramBytes);
-                    string fitStatus = preflight.Verdict switch
+                    var shardPaths = new string[total];
+                    for (int i = 0; i < total; i++)
                     {
-                        PreflightVerdict.Allowed => "fits",
-                        PreflightVerdict.Blocked => "does not fit",
-                        PreflightVerdict.Unknown => "unknown",
-                        _ => "n/a",
-                    };
+                        shardPaths[i] = System.IO.Path.Combine(fileDir, $"{prefix}-{i + 1:D5}-of-{total:D5}{ext}");
+                    }
 
-                    localGgufs.Add(new LocalGgufItem(fullPath, System.IO.Path.GetFileName(fullPath), size, arch, admissionStatus, quant, fitStatus, true, null));
+                    string canonicalFirstShardPath = System.IO.Path.GetFullPath(shardPaths[0]);
+                    string canonicalFirstShardName = System.IO.Path.GetFileName(canonicalFirstShardPath);
+
+                    // Mark all required shard paths as seen so sibling files are not processed as duplicates
+                    foreach (var sp in shardPaths)
+                    {
+                        seenFiles.Add(System.IO.Path.GetFullPath(sp));
+                    }
+
+                    long combinedSize = 0;
+                    var missingShards = new List<string>();
+                    foreach (var sp in shardPaths)
+                    {
+                        if (File.Exists(sp))
+                        {
+                            combinedSize += GetFileSize(sp);
+                        }
+                        else
+                        {
+                            missingShards.Add(sp);
+                        }
+                    }
+
+                    if (missingShards.Count > 0)
+                    {
+                        string missingList = string.Join(", ", missingShards.Select(System.IO.Path.GetFileName));
+                        localGgufs.Add(new LocalGgufItem(
+                            canonicalFirstShardPath,
+                            canonicalFirstShardName,
+                            combinedSize,
+                            "unreadable",
+                            "not supported",
+                            "-",
+                            "n/a",
+                            false,
+                            $"Missing required shard file(s): {missingList}"));
+                        continue;
+                    }
+
+                    localGgufs.Add(InspectModel(
+                        canonicalFirstShardPath,
+                        canonicalFirstShardPath,
+                        canonicalFirstShardName,
+                        combinedSize,
+                        contextTokens,
+                        ramBytes));
+                    continue;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    localGgufs.Add(new LocalGgufItem(fullPath, System.IO.Path.GetFileName(fullPath), size, "unreadable", "not supported", "-", "n/a", false, ex.GetType().Name));
-                }
+
+                long singleSize = GetFileSize(fullPath);
+                localGgufs.Add(InspectModel(
+                    fullPath,
+                    fullPath,
+                    fileName,
+                    singleSize,
+                    contextTokens,
+                    ramBytes));
             }
         }
 
         return new InventoryReport(home, dirsToScan, catalogItems, localGgufs);
+    }
+
+    private static LocalGgufItem InspectModel(
+        string openPath,
+        string itemPath,
+        string itemName,
+        long itemSize,
+        int contextTokens,
+        long? ramBytes)
+    {
+        try
+        {
+            using var model = GgufModel.Open(openPath);
+            string arch = model.Metadata.TryGetValue("general.architecture", out object? a)
+                ? Convert.ToString(a) ?? "unknown" : "unknown";
+
+            var desc = ArchitectureRegistry.Find(arch);
+            // CLAUDE.md rule 14: show a ported-not-verified family as plain "not supported"
+            string admissionStatus = (desc is not null && desc.Status == AdmissionStatus.Admitted)
+                ? "admitted"
+                : "not supported";
+
+            string quant = model.Tensors.Count > 0
+                ? model.Tensors.GroupBy(t => t.DType.ToString())
+                    .Select(g => (
+                        DType: g.Key,
+                        Bytes: g.Sum(t => { try { return t.ByteSize; } catch { return 0L; } }),
+                        Count: g.Count()))
+                    .OrderByDescending(x => x.Bytes)
+                    .ThenByDescending(x => x.Count)
+                    .FirstOrDefault().DType ?? "unknown"
+                : "unknown";
+
+            var preflight = LoadPreflight.EvaluateFile(openPath, contextTokens, ramBytes);
+            string fitStatus = preflight.Verdict switch
+            {
+                PreflightVerdict.Allowed => "fits",
+                PreflightVerdict.Blocked => "does not fit",
+                PreflightVerdict.Unknown => "unknown",
+                _ => "n/a",
+            };
+
+            return new LocalGgufItem(itemPath, itemName, itemSize, arch, admissionStatus, quant, fitStatus, true, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new LocalGgufItem(itemPath, itemName, itemSize, "unreadable", "not supported", "-", "n/a", false, ex.GetType().Name);
+        }
+    }
+
+    private static long GetFileSize(string path)
+    {
+        try
+        {
+            using var probe = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return RandomAccess.GetLength(probe);
+        }
+        catch
+        {
+            try { return new FileInfo(path).Length; }
+            catch { return 0L; }
+        }
     }
 
     private static IReadOnlyList<string> GetEnvironmentModelDirs()

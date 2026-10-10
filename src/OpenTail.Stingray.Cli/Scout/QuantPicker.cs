@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine.Scout;
 using System.Text.RegularExpressions;
 using OpenTail.Stingray.Core.Net;
 
@@ -216,3 +217,8 @@ internal static class QuantTextRenderer
 
     private static string Bytes(long? b) => ScoutTextRenderer.Bytes(b);
 }
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true,
+    UseStringEnumConverter = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never)]
+[JsonSerializable(typeof(QuantReport))]
+internal partial class QuantJsonContext : JsonSerializerContext;

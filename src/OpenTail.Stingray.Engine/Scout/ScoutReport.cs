@@ -1,4 +1,6 @@
-namespace OpenTail.Stingray.Cli.Scout;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+namespace OpenTail.Stingray.Engine.Scout;
 
 // Schema for `stingray scout` (docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md).
 // Rules this file exists to enforce:
@@ -190,5 +192,4 @@ public sealed record ScoutReport(
     UseStringEnumConverter = true, DefaultIgnoreCondition = JsonIgnoreCondition.Never)]
 [JsonSerializable(typeof(ScoutReport))]
 [JsonSerializable(typeof(ArchSignature))]
-[JsonSerializable(typeof(QuantReport))]
 internal partial class ScoutJsonContext : JsonSerializerContext;
