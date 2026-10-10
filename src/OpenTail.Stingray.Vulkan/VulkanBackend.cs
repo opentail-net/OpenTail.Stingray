@@ -3299,7 +3299,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         {
             DType.Q2_K => _matVecQ2KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ2K, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
             DType.IQ4_NL => _matVecIQ4NLPipeline ??= new ComputePipeline(this, Shaders.MatVecIQ4NL, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
-            DType.MXFP4 => _matVecMxfp4Pipeline ??= new ComputePipeline(this, Shaders.MatVecMxfp4, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
+            DType.MXFP4 => _matVecMxfp4Pipeline ??= new ComputePipeline(this, Environment.GetEnvironmentVariable("STINGRAY_VK_MXFP4_V2") == "0" ? Shaders.MatVecMxfp4 : Shaders.MatVecMxfp4V2, 3, pushConstantSize: sizeof(MatVecOffsetParams)),
             _ => throw new NotSupportedException($"No row-offset matvec for {dtype}."),
         };
         uint rows = (uint)output.ElementCount;

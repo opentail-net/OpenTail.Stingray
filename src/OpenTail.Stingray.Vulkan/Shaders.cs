@@ -2689,6 +2689,78 @@ internal static class Shaders
                 output_data[row] = sdata[tid];
         }
         """;
+    /// <summary>
+    /// Experiment: MXFP4 mat-vec with one 17-byte block per lane (five unaligned 32-bit loads, 32 values decoded with a packed
+    /// 4-bit magnitude constant instead of a dynamically indexed array) and the input read as aligned vec4s. 8 rows x 32 lanes per
+    /// workgroup, same push constants and dispatch as <see cref="MatVecMxfp4"/>. Requires cols % 32 == 0.
+    /// </summary>
+    internal const string MatVecMxfp4V2 = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer Weights { uint weights_data[]; };
+        layout(binding = 1) readonly buffer InputV  { vec4 in4[]; };
+        layout(binding = 2) writeonly buffer Output { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint rows;
+            uint cols;
+            uint row_offset;
+        };
+
+        shared float sdata[256];
+
+        // FP4 (E2M1) magnitudes 0,1,2,3,4,6,8,12 (twice the real value; the E8M0 scale below carries the halving), one per nibble.
+        const uint LUT = 0xC8643210u;
+        float fp4(uint n) {
+            float m = float((LUT >> ((n & 7u) * 4u)) & 0xFu);
+            return (n & 8u) != 0u ? -m : m;
+        }
+
+        uint rw(uint off) {
+            uint lo = weights_data[off >> 2];
+            uint sh = (off & 3u) * 8u;
+            return sh == 0u ? lo : (lo >> sh) | (weights_data[(off >> 2) + 1u] << (32u - sh));
+        }
+
+        float e8m0Half(uint e) {
+            return uintBitsToFloat(e < 2u ? (0x00200000u << e) : ((e - 1u) << 23));
+        }
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint lane = tid & 31u;
+            uint row = gl_WorkGroupID.x * 8u + (tid >> 5);
+            float acc = 0.0;
+            if (row < rows) {
+                uint num_blocks = cols >> 5;
+                uint boff = (row_offset + row) * num_blocks * 17u;
+                for (uint blk = lane; blk < num_blocks; blk += 32u) {
+                    uint b0 = boff + blk * 17u;
+                    float d = e8m0Half(rw(b0) & 0xFFu);
+                    uint ib = blk * 8u;
+                    float s = 0.0;
+                    [[unroll]] for (uint w = 0u; w < 4u; w++) {
+                        uint q = rw(b0 + 1u + 4u * w);
+                        vec4 lo = vec4(fp4(q & 0xFu), fp4((q >> 8) & 0xFu), fp4((q >> 16) & 0xFu), fp4((q >> 24) & 0xFu));
+                        vec4 hi = vec4(fp4((q >> 4) & 0xFu), fp4((q >> 12) & 0xFu), fp4((q >> 20) & 0xFu), fp4((q >> 28) & 0xFu));
+                        s += dot(lo, in4[ib + w]) + dot(hi, in4[ib + 4u + w]);
+                    }
+                    acc += d * s;
+                }
+            }
+            sdata[tid] = acc;
+            barrier();
+            [[unroll]] for (uint s = 16u; s > 0u; s >>= 1) {
+                if (lane < s) sdata[tid] += sdata[tid + s];
+                barrier();
+            }
+            if (lane == 0u && row < rows) output_data[row] = sdata[tid];
+        }
+        """;
+
 
     /// <summary>
     /// Matrix-vector multiply over Q2_K weights, 8 rows per workgroup (32 lanes per row). Block =

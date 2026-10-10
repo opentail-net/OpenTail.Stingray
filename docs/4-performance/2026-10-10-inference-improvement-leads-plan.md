@@ -142,3 +142,12 @@ magnitude constant (no dynamically indexed array), input read as aligned vec4s, 
 **14.1-14.3 GB/s -> 24.3-25.1 GB/s (about 1.75x)**, output sum of |c| identical to 8 digits (summation order differs, first element agrees to
 6 digits). ggml reaches 35.9 GB/s, so further room remains. Switch: `STINGRAY_VK_MXFP4_V2=1` (experiment; default flips after end-to-end
 gpt-oss parity and speed checks below).
+
+### Lead 1, MXFP4 kept as the default, 2026-10-10
+- Real model, gpt-oss-20B (`gpt-oss-20b-MXFP4.gguf`), Vulkan GPU, greedy, 48 tokens, alternating A/B (old kernel / new kernel, two rounds):
+  decode **6.7 / 6.7 t/s -> 7.5 / 7.6 t/s (+12-13%)**, prefill 6.7-6.9 -> 7.7 t/s, generated text **identical** in both rounds.
+- Correctness gate added: `VulkanMxfp4MatVecTests` compares the Vulkan mat-vec with the CPU MXFP4 dequantizer and a double-precision dot
+  (rows 37-70, cols 32 / 96 / 1024 / 2880 / 14336, row offsets 0-11); both the old and new kernels pass; the shader-drift gate passes.
+- `STINGRAY_VK_MXFP4_V2=0` restores the old kernel. Remaining gap to ggml on this shape: 25 vs 35.9 GB/s. Ideas not yet tried: load the
+  17-byte block as six consecutive words and funnel-shift once instead of five unaligned two-word reads; several rows per workgroup to share
+  the activation loads.
