@@ -25,7 +25,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [x] **A5** GQA groups of 5-8: groups above 4 use ceil(G/4) workgroups per KV head (`SupportsSplitKvGqa` now accepts 1-8). 13 of 13 parity cases pass (groups 5, 6, 7, 8; head dim 256 with group 8). End to end, Qwen2.5-VL-7B (28 heads / 4 KV heads, group 7), 493-token prompt, alternating A/B: **decode 6.5 -> 7.5 t/s (+15%)**, text identical; its per-token prefill 7.0 -> 7.6 t/s.
 - [ ] **A6** BF16 and Q8_0 KV-cache variants (`AttentionSplitKvPartialBf16`, `AttentionSplitKvPartialQ8`) have the same slow structure: port the design.
 - [ ] **A7** gpt-oss `AttentionSinks` decode kernel (single workgroup per head today; only its full-attention layers pay the long-context cost).
-- [ ] **A8** Verify on more models and contexts: a head-dim-64 MHA model (SmolLM2-1.7B), Qwen3-8B, and contexts of 2k-4k tokens (the gain should grow with context).
+- [ ] **A8** (partly done) Verify on more models and contexts. Done: Qwen3-4B at about 1,900 tokens of context, alternating A/B: **decode 3.3 -> 10.9-11.0 t/s (3.3x)**, text identical (the gain grows with context, as predicted). Still to do: a head-dim-64 MHA model (SmolLM2-1.7B), Qwen3-8B, 4k contexts, a Gemma model.
 - [ ] **A9** Short-context per-layer overhead (about 20 ms per token outside the matmuls): fuse norm + RoPE and add + norm dispatches the way ggml does; profile which dispatches dominate first.
 - [ ] **A10** CUDA decode attention (`llm_attention`, `_bf16`, `_q8_0`) has the identical one-block-per-head, one-thread-per-key structure; needs an NVIDIA machine to measure before porting.
 - [ ] **A11** CPU decode attention: league shows CPU decode falling from 0.88x to 0.67x of llama.cpp as context grows (267 to 3,218 tokens); profile first, reference is ggml's CPU flash attention.
@@ -35,6 +35,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [x] **B1** Opt-in Path 3 (`STINGRAY_VULKAN_MM_PATH=3`): tiled quantized GEMM incl. a new Q6_K decoder, `SgemmQuant`, and flash attention run in 16-query slices. Qwen3-4B prefill 38.4 to 71.3 t/s (+86%), text identical. Commit `eef12b83`.
 - [ ] **B2** Repeat the Path 3 comparison as a proper alternating A/B with medians (the 71.3 is one run).
 - [ ] **B3** Try a 256-token chunk (matmuls are about 0.8 TFLOP/s on 128-row tiles).
+- [ ] **B3b** (new) Path 3 prefill falls from 71 t/s at 493 tokens to 41 t/s at 1,915 tokens (Qwen3-4B): the sliced flash attention rereads K/V once per 16-query slice (8 passes per 128-token chunk) and grows with context. Options: a flash kernel with more queries per workgroup (register-limited at 16 today), or a tiled attention for prefill shaped like the GEMM.
 - [ ] **B4** Second dense model and a decode-regression check with Path 3 on.
 - [ ] **B5** Decide whether Path 3 becomes the default (CPU prefill on the same prompt is 102.8 t/s); extend the batched trunk to Q3_K/Q5_K weights, which it excludes today.
 - [ ] **B6** MoE prefill (currently handed to the CPU) and `VulkanLayerSplitForwardPass` per-token prefill: revisit after B5.
@@ -344,3 +345,7 @@ decode 6.5 / 6.5 -> 7.5 / 7.5 t/s (+15%), text identical in both rounds. Finding
 `VulkanHybridGdnForwardPass` (Qwen3.5/3.6 hybrid) now calls `AttentionAuto`, which uses `AttentionSplitKvGqa` when the shape is supported (partial buffers sized `numHeads x ceil(maxSeqLen/256) x headDim`, allocated in the constructor and freed in Dispose, skipped when
 `STINGRAY_VULKAN_DECODE_ATTN_GQA=0` or `maxSeqLen` exceeds 65,536). Qwen3.5-4B-Q4_K_M (16 heads, 4 KV heads, key length 256, full attention every 4th layer), Vulkan, 480-token prompt, 48 greedy tokens, alternating A/B:
 decode 9.5 / 9.5 -> 10.9 / 10.9 t/s (+15%), prefill unchanged (12.6 t/s: it does not use this kernel), text identical in both rounds.
+
+### A8 partial, B3b finding, 2026-10-11
+Qwen3-4B-Q4_K_M, Vulkan, Path 3 prefill (both modes), 1,915-token context, 48 greedy tokens, alternating A/B of the decode kernel: decode 3.3 / 3.3 t/s -> 10.9 / 11.0 t/s (3.3x), text identical.
+Prefill at that length with Path 3 was 41.3 t/s (71.3 at 493 tokens): the attention share of prefill grows with context (item B3b).
