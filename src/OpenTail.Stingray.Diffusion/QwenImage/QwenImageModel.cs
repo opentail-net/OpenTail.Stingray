@@ -359,10 +359,33 @@ public sealed class QwenImageModel : IDisposable
         visionOps.AdaLNModulate(ws.NormedTxt2, cGpu, ws.TxtMod, numTxtTokens, HiddenDim, shiftOffset: 3 * HiddenDim, scaleOffset: 4 * HiddenDim, isRmsNorm: false, eps: 1e-6f);
 
         int ffDim = HiddenDim * 4;
-        visionOps.Sgemm(ws.ImgMlpBuf, ws.NormedImg2, bw.ImgMlpUpWeight, numImgTokens, HiddenDim, ffDim);
-        if (bw.ImgMlpUpBias is { } imub) imageOps.AddRowBroadcastInPlace(ws.ImgMlpBuf, imub, numImgTokens, ffDim);
-        visionOps.VisionGeluInPlace(ws.ImgMlpBuf);
-        visionOps.Sgemm(ws.ImgOut, ws.ImgMlpBuf, bw.ImgMlpDownWeight, numImgTokens, ffDim, HiddenDim);
+        if (bw.ImgMlpUpChunks is { } upChunks && bw.ImgMlpDownChunks is { } downChunks)
+        {
+            // Chunked MLP (docs/4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md, Phase 2c): the 12288-wide hidden
+            // activation is kept as four contiguous 3072-wide slices. The quantized GEMM runs a K=12288 product far slower than four
+            // K=3072 products over contiguous buffers (measured), so the up projection is computed slice by slice (each slice
+            // gets its own bias slice and GELU) and the down projection accumulates the four partial products. Only the order
+            // in which the K sum is accumulated differs from the single-GEMM path.
+            for (int c = 0; c < upChunks.Length; c++)
+            {
+                visionOps.Sgemm(ws.ImgMlpChunks[c], ws.NormedImg2, upChunks[c], numImgTokens, HiddenDim, HiddenDim);
+                if (bw.ImgMlpUpBiasChunks![c] is { } imubc) imageOps.AddRowBroadcastInPlace(ws.ImgMlpChunks[c], imubc, numImgTokens, HiddenDim);
+                visionOps.VisionGeluInPlace(ws.ImgMlpChunks[c]);
+            }
+            visionOps.Sgemm(ws.ImgOut, ws.ImgMlpChunks[0], downChunks[0], numImgTokens, HiddenDim, HiddenDim);
+            for (int c = 1; c < downChunks.Length; c++)
+            {
+                visionOps.Sgemm(ws.ImgMlpPart, ws.ImgMlpChunks[c], downChunks[c], numImgTokens, HiddenDim, HiddenDim);
+                imageOps.AddScaledInPlace(ws.ImgOut, ws.ImgMlpPart, 1.0f);
+            }
+        }
+        else
+        {
+            visionOps.Sgemm(ws.ImgMlpBuf, ws.NormedImg2, bw.ImgMlpUpWeight, numImgTokens, HiddenDim, ffDim);
+            if (bw.ImgMlpUpBias is { } imub) imageOps.AddRowBroadcastInPlace(ws.ImgMlpBuf, imub, numImgTokens, ffDim);
+            visionOps.VisionGeluInPlace(ws.ImgMlpBuf);
+            visionOps.Sgemm(ws.ImgOut, ws.ImgMlpBuf, bw.ImgMlpDownWeight, numImgTokens, ffDim, HiddenDim);
+        }
         if (bw.ImgMlpDownBias is { } imdb) imageOps.AddRowBroadcastInPlace(ws.ImgOut, imdb, numImgTokens, HiddenDim);
         visionOps.ScaleGateAdd(xGpu, ws.ImgOut, ws.ImgMod, numImgTokens, HiddenDim, gateOffset: 5 * HiddenDim);
 

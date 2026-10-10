@@ -41,6 +41,10 @@ public sealed class QwenImageGpuWorkspace : IDisposable
 
     public CoreTensor ImgMlpBuf { get; }
     public CoreTensor TxtMlpBuf { get; }
+
+    /// <summary>Chunked image-stream MLP (see QwenImageGpuWeights.MlpChunkCount): four hidden-activation slices [img tokens x hidden] plus one partial-sum buffer.</summary>
+    public CoreTensor[] ImgMlpChunks { get; }
+    public CoreTensor ImgMlpPart { get; }
     public CoreTensor ImgOut { get; }
     public CoreTensor TxtOut { get; }
 
@@ -90,6 +94,9 @@ public sealed class QwenImageGpuWorkspace : IDisposable
 
         ImgMlpBuf = backend.Allocate(TensorShape.D2(maxTokens, mlpHidden));
         TxtMlpBuf = backend.Allocate(TensorShape.D2(maxTokens, mlpHidden));
+        ImgMlpChunks = new CoreTensor[QwenImageGpuWeights.MlpChunkCount];
+        for (int c = 0; c < ImgMlpChunks.Length; c++) ImgMlpChunks[c] = backend.Allocate(TensorShape.D2(numImgTokens, hiddenSize));
+        ImgMlpPart = backend.Allocate(TensorShape.D2(numImgTokens, hiddenSize));
         ImgOut = backend.Allocate(TensorShape.D2(numImgTokens, hiddenSize));
         TxtOut = backend.Allocate(TensorShape.D2(numTxtTokens, hiddenSize));
 
@@ -137,6 +144,8 @@ public sealed class QwenImageGpuWorkspace : IDisposable
         _backend.Free(TxtAttnOut);
         _backend.Free(ImgMlpBuf);
         _backend.Free(TxtMlpBuf);
+        foreach (var chunk in ImgMlpChunks) _backend.Free(chunk);
+        _backend.Free(ImgMlpPart);
         _backend.Free(ImgOut);
         _backend.Free(TxtOut);
         _backend.Free(ImgMod);

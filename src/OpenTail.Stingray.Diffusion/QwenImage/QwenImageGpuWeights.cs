@@ -86,6 +86,17 @@ public sealed class QwenImageGpuWeights : IDisposable
         public CoreTensor? ImgMlpUpBias { get; }
         public CoreTensor ImgMlpDownWeight { get; }
         public CoreTensor? ImgMlpDownBias { get; }
+
+        /// <summary>
+        /// Chunked image-stream MLP (see <see cref="MlpChunkCount"/>): when non-null, the up projection is stored as
+        /// <see cref="MlpChunkCount"/> row slices [hidden x hidden] (with matching bias slices) and the down projection as
+        /// <see cref="MlpChunkCount"/> K slices [hidden x hidden], and <see cref="ImgMlpUpWeight"/> / <see cref="ImgMlpDownWeight"/>
+        /// are not uploaded. This keeps every activation buffer 3072 wide, which the quantized GEMM handles much faster than the
+        /// 12288-wide hidden activation (measured: whole MLP 188.6 ms -> 156.3 ms per block on the Vega 8 iGPU).
+        /// </summary>
+        public CoreTensor[]? ImgMlpUpChunks { get; }
+        public CoreTensor?[]? ImgMlpUpBiasChunks { get; }
+        public CoreTensor[]? ImgMlpDownChunks { get; }
         public CoreTensor TxtMlpUpWeight { get; }
         public CoreTensor? TxtMlpUpBias { get; }
         public CoreTensor TxtMlpDownWeight { get; }
@@ -121,10 +132,24 @@ public sealed class QwenImageGpuWeights : IDisposable
             TxtToAddOutBias = UploadOptionalBias(backend, tryGetWeight($"{p}attn.to_add_out.bias"));
 
             int ffDim = d * 4;
-            ImgMlpUpWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.0.proj.weight", getWeight, TensorShape.D2(ffDim, d), forceFp32);
-            ImgMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.0.proj.bias"));
-            ImgMlpDownWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.2.weight", getWeight, TensorShape.D2(d, ffDim), forceFp32);
-            ImgMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.2.bias"));
+            if (!forceFp32 && ChunkedMlpEnabled
+                && TryUploadMlpChunks(backend, rawSource, $"{p}img_mlp.net.0.proj.weight", $"{p}img_mlp.net.2.weight",
+                    tryGetWeight($"{p}img_mlp.net.0.proj.bias"), d, ffDim, out var upChunks, out var upBiasChunks, out var downChunks))
+            {
+                ImgMlpUpChunks = upChunks;
+                ImgMlpUpBiasChunks = upBiasChunks;
+                ImgMlpDownChunks = downChunks;
+                ImgMlpUpWeight = null!;
+                ImgMlpDownWeight = null!;
+                ImgMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.2.bias"));
+            }
+            else
+            {
+                ImgMlpUpWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.0.proj.weight", getWeight, TensorShape.D2(ffDim, d), forceFp32);
+                ImgMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.0.proj.bias"));
+                ImgMlpDownWeight = UploadWeight(backend, rawSource, $"{p}img_mlp.net.2.weight", getWeight, TensorShape.D2(d, ffDim), forceFp32);
+                ImgMlpDownBias = UploadOptionalBias(backend, tryGetWeight($"{p}img_mlp.net.2.bias"));
+            }
             TxtMlpUpWeight = UploadWeight(backend, rawSource, $"{p}txt_mlp.net.0.proj.weight", getWeight, TensorShape.D2(ffDim, d), forceFp32);
             TxtMlpUpBias = UploadOptionalBias(backend, tryGetWeight($"{p}txt_mlp.net.0.proj.bias"));
             TxtMlpDownWeight = UploadWeight(backend, rawSource, $"{p}txt_mlp.net.2.weight", getWeight, TensorShape.D2(d, ffDim), forceFp32);
@@ -152,6 +177,9 @@ public sealed class QwenImageGpuWeights : IDisposable
             {
                 if (t is not null) _backend.Free(t);
             }
+            if (ImgMlpUpChunks is not null) foreach (var t in ImgMlpUpChunks) _backend.Free(t);
+            if (ImgMlpUpBiasChunks is not null) foreach (var t in ImgMlpUpBiasChunks) if (t is not null) _backend.Free(t);
+            if (ImgMlpDownChunks is not null) foreach (var t in ImgMlpDownChunks) _backend.Free(t);
         }
     }
 
@@ -221,6 +249,76 @@ public sealed class QwenImageGpuWeights : IDisposable
     // Kept `false` permanently; FP32 upload is not a viable path forward on this hardware for this
     // model's full 60-layer weight set.
     private static readonly bool ForceFp32WeightsExperiment = false;
+
+    /// <summary>Number of 3072-wide slices the image-stream MLP hidden dimension (4 x hidden) is split into.</summary>
+    internal const int MlpChunkCount = 4;
+
+    /// <summary>STINGRAY_QWEN_MLP_CHUNKS=0 keeps the original single 12288-wide MLP (rollback switch).</summary>
+    private static readonly bool ChunkedMlpEnabled = Environment.GetEnvironmentVariable("STINGRAY_QWEN_MLP_CHUNKS") != "0";
+
+    private static int QuantBlockBytes(DType t) => t switch
+    {
+        DType.Q3_K => 110,
+        DType.Q4_K => 144,
+        DType.Q5_K => 176,
+        _ => throw new ArgumentOutOfRangeException(nameof(t)),
+    };
+
+    /// <summary>
+    /// Uploads one image-stream MLP as <see cref="MlpChunkCount"/> up-projection row slices (contiguous in the GGUF) and
+    /// <see cref="MlpChunkCount"/> down-projection K slices (re-gathered per row, because a K slice is not contiguous), all as raw
+    /// block-quantized tensors. Returns false, uploading nothing, when the weights are not raw K-quants of the expected shape
+    /// (the caller then takes the ordinary single-tensor path).
+    /// </summary>
+    private static unsafe bool TryUploadMlpChunks(IComputeBackend backend, RawWeightSource? raw, string upName, string downName,
+        float[]? upBias, int d, int ffDim, out CoreTensor[]? upChunks, out CoreTensor?[]? upBiasChunks, out CoreTensor[]? downChunks)
+    {
+        upChunks = null; upBiasChunks = null; downChunks = null;
+        if (raw is null || !backend.SupportsQuantizedSgemm || ffDim != MlpChunkCount * d || d % 256 != 0) return false;
+        if (!raw(upName, out nint upData, out long upLen, out DType upType, out int upRows, out int upCols)
+            || !raw(downName, out nint downData, out long downLen, out DType downType, out int downRows, out int downCols))
+            return false;
+        if (!QuantizedGpuUpload.IsSupported(upType) || !QuantizedGpuUpload.IsSupported(downType)) return false;
+        if (upRows != ffDim || upCols != d || downRows != d || downCols != ffDim) return false;
+
+        long upRowBytes = (long)(d / 256) * QuantBlockBytes(upType);
+        long downRowBytes = (long)(ffDim / 256) * QuantBlockBytes(downType);
+        long downChunkRowBytes = (long)(d / 256) * QuantBlockBytes(downType);
+        if (upLen != upRowBytes * ffDim || downLen != downRowBytes * d) return false;
+
+        var ups = new List<CoreTensor>(MlpChunkCount);
+        var biases = new List<CoreTensor?>(MlpChunkCount);
+        var downs = new List<CoreTensor>(MlpChunkCount);
+        try
+        {
+            for (int c = 0; c < MlpChunkCount; c++)
+            {
+                // Up projection rows [c*d, (c+1)*d) are one contiguous byte range.
+                ups.Add(backend.UploadRaw(
+                    new ReadOnlySpan<byte>((byte*)upData + c * d * upRowBytes, checked((int)(d * upRowBytes))),
+                    TensorShape.D2(d, d), upType));
+                biases.Add(upBias is null ? null : UploadOptionalBias(backend, upBias.AsSpan(c * d, d).ToArray()));
+
+                // Down projection columns [c*d, (c+1)*d) of every row: gather that block range row by row.
+                var tmp = new byte[checked((int)(d * downChunkRowBytes))];
+                for (int r = 0; r < d; r++)
+                    new ReadOnlySpan<byte>((byte*)downData + r * downRowBytes + c * downChunkRowBytes, (int)downChunkRowBytes)
+                        .CopyTo(tmp.AsSpan((int)(r * downChunkRowBytes), (int)downChunkRowBytes));
+                downs.Add(backend.UploadRaw(tmp, TensorShape.D2(d, d), downType));
+            }
+        }
+        catch
+        {
+            foreach (var t in ups) backend.Free(t);
+            foreach (var t in biases) if (t is not null) backend.Free(t);
+            foreach (var t in downs) backend.Free(t);
+            throw;
+        }
+        upChunks = ups.ToArray();
+        upBiasChunks = biases.ToArray();
+        downChunks = downs.ToArray();
+        return true;
+    }
 
     /// <summary>
     /// Q3_K/Q4_K weights are uploaded as their raw GGUF blocks when the backend's Sgemm can consume

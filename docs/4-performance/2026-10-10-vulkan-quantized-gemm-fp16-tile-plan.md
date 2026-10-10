@@ -244,3 +244,26 @@ shape but not the shader variant).
   so the exact figure still needs the plan's five-run median.
 - Follow-up candidates for M-small MLP-down (K=12288): a smaller BN for more workgroups, a larger BK to halve barrier
   overhead, or split-K with a reduce; worth about 0.2 s per forward, so low priority.
+
+### Phase 2(a) 128x128 tile with 256 threads, 2026-10-10: rejected, reverted
+Derived mechanically from the large kernel (workgroup 16x16, 128 activation rows x 128 weight rows, 32 KiB shared tiles, two
+workgroups per CU). Output checksums bit-identical to the existing kernel. Standalone benchmark, Q3_K, M=1024: MLP-up
+78.3 -> 93.9 ms (worse), MLP-down 111.6 -> 105.4 ms (-6%), QKV/out 18.5 -> 19.6 ms (worse). Used only for K=12288 it would save
+about 0.36 s per forward (1.5%), below the plan's 2-3% noise floor, so it was not kept. Occupancy is therefore not what
+limits MLP-up; the reference's 65 ms there likely comes from its inner-loop formulation, which stays a Phase 3 question.
+
+### Phase 2(c) chunked image-stream MLP, 2026-10-10: kept
+- Image-stream MLP weights are stored as 4 up-projection row slices and 4 down-projection K slices (3072 wide), uploaded as
+  raw quantized tensors (down slices re-gathered per row at upload), and the hidden activation lives in four 3072-wide buffers
+  (`QwenImageGpuWeights.TryUploadMlpChunks`, `QwenImageGpuWorkspace.ImgMlpChunks`, `QwenImageModel.RunBlockGpu`). Up
+  slices each get their bias slice and GELU; the down projection accumulates four partial products with the existing
+  `AddScaledInPlace`. `STINGRAY_QWEN_MLP_CHUNKS=0` restores the single-GEMM MLP; blocks whose MLP weights are not raw K-quants
+  of the expected shape fall back automatically.
+- Standalone benchmark (Q3_K, M=1024), whole MLP per block: 188.6 ms single GEMMs -> 156.3 ms chunked including the three
+  adds (3.0 ms), saving 32.3 ms per block (1.87 s per forward).
+- Real forward (512x512, GPU, alternating A/B, block time per forward): single 23.15 / 23.20 s, chunked 21.28 / 21.92 s
+  (-1.3 to -1.9 s, 5.5-8%). One-time cost: weight upload about 0.7 s longer (6.2 s vs 5.4 s) for the re-gather.
+- Correctness: the output is not bit-identical (the K sum is accumulated in four partial sums), so the gate is numerical:
+  same-noise 512x512 image PSNR 79.1 dB with a maximum channel difference of 1 of 255 (631 of 262,144 pixels differ);
+  `QwenImageSdCppParityTests` velocity cosine 0.999676 / relative L2 0.0255 and `QwenImageGpuParityTests` cosine 0.996550 /
+  max diff 0.3071 are unchanged to the printed precision with the switch on or off.
