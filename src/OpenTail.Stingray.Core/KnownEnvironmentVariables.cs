@@ -290,6 +290,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_TTS_PROFILE",
         "STINGRAY_TTS_TRACE",
         "STINGRAY_VISION_GEMM",
+        "STINGRAY_VK_QGEMM_SMALLM",
         "STINGRAY_VULKAN_BATCHED_PREFILL",
         "STINGRAY_VULKAN_DP4A",
         "STINGRAY_VULKAN_GDN_CHUNKED_PREFILL",

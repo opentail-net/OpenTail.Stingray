@@ -209,3 +209,38 @@ established by FP16 support alone (dot2 is a separate extension from integer-dot
 assumed better; shape-specific tiling and the small-M path are the immediate priorities; integer-dot is not the first
 target for this device; FP16 overflow is unproven and must be measured, not guarded pre-emptively; the stop criteria
 are reasonable once unified. Not expanding into attention or unrelated fusions while the GEMM work is unmeasured.
+
+## 10. Progress log
+
+### Phase 0 (partial) and reference data, 2026-10-10
+`GGML_VK_PERF_LOGGER=1` on `sd-cli` (same GPU, one forward, 512x512). Reference device line: `uma 1, fp16 1, bf16 0, warp size
+64, shared memory 32768, int dot 0, matrix cores none`. Reference GPU time per call (its m = our N, its n = our M):
+
+| Shape (our M x K x N) | Reference | Stingray before Phase 1 | Stingray after Phase 1 |
+|---|---|---|---|
+| 1024 x 3072 x 12288 (MLP-up) | 65.0 ms (1189 GFLOP/s) | about 79 ms | unchanged (large kernel) |
+| 1024 x 12288 x 3072 (MLP-down) | 110.5 ms (699 GFLOP/s) | 96-116 ms | unchanged |
+| 1024 x 3072 x 3072 (QKV, out) | 17.7 ms (1094 GFLOP/s) | 18.6-19.4 ms | unchanged |
+| 12 x 3072 x 12288 | 2.70 ms | 9.4 ms | 3.09 ms |
+| 12 x 12288 x 3072 | 3.29 ms | 15.5 ms | 7.77 ms |
+| 12 x 3072 x 3072 | 0.74 ms | 3.1 ms | 0.84 ms |
+
+The reference shows the same long-K weakness (699 GFLOP/s at K=12288), so that behaviour is hardware or memory related,
+not specific to our kernel, and the chunked layout could beat the reference there. Still open for Phase 0: five-run median
+baselines, the real `maxComputeSharedMemorySize`, and which pipeline variant ggml selected (the logger names the op and
+shape but not the shader variant).
+
+### Phase 1 (small-M kernel), 2026-10-10: kept
+- New kernels `SgemmQ3KSmall / Q4KSmall / Q5KSmall` (`Shaders.cs`): same decode and K loop as the large kernels, workgroup
+  tile 16 activation rows x 64 weight rows, 128 threads (8x16), 2x4 register tile per thread. Used when M is at most
+  `STINGRAY_VK_QGEMM_SMALLM` (default 32; 0 disables). M=1 stays on the matvec. First attempt used an 8x8 per-thread tile in a
+  2x8 workgroup, which left only 16 threads for a loader written for 128: NaN output, caught by the parity check, rewritten.
+- Correctness: output is **bit-identical** to the large kernel for M = 2..32 on all three Qwen shapes (maxAbsDiff 0), the
+  full-model image is byte-identical to the old path, and the new `VulkanSgemmQuantSmallMTests` (Q3_K/Q4_K/Q5_K, M = 2..33,
+  long K, N not a tile multiple) plus the existing quant parity and shader-drift tests pass.
+- Speed: kernel at M=12 is 2.3-3.7x faster than before (table above), not yet at reference parity for MLP-down (7.8 vs
+  3.3 ms). In the real forward (512x512, GPU, alternating A/B, block time per forward): old 24.95 / 24.91 s, new 23.58 /
+  22.43 s, so about 1.4-2.5 s (6-10%), consistent with the 1.3-1.7 s predicted. Run-to-run drift between rounds is about 5%,
+  so the exact figure still needs the plan's five-run median.
+- Follow-up candidates for M-small MLP-down (K=12288): a smaller BN for more workgroups, a larger BK to halve barrier
+  overhead, or split-K with a reduce; worth about 0.2 s per forward, so low priority.

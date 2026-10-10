@@ -1662,7 +1662,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // Dequant-in-shader GEMM family for GGUF K-quant weights (Shaders.SgemmQ*K, MatVecDqQ*K,
     // SgemmSiluGateQ*K), keyed by (kind, weight dtype).
     private readonly Dictionary<(QuantGemmKind, DType), ComputePipeline> _quantGemmPipelines = new();
-    private enum QuantGemmKind { Sgemm, MatVec, SiluGate }
+    private enum QuantGemmKind { Sgemm, MatVec, SiluGate, SgemmSmall }
+
+    /// <summary>Largest M routed to the small-M quantized GEMM (16-row x 64-weight-row tiles). 0 disables it. STINGRAY_VK_QGEMM_SMALLM overrides.</summary>
+    private static readonly int QuantGemmSmallMMax = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_VK_QGEMM_SMALLM"), out int smallM) ? smallM : 32;
 
     private static bool IsQuantGemmDType(DType dt) => dt is DType.Q3_K or DType.Q4_K or DType.Q5_K;
 
@@ -1674,6 +1677,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             (QuantGemmKind.Sgemm, DType.Q3_K) => Shaders.SgemmQ3K,
             (QuantGemmKind.Sgemm, DType.Q4_K) => Shaders.SgemmQ4K,
             (QuantGemmKind.Sgemm, DType.Q5_K) => Shaders.SgemmQ5K,
+            (QuantGemmKind.SgemmSmall, DType.Q3_K) => Shaders.SgemmQ3KSmall,
+            (QuantGemmKind.SgemmSmall, DType.Q4_K) => Shaders.SgemmQ4KSmall,
+            (QuantGemmKind.SgemmSmall, DType.Q5_K) => Shaders.SgemmQ5KSmall,
             (QuantGemmKind.MatVec, DType.Q3_K) => Shaders.MatVecDqQ3K,
             (QuantGemmKind.MatVec, DType.Q4_K) => Shaders.MatVecDqQ4K,
             (QuantGemmKind.MatVec, DType.Q5_K) => Shaders.MatVecDqQ5K,
@@ -3903,6 +3909,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
             {
                 ComputePipeline mv = QuantGemmPipeline(QuantGemmKind.MatVec, B.DType);
                 DispatchOrRecord(mv, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)N + 7u) / 8u, &p);
+                return;
+            }
+            if (M <= QuantGemmSmallMMax)
+            {
+                // Small-M (e.g. a 5-12 token text stream): 16-row x 64-weight-row tiles instead of a 128-row tile.
+                ComputePipeline small = QuantGemmPipeline(QuantGemmKind.SgemmSmall, B.DType);
+                DispatchOrRecord(small, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], ((uint)M + 15u) / 16u, &p, ((uint)N + 63u) / 64u);
                 return;
             }
             ComputePipeline pipe = QuantGemmPipeline(QuantGemmKind.Sgemm, B.DType);

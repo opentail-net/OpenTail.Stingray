@@ -8269,6 +8269,117 @@ internal static class Shaders
     internal const string SgemmSiluGateQ3K = SgemmQHead + SgemmQ3KDecode + SgemmQLoadSiluGate + SgemmQBody;
     internal const string SgemmQ5K = SgemmQHead + SgemmQ5KDecode + SgemmQLoadPlain + SgemmQBody;
     internal const string SgemmSiluGateQ5K = SgemmQHead + SgemmQ5KDecode + SgemmQLoadSiluGate + SgemmQBody;
+    // Small-M quantized GEMM (M up to a few dozen rows, e.g. a text stream of 5-12 tokens next to a 1024-token image
+    // stream). Same decode and K loop as SgemmQ*, but the workgroup tile is
+    // 16 activation rows x 64 weight rows (8x16 = 128 threads, a 2x4 register tile per thread) instead of 128 x 256 (512 threads, 8x8), so a 12-row product
+    // no longer pays for a 128-row tile. Dispatch (ceil(M/16), ceil(N/64)); push constants and bindings are unchanged.
+    private const string SgemmQSmallHead = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 8, local_size_y = 16, local_size_z = 1) in;
+
+        layout(push_constant) uniform PC { uint M; uint N; uint K; uint aOffset; } pc;
+
+        layout(binding = 0) readonly  buffer BufA { float a_data[]; };
+        layout(binding = 1) readonly  buffer BufB { uint  b_u32[]; };
+        layout(binding = 2) writeonly buffer BufC { float c_data[]; };
+        layout(binding = 0) readonly  buffer BufAVec { vec4 a_vec4[]; };
+
+        shared vec4 tileA4[32][4];
+        shared vec4 tileB4[32][16];
+
+        uint rb(uint off) { return (b_u32[off >> 2] >> ((off & 3u) * 8u)) & 0xFFu; }
+        float rh(uint off) { return unpackHalf2x16(rb(off) | (rb(off + 1u) << 8)).x; }
+        // 4 bytes at an arbitrary (possibly unaligned: Q3_K blocks are 110 bytes) offset.
+        uint rw(uint off)
+        {
+            uint lo = b_u32[off >> 2];
+            uint sh = (off & 3u) * 8u;
+            return sh == 0u ? lo : (lo >> sh) | (b_u32[(off >> 2) + 1u] << (32u - sh));
+        }
+
+        """;
+
+    private const string SgemmQSmallBody = """
+        void main() {
+            uint tx = gl_LocalInvocationID.x;   // 0..7: pair of activation rows
+            uint ty = gl_LocalInvocationID.y;   // 0..15: group of 4 weight rows
+            uint tid = ty * 8u + tx;            // 0..127
+            uint row_base = gl_WorkGroupID.x * 16u;
+            uint col_base = gl_WorkGroupID.y * 64u;
+
+            float acc[2][4];
+            [[unroll]] for (uint i = 0u; i < 2u; i++)
+                [[unroll]] for (uint j = 0u; j < 4u; j++)
+                    acc[i][j] = 0.0;
+
+            uint numTiles = pc.K / 32u;
+            vec4 stash[4];
+            bool vecOk = (pc.aOffset & 3u) == 0u;
+
+            for (uint t = 0u; t < numTiles; t++) {
+                uint k_base = t * 32u;
+                {
+                    // 16 activation rows x 32 K = 128 vec4: one per thread.
+                    uint r = tid >> 3;
+                    uint c4 = (tid & 7u) << 2;
+                    uint gm = row_base + r;
+                    uint gk = k_base + c4;
+                    vec4 v = gm < pc.M ? loadA(gm, gk, vecOk) : vec4(0.0);
+                    tileA4[c4 + 0u][r >> 2u][r & 3u] = v.x;
+                    tileA4[c4 + 1u][r >> 2u][r & 3u] = v.y;
+                    tileA4[c4 + 2u][r >> 2u][r & 3u] = v.z;
+                    tileA4[c4 + 3u][r >> 2u][r & 3u] = v.w;
+                }
+                {
+                    // 64 weight rows x 2 halves = 128 threads, each decoding 16 consecutive weights of one row
+                    // with a single scale decode (same as the large kernel).
+                    uint r = tid >> 1;
+                    uint half16 = (tid & 1u) * 16u;
+                    uint gn = col_base + r;
+                    vec4 v[4];
+                    if (gn < pc.N) dq16s(gn, k_base + half16, v, stash, (t & 1u) == 1u);
+                    else { v[0] = vec4(0.0); v[1] = vec4(0.0); v[2] = vec4(0.0); v[3] = vec4(0.0); }
+                    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+                        uint kc = half16 + i * 4u;
+                        tileB4[kc + 0u][r >> 2u][r & 3u] = v[i].x;
+                        tileB4[kc + 1u][r >> 2u][r & 3u] = v[i].y;
+                        tileB4[kc + 2u][r >> 2u][r & 3u] = v[i].z;
+                        tileB4[kc + 3u][r >> 2u][r & 3u] = v[i].w;
+                    }
+                }
+                barrier();
+
+                [[dont_unroll]] for (uint k0 = 0u; k0 < 32u; k0 += 8u)
+                [[unroll]] for (uint kk = 0u; kk < 8u; kk++) {
+                    uint k = k0 + kk;
+                    vec4 a4 = tileA4[k][tx >> 1u];                 // rows 4*(tx>>1) .. +3
+                    float a0 = (tx & 1u) == 0u ? a4.x : a4.z;      // row 2*tx
+                    float a1 = (tx & 1u) == 0u ? a4.y : a4.w;      // row 2*tx + 1
+                    vec4 b = tileB4[k][ty];                        // weight rows 4*ty .. +3
+                    acc[0][0] += a0 * b.x; acc[0][1] += a0 * b.y; acc[0][2] += a0 * b.z; acc[0][3] += a0 * b.w;
+                    acc[1][0] += a1 * b.x; acc[1][1] += a1 * b.y; acc[1][2] += a1 * b.z; acc[1][3] += a1 * b.w;
+                }
+                barrier();
+            }
+
+            [[unroll]] for (uint i = 0u; i < 2u; i++) {
+                uint out_r = row_base + tx * 2u + i;
+                if (out_r >= pc.M) continue;
+                [[unroll]] for (uint j = 0u; j < 4u; j++) {
+                    uint out_c = col_base + ty * 4u + j;
+                    if (out_c < pc.N)
+                        c_data[out_r * pc.N + out_c] = acc[i][j];
+                }
+            }
+        }
+        """;
+
+    internal const string SgemmQ3KSmall = SgemmQSmallHead + SgemmQ3KDecode + SgemmQLoadPlain + SgemmQSmallBody;
+    internal const string SgemmQ4KSmall = SgemmQSmallHead + SgemmQ4KDecode + SgemmQLoadPlain + SgemmQSmallBody;
+    internal const string SgemmQ5KSmall = SgemmQSmallHead + SgemmQ5KDecode + SgemmQLoadPlain + SgemmQSmallBody;
+
 
     /// <summary>
     /// M == 1 companion to SgemmQ3K/SgemmQ4K (a 128-row tile wastes 127/128 of its work on a single
