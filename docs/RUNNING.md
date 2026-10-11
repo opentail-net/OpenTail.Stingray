@@ -242,3 +242,19 @@ Use `-g -1` (or `--ngl -1`) to offload all transformer layers to GPU VRAM, or om
 | [OpenGVLab InternVL3 2B (CPU Fallback)](models/internvl.md), `InternVL3-2B.Q4_K_M.gguf` | `stingray -m models/_models/InternVL3-2B.Q4_K_M.gguf --mmproj models/_models/mmproj-internvl3-2b-q8_0.gguf --image photo.png -p "Describe this image in one sentence."` | about 1.8 GB RAM | Prompt 123.2 tok/s (256 img + 38 txt), decode 26.7 tok/s (2026-09-28) | Default CPU SIMD execution (batched prompt on AVX2). |
 | [Qwen3-VL 2B Instruct (GPU)](models/qwen-vl.md), `Qwen3VL-2B-Instruct-Q8_0.gguf` | `stingray -m models/_models/Qwen3VL-2B-Instruct-Q8_0.gguf --mmproj models/_models/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf --image photo.png -p "Describe this picture." -g -1` | about 2.2 GB VRAM | Prompt 10.5 tok/s (256 img + 14 txt), decode 10.6 tok/s (2026-09-28) | All 28 layers offloaded to Vulkan GPU. |
 | [Qwen3-VL 2B Instruct (CPU Fallback)](models/qwen-vl.md), `Qwen3VL-2B-Instruct-Q8_0.gguf` | `stingray -m models/_models/Qwen3VL-2B-Instruct-Q8_0.gguf --mmproj models/_models/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf --image photo.png -p "Describe this picture."` | about 2.5 GB RAM | Prompt 23.1 tok/s (64 img + 14 txt), decode 19.7 tok/s (2026-09-28) | Default CPU SIMD execution (`-g 0`). |
+
+#### Long-prompt Vulkan figures (measured 2026-10-11, reference machine: Ryzen 5700G + integrated Radeon, `-g -1`, greedy, batched prefill and split-KV decode attention on by default)
+
+These are prompts of 0.5k to 2k tokens, because both prefill and decode attention cost depend on context length. RAM/VRAM was not re-measured in this pass. Details and the before/after A/Bs: [the performance status board](4-performance/2026-10-10-inference-improvement-leads-plan.md).
+
+| Model | Command | Prompt | Prefill | Decode |
+|---|---|---|---|---|
+| Qwen3-4B Q4_K_M | `stingray -m models/_models/Qwen3-4B-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 1,915 tokens | 97.9-99.5 tok/s (was 43) | 11.0 tok/s (was 3.3 at this length) |
+| SmolLM2-1.7B Q4_K_M | `stingray -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 2,126 tokens | 153 tok/s (was 84) | 17 tok/s (was 8.3) |
+| Qwen2.5-VL-7B Q4_K_M (text prompt) | `stingray -m models/_models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 493 tokens | 53.5 tok/s (was 7.6) | 7.4 tok/s |
+| Qwen3.5-4B Q4_K_M (hybrid GDN) | `stingray -m models/_models/Qwen3.5-4B-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 480 tokens | 53 tok/s (was 11) | 10.6 tok/s |
+| Qwen3.5-9B Q4_K_M (hybrid GDN) | `stingray -m models/_models/Qwen3.5-9B-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 480 tokens | 35.5 tok/s (was 6.4) | 6.3 tok/s |
+| Gemma 4 E4B Q4_K_M | `stingray -m models/_models/gemma-4-E4B-it-Q4_K_M.gguf -p "<prompt>" --temp 0 -g -1` | 495 tokens (CPU prefill handoff) | 56 tok/s (was 9.8) | 9.3 tok/s; 9.5 tok/s after 1,953 tokens (was 5.4) |
+| gpt-oss-20b MXFP4 | `stingray -m models/_models/gpt-oss-20b-MXFP4.gguf -p "<prompt>" --temp 0 -g -1` | 1,876 tokens | 7.8 tok/s (per-token prefill, not yet batched) | 7.8-8.1 tok/s (was 4.8) |
+
+Rollback switches, if a result looks wrong on your hardware: `STINGRAY_VULKAN_MM_PATH=1` (old prefill matmul), `STINGRAY_VULKAN_DECODE_ATTN_GQA=0`, `STINGRAY_VULKAN_FLASH_PREFILL=0`, `STINGRAY_GPU_CPU_PREFILL=0` (Gemma-4 and MoE CPU-prefill handoff).
