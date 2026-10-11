@@ -1,5 +1,13 @@
 # OpenTail.Stingray: Public Developer Surface and Front Door — Implementation Plan
 
+> **Status update 2026-10-11** (a product-flow pass; it verified the items below and did not re-audit the other phases of this plan):
+>
+> - **Exercised end to end:** `stingray setup chat` (468.6 MiB, pinned revision, SHA-256 verified, a "fits this machine" check) followed by `stingray chat "..."` on a clean model home took 5 to 6 seconds in total on a Ryzen 7 5700G; `stingray chat` chose the integrated GPU through Vulkan automatically. Path-free model resolution through `ModelHome` also works in the Chat and Speech samples.
+> - **A1 compile proof is now automated.** `scripts/verify-package-consumers.ps1` packs the checkout and builds, against `OpenTail.Stingray` and `OpenTail.Stingray.Server` 1.0.8 with no project references, the nine README code blocks marked `<!-- verify:consumer -->` plus the Chat, Speech, Diffusion and ChatServer samples: 13 of 13 pass. The Chat sample now uses the public API; the paragraph in A1 below saying it hand-assembles `GgufModel` and `ForwardPass` is historical.
+> - **Defects that check found, all fixed:** the root README chat snippet did not compile (`ModelHome` needs `using OpenTail.Stingray.Core.Catalog;`); the package README lacked `using OpenTail.Stingray.Engine;` for `GenerateChunkKind`, and its TTS snippet called `new QwenTtsPipeline()` (no such constructor) and passed a `ReferenceAudioPath` that `Generate(AudioGenerationRequest)` ignores, so its voice-cloning claim was unsupported.
+> - **A CLI defect found and fixed:** `stingray models` and `models --local` printed `stingray setup <task>` as the next step for non-default catalogue entries, which installs the default instead; they now print `stingray setup <id>` (test: `ModelsNextStep_InstallsExactlyTheEntryShown`).
+> - **Not done in this pass:** a test of the packed package's contents, running the snippets (needs model files), and any CUDA path (no NVIDIA GPU on the development machine).
+
 ## 1. Objective
 
 Make Stingray substantially easier for a .NET developer to discover, install, embed, and use without learning the internal engine architecture or manually assembling execution pipelines.

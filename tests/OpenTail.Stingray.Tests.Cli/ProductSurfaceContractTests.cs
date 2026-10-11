@@ -79,6 +79,21 @@ public sealed class ProductSurfaceContractTests
     }
 
     [Fact]
+    public void ModelsNextStep_InstallsExactlyTheEntryShown()
+    {
+        // `stingray setup <task>` installs the task's DEFAULT; an alternative is installed by its catalogue id. The 'models' tables once printed
+        // 'stingray setup chat' next to qwen2.5-1.5b and qwen2.5-7b, which would have installed qwen2.5-0.5b instead.
+        foreach (var entry in ModelCatalog.Entries)
+        {
+            string hint = OpenTail.Stingray.Cli.ModelsCommand.SetupHint(entry);
+            bool isDefault = ReferenceEquals(ModelCatalog.DefaultFor(entry.Task), entry);
+            Assert.Equal(isDefault ? $"stingray setup {entry.Task}" : $"stingray setup {entry.Id}", hint);
+            string target = hint["stingray setup ".Length..];
+            Assert.True(ModelCatalog.Tasks.Contains(target) || ModelCatalog.Find(target) is not null, $"'{hint}' names neither a task nor a catalogue id");
+        }
+    }
+
+    [Fact]
     public void CliReadme_ChatChoices_MatchTheCatalogue()
     {
         var m = Regex.Match(Read("src/OpenTail.Stingray.Cli/README.md"), @"stingray models chat\s+# view chat choices \(([^)]*)\)");

@@ -54,9 +54,16 @@ even if it happens to load.
 
 ## What does not work yet
 
-- **Some architectures are not supported:** Gemma 1/2, Jamba, pure Mamba, Llama 4 vision,
-  DeepSeek-V3.2/V4 (alpha code, never run) and GLM-4.5-class `glm4moe` models. See the open list in
-  [00-current-work.md](00-current-work.md).
+- **Some architectures are not supported or not verified:** Jamba, pure Mamba, Llama 4 vision and
+  DeepSeek-V3.2/V4 (alpha code, never run). Gemma 1 and 2 have no [STATUS.md](STATUS.md) row: a Gemma 2
+  2B file loaded and generated in the 2026-10-11 all-checkpoint sweep, but nobody checked its text, so
+  treat it as unverified. GLM-4.5-Air (`glm4moe`) is verified on the CPU and the Vulkan layer split
+  (STATUS.md); full Vulkan offload of its 33-42 GB files ran out of host memory on the 63 GB test
+  machine. See the open list in [00-current-work.md](00-current-work.md).
+- **Runs on the CPU but not with full Vulkan offload (`-g -1`):** the hybrid and recurrent Granite
+  4.0-H, LFM2 and Nemotron-H models, OLMo and OLMo 2, and the MLA models Youtu-VL and Kimi-VL (as of
+  2026-10-11; the full list with the error for each is in
+  [2-coverage/2026-10-11-checkpoints-not-supported-yet.md](2-coverage/2026-10-11-checkpoints-not-supported-yet.md)).
 - **Known partial results:** DeepSeek-V2-Lite matched llama.cpp's greedy output with int8 prefill
   (the CPU default again since 2026-10-02, [ADR-0003](reference/adr-0003-cpu-int8-prefill-default.md)),
   but since the Q3_K kernel rewrite `e7b7aa8a` it departs at token 9 on the test prompt

@@ -5,6 +5,8 @@ link goes to the exact file on Hugging Face. This is a recommendation list, not 
 Stingray runs many more models (see [STATUS.md](STATUS.md)), but these are the ones we suggest
 first. [RUNNING.md](RUNNING.md) has the command, the RAM each one really needs, and its measured speed.
 
+**Two ways to get a model.** The Qwen2.5 0.5B chat row, the Piper lessac voice and Whisper base are also in the CLI's starter catalogue: `stingray setup chat`, `stingray setup speak` and `stingray setup transcribe` download them pinned to an exact revision and checksum-verified, and `stingray models` shows what is installed. Everything else in these tables is a manual download (or `stingray pull -r <repo>`). Before downloading one, `stingray scout -r <repo> --quants --budget <your RAM>` tells you whether Stingray supports its architecture and which quantisations fit this machine.
+
 **Columns**
 
 - **Pick it when**: the reason to choose this one over its neighbours.

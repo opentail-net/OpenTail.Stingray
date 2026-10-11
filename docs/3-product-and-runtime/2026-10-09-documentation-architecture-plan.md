@@ -4,6 +4,7 @@
 > **Date:** October 9, 2026  
 > **Scope:** Full documentation suite for OpenTail.Stingray (Core, Engine, Audio, Vision, Diffusion, Server, CLI)  
 > **Core Standard:** A capability may be advertised only when its implementation status and verification evidence support the exact claim being made. The existence of a class, a port, or an architecture name is not sufficient evidence.
+> **Progress 2026-10-11:** Phase 2 landed: the root, package and CLI READMEs were corrected against the packed 1.0.8 package and the real CLI. Phase 5 as built: the external-consumer build from the packed package is `scripts/verify-package-consumers.ps1` (a local script, **not yet a CI job**); the command-citation, internal-link, sample-classification and absolute-claim checks are `ProductSurfaceContractTests`, over the twelve user-facing documents rather than all of `docs/`; CLI option inventory sync was already guarded by `CliOptionInventory_DeclaredCountMatchesSource`. Not re-audited: Phases 1, 4 and the claim-to-STATUS check of every README sentence, except that `WHAT-YOU-CAN-DO.md` had a stale "not supported" list (`glm4moe`, Gemma 2) that was corrected against STATUS.md, and STATUS.md had 11 dead links to audio clips that were never kept.
 
 ---
 

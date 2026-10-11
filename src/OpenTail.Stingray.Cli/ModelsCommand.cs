@@ -111,7 +111,7 @@ public sealed class ModelsCommand : Command<ModelsCommand.Settings>, ICommand
             var state = home.StateOf(shown);
             string next = state == InstallState.Installed
                 ? shown.RunCommand(home)
-                : $"stingray setup {t}";
+                : SetupHint(shown);
 
             bool isFav = favId is not null && string.Equals(shown.Id, favId, StringComparison.OrdinalIgnoreCase);
             string modelDisplay = isFav ? $"{shown.Id} (favourite)" : shown.Id;
@@ -228,7 +228,7 @@ public sealed class ModelsCommand : Command<ModelsCommand.Settings>, ICommand
             string stateStr = Describe(item.State);
             string next = item.State == InstallState.Installed
                 ? item.Entry.RunCommand(home)
-                : $"stingray setup {item.Entry.Task}";
+                : SetupHint(item.Entry);
 
             bool isFav = favourites.TryGetValue(item.Entry.Task, out var favId) && string.Equals(item.Entry.Id, favId, StringComparison.OrdinalIgnoreCase);
             string modelDisplay = isFav ? $"{item.Entry.Id} (favourite)" : item.Entry.Id;
@@ -296,6 +296,10 @@ public sealed class ModelsCommand : Command<ModelsCommand.Settings>, ICommand
 
         return 0;
     }
+
+    /// <summary>The command that installs exactly this entry: <c>setup &lt;task&gt;</c> installs the task's default, so an alternative needs its id.</summary>
+    internal static string SetupHint(CatalogEntry entry) =>
+        ModelCatalog.DefaultFor(entry.Task) is { } d && ReferenceEquals(d, entry) ? $"stingray setup {entry.Task}" : $"stingray setup {entry.Id}";
 
     private static string Describe(InstallState state) => state switch
     {

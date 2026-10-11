@@ -1,6 +1,7 @@
 # Checkpoint Scout and AI-Assisted Architecture Admission
 
 **Status:** Proposed implementation plan (2026-10-09). Drafted by another AI; reviewed against HEAD (all named files/commands exist). **Committed scope: Phases 1–2 plus a short playbook and the optional pretest script (§8.1). Phases 4–5 are deferred, see §8.1.**  
+**Check 2026-10-11:** `stingray scout -r bartowski/SmolLM2-135M-Instruct-GGUF --quants --budget 32G` ran against a public repository: it judged 23 quantisations from their indexes (no weights downloaded), printed the inspected commit, the architecture with its admission status (`llama (Admitted)`) and a fit verdict per quantisation, and needed no environment variable. `pull --revision` and the playbook `docs/reference/architecture-admission-agent-playbook.md` exist. Not re-verified in that check: the rest of Phase 2 and the optional pretest script.
 **Target:** .NET 10 / C# 14, NativeAOT-safe, local-first  
 **Primary constraint:** Make useful progress on the existing 64 GB RAM development machine; do not make oversized real-weight runs a prerequisite for the scout itself.  
 **Scope:** GGUF-first checkpoint inspection and admission assistance. SafeTensors/package inspection remains a related, separate profile system unless an explicit later phase justifies unifying them.

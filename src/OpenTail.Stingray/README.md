@@ -164,39 +164,15 @@ The package bundles every `OpenTail.Stingray.*` library (Core, Cpu, Vulkan, Cuda
 
 ### Why one library
 
-In Python and C++, running modern local AI requires juggling 4–5 fragmented, heavy tools (`llama.cpp` for text, `whisper.cpp` for speech, `kokoro` for voice synthesis, and `ComfyUI` or `diffusers` for image/video generation).
+Running modern local AI usually means several separate tools: one for text, one for speech, one for voice synthesis, another for image and video generation. Stingray puts them behind one .NET package so a single application can use all of them in-process. The tensor kernels, KV caches, samplers, tokenizers, diffusion schedulers and audio processing are written in C# that you can step into and profile.
 
-**Stingray unifies the entire local AI ecosystem into one clean, lightweight .NET library.** All tensor math, SIMD kernels, KV caches, diffusion flow-schedulers, audio DSP resamplers, and tokenizers are written in high-performance managed C# that you can step into, profile, and deploy anywhere.
+### What the code contains
 
-
-### Capabilities in the code
-
-
-* 💬 **Text LLMs & Sparse MoE:** Llama 3 / 3.1 / 3.2 / 3.3 / 4, Mistral 7B / Mixtral MoE / Ministral, Qwen 2.5 / Qwen 3.5 MoE, DeepSeek-V3 / R1, Gemma 3 / 4, SmolLM2. Full tool calling, JSON schema constrained decoding, and grammar masks.
-* 👁️ **Multimodal Vision (11+ Architectures):**
-  * **Alibaba:** Qwen2.5-VL, Qwen3-VL (3D Conv stem, M-RoPE, 2x2 spatial merge).
-  * **DeepSeek:** DeepSeek-OCR & DeepSeek-OCR2 (Dual SAM + CLIP ViT fusion, 1024x1024 grid).
-  * **Mistral AI:** Pixtral 12B (2D Continuous RoPE, SwiGLU, dynamic aspect ratios).
-  * **LLaVA Team:** LLaVA-1.5, LLaVA-NeXT, LLaVA-OneVision (CLIP/SigLIP ViT + GELU MLP).
-  * **OpenGVLab:** InternVL 2.5, InternVL 3, InternVL 4 (PixelShuffle 2x2 downsampling).
-  * **OpenBMB:** MiniCPM-V 2.6 (Dynamic HD 9-slice grid + 2D sinusoidal cross-attention Resampler).
-  * **Zhipu AI:** GLM-4V, GLM-4.5V, GLM-OCR (Dual Conv2D stem, 2D M-RoPE, Conv2D patch merger).
-  * **NVIDIA:** Nemotron-V2-VL / Nemotron-4-Nano (Learned register tokens + 2x2 merge + Squared ReLU MLP).
-  * **Baidu / Dots:** PaddleOCR-VL, Dots-OCR (2D M-RoPE + patch merger + GELU MLP).
-  * **Moonshot AI:** Kimi K2.5 / Kimi-VL (3D learned position embeddings + 2D interleaved RoPE).
-  * **Google & Meta:** Gemma 4 UV (`gemma4uv`), Gemma 4 ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), and Llama 4 (`llama4`).
-* 🎙️ **Studio Audio & Voice Stack:**
-  * **Speech-to-Text (ASR):** Whisper (Large-v3 / Turbo), NVIDIA NeMo Parakeet FastConformer CTC, Alibaba Qwen3-ASR (0.6B/1.7B), Qwen3-ForcedAligner (word timestamps), FunASR Paraformer, SenseVoice, and Silero VAD.
-  * **Neural Voice (TTS) and voice cloning:** Qwen3-TTS 12Hz (includes a speaker encoder), Coqui XTTS-v2 (GPT2 autoregressive codec + FiLM-conditioned HiFi-GAN, zero-shot voice cloning; **voice cloning is verified end to end for XTTS-v2 only**, see STATUS.md), Kokoro-82M, Chatterbox-Turbo, F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Piper VITS, Meta MMS-TTS (Massively Multilingual VITS), and MeloTTS Multilingual VITS.
-  * **Broadcast DSP:** Rational windowed-sinc resamplers, ATSC A/85 downmixing, and TPDF dithered 16-bit/24-bit WAV exporter.
-* 🎨 **State-of-the-Art Diffusion & Video:**
-  * **Image Architectures:** SD 1.5, SDXL, SD 3 / 3.5 (MMDiT), FLUX.1 (schnell/dev), FLUX.2 (Klein & Kontext multi-reference), and Z-Image-Turbo.
-  * **Acoustic Diffusion:** Stable Audio 3 (Variable-Length 44.1kHz Stereo DiT).
-  * **Video Diffusion:** Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
-  * **Streaming:** Latent Consistency Models (LCM, 1-4 step) and `StreamBatchPipeline` for continuous image streams. No measured frame rate is recorded in STATUS.md, so none is claimed here.
-  * **Exporters:** Animated GIF and animated PNG sequence writers with Floyd-Steinberg dithering.
-* ⚡ **Hardware selection:** SIMD kernels (AVX-512, AVX2, ARM NEON), a cached GPU topology probe, and `SmartOffloadPlanner`, which decides how many layers go on a discrete GPU, an APU or the CPU.
-
+- **Language models:** Llama, Mistral and Mixtral, Qwen, Gemma, DeepSeek, Phi, gpt-oss, GLM, Granite, LFM2 and others, including mixture-of-experts models; tool calling, JSON-schema constrained output and grammar masks.
+- **Vision:** projector pipelines for Qwen-VL, DeepSeek-OCR, Pixtral, LLaVA, InternVL, MiniCPM-V, GLM-V, Nemotron-VL, PaddleOCR-VL, dots.ocr, Kimi-VL, Gemma 3 and 4, and Llama 4.
+- **Speech:** recognition (Whisper, Parakeet, Qwen3-ASR, FunASR Paraformer, SenseVoice, Silero VAD) and synthesis (Piper, Kokoro, Chatterbox, F5-TTS, CosyVoice, XTTS-v2, Qwen3-TTS, Fish Speech, MeloTTS, MMS-TTS), plus resampling, downmixing and WAV export. Voice cloning is verified end to end for XTTS-v2 only.
+- **Generation:** images (Stable Diffusion 1.5, XL and 3.5, FLUX.1 and FLUX.2, Z-Image-Turbo, Qwen Image), video (Wan, LTX-Video, HunyuanVideo), music and sound effects (ACE-Step, Stable Audio 3, MiniMax-Music3, MusicGen, AudioGen), latent-consistency streaming, and GIF or animated-PNG export. No streaming frame rate is recorded in STATUS.md, so none is claimed.
+- **Hardware selection:** SIMD kernels (AVX-512, AVX2, ARM NEON), a cached GPU topology probe, and `SmartOffloadPlanner`, which decides how many layers go on a discrete GPU, an APU or the CPU.
 
 ---
 
