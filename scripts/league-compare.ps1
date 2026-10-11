@@ -33,6 +33,7 @@ foreach ($l in (Get-Content $League)) {
     $scIdx = [array]::IndexOf($cols, ($cols | Where-Object { $_ -match '^Scenario' } | Select-Object -First 1))
     $beIdx = [array]::IndexOf($cols, ($cols | Where-Object { $_ -match '^Backend' } | Select-Object -First 1))
     $csIdx = $cols.IndexOf(($cols | Where-Object { $_ -match 'C#|OT, t/s|Ours|stingray' } | Select-Object -First 1))
+    $cppIdx = $cols.IndexOf(($cols | Where-Object { $_ -match 'C\+\+' } | Select-Object -First 1))
     $dtIdx = $cols.IndexOf(($cols | Where-Object { $_ -match 'Performance Check|Date' } | Select-Object -First 1))
     if ($beIdx -lt 0 -or $csIdx -lt 0) { continue }
     $model = if ($modelCol -ge 0) { $cells[$modelCol] } else { $section }
@@ -42,12 +43,27 @@ foreach ($l in (Get-Content $League)) {
     if (-not $backend) { continue }
     if ($scen -notmatch '(\d{3,4})\s*tok') { continue }
     $tok = [int]$Matches[1]; if ($tok -lt 400 -or $tok -gt 650) { continue }
-    if ($csIdx -ge $cells.Count -or $cells[$csIdx] -notmatch '([\d.]+)\s*t/s') { continue }
-    $val = [double]$Matches[1]
-    $metric = if ($scen -match '^prefill|prefill \(' ) { 'prefill' } elseif ($scen -match 'decode') { 'decode' } else { '' }
-    if (-not $metric) { continue }
+    if ($csIdx -ge $cells.Count -or $cells[$csIdx] -notmatch 't/s') { continue }
+    # A cell is either one value or a "prefill / decode" pair ("32.3-32.4 / 10.9-11.0 t/s"); take the first number of each part.
+    function Parts([string]$cell) {
+        $c = ($cell -replace 't/s', '') -replace '\*', '' -replace '\(.*?\)', ''
+        $nums = @(); foreach ($p in ($c -split '/')) { if ($p -match '([\d.]+)') { $nums += [double]$Matches[1] } else { $nums += $null } }
+        return , $nums
+    }
+    $isPair = $scen -match 'prefill.*/.*decode'
+    $csVals = Parts $cells[$csIdx]
+    $cppVals = if ($cppIdx -ge 0 -and $cppIdx -lt $cells.Count) { Parts $cells[$cppIdx] } else { @() }
     $date = if ($dtIdx -ge 0 -and $dtIdx -lt $cells.Count) { $cells[$dtIdx] } else { '' }
-    $rows.Add([pscustomobject]@{ model = $model; key = (Norm $model); backend = $backend; metric = $metric; tok = $tok; old = $val; date = $date; scen = $scen })
+    $names = @(); $idxs = @()
+    if ($isPair) { $names = @('prefill', 'decode'); $idxs = @(0, 1) }
+    elseif ($scen -match '^prefill|prefill \(') { $names = @('prefill'); $idxs = @(0) }
+    elseif ($scen -match 'decode') { $names = @('decode'); $idxs = @(0) }
+    for ($k = 0; $k -lt $names.Count; $k++) {
+        $i = [int]$idxs[$k]
+        if ($i -ge $csVals.Count -or $null -eq $csVals[$i]) { continue }
+        $cpp = 0.0; if ($i -lt $cppVals.Count -and $null -ne $cppVals[$i]) { $cpp = [double]$cppVals[$i] }
+        $rows.Add([pscustomobject]@{ model = $model; key = (Norm $model); backend = $backend; metric = $names[$k]; tok = $tok; old = [double]$csVals[$i]; cpp = $cpp; date = $date; scen = $scen })
+    }
 }
 
 $out = foreach ($n in $new) {
@@ -57,7 +73,7 @@ $out = foreach ($n in $new) {
         # prefer the row with the closest prompt length, then the latest date string
         $best = $cand | Sort-Object { [Math]::Abs($_.tok - $n.tok) }, date -Descending | Select-Object -First 1
         $newv = if ($metric -eq 'prefill') { $n.prefill } else { $n.decode }
-        [pscustomobject]@{ model = $n.model; backend = $n.backend; metric = $metric; oldTok = $best.tok; newTok = $n.tok; old = $best.old; oldDate = $best.date; new = $newv; change = [Math]::Round($newv / $best.old, 2) }
+        [pscustomobject]@{ model = $n.model; backend = $n.backend; metric = $metric; oldTok = $best.tok; newTok = $n.tok; old = $best.old; oldDate = $best.date; cpp = $best.cpp; estRatio = $(if ($best.cpp -gt 0) { [Math]::Round($newv / $best.cpp, 2) } else { "" }); oldRatio = $(if ($best.cpp -gt 0) { [Math]::Round($best.old / $best.cpp, 2) } else { "" }); new = $newv; change = [Math]::Round($newv / $best.old, 2) }
     }
 }
 $matchedKeys = $out | ForEach-Object { Norm $_.model } | Select-Object -Unique
