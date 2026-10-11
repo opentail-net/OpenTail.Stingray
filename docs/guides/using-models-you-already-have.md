@@ -12,6 +12,7 @@ Everything marked **verified** was run on 2026-10-11 on Windows 11 (AMD Ryzen 7 
 | A **folder** | A Hugging Face SafeTensors package | It needs `config.json`, the `.safetensors` file(s) and a `tokenizer.json`. See [SafeTensors folders](#safetensors-folders) for what that covers. |
 
 From C#, `Model.Load(path)` takes the same file or folder.
+**The file stays where it is.** Stingray opens it read-only and memory-maps it in place; it does not copy it into its own model folder and writes nothing to the file or its folder. The operating system pages the weights in from the original location as they are used (a GPU run also uploads them to GPU memory), so a file on a network drive is read over the network. Only `stingray setup` and `stingray pull` download into Stingray's own model folder.
 
 ```bash
 stingray -m <file-or-folder> -p "Hello"        # add -g -1 to use the GPU
