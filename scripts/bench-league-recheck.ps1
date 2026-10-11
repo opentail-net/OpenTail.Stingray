@@ -58,6 +58,14 @@ function Find-Model([string]$stem) {
         $p = Join-Path $repo "$d/$stem.gguf"
         if (Test-Path $p) { return $p }
     }
+    # Also look in every drive's _models (one sub-folder level deep) and the offload folder, so named runs find checkpoints that live off the repo.
+    foreach ($drive in [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady }) {
+        foreach ($root in @((Join-Path $drive.Name '_models'), (Join-Path $drive.Name '_other_models'))) {
+            if (-not (Test-Path $root)) { continue }
+            $hit = Get-ChildItem -Path $root -Filter "$stem.gguf" -File -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+        }
+    }
     return $null
 }
 
