@@ -4,7 +4,7 @@
 #   2. Finds every C# code block in the READMEs that is marked with an HTML comment line  <!-- verify:consumer -->  immediately above the
 #      ```csharp fence, writes each into its own isolated console project (outside the repo, PackageReference only) and builds it.
 #      A block is a complete top-level program; blocks that use WebApplication get the Web SDK and the Server package.
-#   3. Builds the samples that claim to be package consumers (Chat, Speech, Diffusion, ChatServer) with -p:StingrayPackageVersion=<version>,
+#   3. Builds the samples that claim to be package consumers (Chat, Extract, Speech, Diffusion, ChatServer) with -p:StingrayPackageVersion=<version>,
 #      which swaps their ProjectReference items for PackageReference, and checks the restore resolved no project references.
 #
 # This proves the code COMPILES against the public package. It does not run inference (that needs model files); where a sample or snippet has been
@@ -94,7 +94,7 @@ $refs
 }
 
 # --- 3. samples in package mode
-foreach ($s in 'OpenTail.Stingray.Sample.Chat', 'OpenTail.Stingray.Sample.Speech', 'OpenTail.Stingray.Sample.Diffusion', 'ChatServer') {
+foreach ($s in 'OpenTail.Stingray.Sample.Chat', 'OpenTail.Stingray.Sample.Extract', 'OpenTail.Stingray.Sample.Speech', 'OpenTail.Stingray.Sample.Diffusion', 'ChatServer') {
     $proj = Join-Path $repo "samples/$s"
     $out = & dotnet build $proj -c $Configuration "-p:StingrayPackageVersion=$Version" "-p:RestoreSources=$($sources -replace ';', '%3B')" 2>&1 | Out-String
     $ok = ($LASTEXITCODE -eq 0)

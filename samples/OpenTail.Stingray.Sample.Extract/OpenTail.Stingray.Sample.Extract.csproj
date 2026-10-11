@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OpenTail.Stingray.Sample.Extract</RootNamespace>
+    <AssemblyName>opentail-extract-sample</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Package consumer sample; see OpenTail.Stingray.Sample.Chat.csproj for the two build modes. -->
+  <ItemGroup Condition="'$(StingrayPackageVersion)' == ''">
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(StingrayPackageVersion)' != ''">
+    <PackageReference Include="OpenTail.Stingray" Version="$(StingrayPackageVersion)" />
+  </ItemGroup>
+
+</Project>
