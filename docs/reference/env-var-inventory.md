@@ -29,7 +29,8 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-09 — `KnownEnvironmentVariables.All` now contains **274** names** (added `STINGRAY_ALLOW_EXTERNAL`, `STINGRAY_CONFIG_DIR`, `STINGRAY_IGNORE_PREFLIGHT`)
+**Reconciled again 2026-10-11 — `KnownEnvironmentVariables.All` now contains **284** names** (added the Qwen Image and Vulkan performance switches: `STINGRAY_QWEN_PROFILE`, `STINGRAY_QWEN_MLP_CHUNKS`, `STINGRAY_VK_QGEMM_SMALLM`, `STINGRAY_VK_MXFP4_V2`, `STINGRAY_VK_MATVEC_V2`, `STINGRAY_VK_PATH3_CHUNK`, `STINGRAY_VULKAN_DECODE_ATTN_GQA`, `STINGRAY_VULKAN_DECODE_PROFILE`, `STINGRAY_VULKAN_FLASH_PREFILL`, `STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK`)
+(2026-10-09: 274 names; added `STINGRAY_ALLOW_EXTERNAL`, `STINGRAY_CONFIG_DIR`, `STINGRAY_IGNORE_PREFLIGHT`)
 (2026-10-05: registered `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL` and `STINGRAY_MOE_PHASE_TIMING`, both read in `src/` but missing from the registry. Removed `STINGRAY_HANDOFF_TEST_MODEL`: it is read only by `HybridCpuPrefillHandoffTests` under `tests/`, never in `src/`, so the registry — whose tests scan `src/` — cannot justify it, and registering it would make `doctor` accept a name the engine itself never reads. It stays a test-only switch, like `STINGRAY_RUN_HEAVY_TESTS`; optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` (default 4) and `STINGRAY_HANDOFF_TEST_CTX` (default 1024) are read by the same test. Net +1 from the 267 the registry held after the earlier, un-documented edits.)
 
 **Reconciled 2026-10-03 — `KnownEnvironmentVariables.All` contained **266** names**

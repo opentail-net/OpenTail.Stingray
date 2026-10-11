@@ -2925,7 +2925,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
                 VulkanMatMulStats.RecordPath2(nTok, rows, cols, weightDType);   // counted with the tiled path
                 return;
             }
-            if (nTok > VulkanMatMulPathConfig.Path1MaxTokensPerDispatch)
+            if (nTok > VulkanMatMulPathConfig.Path1MaxTokensPerDispatch && weightDType is DType.Q4_K or DType.Q6_K)
                 throw new NotSupportedException(
                     $"Path 3 serves Q3_K/Q4_K/Q5_K/Q6_K with cols % 256 == 0; {weightDType} with cols={cols} cannot take a {nTok}-token chunk (Path 1 is capped at 16).");
         }

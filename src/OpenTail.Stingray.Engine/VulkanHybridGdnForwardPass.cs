@@ -328,6 +328,8 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     private Tensor? _gpuBtK;         // [_btCap × kvDim]
     private Tensor? _gpuBtV;         // [_btCap × kvDim]
     private Tensor? _gpuBtAttnOut;   // [_btCap × qDim]
+    private Tensor? _gpuBtFfnGate;   // [_btCap × intermDim] dense-GPU FFN gate/up scratch (null: no dense GPU FFN layers)
+    private Tensor? _gpuBtFfnUp;
 
     private bool _disposed;
 
@@ -961,9 +963,18 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
     //  at 8, so the admissible N is processed in sub-chunks of ≤ MaxBatchChunk tokens.
     // ================================================================
 
+    /// <summary>Tokens per batched-prefill chunk: the active matmul path's width (Path 3 serves 256), capped at 128 by default (<c>STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK</c> overrides), never below the 8-token verify chunk.</summary>
+    private static int PrefillChunkTokens()
+    {
+        int cap = VulkanMatMulPathConfig.MaxTokensPerDispatch;
+        int want = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK"), out int c) && c >= 1 ? c : 128;
+        return Math.Max(MaxBatchChunk, Math.Min(want, cap));
+    }
+
     private ReadOnlySpan<float> PrefillBatched(IReadOnlyList<int> tokens, int startPos)
     {
-        EnsureBatchedScratch(MaxBatchChunk);
+        int chunk = PrefillChunkTokens();
+        EnsureBatchedScratch(chunk);
         int total = tokens.Count;
         int processed = 0;
         // Pessimistic fault latch (mirror CudaHybridGdnForwardPass): the per-chunk GDN-state
@@ -973,7 +984,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _faulted = true;
         while (processed < total)
         {
-            int n = Math.Min(MaxBatchChunk, total - processed);
+            int n = Math.Min(chunk, total - processed);
             int chunkStartPos = startPos + processed;
             bool lastChunk = processed + n >= total;
             PrefillChunk(tokens, processed, n, chunkStartPos, lastChunk);
@@ -1263,6 +1274,20 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         int embDim = _embDim;
         Tensor hidden = _gpuBtHidden!, norm = _gpuBtNorm!;
         long rowBytes = (long)embDim * sizeof(float);
+        // Dense GPU FFN: batch the gate/up/down projections across the chunk (the weights stream once per
+        // chunk instead of once per token), then run the SiLU gate over the whole [n x intermDim] block.
+        if (!_hp.IsMoE && _gpuWFfnGate is not null && _gpuWFfnGate[layer] is not null && _gpuBtFfnGate is not null && _gpuBtFfnUp is not null)
+        {
+            Tensor normA = Alias(norm, n, embDim), hiddenA = Alias(hidden, n, embDim);
+            Tensor gateA = Alias(_gpuBtFfnGate, n, _intermDim), upA = Alias(_gpuBtFfnUp, n, _intermDim);
+            GpuMatMulBatched(gateA, _gpuWFfnGate[layer]!, normA, n);
+            GpuMatMulBatched(upA,   _gpuWFfnUp![layer]!,  normA, n);
+            _gpu.RecordBarrier();
+            _gpu.SiLuMul(gateA, upA);
+            _gpu.RecordBarrier();
+            GpuMatMulBatched(hiddenA, _gpuWFfnDown![layer]!, gateA, n);
+            return;
+        }
         for (int i = 0; i < n; i++)
         {
             // Row i of the batched post-attn norm → scalar norm buffer (compute-stage copy,
@@ -1329,6 +1354,11 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _gpuBtK       = _gpu.Allocate(TensorShape.D1((long)cap * kvDim));
         _gpuBtV       = _gpu.Allocate(TensorShape.D1((long)cap * kvDim));
         _gpuBtAttnOut = _gpu.Allocate(TensorShape.D1((long)cap * qDim));
+        if (_gpuFfnGateBufDense is not null)
+        {
+            _gpuBtFfnGate = _gpu.Allocate(TensorShape.D1((long)cap * _intermDim));
+            _gpuBtFfnUp   = _gpu.Allocate(TensorShape.D1((long)cap * _intermDim));
+        }
 
         _btCap = cap;
     }
@@ -1341,6 +1371,7 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         F(ref _gpuBtQkv); F(ref _gpuBtQkvConv); F(ref _gpuBtZ); F(ref _gpuBtQHead); F(ref _gpuBtKHead);
         F(ref _gpuBtAlpha); F(ref _gpuBtBeta); F(ref _gpuBtGdnOut);
         F(ref _gpuBtQGate); F(ref _gpuBtQ); F(ref _gpuBtGate); F(ref _gpuBtK); F(ref _gpuBtV); F(ref _gpuBtAttnOut);
+        F(ref _gpuBtFfnGate); F(ref _gpuBtFfnUp);
         _btCap = 0;
     }
 

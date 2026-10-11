@@ -54,7 +54,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **D3** FP16-tile GEMM project (the only large-upside item left; carries the numerics decision). Plan: [the quantized GEMM plan](2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md).
 
 ### E. Other leads and deferred work
-- [ ] **E1** Lead 3: hybrid-GDN (Qwen3.5/3.6) prefill evaluated token by token (re-measure first; the league figure may be stale).
+- [x] **E1** Hybrid-GDN (Qwen3.5/3.6) batched prefill, re-measured and fixed 2026-10-11. Cause: the batched trunk was capped at 8 tokens per chunk and ran the dense FFN per row (weights re-streamed per token). Now: chunk = min(128, active matmul path width) (`STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK`), dense-GPU FFN batched across the chunk, and `MatMulBatched` falls back instead of throwing for dtypes Path 3 does not serve. 480-token prompt: **Qwen3.5-4B 11.0 -> 46.1 t/s (4.2x)** (chunk 8: 17.6, 64: 33.6, 128: 46.1, 256: 48.2, 512: 50.8), **Qwen3.5-9B 6.4 -> 35.5 t/s (5.5x)**, decode unchanged, greedy text identical to the sequential path on both. Open: the recurrence scan and AttentionBatched (head dim 256, per-query workgroups) are the remaining prefill cost; MoE hybrid FFN is still per row; the CUDA-oracle hybrid tests cannot run here.
 - [ ] **E2** Lead 4: MoE decode gap (OLMoE 0.50x).
 - [ ] **E3** Lead 5: FLUX.2 GPU (3,260 s for one 512x512 image).
 - [ ] **E4** Lead 6: diffusion-side `MatVecDq*` kernels (parked, would double the effort).
