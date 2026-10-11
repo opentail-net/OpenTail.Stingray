@@ -22,7 +22,8 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Choose settings for my hardware | [reference/recommended-configurations.md](reference/recommended-configurations.md), [profiles/](profiles) |
 | Look up an environment variable | [reference/env-var-inventory.md](reference/env-var-inventory.md) |
 | Query capabilities from code | [reference/capabilities.md](reference/capabilities.md) |
-| Run a new GGUF from Hugging Face | [reference/061-coverage-tooling.md](reference/061-coverage-tooling.md) (`pull`, `admit-arch`, `gen-vision-scaffold`) |
+| Check a model that is not in the starter list before downloading it (does it fit? is it supported?) | [reference/061-coverage-tooling.md](reference/061-coverage-tooling.md) (`scout -r <repo> --quants --budget`, then `pull --revision`) |
+| Add support for a new model architecture | [reference/adding-an-architecture.md](reference/adding-an-architecture.md), [reference/architecture-admission-agent-playbook.md](reference/architecture-admission-agent-playbook.md) (`scout`, `admit-arch`, goldens), [../CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Compare Stingray with other engines | [reference/POSITIONING.md](reference/POSITIONING.md) |
 | See performance numbers | [../PerformanceLeague.md](../PerformanceLeague.md) (full, measured, hardware-specific) |
 | Contribute, or see what is open | [../CONTRIBUTING.md](../CONTRIBUTING.md), [WANTED.md](WANTED.md) |

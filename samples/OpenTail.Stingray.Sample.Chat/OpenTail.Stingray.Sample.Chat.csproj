@@ -6,9 +6,17 @@
     <AssemblyName>opentail-llm-sample-chat</AssemblyName>
   </PropertyGroup>
 
-  <!-- Consumes the OpenTail.Stingray public library API -->
-  <ItemGroup>
+  <!--
+    Package consumer sample: it uses only the public OpenTail.Stingray API.
+    Default (in-repo) builds use the source project so edits are picked up immediately.
+    `-p:StingrayPackageVersion=<version>` builds against the PACKED NuGet package instead; scripts/verify-package-consumers.ps1 does that
+    to prove the public package alone is enough.
+  -->
+  <ItemGroup Condition="'$(StingrayPackageVersion)' == ''">
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(StingrayPackageVersion)' != ''">
+    <PackageReference Include="OpenTail.Stingray" Version="$(StingrayPackageVersion)" />
   </ItemGroup>
 
 </Project>

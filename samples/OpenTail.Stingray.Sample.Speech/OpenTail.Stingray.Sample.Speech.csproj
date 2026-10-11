@@ -9,9 +9,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
-  <ItemGroup>
+  <!-- Package consumer sample; see OpenTail.Stingray.Sample.Chat.csproj for the two build modes. -->
+  <ItemGroup Condition="'$(StingrayPackageVersion)' == ''">
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(StingrayPackageVersion)' != ''">
+    <PackageReference Include="OpenTail.Stingray" Version="$(StingrayPackageVersion)" />
   </ItemGroup>
 
 </Project>

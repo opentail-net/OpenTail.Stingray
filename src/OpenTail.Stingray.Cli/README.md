@@ -1,6 +1,6 @@
 # OpenTail.Stingray.Cli
 
-`stingray` — a command-line tool for local LLM inference and image generation, powered by [OpenTail.Stingray](https://www.nuget.org/packages/OpenTail.Stingray). Reads GGUF models and runs them on CPU (AVX2/AVX-512) or GPU (Vulkan / CUDA). No Python, no sidecar process.
+`stingray` is the command-line front door to OpenTail.Stingray: install a recommended model for a task and run it without typing a path (`setup`, `chat`, `speak`, `transcribe`), or point it at any GGUF and tune the run yourself. It also generates images, computes embeddings, and carries the tools for checking and admitting new models (`scout`, `pull`, `inspect`, `admit-arch`). Runs on CPU (AVX2/AVX-512) or GPU (Vulkan / CUDA). No Python, no llama.cpp, no sidecar process.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
@@ -42,6 +42,34 @@ stingray speak "Hello from Stingray." -o hello.wav
 stingray transcribe hello.wav
 ```
 
+## Is my machine ready?
+
+```bash
+stingray models              # which of chat / speak / transcribe have a model installed, and the command that fixes each gap
+stingray doctor              # the local runtime and which GPU backends are usable
+stingray doctor -m model.gguf   # structural check of a GGUF without running inference
+```
+
+(`stingray status` is different: it reads live metrics from a running server.) The starter
+catalogue covers chat, speak and transcribe only. Everything else the engine can run, and how well
+each model was checked, is in [docs/STATUS.md](../../docs/STATUS.md).
+
+## A model that is not in the catalogue
+
+Check it before you download it, then fetch exactly the file you checked:
+
+```bash
+stingray scout -r owner/repo --quants --budget 32G           # architecture, blockers, which quantisations fit, a pull command pinned to the inspected commit
+stingray pull  -r owner/repo --revision <commit> -q Q4_K_M    # downloads that revision, so you get what scout inspected
+stingray -m models/<file>.gguf -p "Hello" -g -1              # run it (drop -g -1 for CPU)
+```
+
+`scout` reads only the file index, never the weights, and only reports: without `--budget` it does
+not judge whether the model fits your RAM. A local file works too (`stingray scout -m model.gguf`).
+If the architecture is not admitted yet, see
+[adding an architecture](../../docs/reference/adding-an-architecture.md) for the evidence required
+before it is advertised as supported.
+
 ## Advanced & Path-Oriented Usage
 
 ```bash
@@ -59,7 +87,7 @@ stingray list-metadata -m model.gguf
 stingray capabilities                     # which model packages are supported
 stingray inspect -m models/some-hf-dir    # verdict on a SafeTensors package
 
-# Image generation (Z-Image-Turbo; CUDA or Vulkan)
+# Image generation (Z-Image-Turbo). A GPU (Vulkan or CUDA) is strongly recommended; add `--device none` to force CPU, which is slow.
 stingray image \
   -m models/z_image_turbo-Q5_K_M.gguf \
   --vae models/z-image-turbo/vae \
@@ -103,7 +131,7 @@ accepted and quietly does nothing.
 | `--tq` | off | TurboQuant KV-cache compression (~4–8× less KV memory) |
 | `--tq-mode` | `auto` | `auto`, `kvarn` (4-bit K / 2-bit V) or `lloydmax` (3-bit codebooks; degrades quality on QK-norm models such as Qwen3) |
 
-Run `stingray --help` or view the [CLI Option Inventory](../../docs/reference/cli-option-inventory.md) for the complete reference across all 29 commands.
+Run `stingray --help` or view the [CLI Option Inventory](../../docs/reference/cli-option-inventory.md) for every option of every command.
 
 ## Requirements
 

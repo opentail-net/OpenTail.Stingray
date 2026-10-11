@@ -6,7 +6,7 @@ here is backed by a dated row in [STATUS.md](STATUS.md) (how well it was checked
 [RUNNING.md](RUNNING.md) (the exact command, the memory it needs and the speed we measured).
 
 Stingray is a library, a command-line tool (`stingray`) and an OpenAI/Anthropic-compatible server,
-all running the same engine in plain .NET with no Python and no native binaries. You pick the
+all running the same engine in .NET with no Python and no llama.cpp. (Native code that can still be involved: your GPU driver, and ONNX Runtime for the ONNX speech engines.) You pick the
 interface that fits: a one-off try is the CLI, an app is the NuGet package, an existing OpenAI
 client is the server.
 

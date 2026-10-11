@@ -1,34 +1,41 @@
 # OpenTail.Stingray
 
 **Local AI for .NET.** Chat with language models, turn text into speech, transcribe audio, read
-images and generate pictures, inside your own .NET process. There is no Python, no sidecar
-server and no native binaries to ship: the engine is managed C# that runs on your CPU, or your
-GPU through Vulkan or CUDA.
+images and generate pictures, inside your own .NET process. There is no Python, no llama.cpp and
+no sidecar server: the engine is managed C# that runs on your CPU, or your GPU through Vulkan or
+CUDA. (The native pieces that can still be involved are your GPU driver, and ONNX Runtime for the
+ONNX-based speech engines such as Piper.)
 
 [![NuGet](https://img.shields.io/nuget/v/OpenTail.Stingray.svg)](https://www.nuget.org/packages/OpenTail.Stingray)
 [![.NET 10](https://img.shields.io/badge/.NET-10-blue)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ```text
-> dotnet run -- chat qwen2.5-0.5b-instruct-q4_k_m.gguf "In one sentence, why do developers write unit tests?"
-Developers write unit tests to ensure individual components of a program work as intended,
-enhancing code quality, maintaining stability, and facilitating testing and debugging.
+> stingray setup chat
+> stingray chat "In one sentence, why do developers write unit tests?"
+Developers write unit tests to ensure individual components work as intended, facilitating code
+quality, maintainability, and testing of software components.
 ```
 
-That answer came from a 469 MB model running on an ordinary desktop CPU, in about three seconds.
+That is a 469 MB model, downloaded and checksum-verified by `stingray setup chat`. On an AMD Ryzen 7
+5700G desktop (integrated graphics, which `stingray chat` picked automatically through Vulkan) the
+second command took 5 to 6 seconds in total, including loading the model (measured 2026-10-11).
+Sampling is random, so the wording differs from run to run.
 
 ## Why Stingray
 
 - **It's just a NuGet package.** `dotnet add package OpenTail.Stingray` and your app can run
-  models. Nothing to install on the user's machine, nothing to keep in sync, and it publishes with
-  NativeAOT into a single executable.
+  models. For CPU use there is nothing else to install on the user's machine or keep in sync, and it
+  publishes with NativeAOT into a single executable.
 - **One library for text, speech and images.** The same package does chat, text-to-speech,
   speech-to-text, image understanding and image generation, so you don't glue five tools together.
 - **It reads the models people already use.** GGUF files from Hugging Face (the llama.cpp
   format), plus the common ONNX/safetensors releases for speech and diffusion.
-- **Checked against the reference implementations.** Language models are compared token by token
-  with llama.cpp. What is verified, and how, is recorded model by model in
-  [docs/STATUS.md](docs/STATUS.md).
+- **Checked against the reference implementations.** Where a llama.cpp reference run exists,
+  language models are compared with it token by token; speech and diffusion models are checked
+  against their reference implementations or recorded outputs. What is verified, and how, is
+  recorded model by model in [docs/STATUS.md](docs/STATUS.md). Where nothing is recorded there,
+  treat a model as unverified.
 
 ## Three Ways to Run
 
@@ -69,8 +76,10 @@ This verifies SHA-256 integrity and stores the model in `ModelHome`. You can als
 
 **3. Replace `Program.cs`**
 
+<!-- verify:consumer -->
 ```csharp
 using OpenTail.Stingray;
+using OpenTail.Stingray.Core.Catalog;
 using OpenTail.Stingray.Executors;
 
 // Resolve model from CLI argument or default ModelHome bundle:
@@ -105,6 +114,7 @@ both files of a voice, for example `en_US-lessac-medium.onnx` (63 MB) and
 `en_US-lessac-medium.onnx.json`
 ([here](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium)):
 
+<!-- verify:consumer -->
 ```csharp
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Piper;
@@ -116,6 +126,7 @@ tts.Generate(new AudioGenerationRequest { Text = "Hello from a voice that never 
 **Speech to text** with Whisper. Download
 [`ggml-base.bin`](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-base.bin) (148 MB):
 
+<!-- verify:consumer -->
 ```csharp
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Whisper;
@@ -134,6 +145,7 @@ transcribes it back word for word.
 Add `OpenTail.Stingray.Server` to an ASP.NET project, and existing OpenAI clients can talk to a
 local model:
 
+<!-- verify:consumer -->
 ```csharp
 using OpenTail.Stingray.Server;
 
@@ -189,13 +201,39 @@ they mean the same thing. Model assets live in a per-user folder (`%LOCALAPPDATA
 
 ## Finding models
 
-**[docs/MODELS.md](docs/MODELS.md)** is a short, curated list of models to start with, one table
-per task (chat, images, speech, transcription, image generation, search). Each entry links straight
-to the file on Hugging Face and shows its size, licence and whether we have tested that exact file.
-**[docs/RUNNING.md](docs/RUNNING.md)** then says how to run each one well: the command, the RAM it
+There are two lists, and they are different on purpose.
+
+- **The starter catalogue** is what `stingray models` shows: a short, curated list for three tasks
+  (chat, speak, transcribe), each with a recommended model and a few alternatives. Every entry is
+  pinned to an exact file revision with a SHA-256, shows its licence, RAM need and measured speed,
+  and says what was checked, or that nothing was. `stingray setup <task>` installs one, the path-free commands run it,
+  and `stingray models use <task> <id>` keeps your favourite.
+- **Everything else the engine can run** is tracked in [docs/STATUS.md](docs/STATUS.md), model by
+  model. An architecture the engine has admitted is not the same as a model we recommend or have
+  verified on your backend: read the row before you rely on it.
+
+**[docs/MODELS.md](docs/MODELS.md)** is the curated list for humans, one table per task (chat,
+images, speech, transcription, image generation, search), linking straight to the files on Hugging
+Face. **[docs/RUNNING.md](docs/RUNNING.md)** says how to run each one well: the command, the RAM it
 really needs and its measured speed. For how a model family works inside Stingray (the GGUF
 architecture keys it uses, which classes run it, checkpoints and measured results), see the
 **[architecture cards](docs/models/README.md)**.
+
+### Trying a model that is not in the catalogue
+
+Check it before you download it, then fetch exactly what you checked:
+
+```bash
+stingray scout -r owner/repo --quants --budget 32G      # architecture, blockers, which quantisations fit this machine
+stingray pull  -r owner/repo --revision <commit> -q Q4_K_M   # the commit scout printed, so you get the file it inspected
+stingray -m models/<file>.gguf -p "Hello"               # run it; add -g -1 for the GPU
+```
+
+`scout` reads only the file index (no weights) and never decides anything for you: it reports what
+it found, and `--budget` is what makes it judge whether the model fits your RAM. If the
+architecture is not admitted yet, [docs/reference/adding-an-architecture.md](docs/reference/adding-an-architecture.md)
+and [CONTRIBUTING.md](CONTRIBUTING.md) describe the evidence a new architecture needs (a real
+checkpoint, an independent reference, timed runs) before a support claim is made.
 
 ## What else it can do
 
