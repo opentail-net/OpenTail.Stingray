@@ -60,6 +60,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **E3** Lead 5: FLUX.2 GPU (3,260 s for one 512x512 image).
 - [ ] **E4** Lead 6: diffusion-side `MatVecDq*` kernels (parked, would double the effort).
 - [ ] **E5** Reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2: explicitly deferred until the leads above are done or parked.
+- [ ] **E6** (later, from the 2026-10-11 all-checkpoint sweep) Text sanity check in `scripts/bench-league-recheck.ps1`: record the first ~80 characters of each run's output, flag empty or degenerate text (repetition, mostly non-text), and keep a baseline file of known-good starts so a later sweep reports "text changed" per model. Today the sweep proves a checkpoint loads and decodes (CPU 94 of 95, Vulkan 81 of 95 at 94 models in), not that its output is right.
 
 ## How the wins were found (the playbook; reuse it)
 
