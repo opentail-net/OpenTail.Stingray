@@ -33,7 +33,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 ### B. Prefill on Vulkan (Lead 2)
 - [x] **B0** Diagnose: the batched prefill runs at about 0.3 TFLOP/s (multi-token mat-vec, 16 tokens per dispatch); a larger chunk silently falls back to a slow attention kernel. Evidence log: "Lead 2".
 - [x] **B1** Opt-in Path 3 (`STINGRAY_VULKAN_MM_PATH=3`): tiled quantized GEMM incl. a new Q6_K decoder, `SgemmQuant`, and flash attention run in 16-query slices. Qwen3-4B prefill 38.4 to 71.3 t/s (+86%), text identical. Commit `eef12b83`.
-- [ ] **B2** Repeat the Path 3 comparison as a proper alternating A/B with medians (the 71.3 is one run).
+- [x] **B2** Path 3 vs Path 1 as an alternating A/B, two rounds (Qwen3-4B-Q4_K_M, Vulkan): 493-token prompt **38.3 / 38.4 -> 72.4 / 71.8 t/s (+88%)**; 1,915-token prompt **27.4 / 27.4 -> 41.2 / 41.4 t/s (+51%)**; decode unchanged (12.0-12.4 and 10.9 t/s in both paths).
 - [ ] **B3** Try a 256-token chunk (matmuls are about 0.8 TFLOP/s on 128-row tiles).
 - [ ] **B3b** (new) Path 3 prefill falls from 71 t/s at 493 tokens to 41 t/s at 1,915 tokens (Qwen3-4B): the sliced flash attention rereads K/V once per 16-query slice (8 passes per 128-token chunk) and grows with context. Options: a flash kernel with more queries per workgroup (register-limited at 16 today), or a tiled attention for prefill shaped like the GEMM.
 - [ ] **B4** Second dense model and a decode-regression check with Path 3 on.
