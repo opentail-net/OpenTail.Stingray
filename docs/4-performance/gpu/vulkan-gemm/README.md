@@ -33,7 +33,7 @@ memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 
 | variable | effect |
 |---|---|
-| `STINGRAY_VULKAN_MM_PATH` | `1` (default) or `2`. Path 2 declines every shape today and falls through to Path 1. |
+| `STINGRAY_VULKAN_MM_PATH` | `3` (default since 2026-10-11), `1` (old multi-token mat-vec) or `2`. Path 2 declines every shape today and falls through to Path 1. |
 | `STINGRAY_VULKAN_MM_STATS` | `1` to count dispatches and weight bytes; off by default so an unmeasured run is byte-identical to before. |
 
 ```

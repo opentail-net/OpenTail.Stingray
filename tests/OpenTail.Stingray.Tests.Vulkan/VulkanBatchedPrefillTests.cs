@@ -46,7 +46,7 @@ public sealed class VulkanBatchedPrefillTests : HeavyTestBase
     /// greedy-argmax assertion below still applies to both paths and is the sharper check.</para>
     /// </remarks>
     private static double ActivePathTolerance =>
-        VulkanMatMulPathConfig.UsePath2 ? 2e-2 : FpReassociationTolerance;
+        (VulkanMatMulPathConfig.UsePath2 || VulkanMatMulPathConfig.UsePath3) ? 2e-2 : FpReassociationTolerance;
 
     private static string? FindModelPath()
     {

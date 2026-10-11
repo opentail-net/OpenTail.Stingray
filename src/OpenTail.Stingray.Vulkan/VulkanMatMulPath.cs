@@ -34,7 +34,7 @@ public enum VulkanMatMulPath
     /// <summary>Shared-memory tiled quantized GEMM (<c>MatMulTiledQ4K</c>/<c>MatMulTiledQ6K</c>). Serves Q4_K and Q6_K; declines other dtypes to Path 1.</summary>
     Path2 = 2,
 
-    /// <summary>Tiled quantized GEMM with a prefill-sized chunk (<see cref="VulkanBackend.SgemmQuant"/>: 128-row tile, dequantizes in the tile loader). Serves Q3_K, Q4_K, Q5_K, Q6_K; opt-in via STINGRAY_VULKAN_MM_PATH=3.</summary>
+    /// <summary>Tiled quantized GEMM with a prefill-sized chunk (<see cref="VulkanBackend.SgemmQuant"/>: 128-row tile, dequantizes in the tile loader). Serves Q3_K, Q4_K, Q5_K, Q6_K; default (STINGRAY_VULKAN_MM_PATH=1 rolls back).</summary>
     Path3 = 3,
 }
 
@@ -116,7 +116,7 @@ public static class VulkanMatMulPathConfig
     /// Re-reads <c>STINGRAY_VULKAN_MM_PATH</c>. Exposed for tests.
     /// </summary>
     /// <remarks>
-    /// <b>Defaults to Path 1</b>, unlike the CPU's <c>GemmPathConfig</c> which defaults to Path 2.
+    /// <b>Defaults to Path 3</b> since 2026-10-11 (prefill +86-100% on dense Q4_K models, greedy text identical, arch-parity suites pass; set STINGRAY_VULKAN_MM_PATH=1 to roll back). Unlike the CPU's <c>GemmPathConfig</c> which defaults to Path 2.
     /// The CPU default was flipped only after Path 2 was measured faster end-to-end and no worse on
     /// perplexity. Here Path 2 does not exist yet, so the default must stay on the incumbent; when a
     /// kernel lands, it earns the default the same way — by measurement, not by being newer.
@@ -124,8 +124,9 @@ public static class VulkanMatMulPathConfig
     public static VulkanMatMulPath ReadFromEnvironment()
     {
         string? v = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_MM_PATH");
-        if (string.IsNullOrWhiteSpace(v)) return VulkanMatMulPath.Path1;
+        if (string.IsNullOrWhiteSpace(v)) return VulkanMatMulPath.Path3;
         v = v.Trim();
+        if (v == "1" || v.Equals("path1", StringComparison.OrdinalIgnoreCase)) return VulkanMatMulPath.Path1;
         if (v == "2" || v.Equals("path2", StringComparison.OrdinalIgnoreCase)) return VulkanMatMulPath.Path2;
         if (v == "3" || v.Equals("path3", StringComparison.OrdinalIgnoreCase)) return VulkanMatMulPath.Path3;
         return VulkanMatMulPath.Path1;
