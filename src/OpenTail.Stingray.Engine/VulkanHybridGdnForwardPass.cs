@@ -1253,6 +1253,10 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _gpu.RecordBarrier();
 
         // 6. Batched GQA SDPA: query i (pos chunkStartPos+i) attends causally over [0, chunkStartPos+i].
+        if (_gpu.SupportsFlashPrefillGqa((uint)_numHeads, (uint)_numKvHeads, (uint)_headDim) && n > 1)
+            _gpu.AttentionFlashPrefillGqa(qAll, _gpuKCache[layer]!, _gpuVCache[layer]!, attnOutAll,
+                (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)chunkStartPos, n);
+        else
         _gpu.AttentionBatched(qAll, _gpuKCache[layer]!, _gpuVCache[layer]!, attnOutAll,
             (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)chunkStartPos, n, (uint)_maxSeqLen);
         _gpu.RecordBarrier();

@@ -29,6 +29,9 @@ public sealed class VulkanFlashPrefillGqaTests
     [InlineData(32u, 8u, 77u, 256, 64u)]
     [InlineData(32u, 32u, 5u, 70, 64u)]
     [InlineData(15u, 5u, 1000u, 130, 64u)]
+    [InlineData(16u, 4u, 0u, 100, 256u)]
+    [InlineData(16u, 4u, 77u, 256, 256u)]
+    [InlineData(8u, 8u, 1000u, 130, 256u)]
     public void MatchesSlicedFlashKernel(uint numHeads, uint numKvHeads, uint basePos, int numQueries, uint headDim)
     {
         using var vk = TryCreateVulkan();
@@ -52,21 +55,11 @@ public sealed class VulkanFlashPrefillGqaTests
         vk.AttentionFlashPrefillGqa(q, k, v, outNew, numHeads, numKvHeads, headDim, basePos, numQueries);
         vk.Synchronize();
 
-        // Reference: the 16-query kernel, one slice at a time on host-sliced Q.
-        for (int i0 = 0; i0 < numQueries; i0 += VulkanBackend.FlashAttentionMaxQueries)
-        {
-            int take = Math.Min(VulkanBackend.FlashAttentionMaxQueries, numQueries - i0);
-            var qs = vk.Upload(qHost.AsSpan(i0 * (int)qDim, take * (int)qDim).ToArray(), TensorShape.D1(take * (long)qDim), exact: true);
-            var os = vk.Allocate(TensorShape.D1(take * (long)qDim));
-            vk.AttentionBatchedFlash(qs, k, v, os, numHeads, numKvHeads, headDim, basePos + (uint)i0, take, maxSeq);
-            vk.Synchronize();
-            var part = new float[take * qDim];
-            vk.Download(os, part);
-            vk.Free(qs); vk.Free(os);
-            // stash into outRef via host copy below
-            Array.Copy(part, 0, _refHost ??= new float[numQueries * qDim], i0 * (int)qDim, part.Length);
-        }
-        var a = _refHost!; _refHost = null;
+        // Reference: the original per-(head, query) kernel (any head dim; basePos + numQueries must stay within its 4096-slot scores array).
+        vk.AttentionBatched(q, k, v, outRef, numHeads, numKvHeads, headDim, basePos, numQueries, maxSeq);
+        vk.Synchronize();
+        var a = new float[numQueries * qDim];
+        vk.Download(outRef, a);
         var b = new float[numQueries * qDim];
         vk.Download(outNew, b);
         double maxAbs = 0, maxRef = 0;
@@ -79,5 +72,4 @@ public sealed class VulkanFlashPrefillGqaTests
         Assert.True(maxAbs <= 2e-5 * (maxRef + 1.0), $"heads={numHeads} kv={numKvHeads} base={basePos} q={numQueries}: maxAbsDiff {maxAbs:E2} (max|ref| {maxRef:E2})");
     }
 
-    [ThreadStatic] private static float[]? _refHost;
 }
