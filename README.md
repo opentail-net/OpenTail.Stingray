@@ -49,7 +49,8 @@ Stingray offers three integrated interfaces depending on your workflow:
 
 **New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
 handles, what you need and where the limits are, and the [task guides](docs/guides/README.md) show how to do
-each one. If something goes wrong, see
+each one. The [samples](samples/README.md) are runnable programs, and say which of them use only the
+public package API and how far each was verified. If something goes wrong, see
 [troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Quick start: chat from C#
@@ -99,7 +100,7 @@ await foreach (string piece in session.ChatAsync("In one sentence, why do develo
 
 For advanced applications requiring internal thinking tokens or detailed usage metrics, use `session.ChatChunksAsync(...)` which yields typed `GenerateChunk` streams.
 
-*(Alternatively, low-level engine pipelines can directly wire `GgufModel`, `CpuBackend`, `ForwardPass`, and `InferenceEngine` as demonstrated in [samples/QuickStart](samples/QuickStart/Program.cs).)*
+*(Contributors who want to see the engine internals wired by hand (`GgufModel`, `CpuBackend`, `ForwardPass`, `InferenceEngine`) can read [samples/QuickStart](samples/QuickStart/README.md). It is not a package example: it uses types that are not part of the public API.)*
 
 **4. Run it**
 
@@ -137,8 +138,9 @@ Console.WriteLine(stt.Transcribe(new SpeechToTextRequest { AudioSamples = sample
 // Hello from a voice that never left this computer.
 ```
 
-On the test machine below, the voice generates 2.7 seconds of audio in 1.2 seconds, and Whisper
-transcribes it back word for word.
+On the test machine below (measured 2026-10-11), the voice generated 2.7 seconds of audio in 1.8
+seconds, and Whisper transcribed it back word for word. Short sentences with ordinary words come back
+exactly; proper nouns and brand names often do not (it heard "OpenTail Stingray" as "Benail Tina").
 
 ## Serve an OpenAI-compatible API
 
@@ -256,13 +258,14 @@ are in the same file.
 
 ## Hardware and speed
 
-The timings in this README come from an AMD Ryzen 7 5700G (8 cores, integrated graphics only)
-with 64 GB of RAM, CPU only, on Windows 11. Rough guide:
+The timings in this README come from one machine: an AMD Ryzen 7 5700G (8 cores, integrated
+graphics only) with 64 GB of RAM, on Windows 11. The table below is the CPU; the chat example at the
+top used the same machine's integrated graphics. Rough guide:
 
 | You want to | Download | RAM | On that CPU |
 |---|---|---|---|
 | Chat with a small model | 0.5 GB | 2 GB | ~60-70 tokens/s (Qwen2.5 0.5B) |
-| Chat with a 7–8B model | 4–5 GB | 8 GB | a few tokens/s; a GPU helps a lot |
+| Chat with a 7–8B model | 4–5 GB | 8 GB | about 6-8 tokens/s. On this integrated GPU, generating is no faster than the CPU (memory bandwidth is shared), though reading a long prompt is about 20% faster; a discrete GPU is untested ([measurements](PerformanceLeague.md)) |
 | Text to speech (Piper) | 63 MB | < 1 GB | faster than real time |
 | Speech to text (Whisper base) | 148 MB | < 1 GB | ~2x real time |
 | Image generation | 5–12 GB | 16 GB+ | minutes per image; a GPU is recommended |
@@ -273,10 +276,10 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
 | Your Hardware | Backend (`--backend`) | Execution Details |
 |---|---|---|
-| **CPU Only** (x86-64) | `cpu` | Pure managed C# with AVX2 & AVX-512 SIMD kernels. Runs everywhere with zero GPU required. |
-| **AMD, Intel, or NVIDIA GPU** | `vulkan` | Direct cross-platform SPIR-V compute shaders via Vulkan. Ideal for discrete GPUs and APUs/iGPUs. |
-| **NVIDIA GPU** | `cuda` | Hardware-accelerated cuBLAS and CUDA 12.x kernels for maximum throughput. |
-| **Automatic Selection** | `auto` (default) | Automatically detects available hardware and offloads layers (`-g -1` for all layers). |
+| **CPU only** (x86-64) | the default for `stingray -m ...` (`-g 0`); no `--backend` value needed | Managed C# with AVX2 and AVX-512 SIMD kernels. Needs no GPU. |
+| **AMD, Intel, or NVIDIA GPU** | `--backend vulkan` | SPIR-V compute shaders via Vulkan (needs a Vulkan driver). Tested on an AMD integrated GPU only. |
+| **NVIDIA GPU** | `--backend cuda` | cuBLAS and CUDA 12.x kernels (needs the CUDA 12 runtime). **Unverified here: there is no NVIDIA card on the development machine.** |
+| **Automatic selection** | `--backend auto` (the default when `-g` is set) | Picks CUDA when `-g` is set and CUDA is available, otherwise Vulkan; `-g -1` offloads every layer. |
 
 ## Documentation & Architecture
 

@@ -22,7 +22,7 @@ dotnet add package OpenTail.Stingray
 
 Requires .NET 10 and a 64-bit x86 CPU with AVX2 (most PCs from 2015 on). ARM64 has SIMD kernels but is not yet measured by the project. A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
-**What you do and do not need.** Stingray's own inference code (tensor kernels, tokenizers, KV caches, samplers, diffusion schedulers) is managed C#. You do not need Python, llama.cpp, ggml or a separate inference server. Some execution paths still load native code that is not Stingray's: the GPU driver (Vulkan loader, or the CUDA 12 runtime for the CUDA backend), and ONNX Runtime, which this package depends on for the ONNX-based speech engines such as Piper. The CPU backend for GGUF language models needs none of these.
+**What you do and do not need.** Stingray's own inference code (tensor kernels, tokenizers, KV caches, samplers, diffusion schedulers) is managed C#. You do not need Python, llama.cpp, ggml or a separate inference server. Some execution paths still load native code that is not Stingray's: the GPU driver (Vulkan loader, or the CUDA 12 runtime for the CUDA backend), and ONNX Runtime, which this package depends on for the ONNX-based speech engines such as Piper. A CPU run may still initialise the Vulkan backend at start-up and print a few diagnostic lines to stderr (for example the Vulkan device limits); they are not errors.
 
 ## Your first model
 
@@ -182,7 +182,7 @@ The [sample catalogue](https://github.com/opentail-net/OpenTail.Stingray/blob/ma
 
 * **Chat, Speech, Diffusion and ChatServer** are written against the public package API. They build from source against project references by default, and `scripts/verify-package-consumers.ps1` rebuilds them against the packed NuGet package to prove the public API is enough.
 * **QuickStart and ToolCall** use engine internals and are for contributors.
-* **HotRouting** is a simulation of scheduling behaviour, not an inference benchmark.
+* **HotRouting** is a demonstration of session-state retention across roles that uses a real model if one is present and otherwise falls back to a simulation; it is not an inference benchmark.
 
 ## Verification and provenance
 
