@@ -3516,6 +3516,11 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     private void RecordBatchedFlashAttention(int layer, int startPos, int k, bool kvBf16)
     {
         int cap = VulkanBackend.FlashAttentionMaxQueries;
+        if (!kvBf16 && k > cap && _gpu.SupportsFlashPrefillGqa((uint)_numHeads, (uint)_numKvHeads, (uint)_headDim))
+        {
+            _gpu.AttentionFlashPrefillGqa(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK, (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, (uint)startPos, k);
+            return;
+        }
         if (k <= cap)
         {
             _gpu.AttentionBatchedFlash(_qK, _gpuKCache[layer], _gpuVCache[layer], _attnOutK,
