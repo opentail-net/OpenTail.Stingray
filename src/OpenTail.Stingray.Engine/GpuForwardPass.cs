@@ -956,7 +956,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_splitKvEnabled && _maxSeqLen > SplitKvMinPosition && _maxSeqLen <= (int)VulkanBackend.SplitKvMaxSeqLen)
         {
             int maxSplits = (_maxSeqLen + (int)VulkanBackend.SplitKvChunk - 1) / (int)VulkanBackend.SplitKvChunk;
-            _splitKvPartialO = gpu.Allocate(TensorShape.D1((long)_numHeads * maxSplits * _headDim));
+            _splitKvPartialO = gpu.Allocate(TensorShape.D1((long)_numHeads * maxSplits * _maxHeadDim));
             _splitKvPartialMeta = gpu.Allocate(TensorShape.D1((long)_numHeads * maxSplits * 2));
         }
 
@@ -2589,6 +2589,12 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                     _attnScoresScratch,
                     (uint)_numHeads, (uint)layerKv, (uint)layerHd,
                     (uint)(position + 1), (uint)_maxSeqLen, window: window);
+            else if (_splitKvEnabled && SplitKvGqaEnabled && _splitKvPartialO is not null && _splitKvPartialMeta is not null
+                     && VulkanBackend.SupportsSplitKvGqa((uint)_numHeads, (uint)layerKv, (uint)layerHd))
+                _gpu.AttentionSplitKvGqa(qView, _gpuKCache[effLayer], _gpuVCache[effLayer], attnOutView,
+                    _splitKvPartialO, _splitKvPartialMeta,
+                    (uint)_numHeads, (uint)layerKv, (uint)layerHd,
+                    (uint)(position + 1), (uint)_maxSeqLen, window);
             else
                 _gpu.Attention(qView, _gpuKCache[effLayer], _gpuVCache[effLayer], attnOutView,
                     _attnScoresScratch,

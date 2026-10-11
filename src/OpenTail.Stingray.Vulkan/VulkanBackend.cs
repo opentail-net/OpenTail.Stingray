@@ -3556,7 +3556,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
     /// <summary>True when <see cref="AttentionSplitKvGqa"/> can serve this shape: head_dim 64, 128 or 256 and a GQA group of 1 to 8 query heads per KV head (groups above 4 use two workgroups per KV head).</summary>
     public static bool SupportsSplitKvGqa(uint numHeads, uint numKvHeads, uint headDim) =>
-        numKvHeads > 0 && numHeads % numKvHeads == 0 && numHeads / numKvHeads is >= 1 and <= 8 && headDim is 64 or 128 or 256;
+        numKvHeads > 0 && numHeads % numKvHeads == 0 && numHeads / numKvHeads is >= 1 and <= 8 && headDim is 64 or 128 or 256 or 512;
 
     /// <summary>
     /// <see cref="AttentionSplitKv"/> with the GQA-group partial pass (<see cref="Shaders.AttentionSplitKvPartialGqa"/>): one workgroup per

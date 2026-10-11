@@ -30,6 +30,8 @@ public sealed class VulkanSplitKvGqaAttentionTests
     [InlineData(28u, 4u, 128u)]   // group 7, Qwen2.5-7B style (4 + 3)
     [InlineData(64u, 8u, 128u)]   // group 8, gpt-oss style (4 + 4)
     [InlineData(32u, 4u, 256u)]   // group 8, head dim 256 (hybrid Qwen3.5 style)
+    [InlineData(8u, 2u, 256u)]    // group 4, head dim 256 (Gemma 4 sliding-window layers)
+    [InlineData(8u, 2u, 512u)]    // group 4, head dim 512 (Gemma 4 global layers)
     public void MatchesOriginalSplitKvKernel(uint numHeads, uint numKvHeads, uint headDim)
     {
         using var vk = TryCreateVulkan();
@@ -87,6 +89,8 @@ public sealed class VulkanSplitKvGqaAttentionTests
         Assert.False(VulkanBackend.SupportsSplitKvGqa(72, 8, 128));    // group 9
         Assert.True(VulkanBackend.SupportsSplitKvGqa(16, 4, 256));     // head dim 256
         Assert.False(VulkanBackend.SupportsSplitKvGqa(32, 8, 96));     // head dim 96
+        Assert.True(VulkanBackend.SupportsSplitKvGqa(8, 2, 512));      // head dim 512
+        Assert.False(VulkanBackend.SupportsSplitKvGqa(8, 2, 1024));    // head dim 1024
         Assert.False(VulkanBackend.SupportsSplitKvGqa(28, 8, 128));    // not a whole number of query heads per KV head
     }
 }
