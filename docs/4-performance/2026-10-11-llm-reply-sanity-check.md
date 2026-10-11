@@ -22,3 +22,16 @@ Every checkpoint under every drive's `_models` folder (de-duplicated): **91 pass
 - It shows the **91 admitted-and-runnable chat LLMs still answer coherently** after the recent engine changes, on the CPU path. It does not cover Vulkan or CUDA, quality (only "mentions Paris"), long prompts, or the four oversized checkpoints.
 - A passing line means the model produced the expected word once, greedy; it is not a golden or a benchmark.
 - The harness needs a smarter notion of "chat model" (it currently runs every GGUF whose architecture is not on its non-LLM list). Follow-up: use the same admitted-architecture list as `stingray scout`, and run base models with a completion-style prompt.
+
+## Gemma-2 root cause (found 2026-10-11, not yet fixed)
+
+The `gemma2` descriptor (`src/OpenTail.Stingray.Engine/Architectures/GemmaArchitectures.cs`) has **no `ApplyModelSemantics`**, unlike `gemma3`/`gemma4` (`FamilyModelSemantics.Gemma3`). It therefore runs as a plain dense Llama-style model and is missing everything that makes Gemma-2 Gemma-2:
+
+- embedding scale `sqrt(n_embd)`;
+- GeGLU (`FfnActivation.GeluApprox`) instead of SwiGLU;
+- the post-attention and post-FFN RMSNorms (check the `HasPostAttnNorm` / post-FFN flags are set for this tensor layout);
+- alternating sliding-window layers (window 4096, local on even layers per llama.cpp);
+- **attention logit soft-capping (`attn_logit_softcapping`, 50.0): `ModelHyperparams` has no field for it and no attention kernel applies it** (CPU, Vulkan or CUDA);
+- final logit soft-capping (`final_logit_softcapping`, 30.0): the field exists (`FinalLogitSoftcap`) but gemma2 never sets it.
+
+`gemma` (v1) shares the same gap for the embedding scale and GeGLU and should be checked at the same time. Fixing it is a port, not a one-line change: add the semantics function, add an attention soft-cap to the attention kernels on every backend, then verify against llama.cpp (greedy tokens and a hash-pinned golden). Do not "fix" it with only the cheap parts: a partial port would produce plausible text that is still wrong. Until it is done, Gemma-2 should be treated as **not working**; consider moving `gemma2` out of the admitted set (rule 14) if it will not be fixed soon.
