@@ -103,10 +103,19 @@ $base = (Get-Content -Raw -Path $p500)
 Set-Content -Path $p2k -Value ($base + ' ' + $base + ' ' + $base + ' ' + $base) -NoNewline -Encoding utf8
 $scenarioDefs = @{ 'short' = @($pShort, 64); '500' = @($p500, 16); '2k' = @($p2k, 24) }
 
-function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]$n) {
-    $ngl = if ($backend -eq 'vulkan') { '-1' } else { '0' }
+function Get-BlockCount([string]$path) {
+    $t = (& $exe list-metadata -m $path 2>&1 | Out-String)
+    if ($t -match '\.block_count\s+(\d+)') { return [int]$Matches[1] }
+    return 0
+}
+
+function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]$n, [string]$nglOverride = "") {
+    $ngl = if ($nglOverride) { $nglOverride } elseif ($backend -eq "vulkan") { "-1" } else { "0" }
     $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
-    foreach ($a in @('-m', $model, '-f', $promptFile, '-n', "$n", '--temp', '0', '-g', $ngl)) { [void]$psi.ArgumentList.Add($a) }
+    $argv = @("-m", $model, "-f", $promptFile, "-n", "$n", "--temp", "0", "-g", $ngl)
+    # Oversized checkpoints are supported, so the CPU memory preflight (a refusal, not a capability limit) is bypassed for the harness.
+    if ($backend -eq "cpu") { $argv += "--ignore-preflight" }
+    foreach ($a in $argv) { [void]$psi.ArgumentList.Add($a) }
     $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
     $proc = [System.Diagnostics.Process]::Start($psi)
     $errTask = $proc.StandardError.ReadToEndAsync()
@@ -157,9 +166,19 @@ foreach ($m in $work) {
             if ($done.ContainsKey("$stem|$backend|$scName")) { continue }
             if ($modelDead[$backend]) { continue }
             $file = $scenarioDefs[$scName][0]; $n = [int]$scenarioDefs[$scName][1]
-            $pf = @(); $df = @(); $tok = 0; $why = ''; $kind = ''
+            $pf = @(); $df = @(); $tok = 0; $why = ''; $kind = ''; $suffix = ""
             for ($r = 0; $r -lt $Runs; $r++) {
                 $res = Invoke-One $m.path $backend $file $n
+                # Full Vulkan offload of a checkpoint larger than the placement budget runs out of host memory while uploading layers; the supported way to
+                # run such a checkpoint is a partial offload, so retry once with -g N sized to about 12 GB of layers and label the row.
+                if (-not $res.ok -and $backend -eq 'vulkan' -and $res.why -match 'OutOfHostMemory|ErrorOutOf|out of memory') {
+                    $layers = Get-BlockCount $m.path
+                    if ($layers -gt 0 -and $m.gb -gt 12) {
+                        $gN = [Math]::Max(1, [int][Math]::Floor($layers * 12.0 / $m.gb))
+                        $res = Invoke-One $m.path $backend $file $n "$gN"
+                        $suffix = " [partial offload -g $gN]"
+                    }
+                }
                 if ($res.ok) { $pf += $res.pf; $df += $res.df; $tok = $res.pt } else { $why = $res.why; $kind = $res.kind; break }
             }
             if ($pf.Count -eq 0) {
@@ -169,6 +188,7 @@ foreach ($m in $work) {
             } else {
                 $bp = ($pf | Measure-Object -Maximum).Maximum; $bd = ($df | Measure-Object -Maximum).Maximum
                 $runsTxt = (0..($pf.Count - 1) | ForEach-Object { '{0:F1}/{1:F1}' -f $pf[$_], $df[$_] }) -join ', '
+                $runsTxt += $suffix
                 Add-Content -Path $OutFile -Value ("| {0} | {1} | {2} | {3} | {4} | {5} | {6:F1} | {7:F1} | {8} |" -f $stem, $m.gb, $m.arch, $backend, $scName, $tok, $bp, $bd, $runsTxt); $ok++
             }
         }
