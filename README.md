@@ -1,7 +1,7 @@
 # OpenTail.Stingray
 
-**Local AI for .NET.** Chat with language models, transcribe audio, read images, and generate
-speech, music, sound effects and pictures, all inside your own .NET process.
+**Local AI for .NET.** Language models, vision, speech, music, sound effects and image generation,
+all running inside your own .NET process.
 
 **No Python. No llama.cpp. No sidecar server.** The engine is managed C# that runs on your CPU, or
 your GPU through Vulkan or CUDA. (The native pieces that can still be involved are your GPU driver,
