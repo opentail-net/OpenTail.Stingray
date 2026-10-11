@@ -101,7 +101,7 @@ public static class VulkanMatMulPathConfig
     public const int Path2MaxTokensPerDispatch = 16;
 
     /// <summary>Prefill chunk for Path 3 (the M dimension of the tiled quantized GEMM; it is bounded by scratch memory, not by a register array).</summary>
-    public const int Path3MaxTokensPerDispatch = 128;
+    public static readonly int Path3MaxTokensPerDispatch = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_VK_PATH3_CHUNK"), out int c3) && c3 >= 16 && c3 <= 1024 ? c3 : 256;
 
     /// <summary>Whether per-dispatch statistics are collected. Off unless explicitly enabled.</summary>
     /// <remarks>
