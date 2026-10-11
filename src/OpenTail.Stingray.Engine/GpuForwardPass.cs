@@ -1387,8 +1387,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // (GpuPrefillHandoff.cs); this pass has no batched MoE trunk, only the per-token loop below.
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(N, startPos);
+        if (s_prefillTiming && LastCpuPrefillRefusal is not null) Console.Error.WriteLine($"[gpu-prefill] cpu handoff refused: {LastCpuPrefillRefusal}");
         if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
             return _logitsBuf;
+        if (s_prefillTiming && LastCpuPrefillRefusal is null && _cpuPrefillBroken) Console.Error.WriteLine($"[gpu-prefill] cpu handoff unavailable: {_cpuPrefillBrokenReason}");
 
         // SnapKV (issue #59) gating: only run eviction when this is a fresh
         // prefill (startPos==0), the effective budget is positive, the prompt

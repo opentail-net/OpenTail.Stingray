@@ -80,6 +80,9 @@ public static class PrefillHandoffFamilies
             [("qwen2moe", HandoffPath.VulkanFullGpu)] = new(
                 "GpuCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, -g -1, shared expert 5632 wide with sigmoid gate): handoff logits equal the CPU pass, 40 decode steps vs sequential GPU prefill: cosine 0.998-1.0000 except one isolated 0.9888 dip at step 34 (near-tie router, neighbours 0.998)",
                 "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),
+            [("gemma4", HandoffPath.VulkanFullGpu)] = new(
+                "Gemma4CpuPrefillHandoffTests (gemma-4-E4B-it Q4_K_M, -g -1, 145-token prompt, default and F32 KV): per-layer head dims 256/512 and shared-KV tail layers (18 of 42); 24 teacher-forced decode steps vs the sequential GPU prefill, cosine 0.9995-0.9999, prefill-logit cosine 0.9988",
+                "gemma4|attention.head_count_kv=2|attention.key_length=512"),
             [("phimoe", HandoffPath.VulkanFullGpu)] = new(
                 "GpuCpuPrefillHandoffTests (Phi-3.5-MoE-instruct Q3_K_M, -g -1, ctx 1024 = short LongRoPE factors; RMSNorm + bias, LM-head bias): handoff logits equal the CPU pass, 40 decode steps vs sequential GPU prefill: cosine >= 0.988 (one dip, rest >= 0.997)",
                 "phimoe|attention.head_count_kv=8|expert_count=16|expert_used_count=2"),

@@ -68,10 +68,12 @@ public sealed unsafe partial class GpuForwardPass
         if (startPos != 0) return "startPos != 0 (a CPU pass built here does not hold the earlier turns' K/V)";
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
         if (n > _maxSeqLen) return "prompt longer than the context";
-        if (!_isMoE) return "dense model: the GPU batched trunk handles prefill (nothing here is measured for dense on a fast GPU)";
+        if (!_isMoE && !_isGemma4) return "dense model: the GPU batched trunk handles prefill (nothing here is measured for dense on a fast GPU)";
         if (_canBatchedTrunk) return "the GPU batched trunk is available";
         if (_tqEnabled) return "TurboQuant KV is active";
-        if (_isGemma4 || _hp.LayerHeadDim is not null) return "per-layer head dimensions";
+        if (!_isGemma4 && _hp.LayerHeadDim is not null) return "per-layer head dimensions";
+        // Gemma 4 (per-layer head dims 256/512, shared-KV tail layers): the batched GPU trunk excludes it, the CPU batched pass is much faster than its per-token loop.
+        if (_isGemma4 && _hp.LayerKvHeads is { } lkvh && lkvh.Distinct().Count() > 1) return "per-layer KV head counts";
         if (_residentLayers != _hp.NumLayers) return "layer split: not every layer is GPU resident";
         if (_kvEvicted) return "KV positions were evicted (SnapKV)";
         if (_snapKvEffectiveBudget > 0 && n > _snapKvEffectiveBudget) return "SnapKV would evict after this prefill";
@@ -79,7 +81,7 @@ public sealed unsafe partial class GpuForwardPass
         if (_kvDType is not (DType.Float32 or DType.BFloat16)) return $"GPU KV dtype {_kvDType} has no handoff conversion";
         if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.GpuCpuPrefill, HandoffPath.VulkanFullGpu) is { } familyRefusal) return familyRefusal;
-        long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
+        long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _isGemma4 ? _maxHeadDim : _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
         return null;
@@ -96,9 +98,26 @@ public sealed unsafe partial class GpuForwardPass
                 long t1 = Stopwatch.GetTimestamp();
 
                 int n = tokens.Count;
-                using var cache = new PagedKvCache(_hp.NumLayers, _numKvHeads, _headDim,
-                    bf16Store: false, autoBf16: false, layerHeadDim: null);
-                ReadOnlySpan<float> logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, 0);
+                // Gemma 4's per-layer head dims are not supported by PrefillWithCache(cache); its whole-model Prefill (the batched CPU path) fills the
+                // pass's own cache for every layer instead, and that cache is the source for the upload (as in the layer-split handoff).
+                PagedKvCache? ownCache = null;
+                PagedKvCache cache;
+                ReadOnlySpan<float> logits;
+                if (_isGemma4)
+                {
+                    _cpuPrefillPass!.TruncateTo(0);
+                    logits = _cpuPrefillPass.Prefill(tokens, 0);
+                    cache = _cpuPrefillPass.KvCacheForHandoff;
+                }
+                else
+                {
+                    ownCache = new PagedKvCache(_hp.NumLayers, _numKvHeads, _headDim,
+                        bf16Store: false, autoBf16: false, layerHeadDim: null);
+                    cache = ownCache;
+                    logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, 0);
+                }
+                try
+                {
                 logits[.._logitsBuf.Length].CopyTo(_logitsBuf);
                 long t2 = Stopwatch.GetTimestamp();
 
@@ -119,6 +138,12 @@ public sealed unsafe partial class GpuForwardPass
                         $"end-to-end {total:F0} ms ({n * 1000.0 / Math.Max(total, 1e-3):F1} tok/s)");
                 }
                 return true;
+                }
+                finally
+                {
+                    ownCache?.Dispose();
+                    if (_isGemma4) _cpuPrefillPass!.TruncateTo(0);   // the pass's own cache: leave it empty for the next fresh sequence
+                }
             }
             catch (NotSupportedException ex)
             {
@@ -159,28 +184,34 @@ public sealed unsafe partial class GpuForwardPass
 
     private void HandoffKv(PagedKvCache source, int n)
     {
-        int kvDim = _numKvHeads * _headDim;
-        float[] kHost = new float[(long)n * kvDim];
-        float[] vHost = new float[(long)n * kvDim];
-        uint[]? kPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * kvDim / 2] : null;
-        uint[]? vPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * kvDim / 2] : null;
+        // Gemma 4 varies head_dim by layer (256 SWA / 512 global) and aliases the shared-KV tail layers onto their source's cache;
+        // every other model has one kvDim for all layers.
+        int maxKvDim = _isGemma4 ? _numKvHeads * _maxHeadDim : _numKvHeads * _headDim;
+        float[] kHost = new float[(long)n * maxKvDim];
+        float[] vHost = new float[(long)n * maxKvDim];
+        uint[]? kPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * maxKvDim / 2] : null;
+        uint[]? vPacked = _kvDType == DType.BFloat16 ? new uint[(long)n * maxKvDim / 2] : null;
 
         // Only the resident layers have GPU caches: all of them for a full offload, [0, LayerLimit) for the Vulkan layer split.
         for (int layer = 0; layer < _residentLayers; layer++)
         {
-            KvHandoff.ExtractRows(source, layer, n, _numKvHeads, _headDim, kHost, vHost);
+            if (_kvAliasedLayers.Contains(layer)) continue;   // shares its source layer's cache, which is uploaded from the source
+            int hd = _isGemma4 ? _hp.LayerHeadDim![layer] : _headDim;
+            int kvDim = _numKvHeads * hd;
+            long elems = (long)n * kvDim;
+            KvHandoff.ExtractRows(source, layer, n, _numKvHeads, hd, kHost, vHost);
             if (kPacked is null)
             {
-                _gpu.UploadInto(_gpuKCache[layer], kHost);
-                _gpu.UploadInto(_gpuVCache[layer], vHost);
+                _gpu.UploadInto(_gpuKCache[layer], kHost.AsSpan(0, (int)elems));
+                _gpu.UploadInto(_gpuVCache[layer], vHost.AsSpan(0, (int)elems));
             }
             else
             {
-                PackHalf(kHost, kPacked);
-                PackHalf(vHost, vPacked!);
+                PackHalf(kHost, kPacked, (int)(elems / 2));
+                PackHalf(vHost, vPacked!, (int)(elems / 2));
                 // Bit pattern copy: UploadInto moves float-sized words and never interprets them.
-                _gpu.UploadInto(_gpuKCache[layer], MemoryMarshal.Cast<uint, float>(kPacked));
-                _gpu.UploadInto(_gpuVCache[layer], MemoryMarshal.Cast<uint, float>(vPacked!));
+                _gpu.UploadInto(_gpuKCache[layer], MemoryMarshal.Cast<uint, float>(kPacked.AsSpan(0, (int)(elems / 2))));
+                _gpu.UploadInto(_gpuVCache[layer], MemoryMarshal.Cast<uint, float>(vPacked!.AsSpan(0, (int)(elems / 2))));
             }
         }
     }
@@ -204,9 +235,11 @@ public sealed unsafe partial class GpuForwardPass
     }
 
     /// <summary>Two IEEE fp16 per word, element 2w in the low half: the layout <c>KvAppendBf16</c> writes and attention reads.</summary>
-    internal static void PackHalf(float[] src, uint[] dst)
+    internal static void PackHalf(float[] src, uint[] dst) => PackHalf(src, dst, dst.Length);
+
+    internal static void PackHalf(float[] src, uint[] dst, int words)
     {
-        for (int w = 0; w < dst.Length; w++)
+        for (int w = 0; w < words; w++)
         {
             uint lo = BitConverter.HalfToUInt16Bits((Half)src[2 * w]);
             uint hi = BitConverter.HalfToUInt16Bits((Half)src[2 * w + 1]);
