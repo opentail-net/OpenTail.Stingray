@@ -37,7 +37,7 @@ To compile an application consuming `OpenTail.Stingray` with NativeAOT, configur
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenTail.Stingray" Version="1.0.7" />
+    <PackageReference Include="OpenTail.Stingray" Version="1.0.8" />
   </ItemGroup>
 
 </Project>
