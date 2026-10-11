@@ -96,21 +96,30 @@ public package API and how far each was verified. If something goes wrong, see
 
 ## Why Stingray
 
-- **It's just a NuGet package.** `dotnet add package OpenTail.Stingray` and your app can run
-  models. For CPU use there is nothing else to install on the user's machine or keep in sync, and it
-  publishes with NativeAOT into a single executable.
-- **One library for every modality.** Language models, vision, speech, music, sound effects and
-  image generation come from the same package, so you don't glue five tools together.
-- **It reads the models you already have, in the format you have them.** GGUF files (the
-  llama.cpp format), Hugging Face SafeTensors folders, the weight files in a local Ollama store
-  (they are GGUF), ONNX voices and whisper.cpp `.bin` models, with no conversion step and no
-  re-download. What each format can do, and where it stops, is in the
+- **It runs inside your process.** `dotnet add package OpenTail.Stingray` and the model loads into
+  your app: no Python, no llama.cpp, no server to start and keep alive, and no HTTP hop between
+  your code and the model. Prompts and documents stay in your process. (The only native pieces are
+  the GPU driver, and ONNX Runtime if you use ONNX voices.) For CPU use there is nothing else to
+  install or keep in sync on the user's machine, and the app publishes with NativeAOT into a single
+  executable; the command-line tool starts in about 60 ms ([measured](docs/guides/native-aot-deployment.md#measured-numbers), start-up only, not model loading).
+- **One library, every modality.** Language models, vision, speech, music, sound effects and
+  image generation come from the same package and the same .NET API, so you don't glue five tools
+  together.
+- **It reads the models you already have, in place.** GGUF files (the llama.cpp format), Hugging
+  Face SafeTensors folders, the weight files in a local Ollama store (they are GGUF), ONNX voices
+  and whisper.cpp `.bin` models, with no conversion step and no re-download; the file is
+  memory-mapped where it is, never copied. What each format can do, and where it stops, is in the
   [format table](#formats-it-reads) and the guide [Use the models you already have](docs/guides/using-models-you-already-have.md).
-- **Checked against the reference implementations.** Where a llama.cpp reference run exists,
-  language models are compared with it token by token; speech and diffusion models are checked
-  against their reference implementations or recorded outputs. What is verified, and how, is
-  recorded model by model in [docs/STATUS.md](docs/STATUS.md). Where nothing is recorded there,
-  treat a model as unverified.
+- **C# you can read and step into.** The engine is plain C# in this repository, not a wrapper
+  around a native inference library, so you can set a breakpoint inside inference, read how a model
+  runs, and change it.
+- **Evidence, including the unflattering kind.** Starter models are pinned to an exact commit and
+  checked against a SHA-256. Where a llama.cpp reference run exists, language models are compared
+  with it token by token; speech and diffusion models are checked against their reference
+  implementations or recorded outputs. What is verified, and how, is recorded model by model in
+  [docs/STATUS.md](docs/STATUS.md), and speeds against llama.cpp, including the rows where
+  Stingray is slower, are in [PerformanceLeague.md](PerformanceLeague.md). Where nothing is
+  recorded, treat a model as unverified.
 
 ## Speak and listen
 
