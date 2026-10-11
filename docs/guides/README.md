@@ -14,6 +14,7 @@ the options that matter, and the limits. For the overview of everything Stingray
 | Search by meaning (embeddings and reranking) | [search-embeddings-rerank.md](search-embeddings-rerank.md) |
 | Generate images or short video | [images-and-video.md](images-and-video.md) |
 | Serve all of this to OpenAI, Anthropic or Cohere clients | [serve-an-api.md](serve-an-api.md) |
+| Use models that LM Studio, Ollama or Hugging Face already downloaded | [using-models-you-already-have.md](using-models-you-already-have.md) |
 
 ## Technical Deep Dives
 
@@ -24,7 +25,7 @@ In-depth technical guides for engine internals, memory optimization, and deploym
 | KV cache compression, TurboQuant & prefix reuse | [turboquant-kv-cache.md](turboquant-kv-cache.md) |
 | Pure C# vectorization, SIMD intrinsics & thread pools | [managed-simd-kernels.md](managed-simd-kernels.md) |
 | Compute backends (CPU, Vulkan shaders, CUDA) | [hardware-backends.md](hardware-backends.md) |
-| Publishing single-file zero-dependency NativeAOT binaries | [native-aot-deployment.md](native-aot-deployment.md) |
+| Publishing single-file NativeAOT binaries | [native-aot-deployment.md](native-aot-deployment.md) |
 
 ---
 

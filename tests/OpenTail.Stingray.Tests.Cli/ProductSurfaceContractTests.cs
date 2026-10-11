@@ -36,6 +36,7 @@ public sealed class ProductSurfaceContractTests
         "docs/STATUS.md",
         "docs/TROUBLESHOOTING.md",
         "docs/guides/README.md",
+        "docs/guides/using-models-you-already-have.md",
         "samples/README.md",
     ];
 
