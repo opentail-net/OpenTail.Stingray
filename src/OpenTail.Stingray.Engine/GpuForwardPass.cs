@@ -1910,10 +1910,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 // Flash-decoding split-KV (issue #332): bf16 cache, same gate as the fp32 path
                 // (#312). Below it / split-disabled / headDim%32!=0 runs the byte-identical
                 // single-workgroup bf16 spill path. The combine pass is dtype-agnostic.
-                if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
+                if (UseSplitKvDecodeQuantKv(position))
                 {
-                    _gpu.AttentionSplitKvBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                        _splitKvPartialO, _splitKvPartialMeta!,
+                    AttentionSplitKvQuantKv(1, _q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                        _splitKvPartialO!, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
                         (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
@@ -1937,10 +1937,10 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 // (#312). q8_0 already guarantees kv_dim%32==0 so headDim%32==0 holds, but the
                 // gate is kept uniform. Below it / split-disabled runs the byte-identical q8_0
                 // single-workgroup spill path. The combine pass is dtype-agnostic.
-                if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
+                if (UseSplitKvDecodeQuantKv(position))
                 {
-                    _gpu.AttentionSplitKvQ8(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                        _splitKvPartialO, _splitKvPartialMeta!,
+                    AttentionSplitKvQuantKv(2, _q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                        _splitKvPartialO!, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
                         (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
@@ -3341,9 +3341,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.KvAppendBf16(_k, _v, _gpuKCache[layer], _gpuVCache[layer],
                 (uint)kvDim, (uint)position, (uint)_maxSeqLen);
             _gpu.RecordBarrier();
-            if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
-                _gpu.AttentionSplitKvBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                    _splitKvPartialO, _splitKvPartialMeta!,
+            if (UseSplitKvDecodeQuantKv(position))
+                AttentionSplitKvQuantKv(1, _q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                    _splitKvPartialO!, _splitKvPartialMeta!,
                     (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.AttentionBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
@@ -3355,9 +3355,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.KvAppendQ8_0(_k, _v, _gpuKCache[layer], _gpuVCache[layer],
                 (uint)kvDim, (uint)position, (uint)_maxSeqLen);
             _gpu.RecordBarrier();
-            if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
-                _gpu.AttentionSplitKvQ8(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
-                    _splitKvPartialO, _splitKvPartialMeta!,
+            if (UseSplitKvDecodeQuantKv(position))
+                AttentionSplitKvQuantKv(2, _q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
+                    _splitKvPartialO!, _splitKvPartialMeta!,
                     (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.AttentionQ8_0(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
@@ -3526,6 +3526,27 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.AttentionSplitKvGqa(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
         else
             _gpu.AttentionSplitKv(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
+    }
+
+    /// <summary>
+    /// Whether bf16/q8_0-KV decode attention at <paramref name="position"/> takes the split-KV path: above <see cref="SplitKvMinPosition"/> as before, and (like fp32) at every length
+    /// when the GQA-group kernel serves the shape, so the quantised caches get the same coalesced single-split kernel for short contexts.
+    /// </summary>
+    private bool UseSplitKvDecodeQuantKv(int position) =>
+        _splitKvEnabled && _headDim % 32 == 0 && _splitKvPartialO is not null
+        && (position + 1 > SplitKvMinPosition
+            || (SplitKvGqaEnabled && VulkanBackend.SupportsSplitKvGqa((uint)_numHeads, (uint)_numKvHeads, (uint)_headDim)));
+
+    /// <summary>Split-KV decode attention for a fp16-packed (<paramref name="kvFormat"/> 1) or q8_0 (2) KV cache: the GQA-group kernel when the shape is supported, else the original per-head kernel.</summary>
+    private void AttentionSplitKvQuantKv(int kvFormat, Tensor q, Tensor kCache, Tensor vCache, Tensor output, Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen, uint window = 0u)
+    {
+        if (SplitKvGqaEnabled && VulkanBackend.SupportsSplitKvGqa(numHeads, numKvHeads, headDim))
+            _gpu.AttentionSplitKvGqa(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window, kvFormat: kvFormat);
+        else if (kvFormat == 1)
+            _gpu.AttentionSplitKvBf16(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
+        else
+            _gpu.AttentionSplitKvQ8(q, kCache, vCache, output, partialO, partialMeta, numHeads, numKvHeads, headDim, seqLen, maxSeqLen, window);
     }
 
     /// <summary>

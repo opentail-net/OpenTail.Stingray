@@ -2372,7 +2372,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
     /// must match the single-pass attention to &lt; 1e-3.
     /// </summary>
     private static void AttentionSplitKvMatchesCpuReference(
-        int seqLen, int numHeads, int numKvHeads, int headDim)
+        int seqLen, int numHeads, int numKvHeads, int headDim, bool gqa = false)
     {
         using var backend = CreateBackendOrSkip();
 
@@ -2546,7 +2546,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
     }
 
     private static void AttentionSplitKvBf16MatchesCpuReference(
-        int seqLen, int numHeads, int numKvHeads, int headDim)
+        int seqLen, int numHeads, int numKvHeads, int headDim, bool gqa = false)
     {
         using var backend = CreateBackendOrSkip();
 
@@ -2588,7 +2588,9 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKvBf16(
+        var vkbBf16 = (global::OpenTail.Stingray.Vulkan.VulkanBackend)backend;
+        if (gqa) vkbBf16.AttentionSplitKvGqa(gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta, (uint)numHeads, (uint)numKvHeads, (uint)headDim, (uint)seqLen, (uint)maxSeqLen, kvFormat: 1);
+        else vkbBf16.AttentionSplitKvBf16(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
@@ -2608,6 +2610,24 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         backend.Free(gpuPartialO);
         backend.Free(gpuPartialMeta);
     }
+
+    /// <summary>GQA-group split-KV kernel on an fp16-packed KV cache (A6): group 2 and group 8, head dims 128/64/256, multiple splits and a tiny tail.</summary>
+    [Theory]
+    [InlineData(5000, 4, 2, 128)]
+    [InlineData(4097, 16, 2, 64)]
+    [InlineData(700, 8, 4, 256)]
+    [InlineData(300, 32, 4, 128)]
+    public void AttentionSplitKvGqaBf16_MatchesCpuReference(int seqLen, int numHeads, int numKvHeads, int headDim)
+        => AttentionSplitKvBf16MatchesCpuReference(seqLen, numHeads, numKvHeads, headDim, gqa: true);
+
+    /// <summary>GQA-group split-KV kernel on a block_q8_0 KV cache (A6).</summary>
+    [Theory]
+    [InlineData(5000, 4, 2, 128)]
+    [InlineData(4097, 16, 2, 64)]
+    [InlineData(700, 8, 4, 256)]
+    [InlineData(300, 32, 4, 128)]
+    public void AttentionSplitKvGqaQ8_MatchesCpuReference(int seqLen, int numHeads, int numKvHeads, int headDim)
+        => AttentionSplitKvQ8MatchesCpuReference(seqLen, numHeads, numKvHeads, headDim, gqa: true);
 
     // ── q8_0 split-KV (issue #332) ──────────────────────────────────────────────────────────
 
@@ -2636,7 +2656,7 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
     }
 
     private static void AttentionSplitKvQ8MatchesCpuReference(
-        int seqLen, int numHeads, int numKvHeads, int headDim)
+        int seqLen, int numHeads, int numKvHeads, int headDim, bool gqa = false)
     {
         using var backend = CreateBackendOrSkip();
 
@@ -2677,7 +2697,9 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKvQ8(
+        var vkbQ8 = (global::OpenTail.Stingray.Vulkan.VulkanBackend)backend;
+        if (gqa) vkbQ8.AttentionSplitKvGqa(gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta, (uint)numHeads, (uint)numKvHeads, (uint)headDim, (uint)seqLen, (uint)maxSeqLen, kvFormat: 2);
+        else vkbQ8.AttentionSplitKvQ8(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
