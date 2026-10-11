@@ -87,6 +87,35 @@ Console.WriteLine();
 
 The chat API (`Model`, `ChatSession`, executors) is for language models. Speech, vision and image generation have their own pipeline types, shown next, because their inputs and outputs are not chat messages.
 
+### Watching what the engine does
+
+The engine reports what it did to an in-process event bus, so you can forward timings to your own logging or metrics without touching the hot paths. With no subscriber, emitting costs one volatile read.
+
+<!-- verify:consumer -->
+```csharp
+using OpenTail.Stingray;
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Core.Catalog;
+using OpenTail.Stingray.Executors;
+
+using var events = EngineEvents.Subscribe(new ConsoleSink());
+
+using var model = Model.Load(args.Length > 0 ? args[0] : ModelHome.ResolveModelPath("qwen2.5-0.5b"));
+using var context = model.CreateContext(new ContextParams { ContextSize = 2048 });
+var executor = new InteractiveExecutor(context);
+await foreach (var piece in executor.InferAsync("Name three colours.", new InferenceParams { MaxTokens = 24 }))
+    Console.Write(piece);
+Console.WriteLine();
+
+// Keep sinks quick and thread-safe; an exception thrown here is swallowed so telemetry cannot break inference.
+sealed class ConsoleSink : IEngineEventSink
+{
+    public void OnEvent(in EngineEvent e) => Console.Error.WriteLine(EngineEvents.ToJsonLine(e));
+}
+```
+
+The event kinds are `ModelLoaded` (architecture, build time), `PrefillCompleted` and `DecodeCompleted` (token counts and times), `MtpStep` (speculative-decoding drafts proposed and accepted) and `GcStats`. **What the library emits today:** a package consumer calling `Model.Load` and an executor, as above, receives `ModelLoaded` (the only one verified from a library run: the snippet printed `{"event":"ModelLoaded","name":"qwen2","ms":2956,...}`). The prefill, decode and GC events are emitted by the command line (`STINGRAY_EVENTS=1` prints them as JSON lines), not by the executors, so time a library call yourself with `Stopwatch` and the token count. **What it does not report:** GPU memory use or per-token timings or traces, and it is not an OpenTelemetry or `ILogger` integration (forward events from your sink yourself). The server host keeps its own request metrics.
+
 ## Speech
 
 **Text to speech** with a [Piper](https://huggingface.co/rhasspy/piper-voices) voice. Download both files of a voice, for example `en_US-lessac-medium.onnx` (63 MB) and `en_US-lessac-medium.onnx.json`; `stingray setup speak` does this for you.

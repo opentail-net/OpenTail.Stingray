@@ -2,7 +2,7 @@
 
 > **Topic:** Building self-contained, single-file native executables and Docker images with .NET 10 NativeAOT  
 > **Audience:** DevOps engineers and application developers shipping standalone binaries  
-> **Key Characteristics:** Zero .NET runtime installation required, sub-50ms startup time, tiny disk footprint
+> **Key Characteristics:** No .NET runtime installation required; measured cold start and size are in [Measured numbers](#measured-numbers)
 
 ---
 
@@ -11,7 +11,7 @@
 Traditional .NET deployments require either a pre-installed .NET runtime or a bulky self-contained runtime bundle containing JIT compilers.
 
 With **NativeAOT**, the .NET 10 compiler ahead-of-time compiles your managed C# code directly into machine code for the target OS and architecture:
-- **Instant Startup:** Zero JIT compilation warm-up; model initialization begins immediately.
+- **Fast Startup:** No JIT warm-up for the CLI itself; model loading time is separate (see [Measured numbers](#measured-numbers)).
 - **Single Executable:** Ships as a single binary file (`.exe` on Windows, ELF binary on Linux).
 - **Reduced Memory:** Eliminates JIT compilation metadata and overhead from the process working set.
 
@@ -82,4 +82,15 @@ COPY bin/Release/net10.0/linux-x64/publish/MyStingrayApp .
 ENTRYPOINT ["./MyStingrayApp"]
 ```
 
-This produces production container images under **40 MB** before models are mounted.
+The image size depends on the base image and on which native libraries you ship; it has not been measured here, so check your own build.
+
+## Measured numbers
+
+Measured 2026-10-11 on Windows 11, AMD Ryzen 7 5700G, by publishing `src/OpenTail.Stingray.Cli` with `dotnet publish -c Release -r win-x64` (NativeAOT) and timing `stingray --help` (process start to exit, 9 runs each, nothing else running):
+
+| Build | `--help` wall time (median, min) | Peak working set (median) |
+|---|---|---|
+| NativeAOT `stingray.exe` | 62 ms (61 ms) | 13 MiB |
+| Same CLI, JIT (`bin/Release/net10.0/stingray.exe`, needs the .NET 10 runtime) | 111 ms (109 ms) | 25 MiB |
+
+The NativeAOT executable is 27.4 MiB; the whole publish folder is about 132 MiB, most of it `.pdb`/`.xml` debug and documentation files you do not need to ship (not stripped for this measurement). **This is the startup of the command line, not of inference:** loading a model (mapping the file, reading the tokenizer, preparing the backend) and producing the first token take far longer and depend on the model and the machine. The 62 ms figure should not be read as a time to first token. Other platforms and the server host were not measured.
