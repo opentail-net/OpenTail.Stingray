@@ -21,6 +21,7 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
     [InlineData("Phi-3-mini-4k-instruct-Q4_K_M.gguf")]      // fused attn_qkv + fused gate/up
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]   // MoE + full-width (per-channel) QK-norm
     [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")]
+    [InlineData("SmolLM2-1.7B-Instruct-Q5_K_M.gguf")]          // Q5_K weights: batched trunk through Path 3 (B5b)
     [InlineData("stablelm-zephyr-3b.Q4_K_M.gguf")]           // LayerNorm + bias, partial NEOX RoPE
     [InlineData("c4ai-command-r7b-12-2024-Q4_K_M.gguf")]     // cohere2: parallel residual, LayerNorm, SWA + NoPE globals
     [InlineData("gpt2.Q8_0.gguf")]                           // learned position table, non-gated GELU + biases

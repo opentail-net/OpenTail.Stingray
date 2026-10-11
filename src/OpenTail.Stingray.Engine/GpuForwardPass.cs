@@ -1349,8 +1349,12 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_mropePairPos is not null && _hp.RopeSections!.Sum() != _headDim / 2) return false;
         if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
 
+        // Q4_K/Q6_K have the multi-token mat-vec kernels; Path 3 (the tiled quantized GEMM, default) also serves Q3_K and Q5_K, so Q4_K_M-style mixes
+        // that include Q5_K (e.g. Q5_K_M files) stay on the batched trunk instead of dropping to the per-token loop (SmolLM2-1.7B Q5_K_M prefilled at
+        // 22 tok/s against 235 for Q4_K_M before this).
         bool IsBatchable(Tensor w) =>
-            _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q4_K or DType.Q6_K;
+            _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q4_K or DType.Q6_K
+            || (VulkanMatMulPathConfig.UsePath3 && _weightDTypes.GetValueOrDefault(w.Handle, DType.Q4_K) is DType.Q3_K or DType.Q5_K);
 
         for (int i = 0; i < _hp.NumLayers; i++)
         {
