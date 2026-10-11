@@ -1,5 +1,7 @@
 # Gemma Family (Gemma 1, 2, 3, Gemma 4 / E4B)
 
+> **Verification:** [docs/STATUS.md](../STATUS.md) has verified rows for Gemma 3 and Gemma 4 E4B only. Gemma 1 and 2 have no row, so treat them as unverified: a Gemma 2 2B file loaded and generated in the 2026-10-11 all-checkpoint sweep, but its text was not checked.
+
 [← Back to Architecture Cards](README.md)
 
 Related: [gemma4-vision](gemma4-vision.md), [llama](llama.md), [mistral](mistral.md), [phi](phi.md). Verification: [STATUS.md](../STATUS.md); measured commands: [RUNNING.md](../RUNNING.md).

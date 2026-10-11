@@ -1,7 +1,7 @@
 # Architecture Card: Studio Audio Stack (TTS, STT & DSP)
 
 > **Namespace:** `OpenTail.Stingray.Audio`  
-> **Verification Status:** 🔬 Verified pipelines across Piper, Whisper, Kokoro, Paraformer, and DSP utilities (see [docs/STATUS.md](../STATUS.md))  
+> **Verification Status:** Whisper is golden-verified (🔬). Piper, Kokoro and Paraformer were checked by listening or reading (👂). See [docs/STATUS.md](../STATUS.md) for each engine.  
 > **Supported Formats:** ONNX (`.onnx` + `.onnx.json`), GGML/GGUF (`.bin` / `.gguf`), SafeTensors  
 > **Key Implementations:** `PiperPipeline.cs`, `WhisperPipeline.cs`, `WavReader.cs`, `RationalResampler.cs`
 

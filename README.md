@@ -262,13 +262,13 @@ levels of polish:
 
 - **Language models**: Llama, Qwen, Gemma, Mistral, Phi, DeepSeek, gpt-oss, GLM-4, Granite 4.0-H, Nemotron-H, LFM2 and many more GGUF
   architectures, on CPU, Vulkan or CUDA. Tool calling, JSON-schema constrained output, speculative
-  decoding.
-- **Vision**: images in, text out. Gemma, Qwen-VL, LLaVA, Pixtral, InternVL, OCR models such as dots.ocr.
+  decoding. How each family works: [model architecture cards](docs/models/README.md).
+- **Vision**: images in, text out. Gemma, Qwen-VL, LLaVA, Pixtral, InternVL, OCR models such as dots.ocr. How it works: [vision card](docs/models/multimodal-vision.md).
 - **Speech**: text-to-speech engines including Kokoro, XTTS-v2 (voice cloning), Qwen3-TTS, Fish
-  Speech and Chatterbox; speech recognition with Whisper, Parakeet and Qwen3-ASR.
+  Speech and Chatterbox; speech recognition with Whisper, Parakeet and Qwen3-ASR. How it works: [audio card](docs/models/audio-pipelines.md).
 - **Music and sound effects**: ACE-Step 1.5, Stable Audio 3 (music and SFX), MiniMax-Music3 (with vocals), MusicGen and AudioGen. From C# today; no command-line entry yet. **Listen to real clips in [docs/audio-samples](docs/audio-samples/README.md).**
 - **Image and video generation**: FLUX.1 / FLUX.2, Stable Diffusion 1.5 / XL / 3.5, Z-Image-Turbo, Qwen Image, Wan, LTX-Video,
-  HunyuanVideo. These need several model files each; a guided setup is on the way. See the [image and video samples](docs/diffusion-samples/README.md).
+  HunyuanVideo. These need several model files each; a guided setup is on the way. See the [image and video samples](docs/diffusion-samples/README.md); how it works: [diffusion card](docs/models/diffusion-pipelines.md).
 
 What is verified, what is partial and what is experimental is tracked per model, with dated
 evidence, in **[docs/STATUS.md](docs/STATUS.md)**. Speed comparisons between the speech engines
