@@ -1,10 +1,11 @@
 # OpenTail.Stingray
 
 **Local AI for .NET.** Chat with language models, turn text into speech, transcribe audio, read
-images and generate pictures, inside your own .NET process. There is no Python, no llama.cpp and
-no sidecar server: the engine is managed C# that runs on your CPU, or your GPU through Vulkan or
-CUDA. (The native pieces that can still be involved are your GPU driver, and ONNX Runtime for the
-ONNX-based speech engines such as Piper.)
+images and generate pictures, all inside your own .NET process.
+
+**No Python. No llama.cpp. No sidecar server.** The engine is managed C# that runs on your CPU, or
+your GPU through Vulkan or CUDA. (The native pieces that can still be involved are your GPU driver,
+and ONNX Runtime for the ONNX-based speech engines such as Piper.)
 
 [![NuGet](https://img.shields.io/nuget/v/OpenTail.Stingray.svg)](https://www.nuget.org/packages/OpenTail.Stingray)
 [![.NET 10](https://img.shields.io/badge/.NET-10-blue)](https://dotnet.microsoft.com/)
@@ -21,37 +22,6 @@ That is a 469 MB model, downloaded and checksum-verified by `stingray setup chat
 5700G desktop (integrated graphics, which `stingray chat` picked automatically through Vulkan) the
 second command took 5 to 6 seconds in total, including loading the model (measured 2026-10-11).
 Sampling is random, so the wording differs from run to run.
-
-## Why Stingray
-
-- **It's just a NuGet package.** `dotnet add package OpenTail.Stingray` and your app can run
-  models. For CPU use there is nothing else to install on the user's machine or keep in sync, and it
-  publishes with NativeAOT into a single executable.
-- **One library for text, speech and images.** The same package does chat, text-to-speech,
-  speech-to-text, image understanding and image generation, so you don't glue five tools together.
-- **It reads the models people already use.** GGUF files from Hugging Face (the llama.cpp
-  format), plus the common ONNX/safetensors releases for speech and diffusion.
-- **Checked against the reference implementations.** Where a llama.cpp reference run exists,
-  language models are compared with it token by token; speech and diffusion models are checked
-  against their reference implementations or recorded outputs. What is verified, and how, is
-  recorded model by model in [docs/STATUS.md](docs/STATUS.md). Where nothing is recorded there,
-  treat a model as unverified.
-
-## Three Ways to Run
-
-Stingray offers three integrated interfaces depending on your workflow:
-
-| Interface | Package / Command | Best For |
-|---|---|---|
-| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with no Python, no llama.cpp and no separate server (the GPU driver, and ONNX Runtime for ONNX-based speech engines, are the native pieces involved). |
-| **Command-Line CLI** | `dotnet tool install -g OpenTail.Stingray.Cli` (`stingray`) | Immediate terminal chat, path-free model setup (`stingray setup chat`), local inventory, and batch scripting. |
-| **Local API Server** | `dotnet add package OpenTail.Stingray.Server` | Hosting OpenAI-compatible (`/v1/chat/completions`) endpoints for existing tools and web UIs with zero sidecars. |
-
-**New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
-handles, what you need and where the limits are, and the [task guides](docs/guides/README.md) show how to do
-each one. The [samples](samples/README.md) are runnable programs, and say which of them use only the
-public package API and how far each was verified. If something goes wrong, see
-[troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Quick start: chat from C#
 
@@ -107,6 +77,37 @@ For advanced applications requiring internal thinking tokens or detailed usage m
 ```bash
 dotnet run
 ```
+
+## Three Ways to Run
+
+Stingray offers three integrated interfaces depending on your workflow:
+
+| Interface | Package / Command | Best For |
+|---|---|---|
+| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with no Python, no llama.cpp and no separate server (the GPU driver, and ONNX Runtime for ONNX-based speech engines, are the native pieces involved). |
+| **Command-Line CLI** | `dotnet tool install -g OpenTail.Stingray.Cli` (`stingray`) | Immediate terminal chat, path-free model setup (`stingray setup chat`), local inventory, and batch scripting. |
+| **Local API Server** | `dotnet add package OpenTail.Stingray.Server` | Hosting OpenAI-compatible (`/v1/chat/completions`) endpoints for existing tools and web UIs with zero sidecars. |
+
+**New here? [What can I do with Stingray?](docs/WHAT-YOU-CAN-DO.md)** is a one-page tour of every task it
+handles, what you need and where the limits are, and the [task guides](docs/guides/README.md) show how to do
+each one. The [samples](samples/README.md) are runnable programs, and say which of them use only the
+public package API and how far each was verified. If something goes wrong, see
+[troubleshooting](docs/TROUBLESHOOTING.md).
+
+## Why Stingray
+
+- **It's just a NuGet package.** `dotnet add package OpenTail.Stingray` and your app can run
+  models. For CPU use there is nothing else to install on the user's machine or keep in sync, and it
+  publishes with NativeAOT into a single executable.
+- **One library for text, speech and images.** The same package does chat, text-to-speech,
+  speech-to-text, image understanding and image generation, so you don't glue five tools together.
+- **It reads the models people already use.** GGUF files from Hugging Face (the llama.cpp
+  format), plus the common ONNX/safetensors releases for speech and diffusion.
+- **Checked against the reference implementations.** Where a llama.cpp reference run exists,
+  language models are compared with it token by token; speech and diffusion models are checked
+  against their reference implementations or recorded outputs. What is verified, and how, is
+  recorded model by model in [docs/STATUS.md](docs/STATUS.md). Where nothing is recorded there,
+  treat a model as unverified.
 
 ## Speak and listen
 
