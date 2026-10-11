@@ -68,6 +68,13 @@ public sealed record ModelHyperparams
     public float FinalLogitSoftcap { get; init; }
 
     /// <summary>
+    /// Cap value for attention-logit softcapping applied to the scaled Q.K scores before the softmax
+    /// (<c>s = cap * tanh(s / cap)</c>). 0 disables it (every architecture except Gemma 2, which uses 50.0).
+    /// Only the CPU attention paths implement it; an architecture that sets it must be restricted to the CPU backend.
+    /// </summary>
+    public float AttnLogitSoftcap { get; init; }
+
+    /// <summary>
     /// Scalar multiplier applied to a sublayer's output (attention output and FFN
     /// output, independently) immediately before it is added to the residual stream.
     /// Granite-family models (<c>models/granite.cpp</c>'s <c>build_layer_ffn</c>, shared

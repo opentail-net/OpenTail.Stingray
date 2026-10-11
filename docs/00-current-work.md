@@ -99,7 +99,7 @@ updated with dated evidence in the same pass.
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
-7. **Gemma-2 (`gemma2`) produces garbage and was probably never correct.** Found by the 2026-10-11 reply sanity check; llama.cpp answers correctly on the same file. The descriptor has no model semantics (embedding scale, GeGLU, post-norms, sliding window, final soft-cap) and no attention kernel has attention logit soft-capping. Root cause and the fix outline are in [the sanity-check findings](4-performance/2026-10-11-llm-reply-sanity-check.md#gemma-2-root-cause-found-2026-10-11-not-yet-fixed); `gemma` (v1) needs the same check.
+7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Gemma 1 (`gemma`) still needs the same semantics and a checkpoint to verify.** See [the sanity-check findings](4-performance/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
 
 ## 2. Model coverage
 

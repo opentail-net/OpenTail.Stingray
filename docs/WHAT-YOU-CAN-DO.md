@@ -55,9 +55,8 @@ even if it happens to load.
 ## What does not work yet
 
 - **Some architectures are not supported or not verified:** Jamba, pure Mamba, Llama 4 vision and
-  DeepSeek-V3.2/V4 (alpha code, never run). Gemma 1 and 2 have no [STATUS.md](STATUS.md) row: a Gemma 2
-  2B file loaded and generated in the 2026-10-11 all-checkpoint sweep, but nobody checked its text, so
-  treat it as unverified. GLM-4.5-Air (`glm4moe`) is verified on the CPU and the Vulkan layer split
+  DeepSeek-V3.2/V4 (alpha code, never run). Gemma 1 has no [STATUS.md](STATUS.md) row, so treat it as
+  unverified; Gemma 2 is golden-checked on the CPU only (the 2B file; no Vulkan or CUDA). GLM-4.5-Air (`glm4moe`) is verified on the CPU and the Vulkan layer split
   (STATUS.md); full Vulkan offload of its 33-42 GB files ran out of host memory on the 63 GB test
   machine. See the open list in [00-current-work.md](00-current-work.md).
 - **Runs on the CPU but not with full Vulkan offload (`-g -1`):** the hybrid and recurrent Granite

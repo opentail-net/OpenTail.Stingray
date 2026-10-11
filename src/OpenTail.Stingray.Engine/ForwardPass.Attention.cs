@@ -169,7 +169,7 @@ public sealed unsafe partial class ForwardPass
         // Full investigation (ruled-out hypotheses, the parity and perplexity measurements, the
         // superseded reasoning that preceded them): docs/reference/forwardpass-investigation-log.md
         // #flash-128256-wide-attention-heads--perplexity-investigation
-        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize is 0 or -1 && _hp.AlibiMaxBias <= 0f
+        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && windowSize is 0 or -1 && _hp.AlibiMaxBias <= 0f && _hp.AttnLogitSoftcap <= 0f
             && (headDim == 64 || (Flash64WideHeadDimsEnabled && headDim is 128 or 256)) &&
             Avx2.IsSupported && Fma.IsSupported)
         {
@@ -304,6 +304,7 @@ public sealed unsafe partial class ForwardPass
                         int startSeq = AttnStart(endSeq, windowSize);
                         if (startSeq > 0)
                             new Span<float>(scores + (long)t * stride, startSeq).Clear();
+                        if (_hp.AttnLogitSoftcap > 0f) SimdKernels.SoftcapInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq, _hp.AttnLogitSoftcap);
                         SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
                     }
 
@@ -447,6 +448,7 @@ public sealed unsafe partial class ForwardPass
                         int startSeq = AttnStart(endSeq, windowSize);
                         if (startSeq > 0)
                             new Span<float>(scores + (long)t * stride, startSeq).Clear();
+                        if (_hp.AttnLogitSoftcap > 0f) SimdKernels.SoftcapInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq, _hp.AttnLogitSoftcap);
                         SimdKernels.SoftmaxInPlace(scores + (long)t * stride + startSeq, endSeq - startSeq);
                     }
 
@@ -1187,6 +1189,7 @@ public sealed unsafe partial class ForwardPass
                 for (int i = 0; i < scoreLen; i++) headScores[i] += slope * (i - (scoreLen - 1));
             }
 
+            if (_hp.AttnLogitSoftcap > 0f) SimdKernels.SoftcapInPlace(headScores, scoreLen, _hp.AttnLogitSoftcap);
             SimdKernels.SoftmaxInPlace(headScores, scoreLen);
 
             for (int d = 0; d < hdLocal; d++) outHead[d] = 0;

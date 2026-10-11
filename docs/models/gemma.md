@@ -1,6 +1,6 @@
 # Gemma Family (Gemma 1, 2, 3, Gemma 4 / E4B)
 
-> **Verification:** [docs/STATUS.md](../STATUS.md) has verified rows for Gemma 3 and Gemma 4 E4B only. Gemma 1 and 2 have no row, so treat them as unverified: a Gemma 2 2B file loaded and generated in the 2026-10-11 all-checkpoint sweep, but its text was not checked.
+> **Verification:** [docs/STATUS.md](../STATUS.md) has verified rows for Gemma 2 (CPU only, 2B checked), Gemma 3 and Gemma 4 E4B. Gemma 1 has no row, so treat it as unverified.
 
 [← Back to Architecture Cards](README.md)
 
@@ -39,7 +39,7 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 
 | Model | Hugging Face Repository | Parameters | Quantization | Size | Purpose |
 |---|---|---|---|---|---|
-| **Gemma-2-2B-IT** | [google/gemma-2-2b-it](https://huggingface.co/google/gemma-2-2b-it) *(GGUF: [bartowski/gemma-2-2b-it-GGUF](https://huggingface.co/bartowski/gemma-2-2b-it-GGUF))* | 2.6B | `Q4_K_M` | ~1.7 GB | Fast on-device chat and CPU edge inference. **Warning (2026-10-11): output is currently incoherent; see [the sanity-check findings](../4-performance/2026-10-11-llm-reply-sanity-check.md).** |
+| **Gemma-2-2B-IT** | [google/gemma-2-2b-it](https://huggingface.co/google/gemma-2-2b-it) *(GGUF: [bartowski/gemma-2-2b-it-GGUF](https://huggingface.co/bartowski/gemma-2-2b-it-GGUF))* | 2.6B | `Q4_K_M` | ~1.7 GB | Fast on-device chat and CPU edge inference. CPU only; golden-checked 2026-10-11 (see STATUS.md). |
 | **Gemma-2-9B-IT** | [google/gemma-2-9b-it](https://huggingface.co/google/gemma-2-9b-it) *(GGUF: [bartowski/gemma-2-9b-it-GGUF](https://huggingface.co/bartowski/gemma-2-9b-it-GGUF))* | 9.2B | `Q4_K_M` | ~5.8 GB | Strong general-purpose instruction following |
 | **Gemma-3-1B-IT** | [google/gemma-3-1b-it](https://huggingface.co/google/gemma-3-1b-it) | 1.1B | `Q4_K_M` | ~0.8 GB | Ultra-compact edge model |
 | **Gemma-4-E4B-IT** | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) | 4.4B | `Q8_0` / `Q4_K_M` | ~7.5 GB / ~2.9 GB | Google's multimodal reasoning checkpoint |
@@ -56,7 +56,7 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 | **Gemma 2 2B** | Q4_K_M | 4,096 | ~2.5 GB | CPU SIMD (AVX2/AVX-512) |
 | **Gemma 4 E4B** | Q4_K_M | 4,096 | ~4.2 GB | CPU SIMD or Vulkan / CUDA GPU |
 | **Gemma 4 E4B** | Q8_0 | 4,096 | ~8.9 GB | Discrete GPU (Vulkan / CUDA) or 16 GB+ RAM |
-| **Gemma 2 9B** | Q4_K_M | 8,192 | ~8.5 GB | Dedicated GPU (Vulkan / CUDA) |
+| **Gemma 2 9B** | Q4_K_M | 8,192 | ~8.5 GB | CPU only (not run here; Vulkan and CUDA do not support Gemma 2) |
 
 ---
 

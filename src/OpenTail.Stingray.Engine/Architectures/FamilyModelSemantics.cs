@@ -9,6 +9,40 @@ using OpenTail.Stingray.Core;
 internal static class FamilyModelSemantics
 {
     /// <summary>
+    /// Gemma 2 (llama.cpp src/models/gemma2.cpp): sqrt(n_embd) embedding scale, GeGLU (tanh-approximate GELU), the post-attention and
+    /// post-FFN norms (picked up from the tensors), sliding-window attention on every other layer (window 4096; even layers local,
+    /// i % 2 == 0, the same i % period &lt; period - 1 rule as Gemma 3 with period 2), attention-logit softcapping (50) and
+    /// final-logit softcapping (30). The 27B model (46 layers) scales Q by 1/sqrt(n_embd / n_head) instead of 1/sqrt(head_dim).
+    /// There is no separate local RoPE base. Attention softcapping is implemented on the CPU attention paths only, so the
+    /// descriptor restricts this architecture to the CPU backend.
+    /// </summary>
+    public static ModelHyperparams Gemma2(ModelArchitectureSemanticsContext ctx)
+    {
+        var hp = ctx.Baseline;
+        int numLayers = hp.NumLayers;
+        if (numLayers <= 0) return hp;
+
+        int sliding = ctx.Int("attention.sliding_window");
+        var result = hp with
+        {
+            EmbeddingScale = MathF.Sqrt(hp.EmbeddingDim),
+            FfnActivation = FfnActivation.GeluApprox,
+            SlidingWindowSize = sliding,
+            FinalLogitSoftcap = ctx.Float("final_logit_softcapping"),
+            AttnLogitSoftcap = ctx.Float("attn_logit_softcapping"),
+        };
+        if (numLayers == 46 && hp.NumHeads > 0)
+            result = result with { AttentionScaleOverride = 1f / MathF.Sqrt((float)hp.EmbeddingDim / hp.NumHeads) };
+        if (sliding > 0)
+        {
+            var swa = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++) swa[i] = i % 2 == 0;
+            result = result with { IsSwaLayer = swa };
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Gemma 3 (gemma3.cpp): sqrt(d) embedding scale, GELU-tanh FFN, scalar sliding window + period (default 6,
     /// last layer of each block global), separate local RoPE base (default 10000, same rope dim), optional softcap.
     /// </summary>
