@@ -101,8 +101,11 @@ public package API and how far each was verified. If something goes wrong, see
   publishes with NativeAOT into a single executable.
 - **One library for text, speech and images.** The same package does chat, text-to-speech,
   speech-to-text, image understanding and image generation, so you don't glue five tools together.
-- **It reads the models people already use.** GGUF files from Hugging Face (the llama.cpp
-  format), plus the common ONNX/safetensors releases for speech and diffusion.
+- **It reads the models you already have, in the format you have them.** GGUF files (the
+  llama.cpp format), Hugging Face SafeTensors folders, the weight files in a local Ollama store
+  (they are GGUF), ONNX voices and whisper.cpp `.bin` models, with no conversion step and no
+  re-download. What each format can do, and where it stops, is in the
+  [format table](#formats-it-reads).
 - **Checked against the reference implementations.** Where a llama.cpp reference run exists,
   language models are compared with it token by token; speech and diffusion models are checked
   against their reference implementations or recorded outputs. What is verified, and how, is
@@ -221,6 +224,18 @@ Face. **[docs/RUNNING.md](docs/RUNNING.md)** says how to run each one well: the 
 really needs and its measured speed. For how a model family works inside Stingray (the GGUF
 architecture keys it uses, which classes run it, checkpoints and measured results), see the
 **[architecture cards](docs/models/README.md)**.
+
+### Formats it reads
+
+You do not have to convert or re-download what you already have. Point `-m` (CLI) or `Model.Load` (C#) at it:
+
+| Format | What it is for | What was checked (2026-10-11), and where it stops |
+|---|---|---|
+| **GGUF** | Language models and vision models (with their `mmproj`), and many speech, music and image checkpoints. Quantised weights; CPU, Vulkan and CUDA. | The main path, and most of [docs/STATUS.md](docs/STATUS.md). 103 text-generation GGUFs from many families were loaded and run in an all-checkpoint sweep (CPU 101, Vulkan 85). |
+| **SafeTensors** (Hugging Face folders) | Image and video generation, speech and vision models, and language models of a few dense families (Llama and Mistral, Qwen2 and 3, GPT-2). | A SmolLM2-135M folder ran on the CPU. For language models only unquantised weights (F32, F16, BF16) on the CPU are supported; use GGUF for quantised or GPU runs. `stingray capabilities` lists the exact profiles. |
+| **Ollama store** | Models you already pulled with Ollama, with no Ollama daemon needed. | An Ollama weight file is a GGUF: `-m ~/.ollama/models/blobs/sha256-<digest>` (the digest of the model layer in the manifest) ran a Qwen3-VL 2B model. **Loading through the manifest file itself does not work in the CLI yet** (it fails with an invalid-GGUF error), and the library's manifest reader has been tested only on synthetic fixtures. |
+| **ONNX** | Speech engines such as Piper. | Piper ran. It needs ONNX Runtime, a native component that ships as a dependency of the package. |
+| **whisper.cpp `.bin`** | Whisper speech recognition. | `ggml-base.bin` ran (the speech sample). |
 
 ### Trying a model that is not in the catalogue
 
