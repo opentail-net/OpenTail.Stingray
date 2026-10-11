@@ -1,6 +1,6 @@
 # OpenTail.Stingray.Diffusion
 
-Native, high-performance diffusion and multimodal video/audio inference runtime for .NET 10 — 100% managed C#, running in-process with zero Python, zero subprocesses, zero P/Invoke, and full NativeAOT compatibility.
+Diffusion and multimodal video/audio generation for .NET 10: managed C# running in-process, with no Python, no subprocesses and no separate inference server, and NativeAOT compatible. The GPU paths call the vendor Vulkan or CUDA driver libraries, and ONNX-based components use ONNX Runtime; the diffusion math itself is C#.
 
 Supports the entire modern image, video, and acoustic diffusion landscape: **Stable Diffusion 1.5, SDXL, Stable Diffusion 3 / 3.5, FLUX.1, FLUX.2 (Klein & Kontext), FLUX 3 Multimodal A/V, Stable Audio 3, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1 / 2.2 Video, and HunyuanVideo / 1.5**, accelerated natively on CPU (AVX2/AVX-512) and GPU (Vulkan / CUDA).
 

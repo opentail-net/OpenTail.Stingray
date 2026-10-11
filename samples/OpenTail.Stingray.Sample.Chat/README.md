@@ -55,3 +55,29 @@ echo "In one sentence, why do developers write unit tests?" | \
 - `-s, --system <prompt>`: Custom system instructions for the assistant.
 - `-c, --ctx-size <tokens>`: Maximum context window size (default: 2048).
 - `--temp <float>`: Sampling temperature (default: 0.7).
+
+---
+
+## 4. Expected Output
+
+Piped input prints the loading line, then one streamed answer, then a fresh prompt. The run behind this README (Ryzen 7 5700G, Qwen2.5 0.5B Instruct, 5.4 s in total including model load):
+
+```text
+loading ...\stingray\models\qwen2.5-0.5b-instruct-q4_k_m.gguf ... qwen2 (ctx 2048)
+ready. type a message, Ctrl+D / Ctrl+Z to exit.
+> Developers write unit tests to ensure their software components work as intended, isolate bugs, and verify functionality in a controlled environment.
+>
+```
+
+The wording differs from run to run (the default temperature is 0.7).
+
+## 5. Known Limitations
+
+- Runs on the CPU backend; pass a different `-c` for more context. For a GPU, use the CLI (`stingray chat`, which selects a GPU automatically) or set the backend in `ModelParams` as the [package README](../../src/OpenTail.Stingray/README.md) shows.
+- Backend diagnostic lines (Vulkan device limits, "Pre-faulted ... weights", "OpenBLAS: not found (fallback to sequential)") are printed to the console on stderr. They are not errors.
+- One conversation, no persistence between runs.
+
+## 6. Verification
+
+- **Run against real weights, 2026-10-11:** path-free (model installed by `stingray setup chat`) with piped input, as shown above. One run.
+- **Package contract:** the sample builds against the packed `OpenTail.Stingray` 1.0.8 NuGet package with no project references (`scripts/verify-package-consumers.ps1`, 2026-10-11). The default in-repo build uses the source project; pass `-p:StingrayPackageVersion=<version>` to build against the package.

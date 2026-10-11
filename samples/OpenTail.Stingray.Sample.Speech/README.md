@@ -55,3 +55,31 @@ dotnet run --project samples/OpenTail.Stingray.Sample.Speech -c Release -- \
 - `--transcribe <path>`: Path to audio file to transcribe.
 - `--voice <path>`: Explicit path to `.onnx.json` Piper configuration file.
 - `--whisper <path>`: Explicit path to `ggml-base.bin` Whisper model file.
+
+---
+
+## 4. Expected Output
+
+The default round trip synthesizes one fixed sentence and transcribes it back. The run behind this README (Ryzen 7 5700G, CPU, 6.6 s in total):
+
+```text
+[TTS] Synthesizing speech with Piper...
+      Text: "OpenTail Stingray brings fast neural voice synthesis and transcription directly to managed .NET."
+      Generated 5.05s of audio in 3797ms -> sample_speech.wav
+[ASR] Transcribing audio with Whisper...
+      Transcription: "Benail Tina brings fast neural voice synthesis and transcription directly to managed net."
+```
+
+Note what the transcript shows: Whisper base gets the ordinary words right and **mishears the product name** ("OpenTail Stingray" became "Benail Tina"); a shorter sentence, "Hello from OpenTail Stingray.", came back as "Hello from Penial T-NAS.". The text is not the point of the sample; the pipeline working end to end is.
+
+## 5. Known Limitations
+
+- `stingray setup speak` asks you to accept the data licence of the Piper Lessac voice (it is not plainly permissive); the sample itself does not check this.
+- Whisper `base` is small and fast, not the most accurate model; proper nouns and brand names are the usual failures.
+- Piper and Whisper are the only engines shown. Other speech engines have different setup needs and verification levels: see [docs/STATUS.md](../../docs/STATUS.md).
+- Backend diagnostic lines may be printed to stderr.
+
+## 6. Verification
+
+- **Run against real weights, 2026-10-11:** Piper `en_US-lessac-medium` and Whisper `ggml-base.bin`, with the default round trip and the two single-direction modes. All three ran; the transcripts are as shown above. One run each.
+- **Package contract:** the sample builds against the packed `OpenTail.Stingray` 1.0.8 NuGet package with no project references (`scripts/verify-package-consumers.ps1`, 2026-10-11).

@@ -77,3 +77,32 @@ Add a new tool in two steps:
 2. **Implementation** — add a case to `ExecuteTool(...)` and a handler function
 
 For GPU inference, swap `CpuBackend` + `ForwardPass` for `VulkanBackend` + `GpuForwardPass` (add the `OpenTail.Stingray.Vulkan` project reference) — the rest of the sample is unchanged.
+
+## Prerequisites
+
+- The .NET 10 SDK, a 64-bit x86 CPU with AVX2, and a GGUF chat model whose template supports tool calls. The run below used `Qwen3-8B-Q4_K_M.gguf` (about 5 GB; roughly 8 GB of RAM).
+
+## Expected output
+
+The model asks for three tool calls, the sample runs them, and a second turn writes the answer. The run behind this README (Ryzen 7 5700G, CPU, 38 s in total):
+
+```text
+User: What is the weather like in Paris and Tokyo, and what is 42 times 17?
+[model called 3 tool(s)]
+  tool 'get_weather' -> Partly cloudy, 18 °C. Light westerly breeze.
+  tool 'get_weather' -> Clear skies, 24 °C. Humid.
+  tool 'calculate' -> 714
+Assistant: The weather in Paris is partly cloudy with a temperature of 18 °C ... 42 times 17 equals **714**.
+```
+
+## Known limitations
+
+- The weather tool returns canned data for a few cities; it demonstrates the loop, not a real service.
+- Tool-call parsing depends on the model emitting the `<tool_call>` format its template defines; a model that does not will produce no tool calls.
+- The CUDA commands above were **not run** (there is no NVIDIA GPU on the development machine); only the CPU command is verified.
+- Uses engine internals (`GgufModel`, `ToolGrammar`, `TierPlanner`), not the public package contract.
+
+## Verification
+
+- **Run against real weights, 2026-10-11:** Qwen3-8B Q4_K_M on the CPU backend, default prompt, as shown; the arithmetic is correct (42 x 17 = 714). One run.
+- CUDA paths: unverified. Not built against the packed package (it is a contributor example).

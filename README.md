@@ -43,7 +43,7 @@ Stingray offers three integrated interfaces depending on your workflow:
 
 | Interface | Package / Command | Best For |
 |---|---|---|
-| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with zero native dependencies. |
+| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with no Python, no llama.cpp and no separate server (the GPU driver, and ONNX Runtime for ONNX-based speech engines, are the native pieces involved). |
 | **Command-Line CLI** | `dotnet tool install -g OpenTail.Stingray.Cli` (`stingray`) | Immediate terminal chat, path-free model setup (`stingray setup chat`), local inventory, and batch scripting. |
 | **Local API Server** | `dotnet add package OpenTail.Stingray.Server` | Hosting OpenAI-compatible (`/v1/chat/completions`) endpoints for existing tools and web UIs with zero sidecars. |
 

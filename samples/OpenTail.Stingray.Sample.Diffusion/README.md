@@ -113,3 +113,28 @@ pipeline.Generate(request);
 * [Diffusion Model Pipelines](../../docs/models/diffusion-pipelines.md) — Architectural coverage across UNet (SD 1.5, SDXL), DiT (FLUX.1, Z-Image-Turbo), and video diffusion models.
 * [Hardware Backends](../../docs/guides/hardware-backends.md) — Backend selection, Vulkan GPU compute, and SIMD CPU vectorization.
 * [Feature Index](../../docs/WHAT-YOU-CAN-DO.md) — Complete capabilities overview.
+
+---
+
+## Expected Output
+
+A progress line per denoising step, then the path of the PNG and the denoising latency. The run behind this README (Radeon integrated graphics through Vulkan, SD 1.5, `--width 256 --height 256 --steps 8 --seed 42`, prompt "a red apple on a wooden table"; 31 s in total):
+
+```text
+[Denoising] Step 8/8 (100%)...
+[Success] Image written to: ...\sample_diffusion.png
+Denoising Latency: 28567 ms (3570.9 ms/step)
+```
+
+The image was a recognisable red apple on a wooden surface (inspected by eye). At the default 512x512 and 20 steps expect several times longer; on CPU, minutes.
+
+## Known Limitations
+
+- Stable Diffusion 1.5 only in this sample. FLUX, SD 3.5, Z-Image, video and audio diffusion need several model files each and have their own setup: see [docs/STATUS.md](../../docs/STATUS.md) and the [image and video samples](../../docs/diffusion-samples/README.md).
+- A per-step `[UNet.ForwardGpu] record=...ms, submitWait=...ms` line is printed on the GPU path.
+- The checkpoint is large (about 4.27 GB) and its source repository has moved on Hugging Face; both `runwayml/stable-diffusion-v1-5` and `stable-diffusion-v1-5/stable-diffusion-v1-5` resolved when checked on 2026-10-11, and the checkpoint licence (CreativeML Open RAIL-M) applies.
+
+## Verification
+
+- **Run against a real checkpoint, 2026-10-11:** `v1-5-pruned-emaonly.safetensors` and the CLIP tokenizer, on the GPU, as shown. One run; the output was judged by eye, not compared against a reference image. [docs/STATUS.md](../../docs/STATUS.md) records Stable Diffusion 1.5 as checked by human judgement of the output (the 👂 tier), not by a numeric comparison with a reference implementation.
+- **Package contract:** builds against the packed `OpenTail.Stingray` 1.0.8 NuGet package with no project references (`scripts/verify-package-consumers.ps1`, 2026-10-11).
