@@ -27,6 +27,46 @@
 
 ---
 
+## Our-side recheck, 2026-10-11 (C# only, no C++ reference re-measured)
+
+Re-measured with `scripts/bench-league-recheck.ps1` (commit `9652f1f5`, engine defaults, no env overrides, best of 2 runs, one model at a time, 13 minutes for the 25 rows below). Prompts: short (about 15-40 tokens, 64 new tokens), 500 (`docs/reference/benchmark-prompt.txt`, about 490-580 tokens, 16 new tokens), 2k (that prompt four times, 1.9-2.3k tokens, 24 new tokens; the SnapKV auto-budget of 2,048 applies). Same machine as everywhere in this file: Ryzen 7 5700G and its integrated Radeon, so rule 13 applies (nothing here says anything about discrete GPUs).
+
+**No ratio is given because no llama.cpp number was re-measured on the same day or the same prompts.** Older rows in this file keep their own dates and ratios; compare against them only where the prompt length matches, and re-run `scripts/bench-vs-llamacpp.ps1` before restating a ratio. Not run here: the other models in this file (`-Set full` covers 18 of them), the audio, vision and diffusion sections.
+
+What changed since the older rows (details in `docs/4-performance/2026-10-10-inference-improvement-leads-plan.md`): the Vulkan prefill matmul is now the tiled quantized GEMM (Path 3, default), decode attention uses the GQA split-KV kernel, prefill attention is a causal GQA register-tiled kernel (head dims 64/128/256), M-RoPE and hybrid-GDN models take the batched prefill, and Gemma 4 prefills on the CPU and hands its K/V to the GPU (so its short-prompt Vulkan row, below the handoff threshold, is still the slow per-token path).
+
+| Model | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) |
+|---|---|---|---:|---:|---:|---|
+| SmolLM2-1.7B-Instruct-Q4_K_M | cpu | short | 40 | 120.8 | 29.9 | 103.0/29.4, 120.8/29.9 |
+| SmolLM2-1.7B-Instruct-Q4_K_M | cpu | 500 | 555 | 232.9 | 24.5 | 227.7/24.5, 232.9/24.4 |
+| SmolLM2-1.7B-Instruct-Q4_K_M | vulkan | short | 40 | 95.0 | 28.8 | 93.8/28.7, 95.0/28.8 |
+| SmolLM2-1.7B-Instruct-Q4_K_M | vulkan | 500 | 555 | 235.5 | 23.7 | 235.5/23.7, 234.8/22.0 |
+| SmolLM2-1.7B-Instruct-Q4_K_M | vulkan | 2k | 2130 | 153.2 | 17.2 | 150.6/17.0, 153.2/17.2 |
+| Qwen3-4B-Q4_K_M | cpu | short | 30 | 52.3 | 13.7 | 48.5/13.7, 52.3/13.7 |
+| Qwen3-4B-Q4_K_M | cpu | 500 | 493 | 103.5 | 12.0 | 103.5/12.0, 93.4/11.5 |
+| Qwen3-4B-Q4_K_M | vulkan | short | 30 | 40.5 | 12.4 | 40.5/12.4, 40.1/12.3 |
+| Qwen3-4B-Q4_K_M | vulkan | 500 | 493 | 107.7 | 12.0 | 107.1/11.2, 107.7/12.0 |
+| Qwen3-4B-Q4_K_M | vulkan | 2k | 1915 | 100.0 | 10.5 | 99.4/10.4, 100.0/10.5 |
+| Qwen3.5-4B-Q4_K_M | cpu | short | 21 | 26.1 | 11.6 | 23.2/11.3, 26.1/11.6 |
+| Qwen3.5-4B-Q4_K_M | cpu | 500 | 480 | 59.0 | 10.8 | 58.4/10.7, 59.0/10.8 |
+| Qwen3.5-4B-Q4_K_M | vulkan | short | 21 | 23.9 | 10.6 | 23.9/10.5, 23.8/10.6 |
+| Qwen3.5-4B-Q4_K_M | vulkan | 500 | 480 | 62.1 | 10.3 | 61.6/9.9, 62.1/10.3 |
+| Qwen3.5-4B-Q4_K_M | vulkan | 2k | 1893 | 64.6 | 10.6 | 63.2/10.6, 64.6/10.2 |
+| gemma-4-E4B-it-Q4_K_M | cpu | short | 19 | 24.7 | 10.2 | 12.1/10.2, 24.7/10.2 |
+| gemma-4-E4B-it-Q4_K_M | cpu | 500 | 495 | 64.7 | 10.6 | 60.6/9.2, 64.7/10.6 |
+| gemma-4-E4B-it-Q4_K_M | vulkan | short | 19 | 9.3 | 10.2 | 9.3/10.2, 9.2/10.1 |
+| gemma-4-E4B-it-Q4_K_M | vulkan | 500 | 495 | 55.7 | 9.0 | 51.6/8.9, 55.7/9.0 |
+| gemma-4-E4B-it-Q4_K_M | vulkan | 2k | 1959 | 61.1 | 9.3 | 56.7/9.0, 61.1/9.3 |
+| Mistral-7B-Instruct-v0.3-Q4_K_M | cpu | short | 16 | 21.7 | 7.7 | 20.6/7.4, 21.7/7.7 |
+| Mistral-7B-Instruct-v0.3-Q4_K_M | cpu | 500 | 577 | 56.6 | 7.0 | 52.1/6.9, 56.6/7.0 |
+| Mistral-7B-Instruct-v0.3-Q4_K_M | vulkan | short | 16 | 21.5 | 8.1 | 21.4/7.9, 21.5/8.1 |
+| Mistral-7B-Instruct-v0.3-Q4_K_M | vulkan | 500 | 577 | 56.8 | 7.8 | 56.4/7.8, 56.8/7.7 |
+| Mistral-7B-Instruct-v0.3-Q4_K_M | vulkan | 2k | 2293 | 43.5 | 7.2 | 43.4/7.2, 43.5/7.2 |
+
+Performance Check: 2026-10-11 for every row above.
+
+---
+
 ## Text encoders (embeddings / rerank), vs ONNX Runtime
 
 32 passages of ~86 tokens (2,752 tokens), CPU F32, median of 5 timed runs after warm-up, two separate runs each
