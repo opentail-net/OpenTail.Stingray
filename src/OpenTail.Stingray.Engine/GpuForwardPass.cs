@@ -1618,6 +1618,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         }
     }
 
+    private static readonly bool DecodeProfile = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DECODE_PROFILE") == "1";
+    private long _profRecTicks, _profSubTicks, _profTokens;
+
     /// <summary>
     /// Run one token through the transformer on GPU. Returns logits span (downloaded from VRAM).
     /// </summary>
@@ -1639,6 +1642,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         if (_embOnCpu) EmbedToken(token);   // before BeginRecord: UploadToExisting owns the transfer command buffer
 
         // Record ALL dispatches into ONE command buffer
+        long profT0 = DecodeProfile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _gpu.BeginRecord();
 
         // Embed token (GPU lookup from cached table — no PCIe transfer)
@@ -1687,7 +1691,15 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         _gpu.RecordComputeToTransferBarrier();
         _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
 
+        long profT1 = DecodeProfile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _gpu.EndRecordAndSubmit();
+        if (DecodeProfile)
+        {
+            long profT2 = System.Diagnostics.Stopwatch.GetTimestamp();
+            _profRecTicks += profT1 - profT0; _profSubTicks += profT2 - profT1;
+            if (++_profTokens % 16 == 0)
+                Console.Error.WriteLine($"[DecodeProfile] {_profTokens} tokens: {_gpu.DispatchCounter / _profTokens} dispatches/{_gpu.BarrierCounter / _profTokens} barriers per token, record {_profRecTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / _profTokens:F2} ms/token (CPU), submit+wait {_profSubTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / _profTokens:F2} ms/token");
+        }
 
         _gpu.ReadFromStaging(_logitsBuf);
         GuardFiniteLogits();

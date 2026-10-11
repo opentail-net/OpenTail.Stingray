@@ -83,6 +83,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     /// <summary>Insert a compute→compute memory barrier (all writes visible to reads).</summary>
     public void RecordBarrier()
     {
+        _barrierCounter++;
         VkMemoryBarrier barrier = new()
         {
             srcAccessMask = VkAccessFlags.ShaderWrite,
@@ -1921,9 +1922,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct UnpackQkvGqaParams { public uint nTokens; public uint qDim; public uint kvDim; }
     private struct SwiGluSplitParams { public uint nTokens; public uint ffnDim; }
 
+    /// <summary>Dispatches issued or recorded so far (diagnostic; <c>STINGRAY_VULKAN_DECODE_PROFILE</c> reads it).</summary>
+    public long DispatchCounter;
+    private long _barrierCounter;
+    public long BarrierCounter => _barrierCounter;
+
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
     {
+        DispatchCounter++;
         if (_recording)
         {
             pipe.RecordWith(_transferCmd, buffers, groupX, groupY, groupZ, push);
