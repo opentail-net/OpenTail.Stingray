@@ -178,6 +178,8 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     /// <summary>Test hook: whether <see cref="BatchVerify"/> takes the weight-amortizing batched
     /// trunk (true) or the K-loop fallback (false). True for an all-Q4_K/Q6_K dense model.</summary>
     internal bool CanBatchedTrunk => _canBatchedTrunk;
+    /// <summary>The batched trunk is usable right now: statically capable, and (M-RoPE models) no image is registered, since images shift the RoPE positions of later text.</summary>
+    private bool BatchedTrunkNow => _canBatchedTrunk && (_mropePairPos is null || _mropeImages.Count == 0);
 
     /// <summary>
     /// Forces <see cref="Prefill"/> onto the per-token <see cref="Forward"/> loop even when the
@@ -284,7 +286,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             return [Forward(tokens[0], startPos).ToArray()];
         }
 
-        if (_canBatchedTrunk && k <= MaxBatchVerifyK)
+        if (BatchedTrunkNow && k <= MaxBatchVerifyK)
             return BatchVerifyBatched(tokens, startPos);
 
         return BatchVerifyKLoop(tokens, startPos);
@@ -1342,8 +1344,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // has no L2 path (it would silently skip the norm), and the Debug.Assert that guards it is
         // stripped in Release — so don't rely on the L2⟹Llama4⟹MoE coupling, exclude it directly.
         if (_isMoE || _isGemma4 || _hp.UseL2QkNorm || _hp.AttentionOutputGate || _embOnCpu) return false;
-        // M-RoPE: positions are per pair and shift after images; only the per-token trunk applies them.
-        if (_mropePairPos is not null) return false;
+        // M-RoPE: the batched trunk applies plain RoPE, which equals M-RoPE only while no image shifts positions (see
+        // BatchedTrunkNow) and the sections cover every rotation pair (a 4th, never-rotating section would differ).
+        if (_mropePairPos is not null && _hp.RopeSections!.Sum() != _headDim / 2) return false;
         if (_residentLayers < _hp.NumLayers) return false;   // layer split: per-token trunk only
 
         bool IsBatchable(Tensor w) =>
@@ -1422,7 +1425,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // _qK itself (see RecordBatchedTrunk). It used to be excluded, which meant every prompt
         // above the SnapKV budget silently took the per-token path — measured at 6.4 vs 51.7 t/s
         // on a 3218-token prompt, an 8x cliff on default CLI settings.
-        if (_canBatchedTrunk && !_tqEnabled && !_kvEvicted && N > 1
+        if (BatchedTrunkNow && !_tqEnabled && !_kvEvicted && N > 1
             && !DisableBatchedPrefill)
         {
             int cap = MaxPrefillChunk;
