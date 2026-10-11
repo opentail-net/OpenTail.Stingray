@@ -12349,6 +12349,83 @@ internal static class Shaders
         }
         """;
 
+    /// <summary><see cref="AttentionSplitKvCombine"/> with gpt-oss attention sinks: binding 3 = sinks[num_heads], one learned logit per query head that joins the softmax max and denominator but has no value row.</summary>
+    internal const string AttentionSplitKvCombineSinks = """
+        #version 450
+        #extension GL_EXT_control_flow_attributes : enable
+
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer PartialO    { float partial_o[]; };
+        layout(binding = 1) readonly buffer PartialMeta { float partial_meta[]; };
+        layout(binding = 2) buffer Out                  { float out_data[]; };
+        layout(binding = 3) readonly buffer Sinks       { float sinks[]; };
+
+        layout(push_constant) uniform Params {
+            uint num_heads;
+            uint head_dim;
+            uint n_splits;
+        };
+
+        const uint MAX_SPLITS = 256u;
+        shared float sh_scale[256];   // per-split rescale exp(m_s − gmax)
+        shared float red[256];        // reduction scratch
+        shared float sh_gmax;
+        shared float sh_denom;
+
+        void main() {
+            uint tid = gl_LocalInvocationID.x;
+            uint h = gl_WorkGroupID.x;
+            if (h >= num_heads) return;
+            uint base = h * n_splits;
+
+            // Global max over the splits' local maxima.
+            float lmax = -1.0/0.0;
+            for (uint s = tid; s < n_splits; s += 256u)
+                lmax = max(lmax, partial_meta[(base + s) * 2u]);
+            red[tid] = lmax;
+            barrier();
+            [[unroll]] for (uint r = 128u; r > 0u; r >>= 1) {
+                if (tid < r) red[tid] = max(red[tid], red[tid + r]);
+                barrier();
+            }
+            if (tid == 0u) sh_gmax = red[0];
+            barrier();
+            float gmax = max(sh_gmax, sinks[h]);   // the sink logit joins the softmax max
+
+            // Per-split rescale factor exp(m_s − gmax) + global denom Σ exp(m_s−gmax)·l_s.
+            float ldenom = 0.0;
+            for (uint s = tid; s < n_splits; s += 256u) {
+                float m = partial_meta[(base + s) * 2u];
+                float l = partial_meta[(base + s) * 2u + 1u];
+                float sc = exp(m - gmax);
+                sh_scale[s] = sc;
+                ldenom += sc * l;
+            }
+            red[tid] = ldenom;
+            barrier();
+            [[unroll]] for (uint r = 128u; r > 0u; r >>= 1) {
+                if (tid < r) red[tid] += red[tid + r];
+                barrier();
+            }
+            if (tid == 0u) sh_denom = red[0] + exp(sinks[h] - gmax);   // ...and the denominator, with no value row
+            barrier();
+            float inv = 1.0 / sh_denom;
+
+            // Weighted sum of the per-split numerators across head_dim.
+            uint po_base  = base * head_dim;     // first split's row for this head
+            uint out_base = h * head_dim;
+            for (uint d = tid; d < head_dim; d += 256u) {
+                float acc = 0.0;
+                for (uint s = 0u; s < n_splits; s++) {
+                    float sc = sh_scale[s];
+                    if (sc != 0.0) acc += sc * partial_o[po_base + s * head_dim + d];
+                }
+                out_data[out_base + d] = acc * inv;
+            }
+        }
+        """;
+
     /// <summary>
     /// bf16 (issue #332) variant of <see cref="AttentionSplitKvPartial"/>: control flow is
     /// IDENTICAL to the fp32 partial; the ONLY difference is that the K/V cache buffers

@@ -78,6 +78,52 @@ public sealed class VulkanSplitKvGqaAttentionTests
         }
     }
 
+
+    [Theory]
+    [InlineData(64u, 8u, 64u)]    // gpt-oss: 64 query heads, 8 KV heads, head dim 64
+    [InlineData(32u, 8u, 128u)]
+    public void WithSinksMatchesSinksKernel(uint numHeads, uint numKvHeads, uint headDim)
+    {
+        using var vk = TryCreateVulkan();
+        Assert.SkipUnless(vk != null, "no Vulkan device");
+        Assert.SkipUnless(VulkanBackend.SupportsSplitKvGqa(numHeads, numKvHeads, headDim), "shape not served by the GQA kernel");
+
+        const uint maxSeq = 2560;
+        uint kvDim = numKvHeads * headDim;
+        var rnd = new Random(99 + (int)numHeads);
+        float[] Rand(long n, double scale = 1.0) { var a = new float[n]; for (long i = 0; i < n; i++) a[i] = (float)((rnd.NextDouble() * 2 - 1) * scale); return a; }
+        var k = vk!.Upload(Rand((long)maxSeq * kvDim), TensorShape.D1((long)maxSeq * kvDim), exact: true);
+        var v = vk.Upload(Rand((long)maxSeq * kvDim), TensorShape.D1((long)maxSeq * kvDim), exact: true);
+        var q = vk.Upload(Rand(numHeads * headDim), TensorShape.D1(numHeads * headDim), exact: true);
+        var sinksHost = Rand(numHeads, 3.0);
+        var sinks = vk.Upload(sinksHost, TensorShape.D1(numHeads), exact: true);
+        uint maxSplits = (maxSeq + VulkanBackend.SplitKvChunk - 1) / VulkanBackend.SplitKvChunk;
+        var partialO = vk.Allocate(TensorShape.D1((long)numHeads * maxSplits * headDim));
+        var partialMeta = vk.Allocate(TensorShape.D1((long)numHeads * maxSplits * 2));
+        var scratch = vk.Allocate(TensorShape.D1((long)numHeads * maxSeq));
+        var outOld = vk.Allocate(TensorShape.D1(numHeads * headDim));
+        var outNew = vk.Allocate(TensorShape.D1(numHeads * headDim));
+
+        foreach (var (seq, window) in new[] { (1u, 0u), (17u, 0u), (257u, 0u), (1000u, 0u), (2048u, 0u), (1000u, 128u), (300u, 128u) })
+        {
+            vk.AttentionSinks(q, k, v, outOld, scratch, sinks, numHeads, numKvHeads, headDim, seq, maxSeq, window);
+            vk.Synchronize();
+            vk.AttentionSplitKvGqa(q, k, v, outNew, partialO, partialMeta, numHeads, numKvHeads, headDim, seq, maxSeq, window, sinks);
+            vk.Synchronize();
+            var a = new float[numHeads * headDim];
+            var b = new float[numHeads * headDim];
+            vk.Download(outOld, a);
+            vk.Download(outNew, b);
+            double maxAbs = 0, maxRef = 0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                Assert.False(float.IsNaN(b[i]) || float.IsInfinity(b[i]), $"seq={seq} window={window}: non-finite at {i}");
+                maxAbs = Math.Max(maxAbs, Math.Abs(a[i] - b[i]));
+                maxRef = Math.Max(maxRef, Math.Abs(a[i]));
+            }
+            Assert.True(maxAbs <= 1e-5 * (maxRef + 1.0), $"heads={numHeads} hd={headDim} seq={seq} window={window}: maxAbsDiff {maxAbs:E2} (max|ref| {maxRef:E2})");
+        }
+    }
     [Fact]
     public void SupportCheck_AcceptsGroupsOneToEightAndHeadDim64Or128Or256Only()
     {

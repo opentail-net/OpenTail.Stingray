@@ -36,6 +36,7 @@ public sealed unsafe class GptOssGpuForwardPass : IForwardPass
 
     // Scratch
     private readonly Tensor _hidden, _residual, _norm, _q, _k, _v, _attnOut, _scores;
+    private readonly Tensor? _splitO, _splitMeta;   // GQA split-KV partials (null: use the single-workgroup sinks kernel)
     private readonly Tensor _routerLogits, _gate, _up, _down, _moeOut, _biasRow, _logits;
     private readonly float[] _routerHost, _logitsHost, _embedHost;
     private readonly int[] _expertIdx;
@@ -89,6 +90,13 @@ public sealed unsafe class GptOssGpuForwardPass : IForwardPass
         _hidden = Alloc(_embDim); _residual = Alloc(_embDim); _norm = Alloc(_embDim);
         _q = Alloc(_qDim); _k = Alloc(_kvDim); _v = Alloc(_kvDim); _attnOut = Alloc(_qDim);
         _scores = Alloc((long)_numHeads * _maxSeq);
+        if (!(Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DECODE_ATTN_GQA") == "0") && VulkanBackend.SupportsSplitKvGqa((uint)_numHeads, (uint)_numKv, (uint)_headDim)
+            && _maxSeq <= (int)VulkanBackend.SplitKvMaxSeqLen)
+        {
+            int maxSplits = (_maxSeq + (int)VulkanBackend.SplitKvChunk - 1) / (int)VulkanBackend.SplitKvChunk;
+            _splitO = Alloc((long)_numHeads * maxSplits * _headDim);
+            _splitMeta = Alloc((long)_numHeads * maxSplits * 2);
+        }
         _routerLogits = Alloc(hp.NumExperts);
         _gate = Alloc(_ffnDim); _up = Alloc(_ffnDim); _down = Alloc(_embDim); _moeOut = Alloc(_embDim);
         _biasRow = Alloc(Math.Max(_ffnDim, _embDim));
@@ -188,6 +196,10 @@ public sealed unsafe class GptOssGpuForwardPass : IForwardPass
             _gpu.KvAppend(_k, _v, L.KCache, L.VCache, (uint)_kvDim, (uint)position, (uint)_maxSeq);
             _gpu.RecordBarrier();
             uint window = swa && _hp.SlidingWindow > 0 ? (uint)_hp.SlidingWindow : 0u;
+            if (_splitO is not null)
+                _gpu.AttentionSplitKvGqa(_q, L.KCache, L.VCache, _attnOut, _splitO, _splitMeta!,
+                    (uint)_numHeads, (uint)_numKv, (uint)_headDim, (uint)seqLen, (uint)_maxSeq, window, L.Sinks);
+            else
             _gpu.AttentionSinks(_q, L.KCache, L.VCache, _attnOut, _scores, L.Sinks,
                 (uint)_numHeads, (uint)_numKv, (uint)_headDim, (uint)seqLen, (uint)_maxSeq, window);
             _gpu.RecordBarrier();
@@ -273,5 +285,7 @@ public sealed unsafe class GptOssGpuForwardPass : IForwardPass
         foreach (var t in new[] { _outputNorm, _output, _ropeFactorsFull, _ropeFactorsSwa, _hidden, _residual, _norm,
             _q, _k, _v, _attnOut, _scores, _routerLogits, _gate, _up, _down, _moeOut, _biasRow, _logits })
             _gpu.Free(t);
+        if (_splitO is not null) _gpu.Free(_splitO);
+        if (_splitMeta is not null) _gpu.Free(_splitMeta);
     }
 }

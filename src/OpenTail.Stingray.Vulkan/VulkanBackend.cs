@@ -1643,6 +1643,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _splitKvPartialBf16Pipeline;
     private ComputePipeline? _splitKvPartialQ8Pipeline;
     private ComputePipeline? _splitKvCombinePipeline;
+    private ComputePipeline? _splitKvCombineSinksPipeline;
     private ComputePipeline? _snapKvScorePipeline;
     private ComputePipeline? _kvCompactPipeline;
     private ComputePipeline? _embedLookupPipeline;
@@ -3566,7 +3567,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     public void AttentionSplitKvGqa(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
         Tensor partialO, Tensor partialMeta,
         uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
-        uint window = 0u)
+        uint window = 0u, Tensor? sinks = null)
     {
         if (!SupportsSplitKvGqa(numHeads, numKvHeads, headDim))
             throw new NotSupportedException($"AttentionSplitKvGqa serves head_dim 64/128/256 with 1-8 query heads per KV head; got heads={numHeads}, kvHeads={numKvHeads}, headDim={headDim}.");
@@ -3576,6 +3577,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         uint nSplits = (seqLen + SplitKvChunk - 1) / SplitKvChunk;
         _splitKvPartialGqaPipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvPartialGqa, 5, pushConstantSize: sizeof(SplitKvPartialParams));
         _splitKvCombinePipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombine, 3, pushConstantSize: sizeof(SplitKvCombineParams));
+        if (sinks is not null) _splitKvCombineSinksPipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombineSinks, 4, pushConstantSize: sizeof(SplitKvCombineParams));
 
         var pp = new SplitKvPartialParams
         {
@@ -3589,6 +3591,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         if (_recording) RecordBarrier();
 
         var cp = new SplitKvCombineParams { numHeads = numHeads, headDim = headDim, nSplits = nSplits };
+        if (sinks is not null)
+            DispatchOrRecord(_splitKvCombineSinksPipeline!, [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output), GetBuffer(sinks)], numHeads, &cp);
+        else
         DispatchOrRecord(_splitKvCombinePipeline,
             [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output)],
             numHeads, &cp);
@@ -5316,6 +5321,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _splitKvPartialBf16Pipeline?.Dispose();
         _splitKvPartialQ8Pipeline?.Dispose();
         _splitKvCombinePipeline?.Dispose();
+        _splitKvCombineSinksPipeline?.Dispose();
         _snapKvScorePipeline?.Dispose();
         _kvCompactPipeline?.Dispose();
         _tqRotateQueryPipeline?.Dispose();
