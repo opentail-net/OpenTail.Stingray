@@ -1,34 +1,40 @@
 # Re-check OUR side (C#, t/s) of PerformanceLeague.md for the LLM text rows: one results file, one model at a time.
 #
-# For every model it runs three prompt sizes on each backend and parses the CLI's
-#   "Prefill: <N> tokens, <X> t/s | Decode: <M> tokens, <Y> t/s" line:
-#     short  ~15-token prompt, 64 new tokens -> "decode (short ctx)" and a small-prompt prefill
-#     500    docs/reference/benchmark-prompt.txt (~490 tokens), 16 new tokens -> "prefill (~500 tok)"
-#     2k     that prompt x4 (~2,000 tokens), 24 new tokens -> "prefill (~2k tok)" and "decode @2k ctx"
-# on CPU (-g 0) and Vulkan (-g -1). The CPU 2k scenario is off by default (it takes minutes per run on 7B+ models): -CpuLong.
+# Sets:
+#   quick   5 representative models, short + 500 + 2k scenarios         (about 13 minutes)
+#   full    the curated League list (18 models), same scenarios
+#   all     EVERY text-generation GGUF found under every drive's _models, K:\_other_models and the repo's models/
+#           (scripts/list-checkpoints.ps1 builds the inventory; non-LLM architectures and mmproj files are listed as not-in-scope),
+#           smallest first so the heavy hitters run last, 500-token scenario only, one run each (override with -Scenarios / -Runs)
 #
-# Results stream into -OutFile (markdown table rows, one per scenario) and the LAST thing written is a marker file
-# "<OutFile>.done" containing one summary line, so a watcher can wait for that file instead of waking per result:
+# Scenarios (parsed from the CLI's "Prefill: <N> tokens, <X> t/s | Decode: <M> tokens, <Y> t/s"):
+#     short  ~15-token prompt, 64 new tokens -> decode at short context
+#     500    docs/reference/benchmark-prompt.txt (~490 tokens), 16 new tokens -> prefill (~500 tok) + decode @500
+#     2k     that prompt x4 (~2,000 tokens), 24 new tokens -> prefill (~2k) + decode @2k (SnapKV auto-budget 2048 applies)
+# on CPU (-g 0) and Vulkan (-g -1). The CPU 2k scenario needs -CpuLong.
+#
+# Results stream into -OutFile (one markdown row per scenario) and the LAST thing written is "<OutFile>.done" holding one summary
+# line, so a watcher can wait for that file instead of waking per result:
 #     until [ -f "<OutFile>.done" ]; do sleep 30; done
+# -Resume skips (model, backend, scenario) rows that are already in -OutFile, so an interrupted run continues where it stopped.
 #
-# Rules this follows: never two model jobs at once (it refuses to start while a stingray / test process is running and
-# runs strictly sequentially); default JIT settings (no DOTNET_TC_QuickJitForLoops=0, per the no-TC=0 rule); best-of-N
-# because interference on this machine can only slow a run down; one failed run is recorded and the script moves on.
+# Rules this follows: never two model jobs at once (it refuses to start while a stingray / test process is running and runs strictly
+# sequentially); default JIT settings (no DOTNET_TC_QuickJitForLoops=0, per the no-TC=0 rule); best-of-N because interference on this
+# machine can only slow a run down; a model that is missing, too big for free memory, unsupported or that times out is RECORDED
+# (SKIP / UNSUPPORTED / TIMEOUT), never silently dropped, and the script moves on.
 #
-# Usage:
-#   pwsh scripts/bench-league-recheck.ps1                          # -Set quick, cpu+vulkan, 2 runs each
-#   pwsh scripts/bench-league-recheck.ps1 -Set full -Runs 3
-#   pwsh scripts/bench-league-recheck.ps1 -Models SmolLM2-1.7B-Instruct-Q4_K_M,Qwen3-4B-Q4_K_M -Backends vulkan
-#
-# The numbers go into PerformanceLeague.md BY HAND, as dated rows, after reading them (rule 12: check the timing, not just
-# that a row exists; a model that is missing here is reported as SKIP, never as a result).
+# The numbers go into PerformanceLeague.md BY HAND, as dated rows, after reading them (rule 12: check the timings, not just that a
+# row exists).
 param(
-    [ValidateSet('quick', 'full')][string]$Set = 'quick',
+    [ValidateSet('quick', 'full', 'all')][string]$Set = 'quick',
     [string[]]$Models = @(),                      # file stems (without .gguf); overrides -Set
     [ValidateSet('cpu', 'vulkan')][string[]]$Backends = @('cpu', 'vulkan'),
-    [int]$Runs = 2,
+    [ValidateSet('short', '500', '2k')][string[]]$Scenarios = @(),   # default: short,500,2k for quick/full; 500 for all
+    [int]$Runs = 0,                               # default: 2 for quick/full, 1 for all
     [switch]$CpuLong,                             # also run the ~2k scenario on CPU
-    [int]$TimeoutMinutes = 40,                    # per run
+    [double]$MaxGB = 0,                           # -Set all: skip checkpoints larger than this; 0 = no cap (the engine streams / splits oversized checkpoints)
+    [int]$TimeoutMinutes = 25,                    # per run
+    [switch]$Resume,
     [string]$OutFile = ''
 )
 
@@ -39,11 +45,38 @@ Set-Location $repo
 $exe = Join-Path $repo 'src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe'
 if (-not (Test-Path $exe)) { throw "Build the CLI in Release first: dotnet build src/OpenTail.Stingray.Cli -c Release" }
 
+if ($Runs -le 0) { $Runs = if ($Set -eq 'all') { 1 } else { 2 } }
+if ($Scenarios.Count -eq 0) { $Scenarios = if ($Set -eq 'all') { @('500') } else { @('short', '500', '2k') } }
+
 $quick = @('SmolLM2-1.7B-Instruct-Q4_K_M', 'Qwen3-4B-Q4_K_M', 'Qwen3.5-4B-Q4_K_M', 'gemma-4-E4B-it-Q4_K_M', 'Mistral-7B-Instruct-v0.3-Q4_K_M')
 $full = $quick + @('SmolLM2-135M-Instruct-Q4_K_M', 'SmolLM2-360M-Instruct-Q4_K_M', 'qwen2.5-0.5b-instruct-q4_k_m', 'qwen2.5-3b-instruct-q4_k_m',
     'Qwen3-0.6B-Q8_0', 'Qwen3-8B-Q4_K_M', 'Qwen3.5-9B-Q4_K_M', 'gemma-3-4b-it-Q4_K_M', 'gemma-4-12b-it-Q4_K_M',
     'OLMoE-1B-7B-0924-Instruct-Q4_K_M', 'gpt-oss-20b-MXFP4', 'Qwen2.5-VL-7B-Instruct-Q4_K_M', 'Phi-3-mini-4k-instruct-Q4_K_M')
-$list = if ($Models.Count -gt 0) { $Models } elseif ($Set -eq 'full') { $full } else { $quick }
+
+function Find-Model([string]$stem) {
+    foreach ($d in @('models', 'models/_models')) {
+        $p = Join-Path $repo "$d/$stem.gguf"
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+# Work list: objects { stem; path; gb; arch }
+$work = @()
+$notInScope = @()
+if ($Models.Count -gt 0 -or $Set -ne 'all') {
+    $stems = if ($Models.Count -gt 0) { $Models } elseif ($Set -eq 'full') { $full } else { $quick }
+    foreach ($s in $stems) {
+        $p = Find-Model $s
+        $work += [pscustomobject]@{ stem = $s; path = $p; gb = $(if ($p) { [Math]::Round((Get-Item $p).Length / 1GB, 2) } else { 0 }); arch = '' }
+    }
+} else {
+    $inv = & (Join-Path $PSScriptRoot 'list-checkpoints.ps1')
+    foreach ($r in ($inv | Where-Object kind -eq 'llm' | Sort-Object { [double]$_.sizeGB })) {
+        $work += [pscustomobject]@{ stem = [System.IO.Path]::GetFileNameWithoutExtension($r.name); path = $r.path; gb = [double]$r.sizeGB; arch = $r.arch }
+    }
+    $notInScope = @($inv | Where-Object { $_.kind -ne 'llm' })
+}
 
 if (-not $OutFile) { $OutFile = Join-Path ([System.IO.Path]::GetTempPath()) ("league-recheck-{0:yyyyMMdd-HHmm}.md" -f (Get-Date)) }
 $doneFile = "$OutFile.done"
@@ -57,6 +90,8 @@ while ((Get-ModelJobs).Count -gt 0) {
     Start-Sleep -Seconds 15; $waited += 15
 }
 
+function Get-FreeGB { (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB }
+
 # Prompt files (passed with -f: long prompts exceed the Windows command-line limit with -p).
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) 'league-recheck-prompts'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -66,14 +101,7 @@ $p2k = Join-Path $tmp 'x4.txt'
 Set-Content -Path $pShort -Value 'Explain in two sentences why the sky is blue.' -NoNewline -Encoding utf8
 $base = (Get-Content -Raw -Path $p500)
 Set-Content -Path $p2k -Value ($base + ' ' + $base + ' ' + $base + ' ' + $base) -NoNewline -Encoding utf8
-
-function Find-Model([string]$stem) {
-    foreach ($d in @('models', 'models/_models')) {
-        $p = Join-Path $repo "$d/$stem.gguf"
-        if (Test-Path $p) { return $p }
-    }
-    return $null
-}
+$scenarioDefs = @{ 'short' = @($pShort, 64); '500' = @($p500, 16); '2k' = @($p2k, 24) }
 
 function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]$n) {
     $ngl = if ($backend -eq 'vulkan') { '-1' } else { '0' }
@@ -83,54 +111,77 @@ function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]
     $proc = [System.Diagnostics.Process]::Start($psi)
     $errTask = $proc.StandardError.ReadToEndAsync()
     $outTask = $proc.StandardOutput.ReadToEndAsync()
-    if (-not $proc.WaitForExit($TimeoutMinutes * 60 * 1000)) { try { $proc.Kill($true) } catch {}; return @{ ok = $false; why = "timeout after $TimeoutMinutes min" } }
+    if (-not $proc.WaitForExit($TimeoutMinutes * 60 * 1000)) { try { $proc.Kill($true) } catch {}; return @{ ok = $false; kind = 'TIMEOUT'; why = "timeout after $TimeoutMinutes min" } }
     $text = $outTask.Result + "`n" + $errTask.Result
     if ($text -match 'Prefill:\s*(\d+)\s*tokens,\s*([\d.]+)\s*t/s\s*\|\s*Decode:\s*(\d+)\s*tokens,\s*([\d.]+)\s*t/s') {
         return @{ ok = $true; pt = [int]$Matches[1]; pf = [double]$Matches[2]; dt = [int]$Matches[3]; df = [double]$Matches[4] }
     }
-    return @{ ok = $false; why = "no Prefill/Decode line (exit $($proc.ExitCode))" }
+    # Keep the first useful error line so an UNSUPPORTED row says why.
+    $line = ($text -split "`n" | Where-Object { $_ -match 'rror|not supported|unsupported|refus|Unknown|cannot|failed|Exception' } | Select-Object -First 1)
+    if (-not $line) { $line = "no Prefill/Decode line (exit $($proc.ExitCode))" }
+    return @{ ok = $false; kind = 'UNSUPPORTED'; why = ($line.Trim() -replace '\|', '/' -replace '\s+', ' ') }
 }
 
 $commit = (git rev-parse --short HEAD 2>$null)
 $dirty = if ((git status --porcelain 2>$null | Measure-Object).Count -gt 0) { '+dirty' } else { '' }
 $started = Get-Date
+$done = @{}
+if ($Resume -and (Test-Path $OutFile)) {
+    foreach ($l in (Get-Content $OutFile)) { if ($l -match '^\| (.+?) \| [\d.]+ \| .*? \| (cpu|vulkan) \| (short|500|2k) \|') { $done["$($Matches[1])|$($Matches[2])|$($Matches[3])"] = $true } }
+} else {
 @"
-# League recheck, our side (C#), $($started.ToString('yyyy-MM-dd HH:mm'))
+# League recheck, our side (C#), $($started.ToString('yyyy-MM-dd HH:mm')), set '$Set'
 
-Commit ``$commit$dirty``; engine defaults (no env overrides); best of $Runs run(s); prompts: short (~15 tok), 500 (~490 tok), 2k (~2,000 tok; SnapKV auto-budget 2048 applies).
-Machine: Ryzen 7 5700G + integrated Radeon (iGPU; rule 13: do not generalise to discrete GPUs).
+Commit ``$commit$dirty``; engine defaults (no env overrides); best of $Runs run(s) per row; scenarios: $($Scenarios -join ', ') (short ~15-40 tok / 500 ~490-580 tok / 2k ~2,000 tok; SnapKV auto-budget 2048 applies); per-run timeout $TimeoutMinutes min$(if ($Set -eq 'all' -and $MaxGB -gt 0) { "; checkpoints over $MaxGB GB skipped" }).
+Machine: Ryzen 7 5700G + integrated Radeon (iGPU; rule 13: do not generalise to discrete GPUs). 63 GB RAM.
 
-| Model | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) |
-|---|---|---|---:|---:|---:|---|
+| Model | GB | Arch | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) |
+|---|---:|---|---|---|---:|---:|---:|---|
 "@ | Set-Content -Path $OutFile -Encoding utf8
+}
 
-$ok = 0; $bad = 0; $skipped = 0
-foreach ($stem in $list) {
-    $path = Find-Model $stem
-    if (-not $path) { Add-Content -Path $OutFile -Value "| $stem | - | - | - | SKIP | SKIP | checkpoint not present |"; $skipped++; continue }
+$ok = 0; $bad = 0; $skipped = 0; $unsup = 0
+foreach ($m in $work) {
+    $stem = $m.stem
+    if (-not $m.path) { Add-Content -Path $OutFile -Value "| $stem | - | - | - | - | - | SKIP | SKIP | checkpoint not present |"; $skipped++; continue }
+    if ($Set -eq 'all' -and $MaxGB -gt 0 -and $m.gb -gt $MaxGB) { Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | - | - | - | SKIP | SKIP | larger than -MaxGB $MaxGB |"; $skipped++; continue }
+    # Memory guard: wait up to 3 minutes for enough free RAM for the mapped weights plus headroom, else record and skip.
+    # Memory guard: only WAITS (up to 3 minutes) for free RAM to recover from the previous model; it never skips, because oversized checkpoints are
+    # supported (layer split, expert streaming, mmap) and a slow or failed run is recorded as such.
+    $needGB = [Math]::Min($m.gb + 4, 40); $w = 0
+    while ((Get-FreeGB) -lt $needGB -and $w -lt 180) { Start-Sleep -Seconds 15; $w += 15 }
+    $modelDead = @{}
     foreach ($backend in $Backends) {
-        $scenarios = @(@('short', $pShort, 64), @('500', $p500, 16))
-        if ($backend -eq 'vulkan' -or $CpuLong) { $scenarios += , @('2k', $p2k, 24) }
-        foreach ($sc in $scenarios) {
-            $name = $sc[0]; $file = $sc[1]; $n = [int]$sc[2]
-            $pf = @(); $df = @(); $tok = 0; $why = ''
+        foreach ($scName in $Scenarios) {
+            if ($scName -eq '2k' -and $backend -eq 'cpu' -and -not $CpuLong) { continue }
+            if ($done.ContainsKey("$stem|$backend|$scName")) { continue }
+            if ($modelDead[$backend]) { continue }
+            $file = $scenarioDefs[$scName][0]; $n = [int]$scenarioDefs[$scName][1]
+            $pf = @(); $df = @(); $tok = 0; $why = ''; $kind = ''
             for ($r = 0; $r -lt $Runs; $r++) {
-                $res = Invoke-One $path $backend $file $n
-                if ($res.ok) { $pf += $res.pf; $df += $res.df; $tok = $res.pt } else { $why = $res.why }
+                $res = Invoke-One $m.path $backend $file $n
+                if ($res.ok) { $pf += $res.pf; $df += $res.df; $tok = $res.pt } else { $why = $res.why; $kind = $res.kind; break }
             }
             if ($pf.Count -eq 0) {
-                Add-Content -Path $OutFile -Value "| $stem | $backend | $name | - | FAIL | FAIL | $why |"; $bad++
+                Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | $backend | $scName | - | $kind | $kind | $why |"
+                if ($kind -eq 'UNSUPPORTED') { $unsup++ } else { $bad++ }
+                $modelDead[$backend] = $true   # no point retrying the larger prompts on a backend that already failed
             } else {
                 $bp = ($pf | Measure-Object -Maximum).Maximum; $bd = ($df | Measure-Object -Maximum).Maximum
                 $runsTxt = (0..($pf.Count - 1) | ForEach-Object { '{0:F1}/{1:F1}' -f $pf[$_], $df[$_] }) -join ', '
-                Add-Content -Path $OutFile -Value ("| {0} | {1} | {2} | {3} | {4:F1} | {5:F1} | {6} |" -f $stem, $backend, $name, $tok, $bp, $bd, $runsTxt); $ok++
+                Add-Content -Path $OutFile -Value ("| {0} | {1} | {2} | {3} | {4} | {5} | {6:F1} | {7:F1} | {8} |" -f $stem, $m.gb, $m.arch, $backend, $scName, $tok, $bp, $bd, $runsTxt); $ok++
             }
         }
     }
 }
 
+if ($notInScope.Count -gt 0) {
+    Add-Content -Path $OutFile -Value "`n## Not in scope for this harness ($($notInScope.Count) files, $([Math]::Round(($notInScope | Measure-Object sizeGB -Sum).Sum, 1)) GB)`n`nEmbeddings / rerank, ASR, TTS, diffusion, vision projectors and non-GGUF checkpoints need their own harnesses (scripts/bench-audio.ps1, scripts/bench-image.ps1, the encoder benchmark tests).`n`n| Kind | Arch | File | GB |`n|---|---|---|---:|"
+    foreach ($r in ($notInScope | Sort-Object kind, arch, name)) { Add-Content -Path $OutFile -Value "| $($r.kind) | $($r.arch) | $($r.name) | $($r.sizeGB) |" }
+}
+
 $elapsed = (Get-Date) - $started
-$summary = "LEAGUE-RECHECK DONE results=$ok failed=$bad skipped=$skipped elapsed=$([int]$elapsed.TotalMinutes)min file=$OutFile"
+$summary = "LEAGUE-RECHECK DONE set=$Set results=$ok unsupported=$unsup failed=$bad skipped=$skipped elapsed=$([int]$elapsed.TotalMinutes)min file=$OutFile"
 Add-Content -Path $OutFile -Value "`n$summary"
 Set-Content -Path $doneFile -Value $summary -Encoding utf8
 Write-Output $summary
