@@ -17,21 +17,25 @@ public sealed class VulkanFlashPrefillGqaTests
     }
 
     [Theory]
-    [InlineData(32u, 8u, 0u, 17)]
-    [InlineData(32u, 8u, 0u, 64)]
-    [InlineData(32u, 8u, 0u, 100)]
-    [InlineData(32u, 8u, 77u, 256)]
-    [InlineData(32u, 8u, 1000u, 130)]
-    [InlineData(16u, 8u, 300u, 256)]
-    [InlineData(8u, 8u, 5u, 70)]
-    [InlineData(40u, 8u, 63u, 65)]
-    public void MatchesSlicedFlashKernel(uint numHeads, uint numKvHeads, uint basePos, int numQueries)
+    [InlineData(32u, 8u, 0u, 17, 128u)]
+    [InlineData(32u, 8u, 0u, 64, 128u)]
+    [InlineData(32u, 8u, 0u, 100, 128u)]
+    [InlineData(32u, 8u, 77u, 256, 128u)]
+    [InlineData(32u, 8u, 1000u, 130, 128u)]
+    [InlineData(16u, 8u, 300u, 256, 128u)]
+    [InlineData(8u, 8u, 5u, 70, 128u)]
+    [InlineData(40u, 8u, 63u, 65, 128u)]
+    [InlineData(32u, 8u, 0u, 100, 64u)]
+    [InlineData(32u, 8u, 77u, 256, 64u)]
+    [InlineData(32u, 32u, 5u, 70, 64u)]
+    [InlineData(15u, 5u, 1000u, 130, 64u)]
+    public void MatchesSlicedFlashKernel(uint numHeads, uint numKvHeads, uint basePos, int numQueries, uint headDim)
     {
         using var vk = TryCreateVulkan();
         Assert.SkipUnless(vk != null, "no Vulkan device");
-        Assert.SkipUnless(vk!.SupportsFlashPrefillGqa(numHeads, numKvHeads, 128), "shape not served by the kernel");
+        Assert.SkipUnless(vk!.SupportsFlashPrefillGqa(numHeads, numKvHeads, headDim), "shape not served by the kernel");
 
-        const uint headDim = 128, maxSeq = 2048;
+        const uint maxSeq = 2048;
         uint kvDim = numKvHeads * headDim, qDim = numHeads * headDim;
         var rnd = new Random(7 + (int)numHeads + numQueries);
         float[] Rand(long n) { var a = new float[n]; for (long i = 0; i < n; i++) a[i] = (float)(rnd.NextDouble() * 2 - 1); return a; }

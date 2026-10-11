@@ -3393,15 +3393,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     public static bool SupportsFlashAttention(uint headDim, int numQueries) =>
         headDim <= FlashAttentionMaxHeadDim && numQueries <= FlashAttentionMaxQueries && numQueries >= 1;
 
-    private ComputePipeline? _flashPrefillGqa128Pipeline;
+    private ComputePipeline? _flashPrefillGqa128Pipeline, _flashPrefillGqa64Pipeline;
     private struct FlashPrefillGqaParams { public uint qSeq; public uint kvSeq; public uint numHeads; public float scale; public uint numKvHeads; public uint basePos; }
 
     /// <summary>Env switch <c>STINGRAY_VULKAN_FLASH_PREFILL</c>=0 disables <see cref="AttentionFlashPrefillGqa"/>.</summary>
     public static readonly bool FlashPrefillGqaDisabled = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_FLASH_PREFILL") == "0";
 
-    /// <summary>True when <see cref="AttentionFlashPrefillGqa"/> serves this shape: head_dim 128, whole GQA groups, a subgroup of at least 16 lanes.</summary>
+    /// <summary>True when <see cref="AttentionFlashPrefillGqa"/> serves this shape: head_dim 64 or 128, whole GQA groups, a subgroup of at least 16 lanes.</summary>
     public bool SupportsFlashPrefillGqa(uint numHeads, uint numKvHeads, uint headDim) =>
-        !FlashPrefillGqaDisabled && headDim == 128 && numKvHeads > 0 && numHeads % numKvHeads == 0 && MinSubgroupSize >= 16;
+        !FlashPrefillGqaDisabled && headDim is 64 or 128 && numKvHeads > 0 && numHeads % numKvHeads == 0 && MinSubgroupSize >= 16;
 
     /// <summary>
     /// Causal prefill attention for a whole chunk of <paramref name="numQueries"/> queries at absolute positions
@@ -3412,14 +3412,16 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         uint numHeads, uint numKvHeads, uint headDim, uint basePos, int numQueries)
     {
         if (!SupportsFlashPrefillGqa(numHeads, numKvHeads, headDim))
-            throw new NotSupportedException($"AttentionFlashPrefillGqa serves head_dim 128; got heads={numHeads}, kvHeads={numKvHeads}, headDim={headDim}.");
-        _flashPrefillGqa128Pipeline ??= new ComputePipeline(this, Shaders.FlashPrefillGqa128, 4, pushConstantSize: sizeof(FlashPrefillGqaParams));
+            throw new NotSupportedException($"AttentionFlashPrefillGqa serves head_dim 64 or 128; got heads={numHeads}, kvHeads={numKvHeads}, headDim={headDim}.");
+        var pipe = headDim == 64
+            ? _flashPrefillGqa64Pipeline ??= new ComputePipeline(this, Shaders.FlashPrefillGqa64, 4, pushConstantSize: sizeof(FlashPrefillGqaParams))
+            : _flashPrefillGqa128Pipeline ??= new ComputePipeline(this, Shaders.FlashPrefillGqa128, 4, pushConstantSize: sizeof(FlashPrefillGqaParams));
         var p = new FlashPrefillGqaParams
         {
             qSeq = (uint)numQueries, kvSeq = basePos + (uint)numQueries, numHeads = numHeads,
             scale = 1f / MathF.Sqrt(headDim), numKvHeads = numKvHeads, basePos = basePos
         };
-        DispatchOrRecord(_flashPrefillGqa128Pipeline, [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
+        DispatchOrRecord(pipe, [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
             (uint)((numQueries + 63) / 64), &p, 1u, numHeads);
     }
 
@@ -5293,6 +5295,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _attentionBatchedPipeline?.Dispose();
         _attentionBatchedFlashPipeline?.Dispose();
         _flashPrefillGqa128Pipeline?.Dispose();
+        _flashPrefillGqa64Pipeline?.Dispose();
         _attentionBatchedFlashBf16Pipeline?.Dispose();
         _kvAppendBatchedBf16Pipeline?.Dispose();
         _attentionBatchedBf16Pipeline?.Dispose();
