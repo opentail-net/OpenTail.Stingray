@@ -84,7 +84,7 @@ Stingray offers three integrated interfaces depending on your workflow:
 
 | Interface | Package / Command | Best For |
 |---|---|---|
-| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Embedding local LLMs, multimodal vision, speech (TTS/ASR), and diffusion directly into .NET applications with no Python, no llama.cpp and no separate server (the GPU driver, and ONNX Runtime for ONNX-based speech engines, are the native pieces involved). |
+| **In-Process Library** | `dotnet add package OpenTail.Stingray` | Language models, vision, speech, music, sound effects and image generation, embedded directly in your .NET application, with no Python, no llama.cpp and no separate server (the GPU driver, and ONNX Runtime for ONNX-based speech engines, are the native pieces involved). |
 | **Command-Line CLI** | `dotnet tool install -g OpenTail.Stingray.Cli` (`stingray`) | Immediate terminal chat, path-free model setup (`stingray setup chat`), local inventory, and batch scripting. |
 | **Local API Server** | `dotnet add package OpenTail.Stingray.Server` | Hosting OpenAI-compatible (`/v1/chat/completions`) endpoints for existing tools and web UIs with zero sidecars. |
 
@@ -99,8 +99,8 @@ public package API and how far each was verified. If something goes wrong, see
 - **It's just a NuGet package.** `dotnet add package OpenTail.Stingray` and your app can run
   models. For CPU use there is nothing else to install on the user's machine or keep in sync, and it
   publishes with NativeAOT into a single executable.
-- **One library for text, speech and images.** The same package does chat, text-to-speech,
-  speech-to-text, image understanding and image generation, so you don't glue five tools together.
+- **One library for every modality.** Language models, vision, speech, music, sound effects and
+  image generation come from the same package, so you don't glue five tools together.
 - **It reads the models you already have, in the format you have them.** GGUF files (the
   llama.cpp format), Hugging Face SafeTensors folders, the weight files in a local Ollama store
   (they are GGUF), ONNX voices and whisper.cpp `.bin` models, with no conversion step and no
@@ -263,12 +263,12 @@ levels of polish:
 - **Language models**: Llama, Qwen, Gemma, Mistral, Phi, DeepSeek, gpt-oss, GLM-4, Granite 4.0-H, Nemotron-H, LFM2 and many more GGUF
   architectures, on CPU, Vulkan or CUDA. Tool calling, JSON-schema constrained output, speculative
   decoding.
-- **Images in, text out**: Gemma, Qwen-VL, LLaVA, Pixtral, InternVL, OCR models such as dots.ocr.
+- **Vision**: images in, text out. Gemma, Qwen-VL, LLaVA, Pixtral, InternVL, OCR models such as dots.ocr.
 - **Speech**: text-to-speech engines including Kokoro, XTTS-v2 (voice cloning), Qwen3-TTS, Fish
   Speech and Chatterbox; speech recognition with Whisper, Parakeet and Qwen3-ASR.
+- **Music and sound effects**: ACE-Step 1.5, Stable Audio 3 (music and SFX), MiniMax-Music3 (with vocals), MusicGen and AudioGen. From C# today; no command-line entry yet. **Listen to real clips in [docs/audio-samples](docs/audio-samples/README.md).**
 - **Image and video generation**: FLUX.1 / FLUX.2, Stable Diffusion 1.5 / XL / 3.5, Z-Image-Turbo, Qwen Image, Wan, LTX-Video,
-  HunyuanVideo. These need several model files each; a guided setup is on the way.
-- **Music and sound effects**: ACE-Step 1.5, Stable Audio 3 (music and SFX), MiniMax-Music3 (with vocals), MusicGen and AudioGen. **Listen to real clips in [docs/audio-samples](docs/audio-samples/README.md)**; see the [image and video samples](docs/diffusion-samples/README.md) too.
+  HunyuanVideo. These need several model files each; a guided setup is on the way. See the [image and video samples](docs/diffusion-samples/README.md).
 
 What is verified, what is partial and what is experimental is tracked per model, with dated
 evidence, in **[docs/STATUS.md](docs/STATUS.md)**. Speed comparisons between the speech engines
@@ -306,7 +306,7 @@ A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 | **[docs/README.md](docs/README.md)** | Central documentation index, task guides, and technical references. |
 | **[docs/STATUS.md](docs/STATUS.md)** | Model support matrix with dated verification evidence and confidence tiers. |
 | **[docs/RUNNING.md](docs/RUNNING.md)** | Recommended execution commands, memory requirements, and measured speeds. |
-| **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)** | Plain-language tour of capabilities across LLM, vision, speech, and diffusion. |
+| **[docs/WHAT-YOU-CAN-DO.md](docs/WHAT-YOU-CAN-DO.md)** | Plain-language tour of what it can do: language models, vision, speech, music, sound effects and image generation. |
 | **[docs/MODELS.md](docs/MODELS.md)** | Curated, tested starter models with download links, licenses, and file sizes. |
 | **[docs/models/](docs/models/README.md)** | Architecture cards: one page per model family with checkpoints, classes, memory and measured results. |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | Ways to help, by what you have, and what happens to your work. |
