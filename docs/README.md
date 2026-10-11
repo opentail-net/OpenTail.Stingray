@@ -11,7 +11,7 @@ first, then the engineering backlog, grouped by theme in priority order.
 | Do a specific task step by step (chat, vision, speech, images, serving) | [guides/](guides/README.md) |
 | Fix a problem (slow, out of memory, wrong output, will not load) | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Pick and download a model | [MODELS.md](MODELS.md) |
-| Use models that LM Studio, Ollama or Hugging Face already downloaded | [guides/using-models-you-already-have.md](guides/using-models-you-already-have.md) |
+| Use models already on my disk (any GGUF folder, Ollama, Hugging Face downloads) | [guides/using-models-you-already-have.md](guides/using-models-you-already-have.md) |
 | Know what works today, and how well it was checked | [STATUS.md](STATUS.md) |
 | Explore model architecture cards (Qwen, DeepSeek MLA, Vision, Audio, Diffusion) | [models/](models/README.md) |
 | Learn engine internals (SIMD kernels, TurboQuant, backends, NativeAOT) | [guides/](guides/README.md#technical-deep-dives) |

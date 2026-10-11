@@ -236,7 +236,7 @@ You do not have to convert or re-download what you already have. Point `-m` (CLI
 | **Ollama store** | Models you already pulled with Ollama, with no Ollama daemon needed. | An Ollama weight file is a GGUF: `-m ~/.ollama/models/blobs/sha256-<digest>` (the digest of the model layer in the manifest) ran a Qwen3-VL 2B model. **Loading through the manifest file itself does not work in the CLI yet** (it fails with an invalid-GGUF error), and the library's manifest reader has been tested only on synthetic fixtures. |
 | **ONNX** | Speech engines such as Piper. | Piper ran. It needs ONNX Runtime, a native component that ships as a dependency of the package. |
 | **whisper.cpp `.bin`** | Whisper speech recognition. | `ggml-base.bin` ran (the speech sample). |
-**How to point Stingray at what LM Studio, Ollama or Hugging Face already downloaded, and what was and was not verified: [Use the models you already have](docs/guides/using-models-you-already-have.md).**
+**How to point Stingray at models already on your disk (any folder of GGUF files, an Ollama store, Hugging Face downloads), and what was and was not verified: [Use the models you already have](docs/guides/using-models-you-already-have.md).**
 
 ### Trying a model that is not in the catalogue
 

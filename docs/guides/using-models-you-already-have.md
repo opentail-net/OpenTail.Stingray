@@ -17,15 +17,15 @@ From C#, `Model.Load(path)` takes the same file or folder.
 stingray -m <file-or-folder> -p "Hello"        # add -g -1 to use the GPU
 ```
 
-## LM Studio
+## A folder of GGUF files, from anywhere
 
-LM Studio stores ordinary GGUF files, one folder per model: `%USERPROFILE%\.lmstudio\models\<publisher>\<repo>\<file>.gguf` (and, depending on version and settings, `%USERPROFILE%\.cache\lm-studio\models\...`). Pass the file:
+GGUF is an open file format, so a `.gguf` file can live in any folder, whatever tool or download put it there. Pass the file path; Stingray does not need it to be in its own model folder:
 
 ```bash
-stingray -m "C:/Users/<you>/.lmstudio/models/<publisher>/<repo>/<file>.gguf" -p "Say hello in five words."
+stingray -m "D:/my-models/<model>.gguf" -p "Say hello in five words."
 ```
 
-**Verified:** a Qwen3.5 2B file from an LM Studio folder loaded and answered (prefill 61 tokens/s, decode 23 tokens/s on the CPU path). Vision models in LM Studio keep their projector as a separate `mmproj-....gguf` next to the model; pass it with `--mmproj` (not run in this pass).
+**Verified:** a Qwen3.5 2B GGUF stored in a folder outside Stingray's model home loaded and answered (prefill 61 tokens/s, decode 23 tokens/s on the CPU path). A vision model's projector is a separate `mmproj-....gguf` file; keep it beside the model and pass it with `--mmproj` (not run in this pass).
 
 ## Ollama
 
@@ -68,15 +68,15 @@ At the time of writing that lists dense Llama and Mistral, Qwen2 and Qwen3, and 
 
 ## Let Stingray list what you have
 
-`stingray models --local` lists the GGUF models it can see, with architecture, whether Stingray supports it, the quantisation, and whether it fits this machine's memory. By default it looks in Stingray's own model folder. Add your other stores with `STINGRAY_MODEL_DIRS` (a list separated by `;` on Windows and `:` on Linux and macOS). **The scan is not recursive**: list the folder that directly contains the `.gguf` files, which for LM Studio is each model's own folder.
+`stingray models --local` lists the GGUF models it can see, with architecture, whether Stingray supports it, the quantisation, and whether it fits this machine's memory. By default it looks in Stingray's own model folder. Add your other stores with `STINGRAY_MODEL_DIRS` (a list separated by `;` on Windows and `:` on Linux and macOS). **The scan is not recursive**: list the folder that directly contains the `.gguf` files, which may be one folder per model.
 
 ```bash
 # PowerShell
-$env:STINGRAY_MODEL_DIRS = "$env:USERPROFILE\.lmstudio\models\bartowski\google_gemma-4-26B-A4B-it-GGUF"
+$env:STINGRAY_MODEL_DIRS = "D:\my-models\gemma-4-26b"
 stingray models --local
 ```
 
-**Verified:** that listed the LM Studio folder's files next to Stingray's own, for example:
+**Verified:** that listed the GGUF files in an outside folder next to Stingray's own, for example:
 
 ```text
 File                                       Size       Architecture  Support        Quant    Fit
@@ -100,7 +100,7 @@ The CLI also refuses a run whose estimated memory does not fit the machine; `--i
 
 | Source | Route | Status |
 |---|---|---|
-| LM Studio | `-m <file>.gguf` | Verified |
+| Any folder of GGUF files | `-m <file>.gguf` | Verified |
 | Ollama store | `-m <blob>` (find it in the manifest) | Verified; manifest file itself does not work yet |
 | Hugging Face cache (GGUF or SafeTensors) | `-m <snapshot file or folder>` | Not verified here |
 | SafeTensors folder | `-m <folder>` | Verified for one small Llama-family model; narrow profiles, CPU only |

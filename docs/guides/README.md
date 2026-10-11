@@ -14,7 +14,7 @@ the options that matter, and the limits. For the overview of everything Stingray
 | Search by meaning (embeddings and reranking) | [search-embeddings-rerank.md](search-embeddings-rerank.md) |
 | Generate images or short video | [images-and-video.md](images-and-video.md) |
 | Serve all of this to OpenAI, Anthropic or Cohere clients | [serve-an-api.md](serve-an-api.md) |
-| Use models that LM Studio, Ollama or Hugging Face already downloaded | [using-models-you-already-have.md](using-models-you-already-have.md) |
+| Use models already on my disk (any GGUF folder, Ollama, Hugging Face downloads) | [using-models-you-already-have.md](using-models-you-already-have.md) |
 
 ## Technical Deep Dives
 
