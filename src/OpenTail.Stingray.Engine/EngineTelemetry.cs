@@ -97,6 +97,32 @@ public static class EngineTelemetry
         }
     }
 
+    /// <summary>
+    /// Records a prefill or decode measurement reported by an event source that has no request object (the CLI run
+    /// command). A negative token count means "not part of this call". Never throws.
+    /// </summary>
+    internal static void RecordPrefillAndDecode(string forwardPass, int newPromptTokens, double prefillSeconds, int decodeTokens, double decodeSeconds)
+    {
+        try
+        {
+            var tags = new TagList { { "opentail.forward_pass", forwardPass }, { "outcome", OutcomeSuccess } };
+            if (newPromptTokens >= 0)
+            {
+                s_prefillDuration.Record(prefillSeconds, tags);
+                s_prefillTokens.Record(newPromptTokens, tags);
+            }
+            if (decodeTokens >= 0)
+            {
+                s_requests.Add(1, tags);
+                s_decodeDuration.Record(decodeSeconds, tags);
+                s_decodeTokens.Record(decodeTokens, tags);
+            }
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>Tags and ends the generation span (no-op for null). Never throws; counts only, no content.</summary>
     internal static void EndActivity(Activity? activity, string outcome, int promptTokens, int reusedTokens, int decodeTokens)
     {

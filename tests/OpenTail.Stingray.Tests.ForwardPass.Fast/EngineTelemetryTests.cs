@@ -247,6 +247,28 @@ public sealed class EngineTelemetryTests
             Assert.All(load.TagObjects, t => Assert.Contains(t.Key, new[] { "opentail.architecture", "opentail.forward_pass", "outcome" }));
         }
     }
+
+    [Fact]
+    public void EventBridge_TurnsPrefillAndDecodeEventsIntoEngineInstruments()
+    {
+        var samples = new List<Sample>();
+        using var l = Listen(samples);
+        using var sub = OpenTail.Stingray.Core.EngineEvents.Subscribe(new EngineEventsTelemetryBridge("bridge-test"));
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.PrefillCompleted, A: 31, Ms: 250));
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.DecodeCompleted, A: 9, B: 8, Ms: 170));
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.GcStats, A: 1)); // ignored
+        l.Dispose();
+
+        lock (samples)
+        {
+            var mine = samples.Where(s => (string?)s.Tags["opentail.forward_pass"] == "bridge-test").ToArray();
+            Assert.Contains(mine, s => s.Name == "opentail.engine.prefill.tokens" && s.Value == 31);
+            Assert.Contains(mine, s => s.Name == "opentail.engine.prefill.duration" && Math.Abs(s.Value - 0.25) < 1e-9 && s.Unit == "s");
+            Assert.Contains(mine, s => s.Name == "opentail.engine.decode.tokens" && s.Value == 9);
+            Assert.Contains(mine, s => s.Name == "opentail.engine.decode.duration" && Math.Abs(s.Value - 0.17) < 1e-9);
+            Assert.Single(mine, s => s.Name == "opentail.engine.requests");
+        }
+    }
 }
 
 [CollectionDefinition("EngineTelemetry", DisableParallelization = true)]

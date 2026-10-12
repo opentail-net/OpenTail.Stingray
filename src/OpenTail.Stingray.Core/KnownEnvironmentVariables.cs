@@ -193,6 +193,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MTP_DRAFT_N",
         "STINGRAY_MTP_MIN_ACCEPT",
         "STINGRAY_GC_STATS",
+        "STINGRAY_TELEMETRY",
         "STINGRAY_EVENTS",
         "STINGRAY_MODEL_DIRS",
         "STINGRAY_MTP_PROBE_STEPS",

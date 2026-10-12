@@ -72,6 +72,10 @@ Send `"opentail_timing": true` on a non-streaming chat request to get `time_to_f
 
 Unchanged in purpose. Note the lifetime names changed from `opentail-llm_*` to `opentail_llm_*` (a hyphen is not valid in a Prometheus name); `stingray status` reads both.
 
+## CLI
+
+The CLI `run` command feeds the engine instruments from its event bus. `STINGRAY_TELEMETRY=1 stingray -m model.gguf -p "..."` prints an instrument report at exit (no collector needed). The published NativeAOT CLI now ships with `MetricsSupport=true` (+43 KB) so this works there too.
+
 ## Known gaps
 
-`ContinuousBatchingEngine` does not yet supply per-request stats; queue/prefill/decode child spans, span links for requests that waited on a shared load, speculative-decoding, prefix-cache and residency metrics, the NativeAOT CLI path and the real-model overhead A/B are not done. The CLI `run` command has its own decode loop and is not instrumented by the engine meter.
+`ContinuousBatchingEngine` does not yet supply per-request stats; queue/prefill/decode child spans, span links for requests that waited on a shared load, speculative-decoding, prefix-cache and residency metrics are not done.

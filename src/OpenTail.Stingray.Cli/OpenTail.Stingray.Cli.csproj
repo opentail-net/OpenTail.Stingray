@@ -44,7 +44,9 @@
     <StackTraceSupport>false</StackTraceSupport>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <EventSourceSupport>false</EventSourceSupport>
-    <MetricsSupport>false</MetricsSupport>
+    <!-- Metrics stay ON: with false, Meter instruments deliver nothing to an in-process listener in the published binary
+         (measured 2026-10-13; observability plan D9). Cost: +43 KB, no measurable start-up change. -->
+    <MetricsSupport>true</MetricsSupport>
     <DebuggerSupport>false</DebuggerSupport>
     <HttpActivityPropagationSupport>false</HttpActivityPropagationSupport>
   </PropertyGroup>

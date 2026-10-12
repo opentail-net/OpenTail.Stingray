@@ -13,6 +13,18 @@ Console.InputEncoding = Encoding.UTF8;
 bool eventsToStderr = Environment.GetEnvironmentVariable("STINGRAY_EVENTS") == "1";
 bool gcStats = Environment.GetEnvironmentVariable("STINGRAY_GC_STATS") == "1";
 if (eventsToStderr) OpenTail.Stingray.Core.EngineEvents.Subscribe(new StderrJsonEventSink());
+
+// STINGRAY_TELEMETRY=1: attach an in-process listener to the engine's Meter/ActivitySource instruments and print a short
+// report at exit (stderr). Off by default; needs no collector. See docs/guides/observability.md.
+if (Environment.GetEnvironmentVariable("STINGRAY_TELEMETRY") == "1")
+{
+    var telemetry = new TelemetrySummary();
+    AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    {
+        Console.Error.Write(telemetry.Render());
+        telemetry.Dispose();
+    };
+}
 if (eventsToStderr || gcStats)
     AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     {
