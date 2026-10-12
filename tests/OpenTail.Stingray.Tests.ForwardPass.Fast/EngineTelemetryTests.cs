@@ -175,6 +175,43 @@ public sealed class EngineTelemetryTests
         Assert.True(stats.FirstTokenMs >= 0);
         Assert.True(stats.TotalMs >= stats.FirstTokenMs);
     }
+
+    [Fact]
+    public async Task EngineSpan_IsParentedToTheCallersActivity_AndConcurrentRequestsDoNotCross()
+    {
+        var stopped = new List<System.Diagnostics.Activity>();
+        using var al = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name is EngineTelemetry.ActivitySourceName or "test.callers",
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = a => { lock (stopped) stopped.Add(a); },
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(al);
+        using var callers = new System.Diagnostics.ActivitySource("test.callers");
+        using var engine = NewEngine();
+
+        async Task<System.Diagnostics.ActivityTraceId> CallerRun()
+        {
+            using var parent = callers.StartActivity("caller")!;
+            await RunOnce(engine);
+            return parent.TraceId;
+        }
+
+        var traceIds = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(CallerRun)));
+        al.Dispose();
+
+        lock (stopped)
+        {
+            var engineSpans = stopped.Where(a => a.OperationName == "opentail.engine.generate").ToArray();
+            Assert.Equal(4, engineSpans.Length);
+            var callerSpans = stopped.Where(a => a.OperationName == "caller").ToArray();
+            Assert.Equal(4, callerSpans.Length);
+            // Every engine span's parent is exactly one caller span, and each caller owns exactly one engine span.
+            Assert.All(engineSpans, e => Assert.Single(callerSpans, c => c.SpanId == e.ParentSpanId && c.TraceId == e.TraceId));
+            Assert.Equal(4, engineSpans.Select(e => e.ParentSpanId).Distinct().Count());
+        }
+    }
 }
 
 [CollectionDefinition("EngineTelemetry", DisableParallelization = true)]

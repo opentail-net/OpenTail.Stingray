@@ -665,6 +665,10 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
 
             // Run the blocking generation on the engine's dedicated forward-pass thread (issue
             // #302), not an arbitrary thread-pool thread — CUDA contexts are thread-affine.
+            // The engine thread does not inherit the caller's execution context, so Activity.Current is lost
+            // there. Capture the caller's span context here (this runs on the consumer's context) and parent
+            // the generation span explicitly. Default (no current activity) yields a root span.
+            ActivityContext parentContext = Activity.Current?.Context ?? default;
             var genTask = RunOnEngineThread(() =>
             {
                 // Per-request perf trace (issue: server feels slow on big agentic prompts).
@@ -681,9 +685,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 // Telemetry: one record per request from the finally below (never per token).
                 bool faulted = false;
                 long startTicks = Stopwatch.GetTimestamp(), prefillStartTicks = 0, prefillEndTicks = 0, firstTokenTicks = 0;
-                // Null (and free) unless an ActivityListener is attached. Runs on the engine thread, where the
-                // request's Activity.Current is not available, so this is a root span until Phase 3 hands context over.
-                var telemetryActivity = EngineTelemetry.Source.StartActivity("opentail.engine.generate");
+                // Null (and free) unless an ActivityListener is attached. Parented by the context captured above.
+                var telemetryActivity = EngineTelemetry.Source.StartActivity(
+                    "opentail.engine.generate", ActivityKind.Internal, parentContext);
                 // One small allocation per request, referenced only from the final Stop chunk.
                 GenerationStats Snapshot() => new(
                     promptTokenCount, reusedTokens, decodeTokens, encodeMs, prefillMs, ttftMs, swReq.ElapsedMilliseconds);

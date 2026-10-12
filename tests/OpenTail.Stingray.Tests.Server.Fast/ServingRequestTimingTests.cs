@@ -275,4 +275,44 @@ public sealed class ServingRequestTimingTests
         Assert.Equal(n, metrics.QueueLatencySummary.Count);
         Assert.Equal(3 * n, metrics.TotalTokens);
     }
+
+    [Fact]
+    public void OperationSpan_IsChildOfCurrentActivity_AndCarriesAllowListedTags()
+    {
+        var stopped = new List<System.Diagnostics.Activity>();
+        using var al = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name is ServerMetrics.ActivitySourceName or "test.http",
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = a => { lock (stopped) stopped.Add(a); },
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(al);
+        using var http = new System.Diagnostics.ActivitySource("test.http");
+
+        var metrics = new ServerMetrics();
+        using (var parent = http.StartActivity("http"))
+        {
+            var timing = metrics.BeginServingRequest("test.span", "my-model");
+            timing.MarkFirstToken();
+            timing.MarkGenerationComplete();
+            timing.SetOutputTokens(5);
+            timing.Dispose();
+        }
+        al.Dispose();
+
+        lock (stopped)
+        {
+            var op = Assert.Single(stopped, a => a.OperationName == "chat my-model");
+            var parent = Assert.Single(stopped, a => a.OperationName == "http");
+            Assert.Equal(parent.SpanId, op.ParentSpanId);
+            Assert.Equal("success", op.GetTagItem("outcome"));
+            Assert.Equal(5L, op.GetTagItem("gen_ai.usage.output_tokens"));
+            Assert.All(op.TagObjects, t => Assert.Contains(t.Key, new[]
+            {
+                "gen_ai.operation.name", "gen_ai.request.model", "opentail.endpoint", "outcome",
+                "gen_ai.usage.output_tokens", "gen_ai.usage.input_tokens", "opentail.reused_tokens", "opentail.time_to_first_token_ms",
+            }));
+        }
+    }
 }

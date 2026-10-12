@@ -9,6 +9,10 @@ namespace OpenTail.Stingray.Server;
 /// </summary>
 public sealed class ServerMetrics
 {
+    /// <summary>Name of the <see cref="ActivitySource"/> for server request spans; add it to a tracer provider to export them.</summary>
+    public const string ActivitySourceName = "OpenTail.Stingray.Server";
+    internal static readonly ActivitySource Activities = new(ActivitySourceName, "1.0.0");
+
     private static readonly Meter s_meter = new("OpenTail.Stingray.Server", "1.0.0");
     private static readonly Counter<long> s_requestsCounter = s_meter.CreateCounter<long>("opentailllm.requests", "requests", "Total admitted inference requests");
     private static readonly Counter<long> s_tokensCounter = s_meter.CreateCounter<long>("opentailllm.tokens", "tokens", "Total tokens generated");
@@ -195,9 +199,20 @@ public sealed class ServingRequestTiming : IDisposable
 
     private readonly CancellationToken _requestAborted;
 
+    // The operation span: started with the timing (so it matches gen_ai.server.request.duration's boundaries),
+    // parented by the ASP.NET Core request span through Activity.Current. Null, and free, with no listener.
+    private readonly Activity? _activity;
+
     internal ServingRequestTiming(ServerMetrics metrics, ServingTags endpoint, CancellationToken requestAborted = default)
     {
         _requestAborted = requestAborted;
+        if (ServerMetrics.Activities.HasListeners())
+        {
+            _activity = ServerMetrics.Activities.StartActivity("chat " + endpoint.Model, ActivityKind.Internal);
+            _activity?.SetTag("gen_ai.operation.name", "chat");
+            _activity?.SetTag("gen_ai.request.model", endpoint.Model);
+            _activity?.SetTag("opentail.endpoint", endpoint.Endpoint);
+        }
         _metrics = metrics;
         _endpoint = endpoint;
 
@@ -272,11 +287,35 @@ public sealed class ServingRequestTiming : IDisposable
         _metrics.RecordRequestDuration(Stopwatch.GetElapsedTime(_started, end));
         long firstToken = Interlocked.Read(ref _firstToken);
         long genEnd = Interlocked.Read(ref _generationEnd);
+        string outcome = genEnd != 0 ? "success" : _requestAborted.IsCancellationRequested ? "cancelled" : "incomplete";
         _metrics.RecordRequestDurationAndRate(
             Stopwatch.GetElapsedTime(_started, end), _endpoint,
             firstToken != 0 ? Stopwatch.GetElapsedTime(firstToken, genEnd != 0 ? genEnd : end) : TimeSpan.Zero,
             Interlocked.Read(ref _outputTokens),
-            genEnd != 0 ? "success" : _requestAborted.IsCancellationRequested ? "cancelled" : "incomplete");
+            outcome);
+        if (_activity is not null)
+        {
+            try
+            {
+                _activity.SetTag("outcome", outcome);
+                _activity.SetTag("gen_ai.usage.output_tokens", Interlocked.Read(ref _outputTokens));
+                if (EngineStats is { } s)
+                {
+                    _activity.SetTag("gen_ai.usage.input_tokens", s.PromptTokens);
+                    _activity.SetTag("opentail.reused_tokens", s.ReusedTokens);
+                }
+                if (firstToken != 0)
+                    _activity.SetTag("opentail.time_to_first_token_ms", Stopwatch.GetElapsedTime(_started, firstToken).TotalMilliseconds);
+            }
+            catch
+            {
+                // Telemetry must never break serving.
+            }
+            finally
+            {
+                _activity.Dispose();
+            }
+        }
         // MarkGenerationComplete already recorded the accurate (delivery-excluded) sample on the
         // normal path. Only fall back to dispose-time here when it was never called — a
         // cancellation or exception before the generation loop finished — so those requests still
