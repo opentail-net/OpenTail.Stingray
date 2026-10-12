@@ -95,6 +95,32 @@ public sealed class EngineTelemetryTests
     }
 
     [Fact]
+    public async Task Activity_IsEmittedWithCountsOnlyTags()
+    {
+        var stopped = new List<System.Diagnostics.Activity>();
+        using var al = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == EngineTelemetry.ActivitySourceName,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = a => { lock (stopped) stopped.Add(a); },
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(al);
+        using var engine = NewEngine();
+        await RunOnce(engine);
+        al.Dispose();
+
+        lock (stopped)
+        {
+            var a = Assert.Single(stopped, x => x.OperationName == "opentail.engine.generate");
+            Assert.Equal("success", a.GetTagItem("outcome"));
+            Assert.Equal(2, a.GetTagItem("opentail.output_tokens"));
+            Assert.All(a.TagObjects, t => Assert.Contains(t.Key,
+                new[] { "outcome", "opentail.prompt_tokens", "opentail.reused_tokens", "opentail.output_tokens" }));
+        }
+    }
+
+    [Fact]
     public void ModelLoad_RecordsDurationWithAllowListedTags()
     {
         var samples = new List<Sample>();

@@ -681,6 +681,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 // Telemetry: one record per request from the finally below (never per token).
                 bool faulted = false;
                 long startTicks = Stopwatch.GetTimestamp(), prefillStartTicks = 0, prefillEndTicks = 0, firstTokenTicks = 0;
+                // Null (and free) unless an ActivityListener is attached. Runs on the engine thread, where the
+                // request's Activity.Current is not available, so this is a root span until Phase 3 hands context over.
+                var telemetryActivity = EngineTelemetry.Source.StartActivity("opentail.engine.generate");
                 // Issue #212: index of the multi-slot prefix slot bound for this request, or -1
                 // when no non-owned slot is active (single-slot mode, or this request stayed on
                 // the owned slot). -1 keeps the finally's DeactivateSlot a no-op.
@@ -1397,14 +1400,16 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 }
                 finally
                 {
+                    string telemetryOutcome = faulted ? EngineTelemetry.OutcomeError
+                        : ct.IsCancellationRequested ? EngineTelemetry.OutcomeCancelled
+                        : EngineTelemetry.OutcomeSuccess;
+                    EngineTelemetry.EndActivity(telemetryActivity, telemetryOutcome, promptTokenCount, reusedTokens, decodeTokens);
                     if (EngineTelemetry.Enabled)
                     {
                         long endTicks = Stopwatch.GetTimestamp();
                         EngineTelemetry.RecordGeneration(
                             _fwd.GetType().Name,
-                            faulted ? EngineTelemetry.OutcomeError
-                                : ct.IsCancellationRequested ? EngineTelemetry.OutcomeCancelled
-                                : EngineTelemetry.OutcomeSuccess,
+                            telemetryOutcome,
                             promptTokenCount - reusedTokens,
                             prefillEndTicks > prefillStartTicks ? Stopwatch.GetElapsedTime(prefillStartTicks, prefillEndTicks).TotalSeconds : 0,
                             decodeTokens,

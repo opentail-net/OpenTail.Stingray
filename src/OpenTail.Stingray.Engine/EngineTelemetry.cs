@@ -57,6 +57,27 @@ public static class EngineTelemetry
         }
     }
 
+    /// <summary>Tags and ends the generation span (no-op for null). Never throws; counts only, no content.</summary>
+    internal static void EndActivity(Activity? activity, string outcome, int promptTokens, int reusedTokens, int decodeTokens)
+    {
+        if (activity is null) return;
+        try
+        {
+            activity.SetTag("outcome", outcome);
+            activity.SetTag("opentail.prompt_tokens", promptTokens);
+            activity.SetTag("opentail.reused_tokens", reusedTokens);
+            activity.SetTag("opentail.output_tokens", decodeTokens);
+            if (outcome == OutcomeError) activity.SetStatus(ActivityStatusCode.Error);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            activity.Dispose();
+        }
+    }
+
     /// <summary>True when anything listens; callers skip building the record otherwise.</summary>
     internal static bool Enabled =>
         s_requests.Enabled || s_prefillDuration.Enabled || s_decodeDuration.Enabled
