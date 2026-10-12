@@ -34,6 +34,8 @@ public static class ServiceCollectionExtensions
         // TryAdd: a test or downstream module may already have registered a fake/replacement
         // for any of these services. We never overwrite an existing registration here.
         services.TryAddSingleton<ServerMetrics>();
+        services.TryAddSingleton<ServerObservableMetrics>(sp => new ServerObservableMetrics(sp));
+        services.AddHostedService<ServerObservableMetricsStarter>();
         services.TryAddSingleton<SessionRuntimeRelay>(sp => new SessionRuntimeRelay(
             sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value.EnableSessions
                 ? "The engine has not been loaded yet, or it does not expose the CPU-dense session runtime."

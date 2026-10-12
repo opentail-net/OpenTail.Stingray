@@ -50,6 +50,8 @@ Server meter `OpenTail.Stingray.Server` (attributes: `gen_ai.operation.name`, `g
 | `opentail.queue.wait` | s | Start of serving to engine admission |
 | `opentail.requests.active` | {request} | Generation requests in flight |
 | `opentail.requests.rejected` | {request} | Rejected before admission (`opentail.reason`=overload) |
+| `opentail.models.resident`, `.pending_loads`, `.estimated_bytes`, `opentail.admission.queued`; counters `opentail.models.loads`, `.load_failures`, `.evictions`, `.admission_rejections` | | Model residency (observable, read at collection; bytes are estimates) |
+| `opentail.engine.queue.depth`, `.sequences.active`, `.kv_cache.committed_tokens`, `.prefix_cache.entries`, `.estimated_bytes`, `.hits`, `.misses`, `.evictions` | | Engine queue and cache state (DI singleton engine; batching-engine ones only when continuous batching is active) |
 | `opentailllm.*` | | Legacy instruments, kept for one release. `opentailllm.itl_ms` is mislabelled (it is total generation time) |
 
 Engine meter `OpenTail.Stingray.Engine` (attributes: `outcome`, `opentail.forward_pass`; load also `opentail.architecture`):
