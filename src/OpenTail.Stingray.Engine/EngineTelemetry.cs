@@ -39,11 +39,51 @@ public static class EngineTelemetry
     private static readonly Histogram<double> s_modelLoad = s_meter.CreateHistogram<double>(
         "opentail.engine.model.load.duration", "s", "Time to build a runtime for a model (weights mapped, backend and forward pass created).");
 
+    /// <summary>Starts the <c>model.load</c> span as a new root (a load is shared, so it is never a child of one request). Null with no listener.</summary>
+    internal static ModelLoadScope StartModelLoad()
+    {
+        if (!Source.HasListeners()) return default;
+        // StartActivity inherits Activity.Current whatever parent context is passed, so clear it for the
+        // start and restore the caller's context when the scope ends.
+        var saved = Activity.Current;
+        Activity.Current = null;
+        return new ModelLoadScope(Source.StartActivity("model.load", ActivityKind.Internal), saved, swapped: true);
+    }
+
+    /// <summary>Owns the <c>model.load</c> span and puts the caller's <see cref="Activity.Current"/> back on dispose.</summary>
+    internal readonly struct ModelLoadScope : IDisposable
+    {
+        private readonly Activity? _saved;
+        private readonly bool _swapped;
+
+        public ModelLoadScope(Activity? activity, Activity? saved, bool swapped)
+        {
+            Activity = activity;
+            _saved = saved;
+            _swapped = swapped;
+        }
+
+        public Activity? Activity { get; }
+
+        public void Dispose()
+        {
+            Activity?.Dispose();
+            if (_swapped) System.Diagnostics.Activity.Current = _saved;
+        }
+    }
+
     /// <summary>Records one model load. Architecture family is the model identity (never a path or file name).</summary>
-    internal static void RecordModelLoad(string architecture, string forwardPass, string outcome, double seconds)
+    internal static void RecordModelLoad(Activity? activity, string architecture, string forwardPass, string outcome, double seconds)
     {
         try
         {
+            if (activity is not null)
+            {
+                activity.SetTag("opentail.architecture", architecture);
+                activity.SetTag("opentail.forward_pass", forwardPass);
+                activity.SetTag("outcome", outcome);
+                if (outcome == OutcomeError) activity.SetStatus(ActivityStatusCode.Error);
+            }
             if (!s_modelLoad.Enabled) return;
             s_modelLoad.Record(seconds, new TagList
             {

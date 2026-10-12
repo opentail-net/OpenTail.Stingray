@@ -125,7 +125,8 @@ public sealed class EngineTelemetryTests
     {
         var samples = new List<Sample>();
         using var l = Listen(samples);
-        EngineTelemetry.RecordModelLoad("llama", "ForwardPass", EngineTelemetry.OutcomeSuccess, 1.5);
+        using (var load = EngineTelemetry.StartModelLoad())
+            EngineTelemetry.RecordModelLoad(load.Activity, "llama", "ForwardPass", EngineTelemetry.OutcomeSuccess, 1.5);
         l.Dispose();
 
         lock (samples)
@@ -210,6 +211,40 @@ public sealed class EngineTelemetryTests
             // Every engine span's parent is exactly one caller span, and each caller owns exactly one engine span.
             Assert.All(engineSpans, e => Assert.Single(callerSpans, c => c.SpanId == e.ParentSpanId && c.TraceId == e.TraceId));
             Assert.Equal(4, engineSpans.Select(e => e.ParentSpanId).Distinct().Count());
+        }
+    }
+
+    [Fact]
+    public void ModelLoadSpan_IsARootEvenInsideAnotherActivity_WithAllowListedTags()
+    {
+        var stopped = new List<System.Diagnostics.Activity>();
+        using var al = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name is EngineTelemetry.ActivitySourceName or "test.requester",
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = a => { lock (stopped) stopped.Add(a); },
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(al);
+        using var requester = new System.Diagnostics.ActivitySource("test.requester");
+
+        System.Diagnostics.Activity? currentAfterLoad;
+        using (var req = requester.StartActivity("request"))
+        {
+            using (var load = EngineTelemetry.StartModelLoad())
+                EngineTelemetry.RecordModelLoad(load.Activity, "llama", "ForwardPass", EngineTelemetry.OutcomeSuccess, 0.1);
+            currentAfterLoad = System.Diagnostics.Activity.Current;
+            Assert.Same(req, currentAfterLoad); // the caller context survives the load span
+        }
+        al.Dispose();
+
+        lock (stopped)
+        {
+            var request = Assert.Single(stopped, a => a.OperationName == "request");
+            var load = Assert.Single(stopped, a => a.OperationName == "model.load");
+            Assert.Equal(default, load.ParentSpanId);
+            Assert.NotEqual(request.TraceId, load.TraceId);
+            Assert.All(load.TagObjects, t => Assert.Contains(t.Key, new[] { "opentail.architecture", "opentail.forward_pass", "outcome" }));
         }
     }
 }

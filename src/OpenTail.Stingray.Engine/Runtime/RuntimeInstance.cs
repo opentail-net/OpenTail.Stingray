@@ -60,6 +60,9 @@ public sealed class RuntimeInstance : IDisposable
         ArgumentNullException.ThrowIfNull(plan);
         long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
         ArgumentNullException.ThrowIfNull(model);
+        // A load is its own operation (its own trace), never a child of whichever request triggered it.
+        using var loadScope = EngineTelemetry.StartModelLoad();
+        var loadActivity = loadScope.Activity;
 
         if (plan.BackendPlan?.ThreadCount > 0)
         {
@@ -259,14 +262,14 @@ public sealed class RuntimeInstance : IDisposable
                 cudaBackend,
                 vulkanBackend,
                 ownedDisposables);
-            EngineTelemetry.RecordModelLoad(model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeSuccess, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
+            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeSuccess, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
             if (EngineEvents.Enabled)
                 EngineEvents.Emit(new(EngineEventKind.ModelLoaded, model.Architecture, Ms: System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds, Detail: $"forwardPass={plan.ForwardPassKind}"));
             return created;
         }
         catch
         {
-            EngineTelemetry.RecordModelLoad(model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
+            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
             foreach (var d in ownedDisposables)
             {
                 try { d.Dispose(); } catch { }
