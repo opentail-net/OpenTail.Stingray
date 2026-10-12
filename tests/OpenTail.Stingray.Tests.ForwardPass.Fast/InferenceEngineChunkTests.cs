@@ -364,7 +364,7 @@ public sealed class InferenceEngineChunkTests
     /// token to a fixed string and pretends the prompt encodes to a single dummy
     /// token (id 0) so the engine's prefill path has something to chew on.
     /// </summary>
-    private sealed class ScriptedTokenizer : ITokenizer
+    internal sealed class ScriptedTokenizer : ITokenizer
     {
         private static readonly string[] Vocab =
         [
@@ -411,7 +411,7 @@ public sealed class InferenceEngineChunkTests
     /// next token in a pre-determined sequence on every call. Greedy sampling will
     /// pick that token deterministically.
     /// </summary>
-    private sealed class ScriptedForwardPass : IForwardPass
+    internal sealed class ScriptedForwardPass : IForwardPass
     {
         private readonly int[] _sequence;
         private readonly int _vocabSize;
@@ -445,7 +445,8 @@ public sealed class InferenceEngineChunkTests
         }
 
         public ReadOnlySpan<float> Forward(int token, int position) => EmitNext();
-        public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0) => EmitNext();
+        public Action? OnPrefill { get; set; }
+        public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0) { OnPrefill?.Invoke(); return EmitNext(); }
         public void TruncateTo(int length) { }
         public void ResetCache() { _step = 0; }
         public bool SupportsPartialRewind => true;

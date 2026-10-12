@@ -678,6 +678,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 bool logReq = logger?.IsEnabled(LogLevel.Debug) == true;
                 int promptTokenCount = 0, reusedTokens = 0, decodeTokens = 0;
                 long encodeMs = 0, prefillMs = 0, ttftMs = -1;
+                // Telemetry: one record per request from the finally below (never per token).
+                bool faulted = false;
+                long startTicks = Stopwatch.GetTimestamp(), prefillStartTicks = 0, prefillEndTicks = 0, firstTokenTicks = 0;
                 // Issue #212: index of the multi-slot prefix slot bound for this request, or -1
                 // when no non-owned slot is active (single-slot mode, or this request stayed on
                 // the owned slot). -1 keeps the finally's DeactivateSlot a no-op.
@@ -862,6 +865,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     int[] suffixTokens;     // suffix after any cached prefix; reused by the MTP path
                     bool useCanonicalSnapshot = false;
                     long prefillStartMs = swReq.ElapsedMilliseconds;
+                    prefillStartTicks = Stopwatch.GetTimestamp();
                     ReadOnlySpan<float> logits;
 
                     if (imageBytes is { Count: > 0 })
@@ -1049,6 +1053,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         startPos = tokens.Length;
                     }
                     prefillMs = swReq.ElapsedMilliseconds - prefillStartMs;
+                    prefillEndTicks = Stopwatch.GetTimestamp();
 
                     if (useDSpark)
                     {
@@ -1065,7 +1070,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         var textDecDs = new Utf8StreamDecoder();
                         dsDec.Decode(sp.MaxNewTokens, stopIds.AsSpan(), tok =>
                         {
-                            if (ttftMs < 0) ttftMs = swReq.ElapsedMilliseconds;
+                            if (ttftMs < 0) { ttftMs = swReq.ElapsedMilliseconds; firstTokenTicks = Stopwatch.GetTimestamp(); }
                             decodeTokens++;
                             fullSeq.Add(tok);
                             // Reasoning boundary tokens are consumed, never emitted (the
@@ -1142,7 +1147,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
 
                         mtpDec.Decode(sp.MaxNewTokens, stopIds.AsSpan(), tok =>
                         {
-                            if (ttftMs < 0) ttftMs = swReq.ElapsedMilliseconds;
+                            if (ttftMs < 0) { ttftMs = swReq.ElapsedMilliseconds; firstTokenTicks = Stopwatch.GetTimestamp(); }
                             decodeTokens++;
                             fullSeq.Add(tok);
                             // Reasoning boundary tokens are consumed, never emitted (the
@@ -1289,10 +1294,10 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         // turn N's full transcript, not just turn N's prompt.
                         fullSeq.Add(next);
                         recentTokens?.Add(next);
-                        if (ttftMs < 0) ttftMs = swReq.ElapsedMilliseconds;
+                        if (ttftMs < 0) { ttftMs = swReq.ElapsedMilliseconds; firstTokenTicks = Stopwatch.GetTimestamp(); }
                         decodeTokens++;
 
-                        if (stopIds.Contains(next)) { hitMaxTokens = false; break; }
+                        if (stopIds.Contains(next)) { hitMaxTokens = false; decodeTokens--; break; }
 
                         // Counter update mirrors RunCommand.DecodeLoop: reset on each <think>
                         // open, otherwise increment whenever inThinking was true on entry to
@@ -1387,10 +1392,25 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 }
                 catch (Exception ex)
                 {
+                    faulted = ex is not OperationCanceledException;
                     channel.Writer.TryComplete(ex);
                 }
                 finally
                 {
+                    if (EngineTelemetry.Enabled)
+                    {
+                        long endTicks = Stopwatch.GetTimestamp();
+                        EngineTelemetry.RecordGeneration(
+                            _fwd.GetType().Name,
+                            faulted ? EngineTelemetry.OutcomeError
+                                : ct.IsCancellationRequested ? EngineTelemetry.OutcomeCancelled
+                                : EngineTelemetry.OutcomeSuccess,
+                            promptTokenCount - reusedTokens,
+                            prefillEndTicks > prefillStartTicks ? Stopwatch.GetElapsedTime(prefillStartTicks, prefillEndTicks).TotalSeconds : 0,
+                            decodeTokens,
+                            firstTokenTicks > 0 ? Stopwatch.GetElapsedTime(startTicks, firstTokenTicks).TotalSeconds : -1,
+                            Stopwatch.GetElapsedTime(startTicks, endTicks).TotalSeconds);
+                    }
                     // Issue #212: always release a bound non-owned slot, even on exception or
                     // cancellation, so a scratch bind can't leak into the next request's
                     // owned-cache state (mirrors how RestoreOwned is always in a finally).
