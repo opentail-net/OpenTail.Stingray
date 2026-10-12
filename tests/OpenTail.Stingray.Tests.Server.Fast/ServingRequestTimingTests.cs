@@ -135,7 +135,12 @@ public sealed class ServingRequestTimingTests
         lock (samples)
         {
             Assert.All(samples, s => Assert.Equal("s", s.Unit));
-            Assert.All(samples, s => Assert.Equal(new[] { "gen_ai.operation.name", "gen_ai.request.model", "opentail.endpoint" }, s.Tags.Keys.Order().ToArray()));
+            Assert.All(samples, s => Assert.Equal(
+                s.Name == "gen_ai.server.request.duration"
+                    ? new[] { "gen_ai.operation.name", "gen_ai.request.model", "opentail.endpoint", "outcome" }
+                    : new[] { "gen_ai.operation.name", "gen_ai.request.model", "opentail.endpoint" },
+                s.Tags.Keys.Order().ToArray()));
+            Assert.Equal("success", Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration").Tags["outcome"]);
             var ttft = Assert.Single(samples, s => s.Name == "gen_ai.server.time_to_first_token");
             Assert.True(ttft.Value < 0.05);
             var total = Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration");
@@ -193,4 +198,34 @@ public sealed class ServingRequestTimingTests
     [Fact]
     public void SanitizeModel_CapsLength() =>
         Assert.Equal("other", ServerMetrics.SanitizeModel(new string('a', 65)));
+
+    [Theory]
+    [InlineData("success")]
+    [InlineData("cancelled")]
+    [InlineData("incomplete")]
+    public void RequestDuration_OutcomeReflectsHowTheRequestEnded(string expected)
+    {
+        string endpoint = "test.outcome." + expected;
+        string? seen = null;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (i, l) => { if (i.Name == "gen_ai.server.request.duration") l.EnableMeasurementEvents(i); };
+        listener.SetMeasurementEventCallback<double>((i, v, t, s) =>
+        {
+            string? ep = null, oc = null;
+            foreach (var kv in t) { if (kv.Key == "opentail.endpoint") ep = (string?)kv.Value; if (kv.Key == "outcome") oc = (string?)kv.Value; }
+            if (ep == endpoint) seen = oc;
+        });
+        listener.Start();
+
+        using var cts = new CancellationTokenSource();
+        var metrics = new ServerMetrics();
+        var timing = metrics.BeginServingRequest(endpoint, "m", cts.Token);
+        timing.MarkFirstToken();
+        if (expected == "success") timing.MarkGenerationComplete();
+        if (expected == "cancelled") cts.Cancel();
+        timing.Dispose();
+        listener.Dispose();
+
+        Assert.Equal(expected, seen);
+    }
 }

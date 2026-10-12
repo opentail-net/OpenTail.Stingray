@@ -113,7 +113,7 @@ public static class ResponsesEndpoints
         var itemId = $"msg_{Guid.NewGuid():N}";
         long createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         string modelId = engine.ModelId;
-        using var timing = metrics.BeginServingRequest("openai.responses", engine.ModelId);
+        using var timing = metrics.BeginServingRequest("openai.responses", engine.ModelId, ctx.RequestAborted);
 
         if (req.Stream == true)
         {

@@ -420,7 +420,7 @@ public static class OpenAiEndpoints
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
         bool includeTiming = false)
     {
-        using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId);
+        using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         var textSb = new StringBuilder();
         var reasoningSb = new StringBuilder();
         int textTokens = 0;
@@ -538,7 +538,7 @@ public static class OpenAiEndpoints
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created)
     {
-        using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId);
+        using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";

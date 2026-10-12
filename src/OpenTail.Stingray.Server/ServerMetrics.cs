@@ -86,8 +86,9 @@ public sealed class ServerMetrics
     /// <summary>Starts latency accounting at engine-submission time for one generation request.</summary>
     /// <param name="endpoint">Closed set of endpoint names (for example <c>openai.chat_completions</c>); never client-supplied text.</param>
     /// <param name="model">The server-side resolved model id (never the client-supplied string). Path-like or over-long values are reported as <c>other</c>.</param>
-    public ServingRequestTiming BeginServingRequest(string endpoint = "unknown", string? model = null) =>
-        new(this, new ServingTags(endpoint, SanitizeModel(model)));
+    /// <param name="requestAborted">Used only to tell a cancelled request from one that ended without finishing generation.</param>
+    public ServingRequestTiming BeginServingRequest(string endpoint = "unknown", string? model = null, CancellationToken requestAborted = default) =>
+        new(this, new ServingTags(endpoint, SanitizeModel(model)), requestAborted);
 
     internal static string SanitizeModel(string? model) =>
         string.IsNullOrEmpty(model) ? "unknown"
@@ -118,9 +119,14 @@ public sealed class ServerMetrics
         s_ttftHistogram.Record(elapsed.TotalMilliseconds);
         if (s_genAiTtft.Enabled) s_genAiTtft.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
     }
-    internal void RecordRequestDurationAndRate(TimeSpan total, ServingTags endpoint, TimeSpan decode, long outputTokens)
+    internal void RecordRequestDurationAndRate(TimeSpan total, ServingTags endpoint, TimeSpan decode, long outputTokens, string outcome)
     {
-        if (s_genAiRequestDuration.Enabled) s_genAiRequestDuration.Record(total.TotalSeconds, EndpointTags(endpoint));
+        if (s_genAiRequestDuration.Enabled)
+        {
+            var tags = EndpointTags(endpoint);
+            tags.Add("outcome", outcome);
+            s_genAiRequestDuration.Record(total.TotalSeconds, tags);
+        }
         if (outputTokens > 1 && decode > TimeSpan.Zero && s_genAiTpot.Enabled)
             s_genAiTpot.Record(decode.TotalSeconds / (outputTokens - 1), EndpointTags(endpoint));
     }
@@ -169,8 +175,11 @@ public sealed class ServingRequestTiming : IDisposable
     private readonly ServingTags _endpoint;
     private long _outputTokens;
 
-    internal ServingRequestTiming(ServerMetrics metrics, ServingTags endpoint)
+    private readonly CancellationToken _requestAborted;
+
+    internal ServingRequestTiming(ServerMetrics metrics, ServingTags endpoint, CancellationToken requestAborted = default)
     {
+        _requestAborted = requestAborted;
         _metrics = metrics;
         _endpoint = endpoint;
 
@@ -248,7 +257,8 @@ public sealed class ServingRequestTiming : IDisposable
         _metrics.RecordRequestDurationAndRate(
             Stopwatch.GetElapsedTime(_started, end), _endpoint,
             firstToken != 0 ? Stopwatch.GetElapsedTime(firstToken, genEnd != 0 ? genEnd : end) : TimeSpan.Zero,
-            Interlocked.Read(ref _outputTokens));
+            Interlocked.Read(ref _outputTokens),
+            genEnd != 0 ? "success" : _requestAborted.IsCancellationRequested ? "cancelled" : "incomplete");
         // MarkGenerationComplete already recorded the accurate (delivery-excluded) sample on the
         // normal path. Only fall back to dispose-time here when it was never called — a
         // cancellation or exception before the generation loop finished — so those requests still
