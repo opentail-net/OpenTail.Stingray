@@ -258,6 +258,13 @@ Rules for the awkward cases: a cancelled or disconnected request records outcome
 
 Each question carries a **proposed** answer from the independent reviews. None is decided until the owner confirms.
 
+**Decided 2026-10-12 (owner said "go ahead" to the proposed answers; D1, D2, D9, D16 are needed for Phase 1; the rest stay proposed until their phase):**
+- **D1:** pin a commit of `semantic-conventions-genai`, recorded in the mapping table (commit to be filled in when the table is written).
+- **D2:** Stingray-specific `opentail.tokens.input` / `.output` on the server.
+- **D9:** CLI telemetry yes, if the published NativeAOT binary passes the listener test. Spike evidence: with `MetricsSupport=true` a published AOT app delivers all `Meter` measurements (false: none); activities work either way; about +31 KB in a minimal app. Real-CLI size and start-up cost are measured in Phase 1.
+- **D10 (spike):** OpenTelemetry SDK 1.19.1 + OTLP + console exporters publish NativeAOT with warnings as errors, with no warnings, and deliver a meter and a span to the console exporter (exe 8.3 MB). OTLP delivery to a collector and `Server.Host` itself are not yet tested.
+- **D16:** `AcquireAsync` runs before `BeginServingRequest()` in the OpenAI endpoint (line order), so time to first token **excludes** a cold model load; the load is recorded separately (`model.load`). To be asserted by a test in Phase 1.
+
 - **D1: Which GenAI convention version do we use?** *Proposed:* pin a commit of `semantic-conventions-genai` (there is no release to pin), verify each proposed standard name against it, and allow deliberate Stingray-specific metrics, all recorded in the mapping table.
 - **D2: Token usage.** The current token metrics are client-side (`gen_ai.client.inference.*`). *Proposed:* Stingray-specific `opentail.tokens.input` and `.output` on the server, documented in the mapping table, revisited if the conventions define server token metrics.
 - **D3: Separate optional package for OpenTelemetry wiring, or documentation snippets?** *Proposed:* start with host-side setup and a runnable example; add a dedicated integration package only if it materially simplifies use.
