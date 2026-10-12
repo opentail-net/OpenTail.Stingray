@@ -228,4 +228,51 @@ public sealed class ServingRequestTimingTests
 
         Assert.Equal(expected, seen);
     }
+
+    /// <summary>
+    /// One source of truth: the Meter instruments (legacy and GenAI-named) and the summaries that
+    /// feed /metrics and `stingray status` are all driven from the same recording methods, so for
+    /// the same requests their counts must agree.
+    /// </summary>
+    [Fact]
+    public void MeterInstrumentsAndMetricsSummaries_AgreeOnCounts()
+    {
+        const string endpoint = "test.agreement";
+        int ttftGenAi = 0, durationGenAi = 0;
+        long requestsLegacyDelta = 0;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (i, l) => { if (i.Meter.Name == "OpenTail.Stingray.Server") l.EnableMeasurementEvents(i); };
+        listener.SetMeasurementEventCallback<double>((i, v, t, s) =>
+        {
+            bool ours = false;
+            foreach (var kv in t) if (kv.Key == "opentail.endpoint" && (string?)kv.Value == endpoint) ours = true;
+            if (!ours) return;
+            if (i.Name == "gen_ai.server.time_to_first_token") Interlocked.Increment(ref ttftGenAi);
+            if (i.Name == "gen_ai.server.request.duration") Interlocked.Increment(ref durationGenAi);
+        });
+        listener.Start();
+
+        var metrics = new ServerMetrics();
+        const int n = 5;
+        for (int k = 0; k < n; k++)
+        {
+            metrics.RecordRequest();
+            using var timing = metrics.BeginServingRequest(endpoint, "m");
+            timing.MarkAdmitted();
+            timing.MarkFirstToken();
+            timing.MarkGenerationComplete();
+            timing.SetOutputTokens(3);
+            metrics.RecordTokens(3);
+        }
+        listener.Dispose();
+        requestsLegacyDelta = metrics.TotalRequests;
+
+        Assert.Equal(n, requestsLegacyDelta);
+        Assert.Equal(n, metrics.TimeToFirstTokenSummary.Count);
+        Assert.Equal(n, ttftGenAi);
+        Assert.Equal(n, metrics.RequestDurationSummary.Count);
+        Assert.Equal(n, durationGenAi);
+        Assert.Equal(n, metrics.QueueLatencySummary.Count);
+        Assert.Equal(3 * n, metrics.TotalTokens);
+    }
 }
