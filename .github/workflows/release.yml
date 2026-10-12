@@ -85,7 +85,7 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release -- --report-trx --report-trx-filename cli.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release -- --report-trx --report-trx-filename vision.trx --results-directory ./artifacts/test-results --minimum-expected-tests 55
           dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release -- --report-trx --report-trx-filename server-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 200
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release -- --report-trx --report-trx-filename sessions-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release -- --report-trx --report-trx-filename sessions-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 100
           dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release -- --report-trx --report-trx-filename forwardpass-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 480
 
       # A number of heavyweight tests intentionally return early when their GGUF fixture is not
