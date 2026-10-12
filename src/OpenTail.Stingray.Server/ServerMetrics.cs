@@ -33,6 +33,13 @@ public sealed class ServerMetrics
     private static readonly Histogram<double> s_genAiTpot = s_meter.CreateHistogram<double>(
         "gen_ai.server.time_per_output_token", "s", "Decode time per output token after the first, one sample per request", advice: s_perTokenAdvice);
 
+    private static readonly Counter<long> s_rejected = s_meter.CreateCounter<long>(
+        "opentail.requests.rejected", "{request}", "Requests rejected before admission, by reason");
+    private static readonly UpDownCounter<long> s_active = s_meter.CreateUpDownCounter<long>(
+        "opentail.requests.active", "{request}", "Generation requests currently being served");
+    private static readonly Histogram<double> s_queueWait = s_meter.CreateHistogram<double>(
+        "opentail.queue.wait", "s", "Time from the start of serving until the engine admits the request", advice: s_latencyAdvice);
+
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
     private long _totalRequests;
     private long _totalTokens;
@@ -66,6 +73,7 @@ public sealed class ServerMetrics
     {
         Interlocked.Increment(ref _overloadRejections);
         s_rejectionsCounter.Add(1);
+        s_rejected.Add(1, new KeyValuePair<string, object?>("opentail.reason", "overload"));
     }
 
     /// <summary>Adds <paramref name="count"/> to <see cref="TotalTokens"/>.</summary>
@@ -85,7 +93,17 @@ public sealed class ServerMetrics
         { "opentail.endpoint", endpoint },
     };
 
-    internal void RecordQueueLatency(TimeSpan elapsed) => _queueLatency.Observe(elapsed);
+    internal void RecordQueueLatency(TimeSpan elapsed, string endpoint)
+    {
+        _queueLatency.Observe(elapsed);
+        if (s_queueWait.Enabled) s_queueWait.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
+    }
+    internal bool AddActive(long delta, string endpoint)
+    {
+        if (!s_active.Enabled) return false;
+        s_active.Add(delta, new KeyValuePair<string, object?>("opentail.endpoint", endpoint));
+        return true;
+    }
     internal void RecordTimeToFirstToken(TimeSpan elapsed, string endpoint)
     {
         _timeToFirstToken.Observe(elapsed);
@@ -147,7 +165,12 @@ public sealed class ServingRequestTiming : IDisposable
     {
         _metrics = metrics;
         _endpoint = endpoint;
+
+        _activeCounted = metrics.AddActive(1, endpoint);
     }
+
+    // Instrument.Enabled can flip mid-request; decrement only if the increment was actually recorded.
+    private readonly bool _activeCounted;
 
     /// <summary>Output token count for this request, used for time per output token. Call before <see cref="Complete"/>.</summary>
     public void SetOutputTokens(long count) => Interlocked.Exchange(ref _outputTokens, count);
@@ -157,7 +180,7 @@ public sealed class ServingRequestTiming : IDisposable
     {
         if (_admitted) return;
         _admitted = true;
-        _metrics.RecordQueueLatency(Stopwatch.GetElapsedTime(_started));
+        _metrics.RecordQueueLatency(Stopwatch.GetElapsedTime(_started), _endpoint);
     }
 
     /// <summary>Marks the first generated text or reasoning token.</summary>
@@ -209,6 +232,7 @@ public sealed class ServingRequestTiming : IDisposable
     {
         if (_completed) return;
         _completed = true;
+        if (_activeCounted) _metrics.AddActive(-1, _endpoint);
         long end = Stopwatch.GetTimestamp();
         _metrics.RecordRequestDuration(Stopwatch.GetElapsedTime(_started, end));
         long firstToken = Interlocked.Read(ref _firstToken);

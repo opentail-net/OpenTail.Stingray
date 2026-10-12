@@ -144,4 +144,39 @@ public sealed class ServingRequestTimingTests
             Assert.InRange(tpot.Value, 0.009, 0.05);   // ~100ms / 10 tokens, nowhere near (400ms / 10)
         }
     }
+
+    [Fact]
+    public void ActiveQueueAndRejectedInstruments_AreRecorded()
+    {
+        const string endpoint = "test.active_queue";
+        long active = 0, rejected = 0; int queue = 0;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (i, l) => { if (i.Meter.Name == "OpenTail.Stingray.Server") l.EnableMeasurementEvents(i); };
+        listener.SetMeasurementEventCallback<long>((i, v, t, s) =>
+        {
+            var tags = new Dictionary<string, object?>();
+            foreach (var kv in t) tags[kv.Key] = kv.Value;
+            if (i.Name == "opentail.requests.active" && (string?)tags["opentail.endpoint"] == endpoint) Interlocked.Add(ref active, v);
+            if (i.Name == "opentail.requests.rejected" && (string?)tags["opentail.reason"] == "overload") Interlocked.Increment(ref rejected);
+        });
+        listener.SetMeasurementEventCallback<double>((i, v, t, s) =>
+        {
+            foreach (var kv in t)
+                if (i.Name == "opentail.queue.wait" && kv.Key == "opentail.endpoint" && (string?)kv.Value == endpoint) Interlocked.Increment(ref queue);
+        });
+        listener.Start();
+
+        var metrics = new ServerMetrics();
+        var timing = metrics.BeginServingRequest(endpoint);
+        Assert.Equal(1, Interlocked.Read(ref active));
+        timing.MarkAdmitted();
+        timing.Dispose();
+        timing.Dispose(); // idempotent: must not decrement twice
+        metrics.RecordOverloadRejection();
+        listener.Dispose();
+
+        Assert.Equal(0, Interlocked.Read(ref active));
+        Assert.Equal(1, queue);
+        Assert.True(Interlocked.Read(ref rejected) >= 1);
+    }
 }
