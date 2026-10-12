@@ -9,6 +9,9 @@ name: Publish NuGet
 # The tag prefix is `stingray-v`, not a bare `v` — the pre-rename v1.0.0/v1.0.1 tags belong to the
 # old OpenTail.LLM series. The guard step below fails the run if tag and <Version> disagree.
 # All three packable projects (OpenTail.Stingray, .Server, .Cli) ship from the same job.
+# After a successful push, a second job creates (or updates) the GitHub Release for the tag and attaches
+# the packages. It is a separate job so only it holds `contents: write`; the job that holds the NuGet key
+# keeps read-only repository access.
 on:
   push:
     tags: ['stingray-v*']
@@ -136,3 +139,50 @@ jobs:
           --api-key "$NUGET_KEY"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
+
+      # Hand the exact packages that were just validated and pushed to the release job.
+      - name: Upload packages for the GitHub release
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts/nupkg/*.nupkg
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./packages
+
+      # Idempotent: re-running the workflow on the same tag refreshes the assets instead of failing
+      # on "release already exists". Notes are generated from the commits and pull requests since the
+      # previous release, under a short install header. A version with a hyphen (for example
+      # 1.1.0-rc.1) is published as a pre-release.
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#stingray-v}"
+          notes="NuGet packages: [OpenTail.Stingray](https://www.nuget.org/packages/OpenTail.Stingray/${version}), [OpenTail.Stingray.Server](https://www.nuget.org/packages/OpenTail.Stingray.Server/${version}), [OpenTail.Stingray.Cli](https://www.nuget.org/packages/OpenTail.Stingray.Cli/${version}). Command-line tool: \`dotnet tool install -g OpenTail.Stingray.Cli\`. Website: https://opentail.net"
+          flags=()
+          if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./packages/*.nupkg --clobber
+          else
+            gh release create "$TAG" ./packages/*.nupkg \
+              --title "OpenTail.Stingray ${version}" \
+              --notes "$notes" \
+              --generate-notes \
+              --verify-tag \
+              "${flags[@]}"
+          fi
