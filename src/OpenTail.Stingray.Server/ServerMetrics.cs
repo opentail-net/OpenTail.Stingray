@@ -16,6 +16,23 @@ public sealed class ServerMetrics
     private static readonly Histogram<double> s_ttftHistogram = s_meter.CreateHistogram<double>("opentailllm.ttft_ms", "ms", "Time to first token latency");
     private static readonly Histogram<double> s_itlHistogram = s_meter.CreateHistogram<double>("opentailllm.itl_ms", "ms", "Inter-token generation duration");
 
+    // GenAI-convention server metrics (Development status upstream; see the observability plan's mapping table).
+    // Seconds, tagged with a closed endpoint value. Added beside the legacy opentailllm.* instruments, which stay for one release.
+    private static readonly InstrumentAdvice<double> s_latencyAdvice = new()
+    {
+        HistogramBucketBoundaries = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+    };
+    private static readonly InstrumentAdvice<double> s_perTokenAdvice = new()
+    {
+        HistogramBucketBoundaries = [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+    };
+    private static readonly Histogram<double> s_genAiRequestDuration = s_meter.CreateHistogram<double>(
+        "gen_ai.server.request.duration", "s", "Server operation duration, from the start of serving (after parsing and template rendering) to the response being complete", advice: s_latencyAdvice);
+    private static readonly Histogram<double> s_genAiTtft = s_meter.CreateHistogram<double>(
+        "gen_ai.server.time_to_first_token", "s", "Time from the start of serving to the first generated token", advice: s_latencyAdvice);
+    private static readonly Histogram<double> s_genAiTpot = s_meter.CreateHistogram<double>(
+        "gen_ai.server.time_per_output_token", "s", "Decode time per output token after the first, one sample per request", advice: s_perTokenAdvice);
+
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
     private long _totalRequests;
     private long _totalTokens;
@@ -59,13 +76,27 @@ public sealed class ServerMetrics
     }
 
     /// <summary>Starts latency accounting at engine-submission time for one generation request.</summary>
-    public ServingRequestTiming BeginServingRequest() => new(this);
+    /// <param name="endpoint">Closed set of endpoint names (for example <c>openai.chat_completions</c>); never client-supplied text.</param>
+    public ServingRequestTiming BeginServingRequest(string endpoint = "unknown") => new(this, endpoint);
+
+    private static TagList EndpointTags(string endpoint) => new()
+    {
+        { "gen_ai.operation.name", "chat" },
+        { "opentail.endpoint", endpoint },
+    };
 
     internal void RecordQueueLatency(TimeSpan elapsed) => _queueLatency.Observe(elapsed);
-    internal void RecordTimeToFirstToken(TimeSpan elapsed)
+    internal void RecordTimeToFirstToken(TimeSpan elapsed, string endpoint)
     {
         _timeToFirstToken.Observe(elapsed);
         s_ttftHistogram.Record(elapsed.TotalMilliseconds);
+        if (s_genAiTtft.Enabled) s_genAiTtft.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
+    }
+    internal void RecordRequestDurationAndRate(TimeSpan total, string endpoint, TimeSpan decode, long outputTokens)
+    {
+        if (s_genAiRequestDuration.Enabled) s_genAiRequestDuration.Record(total.TotalSeconds, EndpointTags(endpoint));
+        if (outputTokens > 1 && decode > TimeSpan.Zero && s_genAiTpot.Enabled)
+            s_genAiTpot.Record(decode.TotalSeconds / (outputTokens - 1), EndpointTags(endpoint));
     }
     internal void RecordGenerationDuration(TimeSpan elapsed)
     {
@@ -109,7 +140,17 @@ public sealed class ServingRequestTiming : IDisposable
     private bool _admitted;
     private bool _completed;
 
-    internal ServingRequestTiming(ServerMetrics metrics) => _metrics = metrics;
+    private readonly string _endpoint;
+    private long _outputTokens;
+
+    internal ServingRequestTiming(ServerMetrics metrics, string endpoint)
+    {
+        _metrics = metrics;
+        _endpoint = endpoint;
+    }
+
+    /// <summary>Output token count for this request, used for time per output token. Call before <see cref="Complete"/>.</summary>
+    public void SetOutputTokens(long count) => Interlocked.Exchange(ref _outputTokens, count);
 
     /// <summary>Marks the first engine event (the usage/admission chunk on supported engines).</summary>
     public void MarkAdmitted()
@@ -123,7 +164,7 @@ public sealed class ServingRequestTiming : IDisposable
     public void MarkFirstToken()
     {
         if (Interlocked.CompareExchange(ref _firstToken, Stopwatch.GetTimestamp(), 0) != 0) return;
-        _metrics.RecordTimeToFirstToken(Stopwatch.GetElapsedTime(_started));
+        _metrics.RecordTimeToFirstToken(Stopwatch.GetElapsedTime(_started), _endpoint);
     }
 
     /// <summary>
@@ -170,6 +211,12 @@ public sealed class ServingRequestTiming : IDisposable
         _completed = true;
         long end = Stopwatch.GetTimestamp();
         _metrics.RecordRequestDuration(Stopwatch.GetElapsedTime(_started, end));
+        long firstToken = Interlocked.Read(ref _firstToken);
+        long genEnd = Interlocked.Read(ref _generationEnd);
+        _metrics.RecordRequestDurationAndRate(
+            Stopwatch.GetElapsedTime(_started, end), _endpoint,
+            firstToken != 0 ? Stopwatch.GetElapsedTime(firstToken, genEnd != 0 ? genEnd : end) : TimeSpan.Zero,
+            Interlocked.Read(ref _outputTokens));
         // MarkGenerationComplete already recorded the accurate (delivery-excluded) sample on the
         // normal path. Only fall back to dispose-time here when it was never called — a
         // cancellation or exception before the generation loop finished — so those requests still

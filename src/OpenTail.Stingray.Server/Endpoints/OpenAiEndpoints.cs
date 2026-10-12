@@ -420,7 +420,7 @@ public static class OpenAiEndpoints
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
         bool includeTiming = false)
     {
-        using var timing = metrics.BeginServingRequest();
+        using var timing = metrics.BeginServingRequest("openai.chat_completions");
         var textSb = new StringBuilder();
         var reasoningSb = new StringBuilder();
         int textTokens = 0;
@@ -471,6 +471,7 @@ public static class OpenAiEndpoints
         timing.MarkGenerationComplete();
 
         int completionTokens = textTokens + reasoningTokens;
+        timing.SetOutputTokens(completionTokens);
         metrics.RecordTokens(completionTokens);
 
         var rawText = textSb.ToString();
@@ -537,7 +538,7 @@ public static class OpenAiEndpoints
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created)
     {
-        using var timing = metrics.BeginServingRequest();
+        using var timing = metrics.BeginServingRequest("openai.chat_completions");
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -722,6 +723,7 @@ public static class OpenAiEndpoints
         await ctx.Response.WriteAsync("data: [DONE]\n\n", ctx.RequestAborted);
         await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
 
+        timing.SetOutputTokens(tokenCount);
         metrics.RecordTokens(tokenCount);
     }
 

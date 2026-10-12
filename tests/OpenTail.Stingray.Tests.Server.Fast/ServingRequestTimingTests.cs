@@ -100,4 +100,48 @@ public sealed class ServingRequestTimingTests
         Assert.Equal(0, metrics.GenerationDurationSummary.Count);
         Assert.Equal(1, metrics.RequestDurationSummary.Count);
     }
+
+    /// <summary>
+    /// The GenAI-named instruments: seconds, closed attribute set, and time per output token is
+    /// decode time over (tokens - 1) with delivery time excluded. The Meter is process-wide, so the
+    /// test looks only at its own distinctive endpoint tag.
+    /// </summary>
+    [Fact]
+    public void GenAiServerMetrics_AreRecordedWithTimePerOutputToken()
+    {
+        const string endpoint = "test.genai_metrics";
+        var samples = new List<(string Name, string Unit, double Value, Dictionary<string, object?> Tags)>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (i, l) => { if (i.Meter.Name == "OpenTail.Stingray.Server") l.EnableMeasurementEvents(i); };
+        listener.SetMeasurementEventCallback<double>((i, v, t, s) =>
+        {
+            var tags = new Dictionary<string, object?>();
+            foreach (var kv in t) tags[kv.Key] = kv.Value;
+            if (tags.TryGetValue("opentail.endpoint", out var e) && (string?)e == endpoint)
+                lock (samples) samples.Add((i.Name, i.Unit ?? "", v, tags));
+        });
+        listener.Start();
+
+        var metrics = new ServerMetrics();
+        var timing = metrics.BeginServingRequest(endpoint);
+        timing.MarkFirstToken();
+        Thread.Sleep(100);              // decode time
+        timing.MarkGenerationComplete();
+        timing.SetOutputTokens(11);     // 10 intervals after the first token
+        Thread.Sleep(300);              // delivery, must not count towards time per token
+        timing.Dispose();
+        listener.Dispose();
+
+        lock (samples)
+        {
+            Assert.All(samples, s => Assert.Equal("s", s.Unit));
+            Assert.All(samples, s => Assert.Equal(new[] { "gen_ai.operation.name", "opentail.endpoint" }, s.Tags.Keys.Order().ToArray()));
+            var ttft = Assert.Single(samples, s => s.Name == "gen_ai.server.time_to_first_token");
+            Assert.True(ttft.Value < 0.05);
+            var total = Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration");
+            Assert.True(total.Value >= 0.4);
+            var tpot = Assert.Single(samples, s => s.Name == "gen_ai.server.time_per_output_token");
+            Assert.InRange(tpot.Value, 0.009, 0.05);   // ~100ms / 10 tokens, nowhere near (400ms / 10)
+        }
+    }
 }

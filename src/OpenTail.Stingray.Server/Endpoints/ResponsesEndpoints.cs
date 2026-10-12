@@ -113,7 +113,7 @@ public static class ResponsesEndpoints
         var itemId = $"msg_{Guid.NewGuid():N}";
         long createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         string modelId = engine.ModelId;
-        using var timing = metrics.BeginServingRequest();
+        using var timing = metrics.BeginServingRequest("openai.responses");
 
         if (req.Stream == true)
         {
@@ -179,6 +179,7 @@ public static class ResponsesEndpoints
 
             timing.MarkGenerationComplete();
             await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+            timing.SetOutputTokens(tokenCount);
             metrics.RecordTokens(tokenCount);
         }
         else
@@ -208,6 +209,7 @@ public static class ResponsesEndpoints
                 JsonSerializer.Serialize(response, OpenTailStingrayJsonContext.Default.RespObject),
                 ctx.RequestAborted);
 
+            timing.SetOutputTokens(tokenCount);
             metrics.RecordTokens(tokenCount);
         }
     }

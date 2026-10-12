@@ -247,7 +247,7 @@ public static class AnthropicEndpoints
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId,
         bool includeTiming = false)
     {
-        using var timing = metrics.BeginServingRequest();
+        using var timing = metrics.BeginServingRequest("anthropic.messages");
         var thinkingSb = new StringBuilder();
         var textSb = new StringBuilder();
         int totalOutputTokens = 0;
@@ -291,6 +291,7 @@ public static class AnthropicEndpoints
         }
         timing.MarkGenerationComplete();
 
+        timing.SetOutputTokens(totalOutputTokens);
         metrics.RecordTokens(totalOutputTokens);
 
         var contentList = new List<AContent>();
@@ -340,7 +341,7 @@ public static class AnthropicEndpoints
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId)
     {
-        using var timing = metrics.BeginServingRequest();
+        using var timing = metrics.BeginServingRequest("anthropic.messages");
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -657,6 +658,7 @@ public static class AnthropicEndpoints
             JsonSerializer.Serialize(new ATypeOnly("message_stop"), OpenTailStingrayJsonContext.Default.ATypeOnly));
 
         await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+        timing.SetOutputTokens(outputTokens);
         metrics.RecordTokens(outputTokens);
     }
 
