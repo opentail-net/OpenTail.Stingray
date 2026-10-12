@@ -27,4 +27,16 @@
     <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    OpenTelemetry export lives in the HOST only; the Server/Engine libraries use just System.Diagnostics
+    (Meter / ActivitySource) and reference no OpenTelemetry package. Export is off unless an OTEL_* variable
+    asks for it (see Program.cs and docs/guides/observability.md).
+  -->
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+  </ItemGroup>
+
 </Project>
