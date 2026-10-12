@@ -85,32 +85,40 @@ public sealed class ServerMetrics
 
     /// <summary>Starts latency accounting at engine-submission time for one generation request.</summary>
     /// <param name="endpoint">Closed set of endpoint names (for example <c>openai.chat_completions</c>); never client-supplied text.</param>
-    public ServingRequestTiming BeginServingRequest(string endpoint = "unknown") => new(this, endpoint);
+    /// <param name="model">The server-side resolved model id (never the client-supplied string). Path-like or over-long values are reported as <c>other</c>.</param>
+    public ServingRequestTiming BeginServingRequest(string endpoint = "unknown", string? model = null) =>
+        new(this, new ServingTags(endpoint, SanitizeModel(model)));
 
-    private static TagList EndpointTags(string endpoint) => new()
+    internal static string SanitizeModel(string? model) =>
+        string.IsNullOrEmpty(model) ? "unknown"
+        : model.Length > 64 || model.AsSpan().IndexOfAny('/', '\\', ':') >= 0 ? "other"
+        : model;
+
+    private static TagList EndpointTags(ServingTags endpoint) => new()
     {
         { "gen_ai.operation.name", "chat" },
-        { "opentail.endpoint", endpoint },
+        { "gen_ai.request.model", endpoint.Model },
+        { "opentail.endpoint", endpoint.Endpoint },
     };
 
-    internal void RecordQueueLatency(TimeSpan elapsed, string endpoint)
+    internal void RecordQueueLatency(TimeSpan elapsed, ServingTags endpoint)
     {
         _queueLatency.Observe(elapsed);
         if (s_queueWait.Enabled) s_queueWait.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
     }
-    internal bool AddActive(long delta, string endpoint)
+    internal bool AddActive(long delta, ServingTags endpoint)
     {
         if (!s_active.Enabled) return false;
-        s_active.Add(delta, new KeyValuePair<string, object?>("opentail.endpoint", endpoint));
+        s_active.Add(delta, new KeyValuePair<string, object?>("opentail.endpoint", endpoint.Endpoint));
         return true;
     }
-    internal void RecordTimeToFirstToken(TimeSpan elapsed, string endpoint)
+    internal void RecordTimeToFirstToken(TimeSpan elapsed, ServingTags endpoint)
     {
         _timeToFirstToken.Observe(elapsed);
         s_ttftHistogram.Record(elapsed.TotalMilliseconds);
         if (s_genAiTtft.Enabled) s_genAiTtft.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
     }
-    internal void RecordRequestDurationAndRate(TimeSpan total, string endpoint, TimeSpan decode, long outputTokens)
+    internal void RecordRequestDurationAndRate(TimeSpan total, ServingTags endpoint, TimeSpan decode, long outputTokens)
     {
         if (s_genAiRequestDuration.Enabled) s_genAiRequestDuration.Record(total.TotalSeconds, EndpointTags(endpoint));
         if (outputTokens > 1 && decode > TimeSpan.Zero && s_genAiTpot.Enabled)
@@ -158,10 +166,10 @@ public sealed class ServingRequestTiming : IDisposable
     private bool _admitted;
     private bool _completed;
 
-    private readonly string _endpoint;
+    private readonly ServingTags _endpoint;
     private long _outputTokens;
 
-    internal ServingRequestTiming(ServerMetrics metrics, string endpoint)
+    internal ServingRequestTiming(ServerMetrics metrics, ServingTags endpoint)
     {
         _metrics = metrics;
         _endpoint = endpoint;
@@ -324,3 +332,6 @@ internal sealed class LatencyHistogram
         return sb.ToString();
     }
 }
+
+/// <summary>Closed-vocabulary attribute values for one serving request (endpoint name and server-resolved model id).</summary>
+internal readonly record struct ServingTags(string Endpoint, string Model);

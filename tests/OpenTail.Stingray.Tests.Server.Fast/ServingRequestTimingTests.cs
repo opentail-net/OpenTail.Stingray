@@ -123,7 +123,7 @@ public sealed class ServingRequestTimingTests
         listener.Start();
 
         var metrics = new ServerMetrics();
-        var timing = metrics.BeginServingRequest(endpoint);
+        var timing = metrics.BeginServingRequest(endpoint, "test-model");
         timing.MarkFirstToken();
         Thread.Sleep(100);              // decode time
         timing.MarkGenerationComplete();
@@ -135,7 +135,7 @@ public sealed class ServingRequestTimingTests
         lock (samples)
         {
             Assert.All(samples, s => Assert.Equal("s", s.Unit));
-            Assert.All(samples, s => Assert.Equal(new[] { "gen_ai.operation.name", "opentail.endpoint" }, s.Tags.Keys.Order().ToArray()));
+            Assert.All(samples, s => Assert.Equal(new[] { "gen_ai.operation.name", "gen_ai.request.model", "opentail.endpoint" }, s.Tags.Keys.Order().ToArray()));
             var ttft = Assert.Single(samples, s => s.Name == "gen_ai.server.time_to_first_token");
             Assert.True(ttft.Value < 0.05);
             var total = Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration");
@@ -167,7 +167,7 @@ public sealed class ServingRequestTimingTests
         listener.Start();
 
         var metrics = new ServerMetrics();
-        var timing = metrics.BeginServingRequest(endpoint);
+        var timing = metrics.BeginServingRequest(endpoint, "test-model");
         Assert.Equal(1, Interlocked.Read(ref active));
         timing.MarkAdmitted();
         timing.Dispose();
@@ -179,4 +179,18 @@ public sealed class ServingRequestTimingTests
         Assert.Equal(1, queue);
         Assert.True(Interlocked.Read(ref rejected) >= 1);
     }
+
+    [Theory]
+    [InlineData("llama", "llama")]
+    [InlineData(null, "unknown")]
+    [InlineData("", "unknown")]
+    [InlineData("C:\\models\\secret-project\\x.gguf", "other")]
+    [InlineData("/home/user/x.gguf", "other")]
+    [InlineData("hf:org/model", "other")]
+    public void SanitizeModel_NeverExposesPaths(string? input, string expected) =>
+        Assert.Equal(expected, ServerMetrics.SanitizeModel(input));
+
+    [Fact]
+    public void SanitizeModel_CapsLength() =>
+        Assert.Equal("other", ServerMetrics.SanitizeModel(new string('a', 65)));
 }

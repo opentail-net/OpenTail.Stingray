@@ -247,7 +247,7 @@ public static class AnthropicEndpoints
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId,
         bool includeTiming = false)
     {
-        using var timing = metrics.BeginServingRequest("anthropic.messages");
+        using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId);
         var thinkingSb = new StringBuilder();
         var textSb = new StringBuilder();
         int totalOutputTokens = 0;
@@ -341,7 +341,7 @@ public static class AnthropicEndpoints
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId)
     {
-        using var timing = metrics.BeginServingRequest("anthropic.messages");
+        using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId);
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
