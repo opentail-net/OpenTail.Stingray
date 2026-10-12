@@ -259,12 +259,14 @@ public sealed class RuntimeInstance : IDisposable
                 cudaBackend,
                 vulkanBackend,
                 ownedDisposables);
+            EngineTelemetry.RecordModelLoad(model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeSuccess, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
             if (EngineEvents.Enabled)
                 EngineEvents.Emit(new(EngineEventKind.ModelLoaded, model.Architecture, Ms: System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds, Detail: $"forwardPass={plan.ForwardPassKind}"));
             return created;
         }
         catch
         {
+            EngineTelemetry.RecordModelLoad(model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
             foreach (var d in ownedDisposables)
             {
                 try { d.Dispose(); } catch { }

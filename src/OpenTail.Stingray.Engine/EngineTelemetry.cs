@@ -36,6 +36,27 @@ public static class EngineTelemetry
     private static readonly Histogram<double> s_total = s_meter.CreateHistogram<double>(
         "opentail.engine.generation.duration", "s", "Engine request start to generation complete.");
 
+    private static readonly Histogram<double> s_modelLoad = s_meter.CreateHistogram<double>(
+        "opentail.engine.model.load.duration", "s", "Time to build a runtime for a model (weights mapped, backend and forward pass created).");
+
+    /// <summary>Records one model load. Architecture family is the model identity (never a path or file name).</summary>
+    internal static void RecordModelLoad(string architecture, string forwardPass, string outcome, double seconds)
+    {
+        try
+        {
+            if (!s_modelLoad.Enabled) return;
+            s_modelLoad.Record(seconds, new TagList
+            {
+                { "opentail.architecture", architecture },
+                { "opentail.forward_pass", forwardPass },
+                { "outcome", outcome },
+            });
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>True when anything listens; callers skip building the record otherwise.</summary>
     internal static bool Enabled =>
         s_requests.Enabled || s_prefillDuration.Enabled || s_decodeDuration.Enabled

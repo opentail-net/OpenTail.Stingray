@@ -69,7 +69,7 @@ public sealed class EngineTelemetryTests
         Assert.All(ok.Where(s => s.Name.EndsWith(".duration")), s => Assert.Equal("s", s.Unit));
         Assert.Contains(ok, s => s.Name == "opentail.engine.decode.tokens" && s.Value == 2);
         // Allow-list: only these attribute keys may ever appear.
-        Assert.All(samples, s => Assert.All(s.Tags.Keys, k => Assert.Contains(k, new[] { "outcome", "opentail.forward_pass" })));
+        Assert.All(samples, s => Assert.All(s.Tags.Keys, k => Assert.Contains(k, new[] { "outcome", "opentail.forward_pass", "opentail.architecture" })));
     }
 
     [Fact]
@@ -92,6 +92,22 @@ public sealed class EngineTelemetryTests
 
             Assert.True(samples.Any(s => s.Name == "opentail.engine.requests" && (string?)s.Tags["outcome"] == "cancelled"), "outcomes: " + string.Join(",", samples.Where(s => s.Name == "opentail.engine.requests").Select(s => s.Tags["outcome"])));
             Assert.Contains(samples, s => s.Name == "opentail.engine.requests" && (string?)s.Tags["outcome"] == "cancelled");
+    }
+
+    [Fact]
+    public void ModelLoad_RecordsDurationWithAllowListedTags()
+    {
+        var samples = new List<Sample>();
+        using var l = Listen(samples);
+        EngineTelemetry.RecordModelLoad("llama", "ForwardPass", EngineTelemetry.OutcomeSuccess, 1.5);
+        l.Dispose();
+
+        lock (samples)
+        {
+            var s = Assert.Single(samples, x => x.Name == "opentail.engine.model.load.duration" && x.Value == 1.5);
+            Assert.Equal("s", s.Unit);
+            Assert.Equal(new[] { "opentail.architecture", "opentail.forward_pass", "outcome" }, s.Tags.Keys.Order().ToArray());
+        }
     }
 
     [Fact]
