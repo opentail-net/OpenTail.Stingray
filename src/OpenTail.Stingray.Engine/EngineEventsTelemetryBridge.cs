@@ -22,6 +22,9 @@ public sealed class EngineEventsTelemetryBridge : IEngineEventSink
             case EngineEventKind.PrefillCompleted:
                 EngineTelemetry.RecordPrefillAndDecode(_forwardPass, newPromptTokens: (int)e.A, prefillSeconds: e.Ms / 1000.0, decodeTokens: -1, decodeSeconds: 0);
                 break;
+            case EngineEventKind.MtpStep:
+                EngineTelemetry.RecordSpeculativeStep("mtp", proposed: e.B, accepted: e.C);
+                break;
             case EngineEventKind.DecodeCompleted:
                 EngineTelemetry.RecordPrefillAndDecode(_forwardPass, newPromptTokens: -1, prefillSeconds: 0, decodeTokens: (int)e.A, decodeSeconds: e.Ms / 1000.0);
                 break;

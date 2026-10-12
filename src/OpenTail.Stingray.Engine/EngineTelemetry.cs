@@ -39,6 +39,34 @@ public static class EngineTelemetry
     private static readonly Histogram<double> s_modelLoad = s_meter.CreateHistogram<double>(
         "opentail.engine.model.load.duration", "s", "Time to build a runtime for a model (weights mapped, backend and forward pass created).");
 
+    // Speculative decoding. Definitions (per verify step of the mode named in opentail.speculative.mode):
+    //   mtp: one verify step = one drafts event; draft_tokens = drafts proposed to the verifier in that step;
+    //        accepted_tokens = how many of those the verifier accepted (the verifier's own corrected token is NOT counted).
+    // Only modes whose events carry both numbers are exported. Draft-model, prompt-lookup and DSpark are not exported
+    // until each has the same written definition. Acceptance rate = rate(accepted_tokens) / rate(draft_tokens).
+    private static readonly Counter<long> s_specSteps = s_meter.CreateCounter<long>(
+        "opentail.engine.speculative.drafts", "{step}", "Speculative verify steps (one per drafting round).");
+    private static readonly Counter<long> s_specDraftTokens = s_meter.CreateCounter<long>(
+        "opentail.engine.speculative.draft_tokens", "{token}", "Draft tokens proposed to the verifier.");
+    private static readonly Counter<long> s_specAccepted = s_meter.CreateCounter<long>(
+        "opentail.engine.speculative.accepted_tokens", "{token}", "Draft tokens the verifier accepted.");
+
+    /// <summary>Records one speculative verify step. <paramref name="mode"/> is a closed label (currently only <c>mtp</c>). Never throws.</summary>
+    internal static void RecordSpeculativeStep(string mode, long proposed, long accepted)
+    {
+        try
+        {
+            if (!s_specSteps.Enabled && !s_specDraftTokens.Enabled && !s_specAccepted.Enabled) return;
+            var tags = new TagList { { "opentail.speculative.mode", mode } };
+            s_specSteps.Add(1, tags);
+            s_specDraftTokens.Add(proposed, tags);
+            s_specAccepted.Add(accepted, tags);
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>Starts the <c>model.load</c> span as a new root (a load is shared, so it is never a child of one request). Null with no listener.</summary>
     internal static ModelLoadScope StartModelLoad()
     {

@@ -69,7 +69,7 @@ public sealed class EngineTelemetryTests
         Assert.All(ok.Where(s => s.Name.EndsWith(".duration")), s => Assert.Equal("s", s.Unit));
         Assert.Contains(ok, s => s.Name == "opentail.engine.decode.tokens" && s.Value == 2);
         // Allow-list: only these attribute keys may ever appear.
-        Assert.All(samples, s => Assert.All(s.Tags.Keys, k => Assert.Contains(k, new[] { "outcome", "opentail.forward_pass", "opentail.architecture" })));
+        Assert.All(samples, s => Assert.All(s.Tags.Keys, k => Assert.Contains(k, new[] { "outcome", "opentail.forward_pass", "opentail.architecture", "opentail.speculative.mode" })));
     }
 
     [Fact]
@@ -321,6 +321,30 @@ public sealed class EngineTelemetryTests
             Assert.Equal(caller.SpanId, span.ParentSpanId);
             Assert.Equal("success", span.GetTagItem("outcome"));
             Assert.Equal(6, span.GetTagItem("opentail.output_tokens"));
+        }
+    }
+
+    [Fact]
+    public void EventBridge_TurnsMtpStepsIntoSpeculativeCounters_WithAcceptanceDerivable()
+    {
+        var samples = new List<Sample>();
+        using var l = Listen(samples);
+        using var sub = OpenTail.Stingray.Core.EngineEvents.Subscribe(new EngineEventsTelemetryBridge("spec-test"));
+        // Two verify steps: 3 drafts proposed / 2 accepted, then 3 proposed / 3 accepted.
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.MtpStep, A: 10, B: 3, C: 2));
+        OpenTail.Stingray.Core.EngineEvents.Emit(new(OpenTail.Stingray.Core.EngineEventKind.MtpStep, A: 13, B: 3, C: 3));
+        l.Dispose();
+
+        lock (samples)
+        {
+            var spec = samples.Where(s => s.Tags.TryGetValue("opentail.speculative.mode", out var m) && (string?)m == "mtp").ToArray();
+            Assert.All(spec, s => Assert.Equal(new[] { "opentail.speculative.mode" }, s.Tags.Keys.ToArray()));
+            // The Meter is process-wide and other tests may emit MTP events, so compare against this test's own two steps
+            // by asserting the minimum totals and the exact recorded values it must contain.
+            Assert.True(spec.Count(s => s.Name == "opentail.engine.speculative.drafts") >= 2);
+            Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.draft_tokens" && s.Value == 3);
+            Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.accepted_tokens" && s.Value == 2);
+            Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.accepted_tokens" && s.Value == 3);
         }
     }
 }

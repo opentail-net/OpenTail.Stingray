@@ -17,10 +17,14 @@ internal sealed class ServerObservableMetrics : IDisposable
 {
     private readonly Meter _meter = new("OpenTail.Stingray.Server", "1.0.0");
     private readonly IServiceProvider _services;
+    private readonly IDisposable _eventBridge;
 
     public ServerObservableMetrics(IServiceProvider services)
     {
         _services = services;
+        // Speculative-decoding (MTP) steps are reported on the engine event bus, not per request; turn them into the
+        // opentail.engine.speculative.* counters. With no meter listener the bridge returns immediately.
+        _eventBridge = OpenTail.Stingray.Core.EngineEvents.Subscribe(new EngineEventsTelemetryBridge("server"));
 
         // Residency (ModelRuntimeManager). Cumulative counts are observable counters over the existing totals.
         Gauge("opentail.models.resident", "{model}", "Models currently resident", m => m.ResidentModels);
@@ -36,6 +40,7 @@ internal sealed class ServerObservableMetrics : IDisposable
         EngineGauge("opentail.engine.queue.depth", "{request}", "Requests waiting to start generation", e => e.QueueDepth);
         EngineGauge("opentail.engine.sequences.active", "{request}", "Requests currently generating", e => e.ActiveRequests);
         BatchGauge("opentail.engine.kv_cache.committed_tokens", "{token}", "KV tokens reserved by admitted requests", b => b.CommittedKvTokens);
+        BatchGauge("opentail.engine.kv_cache.budget_tokens", "{token}", "KV-token admission budget; long.MaxValue means unlimited", b => b.KvTokenBudget);
         BatchGauge("opentail.engine.prefix_cache.entries", "{entry}", "Prefix snapshots retained", b => b.PrefixCacheEntries);
         BatchGauge("opentail.engine.prefix_cache.estimated_bytes", "By", "Engine-accounted bytes of retained prefix snapshots (an estimate)", b => b.PrefixCacheUsedBytes);
         BatchCounter("opentail.engine.prefix_cache.hits", "{lookup}", "Prefix-cache lookups that found a reusable prefix", b => b.PrefixCacheHits);
@@ -82,7 +87,11 @@ internal sealed class ServerObservableMetrics : IDisposable
         }
     }
 
-    public void Dispose() => _meter.Dispose();
+    public void Dispose()
+    {
+        _eventBridge.Dispose();
+        _meter.Dispose();
+    }
 }
 
 /// <summary>Forces <see cref="ServerObservableMetrics"/> to be created when the host starts.</summary>

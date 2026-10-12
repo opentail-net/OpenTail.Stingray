@@ -57,6 +57,8 @@ Server meter `OpenTail.Stingray.Server` (attributes: `gen_ai.operation.name`, `g
 Engine meter `OpenTail.Stingray.Engine` (attributes: `outcome`, `opentail.forward_pass`; load also `opentail.architecture`):
 `opentail.engine.requests`, `.prefill.duration` / `.prefill.tokens` (new, not reused, prompt tokens), `.decode.duration` / `.decode.tokens`, `.first_token.duration`, `.generation.duration`, `.model.load.duration`.
 
+Speculative decoding (MTP only for now): `opentail.engine.speculative.drafts`, `.draft_tokens`, `.accepted_tokens` with `opentail.speculative.mode=mtp`; acceptance rate = `rate(accepted_tokens) / rate(draft_tokens)`. Other speculative modes are not exported until defined.
+
 Throughputs are derived, not exported: prefill = `sum(prefill.tokens) / sum(prefill.duration)`; decode = `sum(decode.tokens) / sum(decode.duration)`.
 
 ## Traces

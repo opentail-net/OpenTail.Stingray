@@ -33,7 +33,7 @@ public sealed class ObservableMetricsTests
             "opentail.admission.queued", "opentail.models.loads", "opentail.models.load_failures",
             "opentail.models.evictions", "opentail.models.admission_rejections",
             "opentail.engine.queue.depth", "opentail.engine.sequences.active",
-            "opentail.engine.kv_cache.committed_tokens", "opentail.engine.prefix_cache.entries",
+            "opentail.engine.kv_cache.committed_tokens", "opentail.engine.kv_cache.budget_tokens", "opentail.engine.prefix_cache.entries",
             "opentail.engine.prefix_cache.estimated_bytes", "opentail.engine.prefix_cache.hits",
             "opentail.engine.prefix_cache.misses", "opentail.engine.prefix_cache.evictions",
         ];
