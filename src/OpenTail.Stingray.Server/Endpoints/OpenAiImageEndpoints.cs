@@ -138,7 +138,7 @@ public static class OpenAiImageEndpoints
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.Body, response, cancellationToken: ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("image_generation", "openai.images_generations");
 
         // POST /v1/images/edits
         app.MapPost("/v1/images/edits", async (HttpContext ctx) =>
@@ -186,7 +186,7 @@ public static class OpenAiImageEndpoints
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.Body, response, cancellationToken: ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("image_edit", "openai.images_edits");
 
         return app;
     }

@@ -171,4 +171,30 @@ public sealed class EmbeddingEndpointTests : IClassFixture<WebApplicationFactory
             Environment.SetEnvironmentVariable("STINGRAY_EMBEDDING_MODEL", null);
         }
     }
+
+    [Fact]
+    public async Task NonChatOperation_RecordsRequestDurationWithOutcome()
+    {
+        var seen = new List<(string Op, string Ep, string Outcome, double Seconds)>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (i, l) => { if (i.Name == "gen_ai.server.request.duration") l.EnableMeasurementEvents(i); };
+        listener.SetMeasurementEventCallback<double>((i, v, t, s) =>
+        {
+            string? op = null, ep = null, oc = null;
+            foreach (var kv in t)
+            {
+                if (kv.Key == "gen_ai.operation.name") op = (string?)kv.Value;
+                if (kv.Key == "opentail.endpoint") ep = (string?)kv.Value;
+                if (kv.Key == "outcome") oc = (string?)kv.Value;
+            }
+            if (ep == "openai.embeddings") lock (seen) seen.Add((op!, ep, oc!, v));
+        });
+        listener.Start();
+
+        var (status, _) = await Post("/v1/embeddings", "{\"model\":\"does-not-exist\",\"input\":\"x\"}");
+        listener.Dispose();
+
+        Assert.Equal(HttpStatusCode.NotFound, status);
+        lock (seen) Assert.Contains(seen, s => s.Op == "embeddings" && s.Outcome == "client_error" && s.Seconds >= 0);
+    }
 }

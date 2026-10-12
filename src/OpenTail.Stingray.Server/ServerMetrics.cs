@@ -95,6 +95,21 @@ public sealed class ServerMetrics
         : model.Length > 64 || model.AsSpan().IndexOfAny('/', '\\', ':') >= 0 ? "other"
         : model;
 
+    internal bool OperationMetricsEnabled => s_genAiRequestDuration.Enabled;
+
+    /// <summary>Records <c>gen_ai.server.request.duration</c> for a non-chat operation. Operation/endpoint are fixed strings; outcome is success, client_error, error or cancelled.</summary>
+    internal void RecordOperation(string operation, string endpoint, TimeSpan elapsed, string outcome)
+    {
+        if (!s_genAiRequestDuration.Enabled) return;
+        s_genAiRequestDuration.Record(elapsed.TotalSeconds, new TagList
+        {
+            { "gen_ai.operation.name", operation },
+            { "gen_ai.request.model", "unknown" },
+            { "opentail.endpoint", endpoint },
+            { "outcome", outcome },
+        });
+    }
+
     private static TagList EndpointTags(ServingTags endpoint) => new()
     {
         { "gen_ai.operation.name", "chat" },

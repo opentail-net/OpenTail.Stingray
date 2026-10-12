@@ -72,19 +72,19 @@ public static class OpenAiAudioEndpoints
             ctx.Response.ContentType = "audio/wav";
             ctx.Response.Headers.ContentLength = wavBytes.Length;
             await ctx.Response.Body.WriteAsync(wavBytes, ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("speech", "openai.audio_speech");
 
         // 2. Speech-to-Text (ASR) Transcriptions Endpoint
         app.MapPost("/v1/audio/transcriptions", async (HttpContext ctx) =>
         {
             await HandleSpeechToTextAsync(ctx, SpeechTask.Transcribe);
-        });
+        }).WithOperationMetrics("transcription", "openai.audio_transcriptions");
 
         // 3. Speech-to-Text (ASR) Translations Endpoint
         app.MapPost("/v1/audio/translations", async (HttpContext ctx) =>
         {
             await HandleSpeechToTextAsync(ctx, SpeechTask.Translate);
-        });
+        }).WithOperationMetrics("translation", "openai.audio_translations");
 
         return app;
     }

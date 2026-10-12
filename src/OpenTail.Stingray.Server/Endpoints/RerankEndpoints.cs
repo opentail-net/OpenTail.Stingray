@@ -82,7 +82,7 @@ public static class RerankEndpoints
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, cancellationToken: ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("rerank", "rerank");
 
         return app;
     }

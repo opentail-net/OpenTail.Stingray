@@ -48,7 +48,7 @@ public static class OpenAiEmbeddingEndpoints
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, responseObj.GetType(), cancellationToken: ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("embeddings", "openai.embeddings");
 
         // Ollama: POST /api/embed {"model","input": string | string[]} -> {"model","embeddings":[[...]],...}
         app.MapPost("/api/embed", async (HttpContext ctx) =>
@@ -72,7 +72,7 @@ public static class OpenAiEmbeddingEndpoints
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.Body, responseObj, cancellationToken: ctx.RequestAborted);
-        });
+        }).WithOperationMetrics("embeddings", "ollama.embed");
 
         return app;
     }
