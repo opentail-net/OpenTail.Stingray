@@ -39,12 +39,25 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
         var response = await _client.GetAsync("/metrics");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync();
-        Assert.Contains("opentail-llm_requests_total", body);
-        Assert.Contains("opentail-llm_tokens_generated_total", body);
-        Assert.Contains("opentail-llm_uptime_seconds", body);
-        Assert.Contains("opentail-llm_tokens_per_second", body);
-        Assert.Contains("opentail-llm_queue_depth", body);
-        Assert.Contains("opentail-llm_active_requests", body);
+        Assert.Contains("opentail_llm_requests_total", body);
+        Assert.Contains("opentail_llm_tokens_generated_total", body);
+        Assert.Contains("opentail_llm_uptime_seconds", body);
+        Assert.Contains("opentail_llm_tokens_per_second", body);
+        Assert.Contains("opentail_llm_queue_depth", body);
+        Assert.Contains("opentail_llm_active_requests", body);
+    }
+
+    [Fact]
+    public async Task Metrics_NamesAreValidPrometheusIdentifiers()
+    {
+        var body = await (await _client.GetAsync("/metrics")).Content.ReadAsStringAsync();
+        var valid = new System.Text.RegularExpressions.Regex("^[a-zA-Z_:][a-zA-Z0-9_:]*$");
+        foreach (var line in body.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line.StartsWith('#')) continue;
+            var name = line.Split(' ', '{')[0];
+            Assert.Matches(valid, name);
+        }
     }
 
     [Fact]
@@ -56,7 +69,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("m"))));
         var client = factory.CreateClient();
 
-        var before = await GetMetricValue(client, "opentail-llm_requests_total");
+        var before = await GetMetricValue(client, "opentail_llm_requests_total");
 
         var req = new
         {
@@ -67,7 +80,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
         };
         await client.PostAsJsonAsync("/v1/chat/completions", req);
 
-        var after = await GetMetricValue(client, "opentail-llm_requests_total");
+        var after = await GetMetricValue(client, "opentail_llm_requests_total");
         Assert.True(after > before, $"Expected counter to increment, got before={before} after={after}");
     }
 
@@ -78,7 +91,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("m"))));
         var client = factory.CreateClient();
 
-        var before = await GetMetricValue(client, "opentail-llm_tokens_generated_total");
+        var before = await GetMetricValue(client, "opentail_llm_tokens_generated_total");
 
         var req = new
         {
@@ -89,7 +102,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
         };
         await client.PostAsJsonAsync("/v1/chat/completions", req);
 
-        var after = await GetMetricValue(client, "opentail-llm_tokens_generated_total");
+        var after = await GetMetricValue(client, "opentail_llm_tokens_generated_total");
         Assert.True(after > before, $"Expected token counter to increment, got before={before} after={after}");
     }
 

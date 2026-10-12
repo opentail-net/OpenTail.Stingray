@@ -9,7 +9,13 @@ human-facing map that a raw commit graph cannot.
 Ported from the upstream SharpInference snapshot in `examples/SharpInference08086`. **Not part of the
 1.0.3 packages**, which were built from the release-candidate commit before this work.
 
+### Changed
+
+- **`/metrics` names are now valid Prometheus identifiers.** The lifetime counters and gauges were emitted as `opentail-llm_*` (a hyphen is not allowed in a Prometheus metric name); they are now `opentail_llm_*`, matching the rest of the page. `stingray status` reads both spellings. Dashboards or alerts that used the hyphenated names must be updated.
+
 ### Added
+
+- **Telemetry (in progress, see `docs/3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md`).** New `System.Diagnostics.Metrics` instruments alongside the existing `opentailllm.*` ones: engine meter `OpenTail.Stingray.Engine` (requests, prefill/decode/first-token/generation duration and tokens, model load) and `gen_ai.server.*` request duration, time to first token and time per output token, plus `opentail.requests.active`, `opentail.queue.wait` and `opentail.requests.rejected` on the server meter. No content, paths or identifiers are recorded; no OpenTelemetry package is referenced.
 
 - **Mistral / Tekken tokenizer support.** Byte-level BPE alongside the existing SentencePiece path,
   selected by the GGUF `tokenizer.ggml.pre = "tekken"` marker (Mistral-Nemo / Ministral / Pixtral).

@@ -27,36 +27,36 @@ public static class HealthEndpoints
             ? RenderBatchingMetrics(batching)
             : string.Empty;
         return ctx.Response.WriteAsync(
-            $"# HELP opentail-llm_requests_total Total inference requests served\n" +
-            $"# TYPE opentail-llm_requests_total counter\n" +
-            $"opentail-llm_requests_total {totalRequests}\n" +
-            $"# HELP opentail-llm_tokens_generated_total Total tokens generated\n" +
-            $"# TYPE opentail-llm_tokens_generated_total counter\n" +
-            $"opentail-llm_tokens_generated_total {totalTokens}\n" +
-            $"# HELP opentail-llm_uptime_seconds Server uptime in seconds\n" +
-            $"# TYPE opentail-llm_uptime_seconds gauge\n" +
-            $"opentail-llm_uptime_seconds {(long)uptime}\n" +
-            $"# HELP opentail-llm_tokens_per_second Lifetime-average tokens generated per second\n" +
-            $"# TYPE opentail-llm_tokens_per_second gauge\n" +
-            $"opentail-llm_tokens_per_second {tps:F2}\n" +
-            $"# HELP opentail-llm_queue_depth Number of requests waiting to start generation\n" +
-            $"# TYPE opentail-llm_queue_depth gauge\n" +
-            $"opentail-llm_queue_depth {engine.QueueDepth}\n" +
-            $"# HELP opentail-llm_active_requests Number of requests currently generating tokens\n" +
-            $"# TYPE opentail-llm_active_requests gauge\n" +
-            $"opentail-llm_active_requests {engine.ActiveRequests}\n" +
-            $"# HELP opentail-llm_admission_capacity Maximum active-plus-waiting generation requests (0 = unbounded)\n" +
-            $"# TYPE opentail-llm_admission_capacity gauge\n" +
-            $"opentail-llm_admission_capacity {admissionGate.Limit}\n" +
-            $"# HELP opentail-llm_overload_rejections_total Requests rejected because the bounded inference queue was full\n" +
-            $"# TYPE opentail-llm_overload_rejections_total counter\n" +
-            $"opentail-llm_overload_rejections_total {overloadRejections}\n" +
-            $"# HELP opentail-llm_prefix_cache_enabled 1 if the engine's prefix-cache reuse path is active, 0 if disabled (e.g. GDN hybrid models)\n" +
-            $"# TYPE opentail-llm_prefix_cache_enabled gauge\n" +
-            $"opentail-llm_prefix_cache_enabled {(engine.PrefixCacheEnabled ? 1 : 0)}\n" +
-            $"# HELP opentail-llm_prefill_tokens_reused_total Total prompt tokens skipped via the prefix-cache fast path\n" +
-            $"# TYPE opentail-llm_prefill_tokens_reused_total counter\n" +
-            $"opentail-llm_prefill_tokens_reused_total {engine.PrefillTokensReused}\n" +
+            $"# HELP opentail_llm_requests_total Total inference requests served\n" +
+            $"# TYPE opentail_llm_requests_total counter\n" +
+            $"opentail_llm_requests_total {totalRequests}\n" +
+            $"# HELP opentail_llm_tokens_generated_total Total tokens generated\n" +
+            $"# TYPE opentail_llm_tokens_generated_total counter\n" +
+            $"opentail_llm_tokens_generated_total {totalTokens}\n" +
+            $"# HELP opentail_llm_uptime_seconds Server uptime in seconds\n" +
+            $"# TYPE opentail_llm_uptime_seconds gauge\n" +
+            $"opentail_llm_uptime_seconds {(long)uptime}\n" +
+            $"# HELP opentail_llm_tokens_per_second Lifetime-average tokens generated per second\n" +
+            $"# TYPE opentail_llm_tokens_per_second gauge\n" +
+            $"opentail_llm_tokens_per_second {tps:F2}\n" +
+            $"# HELP opentail_llm_queue_depth Number of requests waiting to start generation\n" +
+            $"# TYPE opentail_llm_queue_depth gauge\n" +
+            $"opentail_llm_queue_depth {engine.QueueDepth}\n" +
+            $"# HELP opentail_llm_active_requests Number of requests currently generating tokens\n" +
+            $"# TYPE opentail_llm_active_requests gauge\n" +
+            $"opentail_llm_active_requests {engine.ActiveRequests}\n" +
+            $"# HELP opentail_llm_admission_capacity Maximum active-plus-waiting generation requests (0 = unbounded)\n" +
+            $"# TYPE opentail_llm_admission_capacity gauge\n" +
+            $"opentail_llm_admission_capacity {admissionGate.Limit}\n" +
+            $"# HELP opentail_llm_overload_rejections_total Requests rejected because the bounded inference queue was full\n" +
+            $"# TYPE opentail_llm_overload_rejections_total counter\n" +
+            $"opentail_llm_overload_rejections_total {overloadRejections}\n" +
+            $"# HELP opentail_llm_prefix_cache_enabled 1 if the engine's prefix-cache reuse path is active, 0 if disabled (e.g. GDN hybrid models)\n" +
+            $"# TYPE opentail_llm_prefix_cache_enabled gauge\n" +
+            $"opentail_llm_prefix_cache_enabled {(engine.PrefixCacheEnabled ? 1 : 0)}\n" +
+            $"# HELP opentail_llm_prefill_tokens_reused_total Total prompt tokens skipped via the prefix-cache fast path\n" +
+            $"# TYPE opentail_llm_prefill_tokens_reused_total counter\n" +
+            $"opentail_llm_prefill_tokens_reused_total {engine.PrefillTokensReused}\n" +
             batchingMetrics +
             metrics.RenderServingLatencyMetrics(),
             ctx.RequestAborted);
