@@ -201,7 +201,7 @@ public static class ResponsesEndpoints
             timing.MarkGenerationComplete();
             var response = new RespObject(responseId, "response", createdAt, modelId, "completed",
                 [item], usage, req.OpentailTiming == true
-                    ? new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs)
+                    ? OpenTailResponseTiming.From(timing)
                     : null);
 
             ctx.Response.ContentType = "application/json";

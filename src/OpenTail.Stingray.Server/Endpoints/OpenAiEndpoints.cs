@@ -439,6 +439,7 @@ public static class OpenAiEndpoints
                 }
                 else if (c.Kind == GenerateChunkKind.Stop)
                 {
+                    timing.EngineStats = c.Stats;
                     truncatedByMaxTokens = c.TruncatedByMaxTokens;
                 }
                 else if (c.Kind == GenerateChunkKind.Thinking)
@@ -526,7 +527,7 @@ public static class OpenAiEndpoints
             requestId, "chat.completion", created, engine.ModelId,
             [new CompletionChoice(0, message, finishReason)],
             usage,
-            includeTiming ? new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs) : null);
+            includeTiming ? OpenTailResponseTiming.From(timing) : null);
 
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(

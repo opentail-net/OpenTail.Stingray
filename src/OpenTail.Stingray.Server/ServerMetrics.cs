@@ -167,6 +167,9 @@ public sealed class ServingRequestTiming : IDisposable
 {
     private readonly ServerMetrics _metrics;
     private readonly long _started = Stopwatch.GetTimestamp();
+
+    /// <summary>The engine's per-request stats, taken from the final Stop chunk; null if the engine did not supply them.</summary>
+    public OpenTail.Stingray.Engine.GenerationStats? EngineStats { get; set; }
     private long _firstToken;
     private long _generationEnd;
     private bool _admitted;

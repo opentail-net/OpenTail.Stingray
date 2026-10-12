@@ -266,6 +266,7 @@ public static class AnthropicEndpoints
                 }
                 if (chunk.Kind == GenerateChunkKind.Stop)
                 {
+                    timing.EngineStats = chunk.Stats;
                     truncatedByMaxTokens = chunk.TruncatedByMaxTokens;
                     continue;
                 }
@@ -329,7 +330,7 @@ public static class AnthropicEndpoints
             contentList.ToArray(),
             modelId, stopReason,
             new AUsage(promptTokens, totalOutputTokens),
-            includeTiming ? new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs) : null);
+            includeTiming ? OpenTailResponseTiming.From(timing) : null);
 
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(
@@ -528,6 +529,7 @@ public static class AnthropicEndpoints
                 }
                 if (chunk.Kind == GenerateChunkKind.Stop)
                 {
+                    timing.EngineStats = chunk.Stats;
                     truncatedByMaxTokens = chunk.TruncatedByMaxTokens;
                     continue;
                 }

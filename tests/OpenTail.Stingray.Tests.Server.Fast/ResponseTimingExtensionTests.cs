@@ -125,4 +125,28 @@ public sealed class ResponseTimingExtensionTests : IDisposable
         Assert.True(timing.GetProperty("total_ms").GetDouble() >= 0);
         Assert.True(timing.GetProperty("time_to_first_token_ms").GetDouble() >= 0);
     }
+
+    [Fact]
+    public void Timing_WithEngineStats_SerializesBreakdownAndWithoutStatsKeepsOnlyOriginalFields()
+    {
+        var metrics = new ServerMetrics();
+        using var timing = metrics.BeginServingRequest("test.ext");
+        timing.MarkFirstToken();
+
+        string bare = JsonSerializer.Serialize(OpenTailResponseTiming.From(timing), OpenTailStingrayJsonContext.Default.OpenTailResponseTiming);
+        using (var d = JsonDocument.Parse(bare))
+            Assert.Equal(new[] { "time_to_first_token_ms", "total_ms" }, d.RootElement.EnumerateObject().Select(p => p.Name).Order().ToArray());
+
+        timing.EngineStats = new OpenTail.Stingray.Engine.GenerationStats(
+            PromptTokens: 100, ReusedTokens: 40, OutputTokens: 7, EncodeMs: 2, PrefillMs: 30, FirstTokenMs: 35, TotalMs: 60);
+        string full = JsonSerializer.Serialize(OpenTailResponseTiming.From(timing), OpenTailStingrayJsonContext.Default.OpenTailResponseTiming);
+        using var doc = JsonDocument.Parse(full);
+        var r = doc.RootElement;
+        Assert.Equal(100, r.GetProperty("prompt_tokens").GetInt32());
+        Assert.Equal(40, r.GetProperty("reused_prompt_tokens").GetInt32());
+        Assert.Equal(7, r.GetProperty("generated_tokens").GetInt32());
+        Assert.Equal(2, r.GetProperty("encode_ms").GetInt64());
+        Assert.Equal(30, r.GetProperty("prefill_ms").GetInt64());
+        Assert.Equal(25, r.GetProperty("decode_ms").GetInt64());
+    }
 }

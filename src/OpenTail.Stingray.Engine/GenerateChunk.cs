@@ -55,4 +55,5 @@ public readonly record struct GenerateChunk(
     bool TruncatedByMaxTokens = false,
     bool TruncatedByResourceBudget = false,
     System.Collections.Generic.IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall>? ToolCalls = null,
-    bool HasUnauthorizedToolCall = false);
+    bool HasUnauthorizedToolCall = false,
+    GenerationStats? Stats = null);

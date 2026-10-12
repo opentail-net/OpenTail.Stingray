@@ -684,6 +684,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 // Null (and free) unless an ActivityListener is attached. Runs on the engine thread, where the
                 // request's Activity.Current is not available, so this is a root span until Phase 3 hands context over.
                 var telemetryActivity = EngineTelemetry.Source.StartActivity("opentail.engine.generate");
+                // One small allocation per request, referenced only from the final Stop chunk.
+                GenerationStats Snapshot() => new(
+                    promptTokenCount, reusedTokens, decodeTokens, encodeMs, prefillMs, ttftMs, swReq.ElapsedMilliseconds);
                 // Issue #212: index of the multi-slot prefix slot bound for this request, or -1
                 // when no non-owned slot is active (single-slot mode, or this request stayed on
                 // the owned slot). -1 keeps the finally's DeactivateSlot a no-op.
@@ -1126,7 +1129,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         // DSparkDecoder.Decode never emits the stop token itself, so
                         // decodeTokens reaching MaxNewTokens means budget exhaustion.
                         channel.Writer.TryWrite(new GenerateChunk(
-                            GenerateChunkKind.Stop, "", TruncatedByMaxTokens: decodeTokens >= sp.MaxNewTokens));
+                            GenerateChunkKind.Stop, "", TruncatedByMaxTokens: decodeTokens >= sp.MaxNewTokens, Stats: Snapshot()));
                         channel.Writer.TryComplete();
                         return;
                     }
@@ -1196,7 +1199,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         // (documented contract), so decodeTokens reaching MaxNewTokens here means
                         // the budget was exhausted before a stop token was seen.
                         channel.Writer.TryWrite(new GenerateChunk(
-                            GenerateChunkKind.Stop, "", TruncatedByMaxTokens: decodeTokens >= sp.MaxNewTokens));
+                            GenerateChunkKind.Stop, "", TruncatedByMaxTokens: decodeTokens >= sp.MaxNewTokens, Stats: Snapshot()));
                         channel.Writer.TryComplete();
                         return;
                     }
@@ -1390,7 +1393,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                             _slotTokens[mutatedSlotIdx] = snap;
                     }
 
-                    channel.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Stop, "", TruncatedByMaxTokens: hitMaxTokens));
+                    channel.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Stop, "", TruncatedByMaxTokens: hitMaxTokens, Stats: Snapshot()));
                     channel.Writer.TryComplete();
                 }
                 catch (Exception ex)

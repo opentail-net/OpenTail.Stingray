@@ -158,6 +158,23 @@ public sealed class EngineTelemetryTests
             Assert.DoesNotContain(samples, s => s.Name == "opentail.engine.decode.tokens" && s.Value is < 0 or > 2);
         }
     }
+
+    [Fact]
+    public async Task StopChunk_CarriesPerRequestStats()
+    {
+        using var engine = NewEngine();
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 10 };
+        GenerationStats? stats = null;
+        await foreach (var c in engine.GenerateChunksAsync("seed", sp))
+            if (c.Kind == GenerateChunkKind.Stop) stats = c.Stats;
+
+        Assert.NotNull(stats);
+        Assert.Equal(1, stats!.PromptTokens);
+        Assert.Equal(2, stats.OutputTokens);
+        Assert.Equal(0, stats.ReusedTokens);
+        Assert.True(stats.FirstTokenMs >= 0);
+        Assert.True(stats.TotalMs >= stats.FirstTokenMs);
+    }
 }
 
 [CollectionDefinition("EngineTelemetry", DisableParallelization = true)]

@@ -14,4 +14,23 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// </summary>
 public sealed record OpenTailResponseTiming(
     [property: JsonPropertyName("time_to_first_token_ms")] double? TimeToFirstTokenMs,
-    [property: JsonPropertyName("total_ms")] double TotalMs);
+    [property: JsonPropertyName("total_ms")] double TotalMs,
+    // Engine-side breakdown (present when the engine supplied per-request stats). Counts and
+    // durations only; omitted, not null, when unavailable so the original two fields are unchanged.
+    [property: JsonPropertyName("prompt_tokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PromptTokens = null,
+    [property: JsonPropertyName("reused_prompt_tokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ReusedPromptTokens = null,
+    [property: JsonPropertyName("generated_tokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? GeneratedTokens = null,
+    [property: JsonPropertyName("encode_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? EncodeMs = null,
+    [property: JsonPropertyName("prefill_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? PrefillMs = null,
+    [property: JsonPropertyName("decode_ms"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? DecodeMs = null)
+{
+    /// <summary>Builds the extension from the request's timing and, when available, the engine's stats.</summary>
+    public static OpenTailResponseTiming From(ServingRequestTiming timing)
+    {
+        var s = timing.EngineStats;
+        return s is null
+            ? new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs)
+            : new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs,
+                s.PromptTokens, s.ReusedTokens, s.OutputTokens, s.EncodeMs, s.PrefillMs, s.DecodeMs);
+    }
+}
