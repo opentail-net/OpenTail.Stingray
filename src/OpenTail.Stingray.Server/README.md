@@ -4,6 +4,8 @@ ASP.NET Core endpoints, options, and DI extensions that expose [OpenTail.Stingra
 
 For the bare inference library, use [`OpenTail.Stingray`](https://www.nuget.org/packages/OpenTail.Stingray). For the standalone CLI, use [`OpenTail.Stingray.Cli`](https://www.nuget.org/packages/OpenTail.Stingray.Cli).
 
+Built by [opentail.net](https://opentail.net).
+
 ## Install
 
 ```

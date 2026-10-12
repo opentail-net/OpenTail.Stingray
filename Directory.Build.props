@@ -41,7 +41,9 @@
     <Company>OpenTail</Company>
     <Copyright>Copyright (c) 2026 OpenTail.</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/opentail-net/OpenTail.Stingray</PackageProjectUrl>
+    <!-- The "Project website" link on nuget.org points at the product site; the source repository link
+         (RepositoryUrl, below) keeps pointing at GitHub. -->
+    <PackageProjectUrl>https://opentail.net/</PackageProjectUrl>
     <!-- Keep public package and SourceLink metadata independent of this clone's private origin. -->
     <RepositoryUrl>https://github.com/opentail-net/OpenTail.Stingray</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -56,7 +58,7 @@
     release commit `stingray-v<Version>` to match.
   -->
   <PropertyGroup>
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
   </PropertyGroup>
 
   <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->
