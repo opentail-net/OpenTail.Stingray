@@ -269,6 +269,60 @@ public sealed class EngineTelemetryTests
             Assert.Single(mine, s => s.Name == "opentail.engine.requests");
         }
     }
+
+    [Fact]
+    public async Task ContinuousBatching_StopChunkHasStats_MetricsAndParentedSpanAreRecorded()
+    {
+        var samples = new List<Sample>();
+        var stopped = new List<System.Diagnostics.Activity>();
+        using var l = Listen(samples);
+        using var al = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name is EngineTelemetry.ActivitySourceName or "test.batch.callers",
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = a => { lock (stopped) stopped.Add(a); },
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(al);
+        using var callers = new System.Diagnostics.ActivitySource("test.batch.callers");
+        using var engine = new ContinuousBatchingEngine(
+            new ContinuousBatchingConstraintTests.FakeBatchedForwardPass(),
+            new ContinuousBatchingConstraintTests.CharTokenizer(), "test", maxBatchSize: 1);
+
+        GenerationStats? stats = null;
+        System.Diagnostics.Activity? current;
+        using (var parent = callers.StartActivity("caller"))
+        {
+            var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 6 };
+            await foreach (var c in engine.GenerateChunksAsync("prompt", sp))
+                if (c.Kind == GenerateChunkKind.Stop) stats = c.Stats;
+            current = System.Diagnostics.Activity.Current;
+            Assert.Same(parent, current); // emitting the span must not disturb the caller's context
+        }
+        l.Dispose();
+        al.Dispose();
+
+        Assert.NotNull(stats);
+        Assert.Equal(6, stats!.PromptTokens);       // CharTokenizer: one token per character of "prompt"
+        Assert.Equal(6, stats.OutputTokens);
+        Assert.True(stats.FirstTokenMs >= 0 && stats.TotalMs >= stats.FirstTokenMs);
+
+        lock (samples)
+        {
+            var mine = samples.Where(s => (string?)s.Tags["opentail.forward_pass"] == "continuous_batching").ToArray();
+            Assert.Contains(mine, s => s.Name == "opentail.engine.requests" && (string?)s.Tags["outcome"] == "success");
+            Assert.Contains(mine, s => s.Name == "opentail.engine.decode.tokens" && s.Value == 6);
+            Assert.Contains(mine, s => s.Name == "opentail.engine.prefill.tokens" && s.Value == 6);
+        }
+        lock (stopped)
+        {
+            var caller = Assert.Single(stopped, a => a.OperationName == "caller");
+            var span = Assert.Single(stopped, a => a.OperationName == "opentail.engine.generate");
+            Assert.Equal(caller.SpanId, span.ParentSpanId);
+            Assert.Equal("success", span.GetTagItem("outcome"));
+            Assert.Equal(6, span.GetTagItem("opentail.output_tokens"));
+        }
+    }
 }
 
 [CollectionDefinition("EngineTelemetry", DisableParallelization = true)]

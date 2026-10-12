@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using OpenTail.Stingray.Core.Grammar;
 
@@ -98,6 +99,32 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         public readonly int TurnStartPosition = turnStartPosition;
         public readonly Func<int, bool>? ReservationRenewer = reservationRenewer;
         public int[]? Tokens; // memoized tokenization (admission may retry under backpressure)
+        /// <summary>Timestamps and counts for telemetry; written by the batcher thread, read once by the consumer at the end.</summary>
+        public readonly RequestTelemetry Telemetry = new();
+    }
+
+    /// <summary>
+    /// Per-request measurements for stats and telemetry (counts and ticks only). Plain fields: the batcher thread writes
+    /// them before it completes the output channel and the consumer reads them after, so the channel completion orders them.
+    /// </summary>
+    private sealed class RequestTelemetry
+    {
+        public readonly long StartTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        public long PrefillStartTicks, PrefillEndTicks;
+        public int PromptTokens, ReusedTokens, OutputTokens;
+
+        public GenerationStats Snapshot(int outputTokens)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            static long Ms(long from, long to) => (long)System.Diagnostics.Stopwatch.GetElapsedTime(from, to).TotalMilliseconds;
+            bool prefilled = PrefillEndTicks > PrefillStartTicks && PrefillStartTicks != 0;
+            return new GenerationStats(
+                PromptTokens, ReusedTokens, outputTokens,
+                EncodeMs: PrefillStartTicks != 0 ? Ms(StartTicks, PrefillStartTicks) : 0,
+                PrefillMs: prefilled ? Ms(PrefillStartTicks, PrefillEndTicks) : 0,
+                FirstTokenMs: PrefillEndTicks != 0 ? Ms(StartTicks, PrefillEndTicks) : -1,
+                TotalMs: Ms(StartTicks, now));
+        }
     }
 
     private sealed class PrefixCacheEntry(int[] tokens, ISequenceKvCache cache, long bytes)
@@ -125,6 +152,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
 
     private sealed class ActiveSeq
     {
+        public RequestTelemetry? Telemetry;
         public required int CurrentToken;
         public required int Position;       // position at which CurrentToken will be decoded
         public required ISequenceKvCache Cache;
@@ -423,22 +451,42 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         var channel = Channel.CreateUnbounded<GenerateChunk>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
+        var request = new PendingRequest(prompt, sp, ct, channel, canonicalHistoryPrefix);
+        // Telemetry is recorded once, here, whatever path ends the request. The caller's span context is captured
+        // on the consumer's context and the span is emitted afterwards with its true start time, so Activity.Current
+        // is never changed while the iterator is suspended between chunks.
+        ActivityContext parentContext = Activity.Current?.Context ?? default;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+
         Interlocked.Increment(ref _pendingCount);
         try
         {
-            await _queue.Writer.WriteAsync(new PendingRequest(prompt, sp, ct, channel, canonicalHistoryPrefix), ct)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            // Disposed concurrently (writer completed) or caller-cancelled before the
-            // write landed — undo the counter so QueueDepth doesn't drift.
-            Interlocked.Decrement(ref _pendingCount);
-            throw;
-        }
+            try
+            {
+                await _queue.Writer.WriteAsync(request, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Disposed concurrently (writer completed) or caller-cancelled before the
+                // write landed — undo the counter so QueueDepth doesn't drift.
+                Interlocked.Decrement(ref _pendingCount);
+                throw;
+            }
 
-        await foreach (var chunk in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
-            yield return chunk;
+            await foreach (var chunk in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+                yield return chunk;
+        }
+        finally
+        {
+            // The channel's completion state tells how the request ended: faulted = error, completed = success,
+            // not completed (caller cancelled or abandoned the stream) = cancelled.
+            var completion = channel.Reader.Completion;
+            string outcome = completion.IsFaulted ? EngineTelemetry.OutcomeError
+                : completion.IsCompletedSuccessfully ? EngineTelemetry.OutcomeSuccess
+                : EngineTelemetry.OutcomeCancelled;
+            EngineTelemetry.RecordBatchedRequest(
+                request.Telemetry.Snapshot(request.Telemetry.OutputTokens), outcome, parentContext, startedAt);
+        }
     }
 
     /// <summary>
@@ -954,6 +1002,9 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             // usage.prompt_tokens / input_tokens without re-tokenizing (issue #150).
             // Emitted at admission, before any text/thinking chunk for this sequence.
             req.Output.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Usage, "", tokens.Length));
+            req.Telemetry.PromptTokens = tokens.Length;
+            req.Telemetry.ReusedTokens = reused;
+            req.Telemetry.PrefillStartTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             prefilling.Add(new PrefillingSeq
             {
                 Req = req,
@@ -1214,6 +1265,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     private static void FlushAndComplete(ActiveSeq seq, bool truncatedByMaxTokens = false,
         bool truncatedByResourceBudget = false)
     {
+        if (seq.Telemetry is { } telemetry) telemetry.OutputTokens = seq.TokenCount;
         var textTail = seq.TextDec.Flush();
         if (textTail.Length > 0)
             seq.Output.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Text, textTail));
@@ -1222,7 +1274,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             seq.Output.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Thinking, thinkTail));
         seq.Output.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Stop, "",
             TruncatedByMaxTokens: truncatedByMaxTokens,
-            TruncatedByResourceBudget: truncatedByResourceBudget));
+            TruncatedByResourceBudget: truncatedByResourceBudget,
+            Stats: seq.Telemetry?.Snapshot(seq.TokenCount)));
         seq.Output.Writer.TryComplete();
     }
 
@@ -1318,8 +1371,10 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             }
         }
 
+        req.Telemetry.PrefillEndTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         var seq = new ActiveSeq
         {
+            Telemetry = req.Telemetry,
             CurrentToken = firstToken,
             Position = p.StartPosition + p.Tokens.Length,
             Cache = p.Cache,

@@ -23,7 +23,7 @@ public sealed class ContinuousBatchingConstraintTests
     private const int ForceY = 'Y';
 
     /// <summary>Single-byte tokenizer: token id == ASCII byte. EOG is an id no forward ever emits.</summary>
-    private sealed class CharTokenizer : ITokenizer
+    internal sealed class CharTokenizer : ITokenizer
     {
         public int VocabSize => Vocab;
         public int BosTokenId => 0;
@@ -87,7 +87,7 @@ public sealed class ContinuousBatchingConstraintTests
     /// <summary>Canned forward pass: every sequence's next-token logits put 'X' on top. Records the
     /// widest batch it was ever asked to decode so a test can confirm two sequences actually co-resided
     /// in one batched step (the per-sequence-vs-batch-wide masking guarantee).</summary>
-    private sealed class FakeBatchedForwardPass : IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
+    internal sealed class FakeBatchedForwardPass : IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
     {
         public bool SnapKvEnabled => false;
         public long KvBytesPerToken => 1;

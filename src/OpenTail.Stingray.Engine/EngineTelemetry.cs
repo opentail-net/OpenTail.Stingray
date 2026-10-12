@@ -123,6 +123,39 @@ public static class EngineTelemetry
         }
     }
 
+    /// <summary>
+    /// Records a finished continuous-batching request from its stats snapshot (millisecond resolution) and, when a span
+    /// listener is attached, emits the generation span after the fact with its real start time and duration.
+    /// Never throws; restores <see cref="Activity.Current"/>.
+    /// </summary>
+    internal static void RecordBatchedRequest(GenerationStats s, string outcome, ActivityContext parent, DateTimeOffset startedAt)
+    {
+        const string ForwardPass = "continuous_batching";
+        try
+        {
+            if (Enabled)
+                RecordGeneration(ForwardPass, outcome, s.NewPromptTokens, s.PrefillMs / 1000.0, s.OutputTokens,
+                    s.FirstTokenMs >= 0 ? s.FirstTokenMs / 1000.0 : -1, s.TotalMs / 1000.0);
+            if (!Source.HasListeners()) return;
+            var saved = Activity.Current;
+            try
+            {
+                var activity = Source.StartActivity("opentail.engine.generate", ActivityKind.Internal, parent,
+                    tags: null, links: null, startTime: startedAt);
+                if (activity is null) return;
+                activity.SetEndTime(startedAt.UtcDateTime + TimeSpan.FromMilliseconds(s.TotalMs));
+                EndActivity(activity, outcome, s.PromptTokens, s.ReusedTokens, s.OutputTokens);
+            }
+            finally
+            {
+                Activity.Current = saved;
+            }
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>Tags and ends the generation span (no-op for null). Never throws; counts only, no content.</summary>
     internal static void EndActivity(Activity? activity, string outcome, int promptTokens, int reusedTokens, int decodeTokens)
     {
