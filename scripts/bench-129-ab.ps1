@@ -39,7 +39,12 @@ function Run([string]$label, [string]$dll, [bool]$warm) {
   $psi.FileName = $dotnet
   $psi.Arguments = ($args | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
   $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
+  # Prefer the structured result file (STINGRAY_STATS_JSON, see docs/guides/observability.md). Builds that predate it
+  # ignore the variable and write nothing, in which case the printed lines are parsed below as before.
+  $statsFile = Join-Path ([System.IO.Path]::GetTempPath()) "129ab-$label-$([guid]::NewGuid().ToString('N')).json"
+  $env:STINGRAY_STATS_JSON = $statsFile
   $p = [System.Diagnostics.Process]::Start($psi)
+  Remove-Item Env:\STINGRAY_STATS_JSON -ErrorAction SilentlyContinue
   $so = $p.StandardOutput.ReadToEndAsync(); $se = $p.StandardError.ReadToEndAsync()
   $p.WaitForExit(900*1000) | Out-Null
   $so.Wait(3000) | Out-Null; $se.Wait(3000) | Out-Null
@@ -54,6 +59,13 @@ function Run([string]$label, [string]$dll, [bool]$warm) {
   if ($out -match 'Prefill:\s+(\d+)\s+tokens,\s+([\d\.]+)\s+t/s') { $prefill = "$($matches[1]) tok @ $($matches[2]) t/s" }
   $decode = "n/a"
   if ($out -match 'Decode:\s+(\d+)\s+tokens,\s+([\d\.]+)\s+t/s') { $decode = "$($matches[2]) t/s" }
+  if (Test-Path -LiteralPath $statsFile) {
+    try {
+      $s = & (Join-Path $PSScriptRoot "Get-StingrayRunStats.ps1") -Path $statsFile   # refuses a perturbed (profiled) run
+      if ($null -ne $s.prefill_tokens_per_second) { $prefill = "$($s.prompt_tokens) tok @ $([math]::Round($s.prefill_tokens_per_second, 1)) t/s" }
+      if ($null -ne $s.decode_tokens_per_second)  { $decode = "$([math]::Round($s.decode_tokens_per_second, 1)) t/s" }
+    } finally { Remove-Item -LiteralPath $statsFile -ErrorAction SilentlyContinue }
+  }
   [PSCustomObject]@{ Label=$label; Prefill=$prefill; Decode=$decode; SLRUlines=$slru; CpuMoeHits=$cpuMoe; Backend=$backendLine }
 }
 
