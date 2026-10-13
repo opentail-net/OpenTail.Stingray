@@ -238,6 +238,13 @@ public static class EngineTelemetry
         }
     }
 
+    /// <summary>Starts and ends one synthetic span so a self-test can prove spans reach a listener. Public surface: the CLI self-test command.</summary>
+    public static void RunSelfTestSpan()
+    {
+        using var activity = Source.StartActivity("opentail.engine.selftest");
+        activity?.SetTag("outcome", OutcomeSuccess);
+    }
+
     /// <summary>
     /// Records a finished continuous-batching request from its stats snapshot (millisecond resolution) and, when a span
     /// listener is attached, emits the generation span after the fact with its real start time and duration.

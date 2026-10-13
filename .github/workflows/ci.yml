@@ -73,3 +73,23 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 200
           dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 100
           dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 480
+
+  # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
+  # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
+  # (MetricsSupport off, or instruments trimmed). Verified locally on win-x64 (fails with MetricsSupport=false, passes with true).
+  # NOT yet verified on Linux, so it is non-blocking (continue-on-error) until a green run has been seen here.
+  aot-telemetry:
+    name: NativeAOT telemetry self-test (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Publish the CLI (NativeAOT) and run the telemetry self-test
+        run: |
+          dotnet publish src/OpenTail.Stingray.Cli -c Release -r linux-x64 -o aot-out
+          ./aot-out/stingray telemetry-selftest

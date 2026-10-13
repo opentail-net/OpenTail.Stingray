@@ -84,6 +84,8 @@ app.Configure(config =>
         .WithDescription("Print the tensor index (name, dtype, shape, bytes) from a model file");
     config.AddCommand<GgufTransplantCommand>("gguf-transplant")
         .WithDescription("Build a mixed-precision GGUF by copying a base checkpoint and taking selected tensors (regex) from a donor checkpoint; verifies the result byte-for-byte");
+    config.AddCommand<TelemetrySelfTestCommand>("telemetry-selftest")
+        .WithDescription("Verify, without a model, that engine metrics and spans reach an in-process listener in this build (exit 0 = ok); used to check the published NativeAOT binary");
     config.AddCommand<StaticPlanCommand>("plan")
         .WithDescription("Read-only GGUF compatibility, hardware availability, and placement plan report");
     config.AddCommand<CalibrateCommand>("calibrate")

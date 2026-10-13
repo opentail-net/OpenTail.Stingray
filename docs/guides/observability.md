@@ -84,6 +84,10 @@ Unchanged in purpose. Note the lifetime names changed from `opentail-llm_*` to `
 
 The CLI `run` command feeds the engine instruments from its event bus. `STINGRAY_TELEMETRY=1 stingray -m model.gguf -p "..."` prints an instrument report at exit (no collector needed). The published NativeAOT CLI now ships with `MetricsSupport=true` (+43 KB) so this works there too.
 
+## Checking a published binary
+
+`stingray telemetry-selftest` needs no model: it exits 0 only if engine metrics and a span reach an in-process listener in that build. `scripts/check-aot-telemetry.ps1` publishes the NativeAOT CLI and runs it. A published binary built with `MetricsSupport=false` fails this check.
+
 ## Known gaps
 
 `ContinuousBatchingEngine` does not yet supply per-request stats; queue/prefill/decode child spans, span links for requests that waited on a shared load, speculative-decoding, prefix-cache and residency metrics are not done.
