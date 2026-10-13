@@ -100,8 +100,46 @@ public static class EngineTelemetry
         }
     }
 
+    private static readonly Histogram<double> s_gpuLayerShare = s_meter.CreateHistogram<double>(
+        "opentail.engine.placement.gpu_layer_share", "1", "Share of the model's layers placed on the GPU at load (0 = all CPU). Selecting a GPU does not mean the whole model runs on it.");
+    private static readonly Counter<long> s_backendFallbacks = s_meter.CreateCounter<long>(
+        "opentail.engine.backend.fallbacks", "{load}", "Loads that ran on a different backend than the one explicitly requested; reason is a closed category.");
+
+    /// <summary>Selected backend as a closed label (auto/cpu/cuda/vulkan, or unknown).</summary>
+    internal static string BackendLabel(ExecutionPlan plan) =>
+        plan.BackendPlan is { } b ? b.Backend.ToString().ToLowerInvariant() : "unknown";
+
+    /// <summary>
+    /// Records, once per successful load, where the model was placed and whether an explicitly requested backend was
+    /// not honoured. Reasons are a closed set: <c>unavailable</c> (the requested GPU backend is not available) or <c>other</c>.
+    /// </summary>
+    internal static void RecordPlacement(ExecutionPlan plan)
+    {
+        try
+        {
+            string backend = BackendLabel(plan);
+            if (plan.Placement is { TotalLayers: > 0 } p && s_gpuLayerShare.Enabled)
+                s_gpuLayerShare.Record((double)p.GpuLayers / p.TotalLayers, new TagList { { "opentail.backend", backend } });
+
+            if (!s_backendFallbacks.Enabled || plan.BackendPlan is not { } bp) return;
+            string requested = plan.Request?.Backend?.Trim().ToLowerInvariant() ?? "auto";
+            if (requested is "" or "auto" or "hybrid" || requested == backend) return;
+            string reason = (requested == "cuda" && !bp.CudaAvailable) || (requested == "vulkan" && !bp.VulkanAvailable)
+                ? "unavailable" : "other";
+            s_backendFallbacks.Add(1, new TagList
+            {
+                { "opentail.backend.requested", requested is "cpu" or "cuda" or "vulkan" ? requested : "other" },
+                { "opentail.backend", backend },
+                { "opentail.fallback.reason", reason },
+            });
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>Records one model load. Architecture family is the model identity (never a path or file name).</summary>
-    internal static void RecordModelLoad(Activity? activity, string architecture, string forwardPass, string outcome, double seconds)
+    internal static void RecordModelLoad(Activity? activity, string architecture, string forwardPass, string outcome, double seconds, string backend = "unknown")
     {
         try
         {
@@ -109,6 +147,7 @@ public static class EngineTelemetry
             {
                 activity.SetTag("opentail.architecture", architecture);
                 activity.SetTag("opentail.forward_pass", forwardPass);
+                activity.SetTag("opentail.backend", backend);
                 activity.SetTag("outcome", outcome);
                 if (outcome == OutcomeError) activity.SetStatus(ActivityStatusCode.Error);
             }
@@ -117,6 +156,7 @@ public static class EngineTelemetry
             {
                 { "opentail.architecture", architecture },
                 { "opentail.forward_pass", forwardPass },
+                { "opentail.backend", backend },
                 { "outcome", outcome },
             });
         }

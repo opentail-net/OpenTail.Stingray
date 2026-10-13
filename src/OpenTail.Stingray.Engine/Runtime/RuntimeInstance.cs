@@ -262,14 +262,15 @@ public sealed class RuntimeInstance : IDisposable
                 cudaBackend,
                 vulkanBackend,
                 ownedDisposables);
-            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeSuccess, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
+            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeSuccess, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds, EngineTelemetry.BackendLabel(plan));
+            EngineTelemetry.RecordPlacement(plan);
             if (EngineEvents.Enabled)
                 EngineEvents.Emit(new(EngineEventKind.ModelLoaded, model.Architecture, Ms: System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalMilliseconds, Detail: $"forwardPass={plan.ForwardPassKind}"));
             return created;
         }
         catch
         {
-            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds);
+            EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds, EngineTelemetry.BackendLabel(plan));
             foreach (var d in ownedDisposables)
             {
                 try { d.Dispose(); } catch { }

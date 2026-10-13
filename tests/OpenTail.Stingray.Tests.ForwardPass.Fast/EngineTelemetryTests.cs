@@ -133,7 +133,7 @@ public sealed class EngineTelemetryTests
         {
             var s = Assert.Single(samples, x => x.Name == "opentail.engine.model.load.duration" && x.Value == 1.5);
             Assert.Equal("s", s.Unit);
-            Assert.Equal(new[] { "opentail.architecture", "opentail.forward_pass", "outcome" }, s.Tags.Keys.Order().ToArray());
+            Assert.Equal(new[] { "opentail.architecture", "opentail.backend", "opentail.forward_pass", "outcome" }, s.Tags.Keys.Order().ToArray());
         }
     }
 
@@ -244,7 +244,7 @@ public sealed class EngineTelemetryTests
             var load = Assert.Single(stopped, a => a.OperationName == "model.load");
             Assert.Equal(default, load.ParentSpanId);
             Assert.NotEqual(request.TraceId, load.TraceId);
-            Assert.All(load.TagObjects, t => Assert.Contains(t.Key, new[] { "opentail.architecture", "opentail.forward_pass", "outcome" }));
+            Assert.All(load.TagObjects, t => Assert.Contains(t.Key, new[] { "opentail.architecture", "opentail.backend", "opentail.forward_pass", "outcome" }));
         }
     }
 
@@ -345,6 +345,33 @@ public sealed class EngineTelemetryTests
             Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.draft_tokens" && s.Value == 3);
             Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.accepted_tokens" && s.Value == 2);
             Assert.Contains(spec, s => s.Name == "opentail.engine.speculative.accepted_tokens" && s.Value == 3);
+        }
+    }
+
+    [Fact]
+    public void Placement_RecordsGpuLayerShare_AndAFallbackWithAClosedReason()
+    {
+        var samples = new List<Sample>();
+        using var l = Listen(samples);
+        // CUDA explicitly requested, but the plan selected CPU and CUDA is unavailable: a fallback with reason "unavailable".
+        var plan = new ExecutionPlan(
+            SchemaVersion: 2, ModelPath: "x", Goal: "g", Backend: "cuda", GpuLayers: 10, TotalLayers: 20, ContextSize: 1,
+            KvDtype: "f16", EstimatedVramMb: 0, EstimatedRamMb: 0, Decisions: null, Warnings: null,
+            Request: new PlanRequest("t", "cuda", 10, 1, false, "f16", "none", 1, false),
+            BackendPlan: new BackendPlan(ForwardPassBackend.Cpu, "cpu", 0, CudaAvailable: false, VulkanAvailable: false, ThreadCount: 4),
+            Placement: new PlacementPlan(GpuLayers: 10, CpuLayers: 10, TotalLayers: 20, GpuWeightBytes: 0, CpuWeightBytes: 0));
+        EngineTelemetry.RecordPlacement(plan);
+        l.Dispose();
+
+        lock (samples)
+        {
+            var share = Assert.Single(samples, s => s.Name == "opentail.engine.placement.gpu_layer_share");
+            Assert.Equal(0.5, share.Value);
+            Assert.Equal("cpu", share.Tags["opentail.backend"]);
+            var fb = Assert.Single(samples, s => s.Name == "opentail.engine.backend.fallbacks");
+            Assert.Equal("unavailable", fb.Tags["opentail.fallback.reason"]);
+            Assert.Equal("cuda", fb.Tags["opentail.backend.requested"]);
+            Assert.Equal("cpu", fb.Tags["opentail.backend"]);
         }
     }
 }

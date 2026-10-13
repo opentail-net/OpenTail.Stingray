@@ -55,6 +55,8 @@ Server meter `OpenTail.Stingray.Server` (attributes: `gen_ai.operation.name`, `g
 | `opentailllm.*` | | Legacy instruments, kept for one release. `opentailllm.itl_ms` is mislabelled (it is total generation time) |
 
 Engine meter `OpenTail.Stingray.Engine` (attributes: `outcome`, `opentail.forward_pass`; load also `opentail.architecture`):
+Load and placement: `opentail.engine.model.load.duration` also carries `opentail.backend`; `opentail.engine.placement.gpu_layer_share` (GPU layers over total layers) and `opentail.engine.backend.fallbacks` (an explicitly requested backend was not used; reason `unavailable` or `other`).
+
 `opentail.engine.requests`, `.prefill.duration` / `.prefill.tokens` (new, not reused, prompt tokens), `.decode.duration` / `.decode.tokens`, `.first_token.duration`, `.generation.duration`, `.model.load.duration`.
 
 Speculative decoding (MTP only for now): `opentail.engine.speculative.drafts`, `.draft_tokens`, `.accepted_tokens` with `opentail.speculative.mode=mtp`; acceptance rate = `rate(accepted_tokens) / rate(draft_tokens)`. Other speculative modes are not exported until defined.
