@@ -1161,6 +1161,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private static double s_profStagingCopyMs;
     private static long s_profDispatchCount;
 
+    /// <summary>True when <c>STINGRAY_PROFILE_GPU_SPLIT=1</c>: the GPU-split counters are being accumulated (and perturb what they measure).</summary>
+    public static bool GpuProfileEnabled => s_profGpuSplit;
+
+    /// <summary>Current GPU-split totals since the last <see cref="ResetGpuProfile"/>: submit+GPU+fence-wait ms, staging memcpy ms, submit count. All zero unless profiling is enabled.</summary>
+    public static (double SubmitWaitMs, double StagingCopyMs, long Dispatches) GpuProfileSnapshot() =>
+        (s_profSubmitWaitMs, s_profStagingCopyMs, s_profDispatchCount);
+
     /// <summary>Resets the real GPU-split profiling counters (see <see cref="s_profGpuSplit"/>'s
     /// doc comment) -- call before timing one denoising run to isolate its own numbers.</summary>
     public static void ResetGpuProfile()

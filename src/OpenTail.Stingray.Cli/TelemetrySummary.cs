@@ -59,6 +59,7 @@ internal sealed class TelemetrySummary : IDisposable
 
     public string Render()
     {
+        _meters.RecordObservableInstruments(); // observable instruments (profile counters) report only when collected
         var sb = new StringBuilder("[telemetry] engine instruments seen by the in-process listener\n");
         lock (_gate)
         {

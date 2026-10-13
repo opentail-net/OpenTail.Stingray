@@ -19,6 +19,53 @@ public static class EngineTelemetry
     public const string OutcomeSuccess = "success", OutcomeError = "error", OutcomeCancelled = "cancelled";
 
     private static readonly Meter s_meter = new(MeterName, "1.0.0");
+
+    // Tier 3 (explicit diagnostic mode): these exist ONLY when a profile switch is on (STINGRAY_MOE_PHASE_TIMING=1 or
+    // STINGRAY_PROFILE_GPU_SPLIT=1). The profilers perturb what they measure, so these numbers are labelled as such
+    // and must never feed a benchmark comparison. Observable, so reading costs nothing unless collected.
+    // The Vulkan switch is read from the environment here, and VulkanBackend is touched only inside the guarded callbacks,
+    // so this class never triggers Vulkan's type initialiser on a machine without Vulkan.
+    private static readonly bool s_vulkanProfile = Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1";
+    private static readonly ObservableCounter<double>? s_profilePhase =
+        MoePhaseTiming.Enabled || s_vulkanProfile
+            ? s_meter.CreateObservableCounter(
+                "opentail.profile.phase.duration", ProfileMeasurements, "s",
+                "DIAGNOSTIC (perturbed by profiling, never use for benchmarks): accumulated seconds per profiled phase.")
+            : null;
+    private static readonly ObservableCounter<long>? s_profileDispatches =
+        s_vulkanProfile
+            ? s_meter.CreateObservableCounter(
+                "opentail.profile.vulkan.dispatches", VulkanDispatches,
+                "{submit}", "DIAGNOSTIC: Vulkan queue submits (each a fence wait) since the last profile reset.")
+            : null;
+
+    private static long VulkanDispatches()
+    {
+        try { return OpenTail.Stingray.Vulkan.VulkanBackend.GpuProfileSnapshot().Dispatches; }
+        catch { return 0; }
+    }
+
+    private static IEnumerable<Measurement<double>> ProfileMeasurements()
+    {
+        var list = new List<Measurement<double>>();
+        try
+        {
+            if (MoePhaseTiming.Enabled)
+                foreach (var (phase, seconds) in MoePhaseTiming.Snapshot())
+                    list.Add(new Measurement<double>(seconds, new KeyValuePair<string, object?>("opentail.profile.phase", phase)));
+            if (s_vulkanProfile)
+            {
+                var (submitWaitMs, stagingMs, _) = OpenTail.Stingray.Vulkan.VulkanBackend.GpuProfileSnapshot();
+                list.Add(new Measurement<double>(submitWaitMs / 1000.0, new KeyValuePair<string, object?>("opentail.profile.phase", "vulkan.submit_wait")));
+                list.Add(new Measurement<double>(stagingMs / 1000.0, new KeyValuePair<string, object?>("opentail.profile.phase", "vulkan.staging_copy")));
+            }
+        }
+        catch
+        {
+        }
+        return list;
+    }
+
     internal static readonly ActivitySource Source = new(ActivitySourceName, "1.0.0");
 
     private static readonly Counter<long> s_requests = s_meter.CreateCounter<long>(

@@ -40,6 +40,21 @@ internal static class MoePhaseTiming
         if (phase == Total) s_calls++;
     }
 
+    // Closed phase ids for telemetry (the printed names above are for humans). The two "empty" sweeps are diagnostic extras.
+    private static readonly string[] s_ids =
+    {
+        "moe.router", "moe.shared_expert", "moe.act_quant_gate_up", "moe.sweep_gate_up", "moe.empty_sweep_a",
+        "moe.silu_mul", "moe.act_quant_down", "moe.sweep_down", "moe.empty_sweep_b", "moe.sequential_experts", "moe.total",
+    };
+
+    /// <summary>Accumulated seconds per phase (only phases that were hit). Read by a tier-3 observable counter, so it costs nothing unless collected.</summary>
+    internal static IEnumerable<(string Phase, double Seconds)> Snapshot()
+    {
+        for (int i = 0; i < Count; i++)
+            if (s_ticks[i] != 0)
+                yield return (s_ids[i], s_ticks[i] / (double)Stopwatch.Frequency);
+    }
+
     private static void Print()
     {
         if (s_calls == 0) return;
