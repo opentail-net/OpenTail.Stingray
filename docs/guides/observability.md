@@ -83,3 +83,9 @@ The CLI `run` command feeds the engine instruments from its event bus. `STINGRAY
 ## Known gaps
 
 `ContinuousBatchingEngine` does not yet supply per-request stats; queue/prefill/decode child spans, span links for requests that waited on a shared load, speculative-decoding, prefix-cache and residency metrics are not done.
+
+## Machine-readable run results (benchmarks)
+
+`STINGRAY_STATS_JSON=<path>` makes a CLI run write one versioned JSON file at exit (`schema_version` 1): `architecture`, `forward_pass`, `load_ms`, `prompt_tokens`, `prefill_ms`, `prefill_tokens_per_second`, `decode_tokens` (including hidden reasoning tokens), `visible_tokens`, `decode_ms`, `decode_tokens_per_second`, `speculative_steps`, `speculative_drafts_proposed`, `speculative_drafts_accepted`, and `perturbed` (true when a diagnostic profile switch was on: never compare such a run). A field is omitted when its event never happened. Counts and durations only; no content or paths.
+
+`scripts/Get-StingrayRunStats.ps1 -Path <file>` reads and validates it (and refuses a perturbed run unless `-AllowPerturbed`). Existing `bench-*.ps1` scripts still regex-match printed lines; moving them over is a separate, per-script change. This file does not replace controlled benchmarking: warm-up, repeated runs and reporting the spread still apply.

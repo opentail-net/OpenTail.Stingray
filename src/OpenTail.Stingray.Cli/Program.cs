@@ -25,6 +25,16 @@ if (Environment.GetEnvironmentVariable("STINGRAY_TELEMETRY") == "1")
         telemetry.Dispose();
     };
 }
+
+// STINGRAY_STATS_JSON=<path>: write one versioned machine-readable result file at exit (prefill/decode tokens and
+// times, load time, speculative counts). The structured alternative to regex-matching the printed lines.
+string? statsJsonPath = Environment.GetEnvironmentVariable("STINGRAY_STATS_JSON");
+if (!string.IsNullOrWhiteSpace(statsJsonPath))
+{
+    var statsSink = new RunStatsJsonSink(statsJsonPath);
+    OpenTail.Stingray.Core.EngineEvents.Subscribe(statsSink);
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => statsSink.WriteFile();
+}
 if (eventsToStderr || gcStats)
     AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     {

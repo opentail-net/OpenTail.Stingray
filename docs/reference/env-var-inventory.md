@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-10-13 — `KnownEnvironmentVariables.All` now contains **285** names** (added `STINGRAY_TELEMETRY`; earlier, on 2026-10-11, the Qwen Image and Vulkan performance switches: `STINGRAY_QWEN_PROFILE`, `STINGRAY_QWEN_MLP_CHUNKS`, `STINGRAY_VK_QGEMM_SMALLM`, `STINGRAY_VK_MXFP4_V2`, `STINGRAY_VK_MATVEC_V2`, `STINGRAY_VK_PATH3_CHUNK`, `STINGRAY_VULKAN_DECODE_ATTN_GQA`, `STINGRAY_VULKAN_DECODE_PROFILE`, `STINGRAY_VULKAN_FLASH_PREFILL`, `STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK`)
+**Reconciled again 2026-10-13 — `KnownEnvironmentVariables.All` now contains **286** names** (added `STINGRAY_TELEMETRY` and `STINGRAY_STATS_JSON`; earlier, on 2026-10-11, the Qwen Image and Vulkan performance switches: `STINGRAY_QWEN_PROFILE`, `STINGRAY_QWEN_MLP_CHUNKS`, `STINGRAY_VK_QGEMM_SMALLM`, `STINGRAY_VK_MXFP4_V2`, `STINGRAY_VK_MATVEC_V2`, `STINGRAY_VK_PATH3_CHUNK`, `STINGRAY_VULKAN_DECODE_ATTN_GQA`, `STINGRAY_VULKAN_DECODE_PROFILE`, `STINGRAY_VULKAN_FLASH_PREFILL`, `STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK`)
 (2026-10-09: 274 names; added `STINGRAY_ALLOW_EXTERNAL`, `STINGRAY_CONFIG_DIR`, `STINGRAY_IGNORE_PREFLIGHT`)
 (2026-10-05: registered `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL` and `STINGRAY_MOE_PHASE_TIMING`, both read in `src/` but missing from the registry. Removed `STINGRAY_HANDOFF_TEST_MODEL`: it is read only by `HybridCpuPrefillHandoffTests` under `tests/`, never in `src/`, so the registry — whose tests scan `src/` — cannot justify it, and registering it would make `doctor` accept a name the engine itself never reads. It stays a test-only switch, like `STINGRAY_RUN_HEAVY_TESTS`; optional `STINGRAY_HANDOFF_TEST_GPU_LAYERS` (default 4) and `STINGRAY_HANDOFF_TEST_CTX` (default 1024) are read by the same test. Net +1 from the 267 the registry held after the earlier, un-documented edits.)
 
@@ -213,6 +213,7 @@ dynamically composed names.
 | `STINGRAY_GC_STATS` | diagnostic | CLI: print GC collections, bytes allocated and total pause at process exit (2026-10-08) |
 | `STINGRAY_EVENTS` | diagnostic | CLI: stream EngineEvents (model loaded, prefill/decode completed, MTP step, GC stats) to stderr as JSON lines (2026-10-08) |
 | `STINGRAY_TELEMETRY` | diagnostic | CLI: attach an in-process listener to the engine `Meter`/`ActivitySource` and print a short instrument report at exit (stderr); needs no collector (2026-10-13; see docs/guides/observability.md) |
+| `STINGRAY_STATS_JSON` | diagnostic | CLI: write one versioned machine-readable result file (`schema_version` 1: load, prefill, decode tokens and times, speculative counts, `perturbed`) to the given path at exit; the structured alternative to regex-matching printed lines (2026-10-13; see docs/guides/observability.md) |
 | `STINGRAY_MODEL_DIRS` | diagnostic | tests/tools: extra folders (path list) searched first by `ModelLocator` when looking for a checkpoint by file name (2026-10-08) |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server
