@@ -33,7 +33,8 @@ internal sealed class TelemetrySummary : IDisposable
         _bridge = OpenTail.Stingray.Core.EngineEvents.Subscribe(new EngineEventsTelemetryBridge("cli"));
         _meters.InstrumentPublished = (instrument, listener) =>
         {
-            if (instrument.Meter.Name == EngineTelemetry.MeterName) listener.EnableMeasurementEvents(instrument);
+            if (instrument.Meter.Name is EngineTelemetry.MeterName or OpenTail.Stingray.Diffusion.DiffusionTelemetry.MeterName)
+                listener.EnableMeasurementEvents(instrument);
         };
         _meters.SetMeasurementEventCallback<long>((i, v, t, s) => Record(i, v));
         _meters.SetMeasurementEventCallback<double>((i, v, t, s) => Record(i, v));

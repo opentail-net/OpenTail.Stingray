@@ -59,6 +59,40 @@ public sealed class EulerFlowScheduler
                            Action<int, int>? progress = null,
                            int sign = -1)
     {
+        // Telemetry wrapper: with no listener this is one extra call and a flag check. Step boundaries come from the
+        // progress callback (invoked once at the end of every step), so the loop below is unchanged.
+        if (!DiffusionTelemetry.Enabled)
+            return DenoiseCore(noise, ditForward, progress, sign);
+
+        const string Scheduler = "euler_flow";
+        long loopStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        long stepStart = loopStart;
+        int stepsRun = 0;
+        bool completed = false;
+        void OnStep(int step, int total)
+        {
+            DiffusionTelemetry.RecordStep(Scheduler, stepStart);
+            stepsRun = step;
+            stepStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            progress?.Invoke(step, total);
+        }
+        try
+        {
+            var result = DenoiseCore(noise, ditForward, OnStep, sign);
+            completed = true;
+            return result;
+        }
+        finally
+        {
+            DiffusionTelemetry.RecordLoop(Scheduler, stepsRun, loopStart, completed);
+        }
+    }
+
+    private float[] DenoiseCore(float[] noise,
+                                Func<float[], float, float[]> ditForward,
+                                Action<int, int>? progress,
+                                int sign)
+    {
         var x = (float[])noise.Clone();
         int n = _timesteps.Length;
 

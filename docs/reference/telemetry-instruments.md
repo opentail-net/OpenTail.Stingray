@@ -19,7 +19,7 @@ benchmark comparison. Observable instruments are read only when a listener colle
 path-like or over-long values become `other`), `opentail.endpoint` (fixed names), `error.type` (exception type name, only on failed non-chat operations), `outcome` (success, error, cancelled,
 incomplete, client_error), `opentail.forward_pass` (class name or `cli`/`server`/`continuous_batching`), `opentail.architecture`,
 `opentail.backend` (auto/cpu/cuda/vulkan/unknown), `opentail.backend.requested`, `opentail.fallback.reason`
-(unavailable/other), `opentail.reason` (overload), `opentail.speculative.mode` (mtp), `opentail.profile.phase` (fixed ids).
+(unavailable/other), `opentail.reason` (overload), `opentail.speculative.mode` (mtp), `opentail.profile.phase` (fixed ids), `opentail.diffusion.scheduler` (fixed names, currently `euler_flow`).
 Never: prompt or completion text, tool data, image or audio bytes, request/session/user ids, file paths, exception messages.
 
 ## Instruments
@@ -71,6 +71,9 @@ Never: prompt or completion text, tool data, image or audio bytes, request/sessi
 | `OpenTail.Stingray.Engine` | `opentail.engine.speculative.accepted_tokens` | counter | {token} | 2 | Stingray | speculative.mode | Draft tokens the verifier accepted (its own corrected token not counted); acceptance = rate(accepted)/rate(draft) |
 | `OpenTail.Stingray.Engine` | `opentail.profile.phase.duration` | observable counter | s | 3 | Stingray | profile.phase | DIAGNOSTIC, perturbed: seconds per profiled phase; exists only when `STINGRAY_MOE_PHASE_TIMING=1` or `STINGRAY_PROFILE_GPU_SPLIT=1` |
 | `OpenTail.Stingray.Engine` | `opentail.profile.vulkan.dispatches` | observable counter | {submit} | 3 | Stingray | none | DIAGNOSTIC: Vulkan queue submits since the last profile reset; exists only when `STINGRAY_PROFILE_GPU_SPLIT=1` |
+| `OpenTail.Stingray.Diffusion` | `opentail.diffusion.steps` | counter | {step} | 1 | Stingray | scheduler, outcome | Denoising steps run (a failed loop counts the steps completed before the failure) |
+| `OpenTail.Stingray.Diffusion` | `opentail.diffusion.step.duration` | histogram | s | 1 | Stingray | scheduler | Wall time of one denoising step (one model forward plus the update); one sample per step |
+| `OpenTail.Stingray.Diffusion` | `opentail.diffusion.denoise.duration` | histogram | s | 1 | Stingray | scheduler, outcome | Wall time of one whole denoising loop |
 
 Rows whose tier is 3 are *conditional*: the contract tests do not require them in a normal run, but fail if one appears that
 is not listed.

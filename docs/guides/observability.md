@@ -63,6 +63,10 @@ Speculative decoding (MTP only for now): `opentail.engine.speculative.drafts`, `
 
 Throughputs are derived, not exported: prefill = `sum(prefill.tokens) / sum(prefill.duration)`; decode = `sum(decode.tokens) / sum(decode.duration)`.
 
+Audio (server): `opentail.audio.duration` (audio seconds produced by speech, or consumed by transcription and translation) and `opentail.audio.realtime_factor` (operation duration over audio duration; below 1 is faster than real time), recorded for successful requests. Non-chat operations also carry `error.type` (an exception type name, never a message) on failure.
+
+Diffusion meter `OpenTail.Stingray.Diffusion` (add it with `AddMeter` when you run image generation in your own process; the CLI summary includes it): `opentail.diffusion.steps`, `opentail.diffusion.step.duration` (one sample per denoising step) and `opentail.diffusion.denoise.duration`, from the shared Euler flow scheduler (FLUX and Z-Image). Other schedulers and the video, music and vision pipelines are not instrumented yet. The server's `/v1/images/*` endpoints currently return a synthesized placeholder image and record only request duration.
+
 ## Traces
 
 `POST /v1/chat/completions` (ASP.NET Core) → `chat <model>` (server operation span, same boundaries as `gen_ai.server.request.duration`) → `opentail.engine.generate` (engine span; the caller's context is handed across the engine thread explicitly). `model.load` is its own trace, never a child of the request that triggered the load.
