@@ -66,6 +66,7 @@ public static class OpenAiAudioEndpoints
 
                 var result = pipeline.Generate(audioReq);
                 wavBytes = result.ToWavBytes();
+                ctx.Items[OperationMetricsFilterExtensions.AudioSecondsItem] = result.Duration.TotalSeconds; // output audio, for opentail.audio.* metrics
             }
 
             ctx.Response.StatusCode = 200;
@@ -160,6 +161,7 @@ public static class OpenAiAudioEndpoints
             return;
         }
 
+        ctx.Items[OperationMetricsFilterExtensions.AudioSecondsItem] = (double)samples.Length / sampleRate; // input audio, for opentail.audio.* metrics
         using var pipeline = new WhisperPipeline();
         var req = new SpeechToTextRequest
         {

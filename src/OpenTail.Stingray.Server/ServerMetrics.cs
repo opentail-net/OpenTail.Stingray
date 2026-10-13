@@ -99,19 +99,36 @@ public sealed class ServerMetrics
         : model.Length > 64 || model.AsSpan().IndexOfAny('/', '\\', ':') >= 0 ? "other"
         : model;
 
-    internal bool OperationMetricsEnabled => s_genAiRequestDuration.Enabled;
+    internal bool OperationMetricsEnabled => s_genAiRequestDuration.Enabled || s_audioDuration.Enabled || s_audioRtf.Enabled;
 
-    /// <summary>Records <c>gen_ai.server.request.duration</c> for a non-chat operation. Operation/endpoint are fixed strings; outcome is success, client_error, error or cancelled.</summary>
-    internal void RecordOperation(string operation, string endpoint, TimeSpan elapsed, string outcome)
+    private static readonly Histogram<double> s_audioDuration = s_meter.CreateHistogram<double>(
+        "opentail.audio.duration", "s", "Audio seconds produced (speech) or consumed (transcription, translation) by a successful request", advice: s_latencyAdvice);
+    private static readonly Histogram<double> s_audioRtf = s_meter.CreateHistogram<double>(
+        "opentail.audio.realtime_factor", "1", "Operation duration over audio duration for a successful request (below 1 is faster than real time)",
+        advice: new InstrumentAdvice<double> { HistogramBucketBoundaries = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 50] });
+
+    /// <summary>Records audio seconds and the real-time factor for a successful audio request. Operation/endpoint are fixed strings.</summary>
+    internal void RecordAudio(string operation, string endpoint, double audioSeconds, TimeSpan elapsed)
+    {
+        if (audioSeconds <= 0) return;
+        var tags = new TagList { { "gen_ai.operation.name", operation }, { "opentail.endpoint", endpoint } };
+        if (s_audioDuration.Enabled) s_audioDuration.Record(audioSeconds, tags);
+        if (s_audioRtf.Enabled) s_audioRtf.Record(elapsed.TotalSeconds / audioSeconds, tags);
+    }
+
+    /// <summary>Records <c>gen_ai.server.request.duration</c> for a non-chat operation. Operation/endpoint are fixed strings; outcome is success, client_error, error or cancelled; <paramref name="errorType"/> is an exception type name (never a message), set only for outcome error.</summary>
+    internal void RecordOperation(string operation, string endpoint, TimeSpan elapsed, string outcome, string? errorType = null)
     {
         if (!s_genAiRequestDuration.Enabled) return;
-        s_genAiRequestDuration.Record(elapsed.TotalSeconds, new TagList
+        var tags = new TagList
         {
             { "gen_ai.operation.name", operation },
             { "gen_ai.request.model", "unknown" },
             { "opentail.endpoint", endpoint },
             { "outcome", outcome },
-        });
+        };
+        if (errorType is not null) tags.Add("error.type", errorType);
+        s_genAiRequestDuration.Record(elapsed.TotalSeconds, tags);
     }
 
     private static TagList EndpointTags(ServingTags endpoint) => new()

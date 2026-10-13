@@ -11,6 +11,9 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// </summary>
 internal static class OperationMetricsFilterExtensions
 {
+    /// <summary><c>HttpContext.Items</c> key where an audio handler stores the audio seconds it produced (speech) or consumed (transcription), as a double.</summary>
+    internal const string AudioSecondsItem = "opentail.audio_seconds";
+
     public static TBuilder WithOperationMetrics<TBuilder>(this TBuilder builder, string operation, string endpoint)
         where TBuilder : IEndpointConventionBuilder
     {
@@ -29,6 +32,7 @@ internal static class OperationMetricsFilterExtensions
 
                 long started = Stopwatch.GetTimestamp();
                 string outcome = "success";
+                string? errorType = null;
                 try
                 {
                     await inner(ctx);
@@ -41,14 +45,18 @@ internal static class OperationMetricsFilterExtensions
                     outcome = "cancelled";
                     throw;
                 }
-                catch
+                catch (Exception ex)
                 {
                     outcome = "error";
+                    errorType = ex.GetType().Name; // the type name only: messages can echo request content
                     throw;
                 }
                 finally
                 {
-                    metrics.RecordOperation(operation, endpoint, Stopwatch.GetElapsedTime(started), outcome);
+                    var elapsed = Stopwatch.GetElapsedTime(started);
+                    metrics.RecordOperation(operation, endpoint, elapsed, outcome, errorType);
+                    if (outcome == "success" && ctx.Items.TryGetValue(AudioSecondsItem, out var seconds) && seconds is double audioSeconds && audioSeconds > 0)
+                        metrics.RecordAudio(operation, endpoint, audioSeconds, elapsed);
                 }
             };
         });

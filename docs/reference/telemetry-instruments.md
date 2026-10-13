@@ -16,7 +16,7 @@ listener is attached; **3** explicit diagnostic mode, off by default, perturbs w
 benchmark comparison. Observable instruments are read only when a listener collects.
 
 **Allowed attributes** (closed or bounded values only): `gen_ai.operation.name`, `gen_ai.request.model` (server-resolved id;
-path-like or over-long values become `other`), `opentail.endpoint` (fixed names), `outcome` (success, error, cancelled,
+path-like or over-long values become `other`), `opentail.endpoint` (fixed names), `error.type` (exception type name, only on failed non-chat operations), `outcome` (success, error, cancelled,
 incomplete, client_error), `opentail.forward_pass` (class name or `cli`/`server`/`continuous_batching`), `opentail.architecture`,
 `opentail.backend` (auto/cpu/cuda/vulkan/unknown), `opentail.backend.requested`, `opentail.fallback.reason`
 (unavailable/other), `opentail.reason` (overload), `opentail.speculative.mode` (mtp), `opentail.profile.phase` (fixed ids).
@@ -32,6 +32,8 @@ Never: prompt or completion text, tool data, image or audio bytes, request/sessi
 | `OpenTail.Stingray.Server` | `opentail.queue.wait` | histogram | s | 1 | Stingray | operation, model, endpoint | Start of serving to engine admission |
 | `OpenTail.Stingray.Server` | `opentail.requests.active` | up-down counter | {request} | 1 | Stingray | endpoint | Generation requests in flight; decremented only if the increment was recorded |
 | `OpenTail.Stingray.Server` | `opentail.requests.rejected` | counter | {request} | 1 | Stingray | reason | Rejected before admission |
+| `OpenTail.Stingray.Server` | `opentail.audio.duration` | histogram | s | 1 | Stingray | operation, endpoint | Audio seconds produced (speech) or consumed (transcription, translation) by a successful request |
+| `OpenTail.Stingray.Server` | `opentail.audio.realtime_factor` | histogram | 1 | 1 | Stingray | operation, endpoint | Operation duration over audio duration for a successful request (below 1 is faster than real time); for transcription it includes reading the upload |
 | `OpenTail.Stingray.Server` | `opentailllm.requests` | counter | requests | 1 | Legacy (kept one release) | none | Admitted inference requests |
 | `OpenTail.Stingray.Server` | `opentailllm.tokens` | counter | tokens | 1 | Legacy (kept one release) | none | Tokens generated |
 | `OpenTail.Stingray.Server` | `opentailllm.overload_rejections` | counter | requests | 1 | Legacy (kept one release) | none | Requests rejected because the bounded queue was full |
