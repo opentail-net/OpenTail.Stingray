@@ -101,6 +101,39 @@ public sealed class ServerMetrics
 
     internal bool OperationMetricsEnabled => s_genAiRequestDuration.Enabled || s_audioDuration.Enabled || s_audioRtf.Enabled;
 
+    private static readonly Histogram<double> s_loadWait = s_meter.CreateHistogram<double>(
+        "opentail.models.load.wait", "s", "Time a request waited for a model load to finish (its own or one shared with other requests)", advice: s_latencyAdvice);
+
+    /// <summary>
+    /// Records how long one request waited for a model load and, with a span listener attached, emits a <c>model.acquire</c>
+    /// span after the fact (child of <paramref name="parent"/>) carrying a link to the <c>model.load</c> span, so a shared
+    /// load is never made the child of an arbitrary request. Never throws; restores <see cref="Activity.Current"/>.
+    /// </summary>
+    internal static void RecordLoadWait(TimeSpan waited, string outcome, ActivityContext loadContext, ActivityContext parent, DateTimeOffset startedAt)
+    {
+        try
+        {
+            if (s_loadWait.Enabled) s_loadWait.Record(waited.TotalSeconds, new TagList { { "outcome", outcome } });
+            if (!Activities.HasListeners()) return;
+            var saved = Activity.Current;
+            try
+            {
+                var links = loadContext == default ? null : new[] { new ActivityLink(loadContext) };
+                using var span = Activities.StartActivity("model.acquire", ActivityKind.Internal, parent, tags: null, links: links, startTime: startedAt);
+                if (span is null) return;
+                span.SetTag("outcome", outcome);
+                span.SetEndTime(startedAt.UtcDateTime + waited);
+            }
+            finally
+            {
+                Activity.Current = saved;
+            }
+        }
+        catch
+        {
+        }
+    }
+
     private static readonly Histogram<double> s_audioDuration = s_meter.CreateHistogram<double>(
         "opentail.audio.duration", "s", "Audio seconds produced (speech) or consumed (transcription, translation) by a successful request", advice: s_latencyAdvice);
     private static readonly Histogram<double> s_audioRtf = s_meter.CreateHistogram<double>(

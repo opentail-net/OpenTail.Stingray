@@ -114,6 +114,20 @@ public static class EngineTelemetry
         }
     }
 
+    /// <summary>
+    /// Carries the <c>model.load</c> span's context out of a loader to whoever started it, so requests that waited for a
+    /// shared load can link to it. Set <see cref="LoadHolder"/> on the loading flow before building the runtime; the load
+    /// span fills <see cref="Context"/> when it starts. Contexts only, never content.
+    /// </summary>
+    public sealed class LoadContextHolder
+    {
+        /// <summary>The load span's context, or default when no span listener was attached.</summary>
+        public ActivityContext Context { get; set; }
+    }
+
+    /// <summary>Ambient holder for the load currently being built on this flow (see <see cref="LoadContextHolder"/>).</summary>
+    public static readonly AsyncLocal<LoadContextHolder?> LoadHolder = new();
+
     /// <summary>Starts the <c>model.load</c> span as a new root (a load is shared, so it is never a child of one request). Null with no listener.</summary>
     internal static ModelLoadScope StartModelLoad()
     {
@@ -122,7 +136,9 @@ public static class EngineTelemetry
         // start and restore the caller's context when the scope ends.
         var saved = Activity.Current;
         Activity.Current = null;
-        return new ModelLoadScope(Source.StartActivity("model.load", ActivityKind.Internal), saved, swapped: true);
+        var activity = Source.StartActivity("model.load", ActivityKind.Internal);
+        if (activity is not null && LoadHolder.Value is { } holder) holder.Context = activity.Context;
+        return new ModelLoadScope(activity, saved, swapped: true);
     }
 
     /// <summary>Owns the <c>model.load</c> span and puts the caller's <see cref="Activity.Current"/> back on dispose.</summary>

@@ -90,6 +90,8 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     {
         public required TaskCompletionSource<ModelRuntime> Tcs { get; init; }
         public required DateTimeOffset StartedAt { get; init; }
+        /// <summary>Receives the <c>model.load</c> span's context from the loader, for span links from requests that waited.</summary>
+        public OpenTail.Stingray.Engine.EngineTelemetry.LoadContextHolder Holder { get; } = new();
     }
 
     /// <summary>A caller queued under <see cref="AdmissionWaitTimeout"/> (docs/032 Phase 6
@@ -255,6 +257,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         while (true)
         {
             Task<ModelRuntime>? pendingLoad = null;
+            PendingLoad? waitedLoad = null;   // the load this call waits on (started here or joined), for the wait telemetry
             Task? waitForResidencyChange = null;
             InsufficientResourcesException? admissionFailure = null;
 
@@ -270,6 +273,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 if (_pendingLoads.TryGetValue(model, out var pending))
                 {
                     pendingLoad = pending.Tcs.Task;
+                    waitedLoad = pending;
                 }
                 else if (_residencyMode == ModelResidencyMode.SingleSlot && HasBlockingOtherResident(model))
                 {
@@ -320,7 +324,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     }
                     else
                     {
-                        pendingLoad = StartLoadLocked(model);
+                        pendingLoad = StartLoadLocked(model, out waitedLoad);
                     }
                 }
             }
@@ -370,7 +374,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 continue;
             }
 
-            var runtime = await pendingLoad!.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var runtime = await AwaitLoadAsync(pendingLoad!, waitedLoad, cancellationToken).ConfigureAwait(false);
 
             lock (_lock)
             {
@@ -389,11 +393,15 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     /// the shared task every concurrent caller for this cold model awaits (single-flight).
     /// Factored out so <see cref="WakeOldestAdmissibleQueuedWaiter"/> can reserve a winner's load
     /// atomically with picking it, not just <see cref="AcquireAsync"/>'s own cold-load path.</summary>
-    private Task<ModelRuntime> StartLoadLocked(ModelId model)
+    private Task<ModelRuntime> StartLoadLocked(ModelId model) => StartLoadLocked(model, out _);
+
+    private Task<ModelRuntime> StartLoadLocked(ModelId model, out PendingLoad load)
     {
         var tcs = new TaskCompletionSource<ModelRuntime>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingLoads[model] = new PendingLoad { Tcs = tcs, StartedAt = DateTimeOffset.UtcNow };
-        _ = Task.Run(() => RunLoad(model, tcs));
+        load = new PendingLoad { Tcs = tcs, StartedAt = DateTimeOffset.UtcNow };
+        _pendingLoads[model] = load;
+        var holder = load.Holder;
+        _ = Task.Run(() => RunLoad(model, tcs, holder));
         return tcs.Task;
     }
 
@@ -574,10 +582,44 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         return false;
     }
 
-    private void RunLoad(ModelId model, TaskCompletionSource<ModelRuntime> tcs)
+    /// <summary>
+    /// Waits for a (possibly shared) model load and records how long this caller waited, with a span that links to the
+    /// <c>model.load</c> trace, so one shared load is never attributed to an arbitrary request. Telemetry only; the wait
+    /// itself behaves exactly as before.
+    /// </summary>
+    private static async Task<ModelRuntime> AwaitLoadAsync(Task<ModelRuntime> load, PendingLoad? info, CancellationToken cancellationToken)
+    {
+        var parent = System.Diagnostics.Activity.Current?.Context ?? default;
+        var startedAt = DateTimeOffset.UtcNow;
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        string outcome = "success";
+        try
+        {
+            return await load.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            outcome = "cancelled";
+            throw;
+        }
+        catch
+        {
+            outcome = "error";
+            throw;
+        }
+        finally
+        {
+            ServerMetrics.RecordLoadWait(System.Diagnostics.Stopwatch.GetElapsedTime(started), outcome, info?.Holder.Context ?? default, parent, startedAt);
+        }
+    }
+
+    private void RunLoad(ModelId model, TaskCompletionSource<ModelRuntime> tcs,
+        OpenTail.Stingray.Engine.EngineTelemetry.LoadContextHolder? holder = null)
     {
         try
         {
+            // Lets the engine's model.load span hand its context back, so waiters can link to it.
+            OpenTail.Stingray.Engine.EngineTelemetry.LoadHolder.Value = holder;
             var loaded = _loader(model);
             var runtime = new ModelRuntime(model, loaded, _estimateBytes(model), loaded.Instance);
             lock (_lock)

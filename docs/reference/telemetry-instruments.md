@@ -34,6 +34,7 @@ Never: prompt or completion text, tool data, image or audio bytes, request/sessi
 | `OpenTail.Stingray.Server` | `opentail.requests.rejected` | counter | {request} | 1 | Stingray | reason | Rejected before admission |
 | `OpenTail.Stingray.Server` | `opentail.audio.duration` | histogram | s | 1 | Stingray | operation, endpoint | Audio seconds produced (speech) or consumed (transcription, translation) by a successful request |
 | `OpenTail.Stingray.Server` | `opentail.audio.realtime_factor` | histogram | 1 | 1 | Stingray | operation, endpoint | Operation duration over audio duration for a successful request (below 1 is faster than real time); for transcription it includes reading the upload |
+| `OpenTail.Stingray.Server` | `opentail.models.load.wait` | histogram | s | 1 | Stingray | outcome | Time one request waited for a model load (its own or one shared with other requests); recorded separately, never folded into prefill or time to first token |
 | `OpenTail.Stingray.Server` | `opentailllm.requests` | counter | requests | 1 | Legacy (kept one release) | none | Admitted inference requests |
 | `OpenTail.Stingray.Server` | `opentailllm.tokens` | counter | tokens | 1 | Legacy (kept one release) | none | Tokens generated |
 | `OpenTail.Stingray.Server` | `opentailllm.overload_rejections` | counter | requests | 1 | Legacy (kept one release) | none | Requests rejected because the bounded queue was full |
@@ -85,6 +86,7 @@ is not listed.
 | ASP.NET Core instrumentation (host) | `POST <route>` | caller (W3C `traceparent`) | whole HTTP request |
 | `OpenTail.Stingray.Server` | `chat <model>` | the HTTP span | same boundaries as `gen_ai.server.request.duration`; tags `gen_ai.operation.name`, `gen_ai.request.model`, `opentail.endpoint`, `outcome`, `gen_ai.usage.output_tokens`, `gen_ai.usage.input_tokens`, `opentail.reused_tokens`, `opentail.time_to_first_token_ms` |
 | `OpenTail.Stingray.Engine` | `opentail.engine.generate` | the caller's captured context (explicit hand-off across the engine thread) | engine request; tags `outcome`, `opentail.prompt_tokens`, `opentail.reused_tokens`, `opentail.output_tokens` |
+| `OpenTail.Stingray.Server` | `model.acquire` | the request (current activity) | emitted after the wait with its real start time; one per request that waited for a model load; a span **link** to the `model.load` trace; tag `outcome` |
 | `OpenTail.Stingray.Engine` | `model.load` | none (own trace; a load is shared, never a child of one request) | tags `opentail.architecture`, `opentail.forward_pass`, `opentail.backend`, `outcome` |
 
 ## Timing contract
