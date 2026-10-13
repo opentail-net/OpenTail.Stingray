@@ -309,7 +309,9 @@ public sealed class EngineTelemetryTests
 
         lock (samples)
         {
-            var mine = samples.Where(s => (string?)s.Tags["opentail.forward_pass"] == "continuous_batching").ToArray();
+            var mine = samples.Where(s => s.Tags.TryGetValue("opentail.forward_pass", out var fp) && (string?)fp == "continuous_batching").ToArray();
+            Assert.Contains(samples, s => s.Name == "opentail.engine.batch.size" && s.Value == 1 && (string?)s.Tags["opentail.sampling.path"] is "argmax" or "full_logits");
+            Assert.Contains(samples, s => s.Name == "opentail.engine.iteration.duration" && s.Value >= 0 && s.Unit == "s");
             Assert.Contains(mine, s => s.Name == "opentail.engine.requests" && (string?)s.Tags["outcome"] == "success");
             Assert.Contains(mine, s => s.Name == "opentail.engine.decode.tokens" && s.Value == 6);
             Assert.Contains(mine, s => s.Name == "opentail.engine.prefill.tokens" && s.Value == 6);

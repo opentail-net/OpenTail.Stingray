@@ -59,6 +59,8 @@ Load and placement: `opentail.engine.model.load.duration` also carries `opentail
 
 `opentail.engine.requests`, `.prefill.duration` / `.prefill.tokens` (new, not reused, prompt tokens), `.decode.duration` / `.decode.tokens`, `.first_token.duration`, `.generation.duration`, `.model.load.duration`.
 
+Continuous batching (listener-only): `opentail.engine.batch.size` and `opentail.engine.iteration.duration`, one sample per decode iteration, attribute `opentail.sampling.path`.
+
 Speculative decoding (MTP only for now): `opentail.engine.speculative.drafts`, `.draft_tokens`, `.accepted_tokens` with `opentail.speculative.mode=mtp`; acceptance rate = `rate(accepted_tokens) / rate(draft_tokens)`. Other speculative modes are not exported until defined.
 
 Throughputs are derived, not exported: prefill = `sum(prefill.tokens) / sum(prefill.duration)`; decode = `sum(decode.tokens) / sum(decode.duration)`.

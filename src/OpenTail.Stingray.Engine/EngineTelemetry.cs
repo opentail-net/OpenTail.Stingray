@@ -86,6 +86,30 @@ public static class EngineTelemetry
     private static readonly Histogram<double> s_modelLoad = s_meter.CreateHistogram<double>(
         "opentail.engine.model.load.duration", "s", "Time to build a runtime for a model (weights mapped, backend and forward pass created).");
 
+    // Tier 2: one histogram sample per continuous-batching decode ITERATION (never per token), only when a listener is attached.
+    // One iteration serves many sequences, so this is cheap; it is held to the same overhead budget as everything else.
+    private static readonly Histogram<long> s_batchSize = s_meter.CreateHistogram<long>(
+        "opentail.engine.batch.size", "{sequence}", "Sequences advanced together in one decode iteration.",
+        advice: new InstrumentAdvice<long> { HistogramBucketBoundaries = [1, 2, 4, 8, 16, 32, 64] });
+    private static readonly Histogram<double> s_iterationDuration = s_meter.CreateHistogram<double>(
+        "opentail.engine.iteration.duration", "s", "Wall time of the batched forward step of one decode iteration (results processing excluded).");
+
+    internal static bool IterationEnabled => s_batchSize.Enabled || s_iterationDuration.Enabled;
+
+    /// <summary>Records one decode iteration. <paramref name="argmaxPath"/> is true when the on-device argmax tail was used. Never throws.</summary>
+    internal static void RecordIteration(int sequences, long startTicks, bool argmaxPath)
+    {
+        try
+        {
+            var tags = new TagList { { "opentail.sampling.path", argmaxPath ? "argmax" : "full_logits" } };
+            if (s_batchSize.Enabled) s_batchSize.Record(sequences, tags);
+            if (s_iterationDuration.Enabled) s_iterationDuration.Record(Stopwatch.GetElapsedTime(startTicks).TotalSeconds, tags);
+        }
+        catch
+        {
+        }
+    }
+
     // Speculative decoding. Definitions (per verify step of the mode named in opentail.speculative.mode):
     //   mtp: one verify step = one drafts event; draft_tokens = drafts proposed to the verifier in that step;
     //        accepted_tokens = how many of those the verifier accepted (the verifier's own corrected token is NOT counted).

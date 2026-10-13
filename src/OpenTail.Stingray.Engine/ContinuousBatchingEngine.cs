@@ -651,6 +651,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     allGreedy = false;
             }
 
+            // Tier-2 telemetry: one histogram sample per decode ITERATION (not per token); two timestamps only when a listener is attached.
+            long iterationStart = EngineTelemetry.IterationEnabled ? Stopwatch.GetTimestamp() : 0;
             float[][]? logitsBatch = null;
             (int Token, float Logit)[]? argmaxBatch = null;
             if (allGreedy)
@@ -665,6 +667,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 Interlocked.Increment(ref _batchedFullLogitsSteps);
                 Interlocked.Add(ref _batchedFullLogitsSequences, n);
             }
+            if (iterationStart != 0) EngineTelemetry.RecordIteration(n, iterationStart, allGreedy);
 
             // Process results in reverse order so RemoveAt indices stay valid
             for (int i = n - 1; i >= 0; i--)

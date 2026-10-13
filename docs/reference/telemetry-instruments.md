@@ -19,7 +19,7 @@ benchmark comparison. Observable instruments are read only when a listener colle
 path-like or over-long values become `other`), `opentail.endpoint` (fixed names), `error.type` (exception type name, only on failed non-chat operations), `outcome` (success, error, cancelled,
 incomplete, client_error), `opentail.forward_pass` (class name or `cli`/`server`/`continuous_batching`), `opentail.architecture`,
 `opentail.backend` (auto/cpu/cuda/vulkan/unknown), `opentail.backend.requested`, `opentail.fallback.reason`
-(unavailable/other), `opentail.reason` (overload), `opentail.speculative.mode` (mtp), `opentail.profile.phase` (fixed ids), `opentail.diffusion.scheduler` (fixed names, currently `euler_flow`).
+(unavailable/other), `opentail.reason` (overload), `opentail.speculative.mode` (mtp), `opentail.sampling.path` (argmax or full_logits), `opentail.profile.phase` (fixed ids), `opentail.diffusion.scheduler` (fixed names, currently `euler_flow`).
 Never: prompt or completion text, tool data, image or audio bytes, request/session/user ids, file paths, exception messages.
 
 ## Instruments
@@ -67,6 +67,8 @@ Never: prompt or completion text, tool data, image or audio bytes, request/sessi
 | `OpenTail.Stingray.Engine` | `opentail.engine.model.load.duration` | histogram | s | 1 | Stingray | architecture, forward_pass, backend, outcome | Time to build a runtime for a model |
 | `OpenTail.Stingray.Engine` | `opentail.engine.placement.gpu_layer_share` | histogram | 1 | 1 | Stingray | backend | GPU layers over total layers at load (selecting a GPU does not mean the whole model runs on it) |
 | `OpenTail.Stingray.Engine` | `opentail.engine.backend.fallbacks` | counter | {load} | 1 | Stingray | backend, backend.requested, fallback.reason | An explicitly requested backend was not used |
+| `OpenTail.Stingray.Engine` | `opentail.engine.batch.size` | histogram | {sequence} | 2 | Stingray | sampling.path | Sequences advanced together in one continuous-batching decode iteration; one sample per iteration, never per token |
+| `OpenTail.Stingray.Engine` | `opentail.engine.iteration.duration` | histogram | s | 2 | Stingray | sampling.path | Wall time of the batched forward step of one decode iteration (result processing excluded) |
 | `OpenTail.Stingray.Engine` | `opentail.engine.speculative.drafts` | counter | {step} | 2 | Stingray | speculative.mode | Speculative verify steps (MTP only; other modes not exported until defined) |
 | `OpenTail.Stingray.Engine` | `opentail.engine.speculative.draft_tokens` | counter | {token} | 2 | Stingray | speculative.mode | Draft tokens proposed to the verifier in a step |
 | `OpenTail.Stingray.Engine` | `opentail.engine.speculative.accepted_tokens` | counter | {token} | 2 | Stingray | speculative.mode | Draft tokens the verifier accepted (its own corrected token not counted); acceptance = rate(accepted)/rate(draft) |
