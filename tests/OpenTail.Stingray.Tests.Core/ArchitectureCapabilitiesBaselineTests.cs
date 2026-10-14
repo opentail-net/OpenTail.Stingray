@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 namespace OpenTail.Stingray.Tests.Core;
 
 /// <summary>
-/// Guards for docs/2-coverage/2026-10-08-architecture-capabilities-plan.md (Phase 0).
+/// Guards for docs/done/2026-10-08-architecture-capabilities-plan.md (Phase 0).
 ///
 /// <list type="bullet">
 /// <item><b>Facts baseline</b>: one line per registered architecture with everything the rest of the engine learns from its

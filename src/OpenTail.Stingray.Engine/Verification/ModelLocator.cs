@@ -2,7 +2,7 @@ namespace OpenTail.Stingray.Engine.Verification;
 
 /// <summary>
 /// Finds a model checkpoint by file name. One implementation for every test and tool that used to carry its own hard-coded folder list
-/// (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md, Phase 1). No drive letter or user path lives in code:
+/// (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md, Phase 1). No drive letter or user path lives in code:
 /// per-machine locations come from the <c>STINGRAY_MODEL_DIRS</c> environment variable, and fixed/removable drives are enumerated at
 /// run time looking only for the conventional folder names below.
 /// </summary>

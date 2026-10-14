@@ -604,7 +604,7 @@ public sealed record ModelHyperparams
     /// <paramref name="metadataArchitecture"/> is the key namespace to read (<c>{ns}.block_count</c>, ...); null means
     /// the file's own <c>general.architecture</c> (default <c>llama</c>). Architecture-specific interpretation is being
     /// moved out of here into <see cref="ModelArchitectureSemanticsContext"/> hooks owned by each architecture
-    /// descriptor (docs/2-coverage/2026-10-08-architecture-semantics-admission-plan.md); rules not yet moved remain below.
+    /// descriptor (docs/done/2026-10-08-architecture-semantics-admission-plan.md); rules not yet moved remain below.
     /// </summary>
     public static ModelHyperparams CreateBaseline(IReadOnlyDictionary<string, object> metadata,
         IModelTensorSource? tensorSource, string? metadataArchitecture, ModelArchitectureTraits? traits = null)

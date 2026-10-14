@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Engine.Verification;
 
 /// <summary>
 /// A host-level verification and performance baseline recording the outcomes of all checked-in goldens
-/// (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md Phase 7).
+/// (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md Phase 7).
 /// </summary>
 public sealed record GoldenBaselineFile
 {

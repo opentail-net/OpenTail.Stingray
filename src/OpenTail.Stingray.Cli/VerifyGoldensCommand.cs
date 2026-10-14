@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Runs recorded golden parity references against available models and reports a host baseline
-/// (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md Phase 7).
+/// (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md Phase 7).
 /// </summary>
 public sealed class VerifyGoldensCommand : Command<VerifyGoldensCommand.Settings>
 {

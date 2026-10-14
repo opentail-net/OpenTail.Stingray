@@ -3,7 +3,7 @@
 **Principle.** An `ArchitectureDescriptor` says what is true of the *model*. The planner (`ExecutionPlanner`, `ForwardPassSelection`) decides what to do on *this machine for this request*. A descriptor never says "use CUDA"; it says "I can run on CUDA" (`Capabilities`), and the planner reads only `descriptor.Capabilities` (a test enforces it). Registration is static (`BuiltInArchitectures`, no reflection), so NativeAOT and trimming stay clean. There is no dynamic plugin loading, deliberately.
 
 Measured 2026-10-08 by actually adding a hypothetical dense family and a hypothetical Mamba-2 hybrid to the working tree and running the guards
-([plan](../2-coverage/2026-10-08-architecture-capabilities-plan.md), Phase 5): the code edit is one descriptor plus one manifest line. The rest below are
+([plan](../done/2026-10-08-architecture-capabilities-plan.md), Phase 5): the code edit is one descriptor plus one manifest line. The rest below are
 deliberate gates, not code.
 
 **Admitting a checkpoint as an agent?** Start with [architecture-admission-agent-playbook.md](architecture-admission-agent-playbook.md) (run `stingray scout` first).
@@ -16,7 +16,7 @@ deliberate gates, not code.
    `STINGRAY_UPDATE_BASELINE=1 tests/OpenTail.Stingray.Tests.Core/bin/Debug/net10.0/OpenTail.Stingray.Tests.Core.exe -class OpenTail.Stingray.Tests.Core.ArchitectureCapabilitiesBaselineTests`
    and review the one new line in `Baselines/ArchitectureFacts.txt`.
 4. **Evidence and docs (CLAUDE.md rules 10 and 14):** a real checkpoint, an independent reference (llama-server greedy match or perplexity), timed runs, then the `docs/STATUS.md` row. Until that exists the family stays "NotAdmitted"/internal. This step, not the code, is where the time goes.
-   The sequence: `stingray pull -r <owner/repo>` (verifies the published SHA-256) -> `stingray capture-golden -m <gguf> --prompt "..." --mode teacher --min-confident N --expect <hyperparam>=<value>,...` (records the llama-server reference as token ids with the file's hash, no paths) -> `stingray admit-arch -m <gguf> --golden <file>` (exit 0 = exact or near-tie only, 1 = diverged) -> commit the golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/` together with the descriptor. `GoldenParityTests` then runs it automatically; no new test class. Provenance prose goes in the golden's `notes`. See [the golden-parity plan](../2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md).
+   The sequence: `stingray pull -r <owner/repo>` (verifies the published SHA-256) -> `stingray capture-golden -m <gguf> --prompt "..." --mode teacher --min-confident N --expect <hyperparam>=<value>,...` (records the llama-server reference as token ids with the file's hash, no paths) -> `stingray admit-arch -m <gguf> --golden <file>` (exit 0 = exact or near-tie only, 1 = diverged) -> commit the golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/` together with the descriptor. `GoldenParityTests` then runs it automatically; no new test class. Provenance prose goes in the golden's `notes`. See [the golden-parity plan](../done/2026-10-08-golden-parity-and-admission-tooling-plan.md).
 
 ## When the family has a twist, declare it on the descriptor (no Core edit)
 | Need | Where |

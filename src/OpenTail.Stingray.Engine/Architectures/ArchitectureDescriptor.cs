@@ -153,7 +153,7 @@ public sealed class ArchitectureDescriptor
     /// What this model CAN do, as one small read-only value. The planner reads this and nothing else from the descriptor:
     /// a descriptor says what the model supports ("can run on CUDA", "can batch", "takes image input"), never what to do on a
     /// given machine ("use CUDA"), which stays the planner's decision. A projection over the flat init fields so the 70-odd
-    /// descriptors keep their declarative syntax (docs/2-coverage/2026-10-08-architecture-capabilities-plan.md, Phase 1).
+    /// descriptors keep their declarative syntax (docs/done/2026-10-08-architecture-capabilities-plan.md, Phase 1).
     /// </summary>
     public ArchitectureCapabilities Capabilities => new(
         SupportedBackends, SupportsContinuousBatching, CanBatchPredicate is not null, SupportsImageInput, SupportsAudioInput, ForwardPassFamily);

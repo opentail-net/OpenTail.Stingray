@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine.Verification;
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
-/// One data-driven test for every file under <c>Goldens/</c> (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md):
+/// One data-driven test for every file under <c>Goldens/</c> (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md):
 /// the recorded prompt token ids go into the model (no tokenizer involved), the greedy continuation is compared with the llama.cpp
 /// reference, mismatches are classified as near-ties or divergences by logit gap, and the stepwise-decode vs single-pass-prefill
 /// self-check runs. Adding a model's receipt means adding a JSON file, not a test class. A missing checkpoint skips loudly with the

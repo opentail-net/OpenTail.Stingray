@@ -9,7 +9,7 @@ using OpenTail.Stingray.Engine.Verification;
 namespace OpenTail.Stingray.Cli;
 
 /// <summary>
-/// Captures a golden reference (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md) from the vendored llama.cpp:
+/// Captures a golden reference (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md) from the vendored llama.cpp:
 /// the prompt ids come from <c>llama-tokenize</c> (an oracle independent of our tokenizer, which is then cross-checked against it), the
 /// continuation from a short-lived <c>llama-server</c> given those ids and greedy sampling. The result is a small JSON file holding
 /// identity and evidence only (bare file name, size, SHA-256, build, settings, token ids), never a path to this machine.

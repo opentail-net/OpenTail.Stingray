@@ -1,5 +1,7 @@
 # Architecture Semantics Admission Plan (2026-10-08)
 
+> **ARCHIVED (2026-10-14).** All phases 1-8 are done and 9.1-9.4 recorded results (9 itself was left unticked). Moved unchanged apart from this banner; remaining open items are in [../2-coverage/architecture-admission-followups.md](../2-coverage/architecture-admission-followups.md).
+
 **Baseline:** `main` @ `5c591e6a`. Supersedes [`../done/2026-10-06-architecture-plugin-admission-plan.md`](../done/2026-10-06-architecture-plugin-admission-plan.md)
 (that plan's descriptor/registry/factory/`ExecutionPlan` work has landed; only the remainder below is open).
 

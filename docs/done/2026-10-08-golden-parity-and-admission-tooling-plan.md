@@ -1,5 +1,7 @@
 # Golden parity harness, automatic reference capture and hash-pinned receipts (plan)
 
+> **ARCHIVED (2026-10-14).** Phases 1-7 are done (2026-10-09; the "proposed, not started" status line below is stale). Moved unchanged apart from this banner; remaining open items are in [../2-coverage/architecture-admission-followups.md](../2-coverage/architecture-admission-followups.md).
+
 **Date:** 2026-10-08. **Status:** proposed, not started.
 **Origin:** a review of `examples/TensorSharp/TensorSharp` (its `ParityHarness`, `.parity` goldens, release catalog and `TestMatrix`) for anything that helps *admit and verify* models. This plan adopts the three ideas that are worth it and adapts them to what Stingray already has. It does not touch the descriptor work (see [2026-10-08-architecture-capabilities-plan.md](2026-10-08-architecture-capabilities-plan.md)); the two meet only in `docs/reference/adding-an-architecture.md` step 4.
 

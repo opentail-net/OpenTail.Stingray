@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 namespace OpenTail.Stingray.Engine.Verification;
 
 /// <summary>
-/// A recorded reference result for one model file (docs/2-coverage/2026-10-08-golden-parity-and-admission-tooling-plan.md).
+/// A recorded reference result for one model file (docs/done/2026-10-08-golden-parity-and-admission-tooling-plan.md).
 /// Identity and evidence only: a bare file name, a hash, the reference engine's build and settings, token ids. It never holds a path to
 /// a machine, so it can be committed. The prompt is stored as token ids, so the forward pass is checked in isolation from our tokenizer.
 /// </summary>
