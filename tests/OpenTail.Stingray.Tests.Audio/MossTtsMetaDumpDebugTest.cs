@@ -24,8 +24,7 @@ public sealed class MossTtsMetaDumpDebugTest : HeavyTestBase
         string? path = FindRepoFile("models/_models/moss-tts-nano/MOSS-TTS-Nano-100M-GGUF/moss-tts-nano-100m-q8_0.gguf");
         Assert.SkipUnless(path != null, "gguf not found");
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/00-current-work.md");
-        string outPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-meta.txt"));
+        string outPath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "moss-tts-meta.txt"));
         var sb = new System.Text.StringBuilder();
         foreach (var kv in model.Metadata)
         {
@@ -44,7 +43,7 @@ public sealed class MossTtsMetaDumpDebugTest : HeavyTestBase
         foreach (string name in OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))
         {
             if (!OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, name, out var fileBytes)) continue;
-            string cfgOutPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", name.Replace('/', '_').Insert(0, "moss-tts-")));
+            string cfgOutPath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), name.Replace('/', '_').Insert(0, "moss-tts-")));
             if (Array.IndexOf(wantText, name) >= 0)
             {
                 string content = System.Text.Encoding.UTF8.GetString(fileBytes);

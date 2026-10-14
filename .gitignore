@@ -542,3 +542,7 @@ examples/
 /stage_diagnostics_report.txt
 /voxcpm2-tokenizer*.json
 /personaplex-*
+/moss-tts-*
+/voxcpm2-*
+/vibevoice-*
+/higgs-tts-*

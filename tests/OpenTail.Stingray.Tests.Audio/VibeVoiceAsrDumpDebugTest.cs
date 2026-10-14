@@ -26,13 +26,11 @@ public sealed class VibeVoiceAsrDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "vibevoice-asr-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/00-current-work.md");
-        string root = Path.GetDirectoryName(outDir!)!;
 
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {
             string content = System.Text.Encoding.UTF8.GetString(configBytes);
-            File.WriteAllText(Path.Combine(root, "..", "vibevoice-asr-config.json"), content);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "vibevoice-asr-config.json"), content);
         }
         Console.Error.WriteLine($"[VibeVoiceAsrDump] embedded files: {string.Join(" | ", OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))}");
 
@@ -45,7 +43,7 @@ public sealed class VibeVoiceAsrDumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "vibevoice-asr-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "vibevoice-asr-tensor-names.txt"), sb.ToString());
             Console.Error.WriteLine($"[VibeVoiceAsrDump] wrote {tensorNames.Length} tensor names");
         }
     }

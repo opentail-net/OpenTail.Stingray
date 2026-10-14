@@ -26,13 +26,11 @@ public sealed class VoxCpm2DumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "voxcpm2-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/00-current-work.md");
-        string root = Path.GetDirectoryName(outDir!)!;
 
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var bytes))
         {
             string content = System.Text.Encoding.UTF8.GetString(bytes);
-            File.WriteAllText(Path.Combine(root, "..", "voxcpm2-config.json"), content);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "voxcpm2-config.json"), content);
         }
 
         if (model.Metadata.TryGetValue("audiocpp.tensor_names", out var tnObj) && tnObj is object[] tensorNames)
@@ -45,7 +43,7 @@ public sealed class VoxCpm2DumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "voxcpm2-audiovae-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "voxcpm2-audiovae-tensor-names.txt"), sb.ToString());
         }
         Console.Error.WriteLine("[VoxCpm2Dump] wrote voxcpm2-config.json + voxcpm2-audiovae-tensor-names.txt");
     }

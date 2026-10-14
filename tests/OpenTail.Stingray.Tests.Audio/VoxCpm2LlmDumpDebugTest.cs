@@ -26,8 +26,6 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "voxcpm2-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/00-current-work.md");
-        string root = Path.GetDirectoryName(outDir!)!;
 
         Console.Error.WriteLine($"[VoxCpm2LlmDump] embedded files: {string.Join(" | ", OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))}");
         var files = OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.ReadAll(model);
