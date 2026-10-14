@@ -14,7 +14,7 @@ High-performance AI runtimes require documentation that is accurate, well-struct
 1. **Ignoring established documentation:** Stingray already possesses an extensive, differentiated documentation suite ([`docs/README.md`](../README.md), [`docs/WHAT-YOU-CAN-DO.md`](../WHAT-YOU-CAN-DO.md), [`docs/MODELS.md`](../MODELS.md), [`docs/RUNNING.md`](../RUNNING.md), [`docs/STATUS.md`](../STATUS.md), [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md), and automated reference inventories). Creating parallel root documents (`FEATURES.md`, `USAGE.md`, `DEVELOPMENT.md`, `MODEL_DOWNLOADS.md`) without an explicit migration and ownership map creates unmaintainable duplication.
 2. **Technical inaccuracies & ungrounded claims:**
    - *FLUX.3:* As explicitly documented in [`docs/STATUS.md`](../STATUS.md#L191), `Flux3DiT` and `Flux3Pipeline` are speculative scaffolding not corresponding to any released model; FLUX.3 is not a real coverage target and must never be advertised.
-   - *Vulkan Cooperative Matrix:* As recorded in [`GR_performance.md`](../../GR_performance.md#L121), no cooperative-matrix Vulkan shader path is implemented or enabled in the device chain. Hardware extension detection is not an implemented shader feature.
+   - *Vulkan Cooperative Matrix:* As recorded in [`GR_performance.md`](../4-performance/GR_performance.md#L121), no cooperative-matrix Vulkan shader path is implemented or enabled in the device chain. Hardware extension detection is not an implemented shader feature.
    - *Qwen Image Status:* While DiT and VAE decode are verified against real weights, text conditioning integration remains open; it is not yet an end-to-end supported pipeline.
    - *Hardware Qualification:* Claims regarding hardware backends (e.g. ARM Neon, CUDA) must explicitly distinguish code presence from verified hardware execution.
 3. **Bloat via arbitrary size targets:** Targets like "40–60 KB" encourage encyclopedic repetition. Stingray's documentation must prioritize concise, high-signal entry points that link to single canonical sources of truth.
@@ -113,7 +113,7 @@ To maintain technical integrity, diffusion models are organized into four explic
    - *ARM Neon:* Code paths exist in `OpenTail.Stingray.Cpu`, but must be explicitly qualified as *code implemented; unverified on physical hardware runner* until tested on dedicated ARM64 machines (per `docs/9-external-hardware/`).
 2. **Vulkan Execution:**
    - Verified compute pipeline with SPIR-V shader dispatch, weight-stationary GEMM for supported quants, and shared-memory FlashAttention.
-   - *Cooperative Matrix:* **STRICTLY EXCLUDED.** While `HasCooperativeMatrix` extension detection exists in code, no cooperative-matrix shader pipeline is implemented or enabled (per [`GR_performance.md`](../../GR_performance.md#L121)). Public documentation must accurately state that Vulkan attention and GEMM utilize standard compute shaders.
+   - *Cooperative Matrix:* **STRICTLY EXCLUDED.** While `HasCooperativeMatrix` extension detection exists in code, no cooperative-matrix shader pipeline is implemented or enabled (per [`GR_performance.md`](../4-performance/GR_performance.md#L121)). Public documentation must accurately state that Vulkan attention and GEMM utilize standard compute shaders.
 3. **CUDA Execution:**
    - Managed CUDA driver interop backend exists in `OpenTail.Stingray.Cuda`, but must be explicitly documented with hardware prerequisites (NVIDIA GPU, CUDA driver) per `docs/9-external-hardware/`.
 

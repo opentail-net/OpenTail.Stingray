@@ -535,3 +535,10 @@ examples/
 
 # Failed or tainted sample images are kept locally, not tracked.
 /docs/diffusion-samples/scratch/
+
+# Root-level scratch dumps (CLAUDE.md rule 9)
+/*-tensor-names.txt
+/*-tts-config.json
+/stage_diagnostics_report.txt
+/voxcpm2-tokenizer*.json
+/personaplex-*

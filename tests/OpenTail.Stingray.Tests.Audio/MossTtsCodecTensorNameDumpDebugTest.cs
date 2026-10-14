@@ -30,7 +30,7 @@ public sealed class MossTtsCodecTensorNameDumpDebugTest : HeavyTestBase
         var namesObj = (object[])model.Metadata["audiocpp.tensor_names"];
 
         string? outDir = FindRepoFile("docs/00-current-work.md");
-        string outPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-codec-tensor-names.txt"));
+        string outPath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "moss-tts-codec-tensor-names.txt"));
 
         var sb = new System.Text.StringBuilder();
         for (int i = 0; i < namesObj.Length; i++)

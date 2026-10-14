@@ -36,7 +36,7 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
             if (files.TryGetValue(name, out var bytes))
             {
                 string content = System.Text.Encoding.UTF8.GetString(bytes);
-                File.WriteAllText(Path.Combine(root, "..", $"voxcpm2-{name}"), content);
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), $"voxcpm2-{name}"), content);
             }
         }
 
@@ -56,7 +56,7 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "voxcpm2-llm-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "voxcpm2-llm-tensor-names.txt"), sb.ToString());
             Console.Error.WriteLine($"[VoxCpm2LlmDump] wrote llm-relevant tensor names");
         }
     }

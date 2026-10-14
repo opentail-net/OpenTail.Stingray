@@ -34,7 +34,7 @@ public sealed class VibeVoiceTtsDumpDebugTest : HeavyTestBase
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {
             string content = System.Text.Encoding.UTF8.GetString(configBytes);
-            File.WriteAllText(Path.Combine(root, "..", "vibevoice-tts-config.json"), content);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "vibevoice-tts-config.json"), content);
         }
 
         if (model.Metadata.TryGetValue("audiocpp.tensor_names", out var tnObj) && tnObj is object[] tensorNames)
@@ -47,7 +47,7 @@ public sealed class VibeVoiceTtsDumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "vibevoice-tts-prediction-head-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "vibevoice-tts-prediction-head-tensor-names.txt"), sb.ToString());
             Console.Error.WriteLine($"[VibeVoiceTtsDump] wrote prediction_head tensor names, {tensorNames.Length} total tensors");
         }
     }

@@ -2,7 +2,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Batch-size invariance of the prefill GEMMs that <c>STINGRAY_CPU_DECODE_VIA_GEMM=1</c> sends decode
-/// through (the TensorSharp ManagedQuantGemm idea, todo.md 2026-10-03): a token's output row must be
+/// through (the TensorSharp ManagedQuantGemm idea, docs/todo.md 2026-10-03): a token's output row must be
 /// bitwise identical whether it is computed alone (N = 1, i.e. decode) or inside a batch of any size
 /// (prefill, chunked prefill, speculative verify). That property is the whole point of routing decode
 /// through the GEMM, so it is asserted exactly, not to a tolerance.

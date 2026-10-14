@@ -33,11 +33,11 @@ public sealed class PersonaPlexDumpDebugTest : HeavyTestBase
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {
             string content = System.Text.Encoding.UTF8.GetString(configBytes);
-            File.WriteAllText(Path.Combine(root, "..", "personaplex-config.json"), content);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "personaplex-config.json"), content);
         }
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "voices_safetensors/NATF0.safetensors", out var voiceBytes))
         {
-            string voicePath = Path.Combine(root, "..", "personaplex-voice-natf0.safetensors");
+            string voicePath = Path.Combine(Path.GetTempPath(), "personaplex-voice-natf0.safetensors");
             File.WriteAllBytes(voicePath, voiceBytes);
             Console.Error.WriteLine($"[PersonaPlexDump] wrote {voiceBytes.Length} bytes to {voicePath}");
         }
@@ -51,7 +51,7 @@ public sealed class PersonaPlexDumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "personaplex-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "personaplex-tensor-names.txt"), sb.ToString());
             Console.Error.WriteLine($"[PersonaPlexDump] wrote transformer tensor names, {tensorNames.Length} total tensors");
         }
     }

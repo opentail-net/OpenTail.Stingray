@@ -1,6 +1,6 @@
 # GPU review — verification log
 
-Working through `GR_performance.md`. That review states plainly that it performed no build,
+Working through `docs/4-performance/GR_performance.md`. That review states plainly that it performed no build,
 execution or benchmark; its findings are code-level conclusions. This log records what happened
 when each was checked against the code and the hardware actually present.
 

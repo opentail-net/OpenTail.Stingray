@@ -32,7 +32,7 @@ public sealed class MossTtsTensorNameDumpDebugTest : HeavyTestBase
         Assert.Equal(model.Tensors.Count, namesObj.Length);
 
         string? outDir = FindRepoFile("docs/00-current-work.md");
-        string outPath = Path.Combine(Path.GetDirectoryName(outDir!)!, "..", "moss-tts-tensor-names.txt");
+        string outPath = Path.Combine(Path.GetTempPath(), "moss-tts-tensor-names.txt");
         outPath = Path.GetFullPath(outPath);
 
         var sb = new System.Text.StringBuilder();

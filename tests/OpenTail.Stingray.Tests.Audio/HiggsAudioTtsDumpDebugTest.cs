@@ -32,7 +32,7 @@ public sealed class HiggsAudioTtsDumpDebugTest : HeavyTestBase
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {
             string content = System.Text.Encoding.UTF8.GetString(configBytes);
-            File.WriteAllText(Path.Combine(root, "..", "higgs-tts-config.json"), content);
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "higgs-tts-config.json"), content);
             Console.Error.WriteLine($"[HiggsDump] embedded files: {string.Join(" | ", OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.Names(model))}");
         }
 
@@ -46,7 +46,7 @@ public sealed class HiggsAudioTtsDumpDebugTest : HeavyTestBase
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }
-            File.WriteAllText(Path.Combine(root, "..", "higgs-tts-tensor-names.txt"), sb.ToString());
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "higgs-tts-tensor-names.txt"), sb.ToString());
             Console.Error.WriteLine($"[HiggsDump] wrote body/tied tensor names, {tensorNames.Length} total tensors");
         }
     }

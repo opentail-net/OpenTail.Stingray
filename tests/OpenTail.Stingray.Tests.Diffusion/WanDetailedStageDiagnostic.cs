@@ -33,7 +33,7 @@ public sealed class WanDetailedStageDiagnostic
         return relativePath;
     }
 
-    private static readonly string LogFile = Path.Combine(@"c:\Git-Public\OpenTail.Stingray", "stage_diagnostics_report.txt");
+    private static readonly string LogFile = Path.Combine(Path.GetTempPath(), "stage_diagnostics_report.txt");
 
     private void Log(string msg)
     {
