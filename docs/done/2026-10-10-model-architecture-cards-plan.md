@@ -1,5 +1,7 @@
 # Model Architecture Cards Expansion Plan
 
+> **ARCHIVED (2026-10-14).** All six phases are ticked and every card listed exists in [../models/](../models/). Moved unchanged apart from this banner (its status line below said In Progress).
+
 **Status:** In Progress (2026-10-10)  
 **Goal:** Expand and elevate `docs/models/` into a first-class, exhaustive library of architecture cards covering every model family admitted in OpenTail.Stingray across Text LLMs, Sparse MoE, Multimodal Vision, Neural Speech/Audio, and Diffusion/Video.
 
