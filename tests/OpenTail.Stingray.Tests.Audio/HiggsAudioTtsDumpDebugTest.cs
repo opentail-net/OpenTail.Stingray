@@ -26,8 +26,6 @@ public sealed class HiggsAudioTtsDumpDebugTest : HeavyTestBase
         Assert.SkipUnless(path != null, "higgs checkpoint not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
-        string? outDir = FindRepoFile("docs/00-current-work.md");
-        string root = Path.GetDirectoryName(outDir!)!;
 
         if (OpenTail.Stingray.Audio.AudioCppEmbeddedFiles.TryGet(model, "config.json", out var configBytes))
         {

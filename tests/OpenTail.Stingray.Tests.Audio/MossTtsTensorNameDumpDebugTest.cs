@@ -31,7 +31,6 @@ public sealed class MossTtsTensorNameDumpDebugTest : HeavyTestBase
         var namesObj = (object[])model.Metadata["audiocpp.tensor_names"];
         Assert.Equal(model.Tensors.Count, namesObj.Length);
 
-        string? outDir = FindRepoFile("docs/00-current-work.md");
         string outPath = Path.Combine(Path.GetTempPath(), "moss-tts-tensor-names.txt");
         outPath = Path.GetFullPath(outPath);
 
