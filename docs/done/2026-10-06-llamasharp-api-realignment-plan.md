@@ -1,6 +1,8 @@
 # LLamaSharp API Realignment Plan and Archaeology Report (2026-10-06)
 
-**Target Location**: `docs/3-product-and-runtime/2026-10-06-llamasharp-api-realignment-plan.md`  
+> **ARCHIVED.** All six milestones in section 8 are ticked (moved here unchanged apart from this banner). The user-facing summary is [../3-product-and-runtime/coming-from-llamasharp.md](../3-product-and-runtime/coming-from-llamasharp.md).
+
+**Target Location**: `docs/done/2026-10-06-llamasharp-api-realignment-plan.md`  
 **Reference Document**: [`docs/done/2026-10-05-Realign Stingrays public .NET API toward the LLamaSharp application model.md`](../done/2026-10-05-Realign%20Stingrays%20public%20.NET%20API%20toward%20the%20LLamaSharp%20application%20model.md)  
 **Upstream Reference**: [`examples/llama.cpp/llama.cpp`](../../examples/llama.cpp/llama.cpp)  
 **External Reference**: `https://github.com/SciSharp/LLamaSharp` (`master` branch)

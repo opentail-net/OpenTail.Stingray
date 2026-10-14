@@ -444,7 +444,7 @@ The root README may be more tutorial-oriented than the NuGet README, but it must
 Update:
 
 * `docs/3-product-and-runtime/103-front-door-design.md`
-* `docs/3-product-and-runtime/2026-10-06-llamasharp-api-realignment-plan.md`
+* `docs/done/2026-10-06-llamasharp-api-realignment-plan.md`
 
 Record the real status of the facade, task commands, package README and executable documentation tests. Resolve their current differences in status language and milestone checkboxes.
 

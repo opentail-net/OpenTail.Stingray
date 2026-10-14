@@ -3,7 +3,7 @@
 Stingray exposes a **LLamaSharp-shaped application API** (`Model` -> `ModelContext` -> executor -> `ChatSession`) so
 higher-level wrappers can move between the two with a thin adapter. It is **not** binary- or source-compatible with
 LLamaSharp and does not claim to be. Namespace: `OpenTail.Stingray.Engine` (types under `src/OpenTail.Stingray.Engine/Api`).
-Design rationale and upstream feature comparison: [2026-10-06-llamasharp-api-realignment-plan.md](2026-10-06-llamasharp-api-realignment-plan.md).
+Design rationale and upstream feature comparison: [2026-10-06-llamasharp-api-realignment-plan.md](../done/2026-10-06-llamasharp-api-realignment-plan.md).
 
 | LLamaSharp | Stingray | Notes / deliberate differences |
 | :--- | :--- | :--- |

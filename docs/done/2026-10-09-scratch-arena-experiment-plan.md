@@ -1,8 +1,10 @@
 # Scratch arena: a measure-first experiment (plan)
 
+> **ARCHIVED.** Closed at phase P0 on 2026-10-10 as no-go (moved here unchanged apart from this banner; measurements in `PerformanceLeague.md`, "Scratch arena experiment, phase P0").
+
 **Status:** Closed at P0 (2026-10-10), no-go: the whole per-call allocation cost is 0.1-0.3% of prefill; see `PerformanceLeague.md` "Scratch arena experiment, phase P0". Was: Proposed (2026-10-09). Origin: a suggestion to add "zero-allocation tensor arenas" (a pooled native slab with scoped borrowing) to cut GC pressure and memory.
 **Rule that governs it:** CLAUDE.md rule 7: a performance change is kept only if it is measurably better on real weights with enough samples; otherwise it is reverted.
-**Related:** `PerformanceLeague.md` (~line 1306, the earlier zero-allocation measurement), `docs/done/perf-investigation-brief.md` item 4, `docs/todo.md`.
+**Related:** `PerformanceLeague.md` (~line 1306, the earlier zero-allocation measurement), `perf-investigation-brief.md` item 4, [todo.md](../todo.md).
 
 ## 1. What is already known (so we do not re-litigate it)
 
