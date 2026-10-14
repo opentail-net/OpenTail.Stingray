@@ -1,5 +1,7 @@
 # Test Memory Sweep Report
 
+> **ARCHIVED (2026-10-14).** Dated point-in-time report, moved here unchanged apart from this banner.
+
 **Generated:** 2026-09-28  
 **Script:** `pwsh scripts/sweep-tests.ps1`  
 **Scope:** top-10 most memory-consuming tests across the suite

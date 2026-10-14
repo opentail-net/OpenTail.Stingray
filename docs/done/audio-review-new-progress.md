@@ -559,7 +559,7 @@ is 8.2s, so RVC is now ~1.9× behind (was ~2.4×).
 
 ## PersonaPlex 7B -- real-weight test suite was eagerly fp32-dequantizing the whole checkpoint: 42 GB → 11 GB RAM, ~2.2x faster decode, 2026-09-28
 
-A resumable per-class memory sweep (`scripts/sweep-tests.ps1`, `docs/sweep-tests-memory-report.md`) found the
+A resumable per-class memory sweep (`scripts/sweep-tests.ps1`, `docs/done/sweep-tests-memory-report.md`) found the
 PersonaPlex `personaplex-7b-v1-q8_0.gguf` real-weight test cluster dominating the top-10 memory ranking (7 of 10
 entries, 37-45 GB peak each). Root cause, not what the memory report's per-test narratives suggested (Mimi codec,
 KV cache growth, frame count): `PersonaPlexLmTensorSource` dequantized every q/k/v/gate/up weight from the real

@@ -1,5 +1,7 @@
 # Session findings — 2026-10-01
 
+> **ARCHIVED (2026-10-14).** Dated point-in-time report, moved here unchanged apart from this banner.
+
 Everything below was measured or verified this session; commits are on `main`.
 
 ## Pushed
