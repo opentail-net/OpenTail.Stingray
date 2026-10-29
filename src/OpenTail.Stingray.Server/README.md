@@ -22,7 +22,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenTailStingray(opt =>
 {
     opt.ModelPath = "models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf";
-    opt.NGpuLayers = -1; // -1 = all layers on GPU; 0 = pure CPU
+    opt.NGpuLayers = -1; // -1 = planner sizes the GPU/CPU split (all layers when they fit); 0 = pure CPU
 });
 
 var app = builder.Build();

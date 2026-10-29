@@ -190,7 +190,7 @@ public static class OpenAiEndpoints
                 JsonSerializer.Serialize(new ErrorResponse("invalid_request_error",
                         "This model is not configured for image input. Start the server with a Gemma 4 model and " +
                         "STINGRAY_MMPROJ pointing at its gemma4uv mmproj, on a CPU (NGpuLayers=0) or full-CUDA " +
-                        "(NGpuLayers=-1) backend."),
+                        "backend (NGpuLayers=-1 with every layer fitting VRAM)."),
                     OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
