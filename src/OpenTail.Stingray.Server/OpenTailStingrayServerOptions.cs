@@ -150,7 +150,8 @@ public sealed class OpenTailStingrayServerOptions
     /// single-model path, multi-model entries load lazily on first request and are never pinned,
     /// so normal residency/eviction/admission applies to them — matching docs/032's design
     /// premise that residency is driven by memory pressure, not a fixed deployment size. Aliases
-    /// must be unique (validated at startup by <c>ServiceCollectionExtensions.AddOpenTailStingray</c>).
+    /// must be unique (validated when <see cref="IInferenceService"/> is first constructed, i.e. on the
+    /// first request that routes by model, not at registration).
     /// </summary>
     public IReadOnlyList<NamedModelOptions> Models { get; set; } = Array.Empty<NamedModelOptions>();
 

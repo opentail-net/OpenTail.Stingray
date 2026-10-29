@@ -57,21 +57,31 @@ builder.Services.AddOpenTailStingray(builder.Configuration);
 | Endpoint | Wire-compatible with | Capabilities |
 |---|---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions | Streaming SSE, Tool Calling, Structured JSON, Multimodal Vision |
-| `POST /v1/completions` | OpenAI Completions | Text completion |
 | `POST /v1/audio/transcriptions` | OpenAI Audio Transcriptions | Whisper STT with SRT, VTT, verbose_json |
 | `POST /v1/audio/translations` | OpenAI Audio Translations | Whisper Speech Translation |
 | `POST /v1/audio/speech` | OpenAI Audio Speech | Kokoro, Piper, MeloTTS, Chatterbox, F5-TTS with clause streaming |
 | `POST /v1/images/generations` | OpenAI Image Generations | SD 1.5, SDXL, SD 3/3.5, FLUX, Z-Image with Base64 / URL outputs |
 | `POST /v1/images/edits` | OpenAI Image Edits | Img2Img and Inpainting modifications |
-| `POST /v1/images/variations` | OpenAI Image Variations | Image variation generation |
-| `POST /v1/embeddings` | OpenAI Embeddings | Dense text embeddings |
-| `POST /v1/rerank` | Cohere Rerank | Cross-encoder sequence reranking |
+| `POST /v1/embeddings`, `POST /api/embed` | OpenAI Embeddings, Ollama Embed | Dense text embeddings (`STINGRAY_EMBEDDING_MODEL`) |
+| `POST /v1/rerank` | Cohere Rerank | Cross-encoder sequence reranking (`STINGRAY_RERANK_MODEL`) |
 | `POST /v1/messages` | Anthropic Messages | Anthropic Messages API parity |
 | `POST /v1/responses` | OpenAI Responses | OpenAI Responses endpoint |
 | `GET  /v1/models` | OpenAI Models | Model enumeration |
 | `GET  /health`, `/metrics` | Observability | Liveness + Prometheus metrics |
+| `GET  /status` | Diagnostics | Versioned runtime status: placement, traffic, latency, cache |
 | `GET  /capabilities` | Diagnostics | Read-only protocol/configuration diagnostics |
 | `POST/GET/DELETE /v1/sessions` | Sessions | Opt-in CPU-dense GGUF named-session lifecycle |
 | `GET /v1/sessions/{id}/operations/{operationId}` | Operations | Bounded idempotent-result reconnect lookup |
+
+The embedding and rerank endpoints load only the models named by `STINGRAY_EMBEDDING_MODEL` /
+`STINGRAY_RERANK_MODEL`; the request's `model` field is treated as a name. Set
+`STINGRAY_ENCODER_REQUEST_PATHS=1` to let a request name a checkpoint path instead. Each path a request
+names is loaded and stays resident for the life of the process, so enable it only for trusted clients.
+
+With `Models` configured (multi-model), `/health`, `/metrics`, `/status` and `/capabilities` never load or
+pin a model. `model` is the default alias (the first entry, used when a request names none), `models`
+lists every alias, request and queue counters are summed over the resident models, and per-model facts
+describe the default model (resolved values once it is resident). `/tokenize`, `/detokenize` and `/props`
+need a single engine and are single-model only.
 
 Streaming (SSE) is enabled for every chat/completion endpoint, and the JSON pipeline is wired through a source-generated `JsonSerializerContext` so the package is AOT-friendly even though the project itself is not AOT-published.

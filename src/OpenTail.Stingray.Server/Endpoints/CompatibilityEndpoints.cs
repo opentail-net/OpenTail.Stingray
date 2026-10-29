@@ -14,13 +14,15 @@ public static class CompatibilityEndpoints
     /// </summary>
     public static IEndpointRouteBuilder MapCompatibilityEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/capabilities", (IInferenceEngine engine, IServerSessionRuntime sessions,
-                IOptions<OpenTailStingrayServerOptions> options, ServerLoadedArchitectureRelay architecture,
-                IEnumerable<EndpointDataSource> endpointSources) =>
-            Results.Json(
-                ServerCompatibilitySnapshot.Create(options.Value, engine, sessions,
-                    MappedRoutePatterns(endpointSources), architecture.Architecture),
-                OpenTailStingrayJsonContext.Default.ServerCompatibilitySnapshot));
+        app.MapGet("/capabilities", (IServiceProvider services, IEnumerable<EndpointDataSource> endpointSources) =>
+        {
+            // Never loads or pins a model in a multi-model deployment: see ServerDiagnosticsTarget.
+            var target = ServerDiagnosticsTarget.Resolve(services);
+            return Results.Json(
+                ServerCompatibilitySnapshot.Create(target.Options, target.Engine, target.Sessions,
+                    MappedRoutePatterns(endpointSources), target.Architecture, target.ConfiguredModels),
+                OpenTailStingrayJsonContext.Default.ServerCompatibilitySnapshot);
+        });
         return app;
     }
 

@@ -13,18 +13,21 @@ public static class StatusEndpoints
     public static IEndpointRouteBuilder MapStatusEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/status", (
-                IInferenceEngine engine,
                 ServerMetrics metrics,
                 RequestConcurrencyGate admissionGate,
-                IOptions<OpenTailStingrayServerOptions> options,
                 IServiceProvider services) =>
-            Results.Json(
-                ServerStatusSnapshot.Create(options.Value, engine, metrics, admissionGate.Limit,
+        {
+            // Never loads or pins a model in a multi-model deployment: see ServerDiagnosticsTarget.
+            var target = ServerDiagnosticsTarget.Resolve(services);
+            return Results.Json(
+                ServerStatusSnapshot.Create(target.Options, target.Engine, metrics, admissionGate.Limit,
                     services.GetService<ServerEnvironmentOverrideReceipt>(),
-                    services.GetService<CpuPrefillRuntimeReceiptRelay>()?.Capability,
-                    services.GetService<ServerRuntimeResolutionRelay>()?.Resolution,
-                    services.GetService<ServerLoadedArchitectureRelay>()?.Architecture),
-                OpenTailStingrayJsonContext.Default.ServerStatusSnapshot));
+                    target.CpuBatchedPrefill,
+                    target.RuntimeResolution,
+                    target.Architecture,
+                    target.ConfiguredModels),
+                OpenTailStingrayJsonContext.Default.ServerStatusSnapshot);
+        });
         return app;
     }
 }
