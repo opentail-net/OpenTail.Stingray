@@ -1,5 +1,6 @@
 src/OpenTail.Stingray.Cli/ImageCommand.cs|1
-src/OpenTail.Stingray.Cli/RunCommand.cs|4
+src/OpenTail.Stingray.Cli/RunCommand.Prompt.cs|3
+src/OpenTail.Stingray.Cli/RunCommand.cs|1
 src/OpenTail.Stingray.Cli/StaticPlanCommand.cs|1
 src/OpenTail.Stingray.Cli/TtsEngines.cs|1
 src/OpenTail.Stingray.Core/GgufModel.cs|2
