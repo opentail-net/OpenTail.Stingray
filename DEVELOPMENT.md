@@ -48,6 +48,16 @@ To run the CLI directly from source:
 dotnet run --project src/OpenTail.Stingray.Cli -c Release -- --help
 ```
 
+To pack the three NuGet packages (`OpenTail.Stingray`, `.Server`, `.Cli`) into `artifacts/nuget/` at the
+version in `Directory.Build.props`:
+
+```bash
+pwsh ./repack-nuget.ps1              # add -CleanOutput to empty artifacts/nuget first
+```
+
+For a release, use `scripts/verify-nuget-package.ps1` instead: it also runs the tests and smoke-tests
+the packed packages.
+
 ---
 
 ## 3. Test Suites & Verification Tiers

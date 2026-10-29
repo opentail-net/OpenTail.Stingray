@@ -26,6 +26,7 @@ anything unless their name says so.
 |---|---|---|---|
 | `check-test-model-coverage.ps1` | CI | Reports which GGUF models the test suite gates on and which are missing locally. | `release.yml`, release checklist |
 | `verify-nuget-package.ps1` | CI | Packs and verifies the NuGet package for a given version. | `release.yml`, release checklist |
+| `../repack-nuget.ps1` (repo root) | Maintained | Packs `OpenTail.Stingray`, `.Server` and `.Cli` into `artifacts/nuget/`. A quick local pack, with no tests or smoke checks. | DEVELOPMENT.md |
 | `verify-package-consumers.ps1` | Maintained | Proves the documented NuGet usage compiles against the packed package, not against the source projects. | docs plans |
 | `check-aot-telemetry.ps1` | Maintained | Publishes the NativeAOT CLI and checks that engine metrics and spans reach an in-process listener. No model needed. | observability guide |
 
