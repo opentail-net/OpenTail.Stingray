@@ -1745,6 +1745,8 @@ Short-context decode re-check (24-token-class prompt, 128 generated, 3 runs; lla
 
 "Odd" rows are not failures: they are base/code models fed a raw prompt, or models that emit control tokens first. They were not compared with a reference, so they stay unverified for output correctness.
 
+**Follow-up 2026-10-29: the four odd rows are verified.** gpt2, starcoder2 and xverse give exactly llama.cpp b10306's greedy text; gpt-oss matches its top-10 ranking and flips only a 0.002-nat near-tie. The odd output was not the models: this sweep was *not* raw, as stated above. With no embedded template the CLI wrapped the prompt in ChatML, which these vocabularies read as literal text. The CLI now warns about that and points at `STINGRAY_RAW_PROMPT=1`. Decode vs llama.cpp on the same runs: gpt2 0.67x, starcoder2 0.80x, xverse 0.80x, gpt-oss 0.75x (12.0 vs 16.0 t/s, warm). Details and numbers: [docs/done/2026-10-29-raw-prompt-output-check.md](docs/done/2026-10-29-raw-prompt-output-check.md).
+
 ## GC / managed-allocation cost during decode (2026-10-08): measured, small, not worth an arena
 
 Question: would a zero-allocation tensor arena (pooled native scratch) speed decode up? Measured with the new `STINGRAY_GC_STATS=1` (collections, bytes allocated and total GC pause at process exit), differencing a short and a long run of the same model so model load and tokenizer setup cancel:

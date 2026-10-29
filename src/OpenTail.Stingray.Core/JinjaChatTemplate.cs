@@ -1650,7 +1650,51 @@ public sealed class JinjaChatTemplate
             foreach (var (k, v) in kwargs) d[k] = v;
             return d;
         }
+        if (name == "strftime_now")
+        {
+            // llama.cpp's minja provides strftime_now(format) over local time (gpt-oss: "%Y-%m-%d",
+            // Llama 3.1: "%d %b %Y"). Without it the template's date line renders empty.
+            return Strftime(Now(), args.Count > 0 ? Stringify(args[0]) : "");
+        }
         return null;
+    }
+
+    /// <summary>Clock behind <c>strftime_now</c>; tests replace it.</summary>
+    internal static Func<DateTime> Now { get; set; } = () => DateTime.Now;
+
+    /// <summary>C <c>strftime</c> subset with English (C locale) names; unknown directives are kept verbatim.</summary>
+    internal static string Strftime(DateTime t, string format)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new StringBuilder(format.Length + 16);
+        for (int i = 0; i < format.Length; i++)
+        {
+            if (format[i] != '%' || i + 1 == format.Length) { sb.Append(format[i]); continue; }
+            char c = format[++i];
+            sb.Append(c switch
+            {
+                'Y' => t.Year.ToString("D4", inv),
+                'y' => (t.Year % 100).ToString("D2", inv),
+                'm' => t.Month.ToString("D2", inv),
+                'd' => t.Day.ToString("D2", inv),
+                'e' => t.Day.ToString(inv).PadLeft(2),
+                'H' => t.Hour.ToString("D2", inv),
+                'I' => ((t.Hour + 11) % 12 + 1).ToString("D2", inv),
+                'M' => t.Minute.ToString("D2", inv),
+                'S' => t.Second.ToString("D2", inv),
+                'p' => t.Hour < 12 ? "AM" : "PM",
+                'j' => t.DayOfYear.ToString("D3", inv),
+                'B' => t.ToString("MMMM", inv),
+                'b' or 'h' => t.ToString("MMM", inv),
+                'A' => t.ToString("dddd", inv),
+                'a' => t.ToString("ddd", inv),
+                'F' => t.ToString("yyyy-MM-dd", inv),
+                'T' => t.ToString("HH:mm:ss", inv),
+                '%' => "%",
+                _ => "%" + c,
+            });
+        }
+        return sb.ToString();
     }
 
     private static string CallMacro(MacroDef macro, List<object?> args, List<(string, object?)> kwargs, Dictionary<string, object?> outerCtx)

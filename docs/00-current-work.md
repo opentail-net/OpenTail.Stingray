@@ -57,13 +57,6 @@ updated with dated evidence in the same pass.
     Also: Apertus greedy re-check vs `llama-server --no-jinja`.
 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
-16. **Output correctness of gpt2, starcoder2, xverse and gpt-oss is unverified (2026-10-08 smoke sweep).**
-    On a raw prompt ("The capital of France is") these four loaded and ran but produced odd first output
-    (`<|imp…`, `<`, `<`, `<`). Likely causes: base or code models given a prose prompt, or models that emit
-    control tokens first (gpt-oss harmony channel tokens). Not compared with a reference. To close: run
-    each against `llama-server` with the same prompt and tokenizer, compare tokens, and for gpt-oss use
-    the chat template. Evidence: PerformanceLeague.md, "Load-and-generate smoke sweep".
-
 17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
     Use `--spec-type mtp --no-thinking --temp 0` (auto mode does not engage it: it also requires no history penalty).
     2026-10-08 history: MTP was silently unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`);
