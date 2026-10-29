@@ -15,13 +15,21 @@ public sealed record ServerCompatibilitySnapshot(
     ServerEffectiveCompatibilityConfiguration Configuration)
 {
     /// <summary>Creates the snapshot from the fully bound server options and loaded engine.</summary>
+    /// <param name="mappedRoutes">Route patterns the host actually mapped. <c>null</c> means the complete
+    /// <see cref="EndpointRouteBuilderExtensions.MapOpenTailStingray"/> surface, which is what a host
+    /// that calls that method gets. A subset host must pass its real routes so the snapshot never claims one it did not map.</param>
+    /// <param name="loadedArchitecture">Architecture the loaded model resolved to. <c>null</c> falls back to
+    /// <see cref="OpenTailStingrayServerOptions.Architecture"/>, which is only a hint.</param>
     public static ServerCompatibilitySnapshot Create(
         OpenTailStingrayServerOptions options,
         IInferenceEngine engine,
-        IServerSessionRuntime? sessions = null)
+        IServerSessionRuntime? sessions = null,
+        IReadOnlyCollection<string>? mappedRoutes = null,
+        string? loadedArchitecture = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
+        bool Mapped(string route) => mappedRoutes is null || mappedRoutes.Contains(route);
 
         // MaxBatchSize is the load-time selection contract for the built-in loader. Include it
         // as well as the live engine interface so a test/downstream EngineFactory can still
@@ -54,18 +62,18 @@ public sealed record ServerCompatibilitySnapshot(
         return new ServerCompatibilitySnapshot(
             SchemaVersion: 1,
             Model: engine.ModelId,
-            Architecture: options.Architecture,
+            Architecture: loadedArchitecture ?? options.Architecture,
             Api: new ServerApiSurface(
-                OpenAiChatCompletions: true,
-                OpenAiResponses: true,
-                AnthropicMessages: true,
-                OpenAiModels: true,
-                Health: true,
-                Metrics: true,
-                SessionLifecycle: sessions?.Runtime is not null,
-                OpenAiEmbeddings: true,
-                OllamaEmbed: true,
-                OpenAiRerank: true),
+                OpenAiChatCompletions: Mapped("/v1/chat/completions"),
+                OpenAiResponses: Mapped("/v1/responses"),
+                AnthropicMessages: Mapped("/v1/messages"),
+                OpenAiModels: Mapped("/v1/models"),
+                Health: Mapped("/health"),
+                Metrics: Mapped("/metrics"),
+                SessionLifecycle: sessions?.Runtime is not null && Mapped("/v1/sessions"),
+                OpenAiEmbeddings: Mapped("/v1/embeddings"),
+                OllamaEmbed: Mapped("/api/embed"),
+                OpenAiRerank: Mapped("/v1/rerank")),
             Runtime: new ServerRuntimeCapabilities(
                 ContinuousBatching: continuousBatching,
                 ImageInput: engine.SupportsImageInput,

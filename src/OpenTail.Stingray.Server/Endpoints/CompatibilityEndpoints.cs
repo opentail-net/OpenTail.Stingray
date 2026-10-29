@@ -15,10 +15,19 @@ public static class CompatibilityEndpoints
     public static IEndpointRouteBuilder MapCompatibilityEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/capabilities", (IInferenceEngine engine, IServerSessionRuntime sessions,
-                IOptions<OpenTailStingrayServerOptions> options) =>
+                IOptions<OpenTailStingrayServerOptions> options, ServerLoadedArchitectureRelay architecture,
+                IEnumerable<EndpointDataSource> endpointSources) =>
             Results.Json(
-                ServerCompatibilitySnapshot.Create(options.Value, engine, sessions),
+                ServerCompatibilitySnapshot.Create(options.Value, engine, sessions,
+                    MappedRoutePatterns(endpointSources), architecture.Architecture),
                 OpenTailStingrayJsonContext.Default.ServerCompatibilitySnapshot));
         return app;
     }
+
+    /// <summary>Route patterns registered on this host, so the snapshot reports only mapped APIs.</summary>
+    private static HashSet<string> MappedRoutePatterns(IEnumerable<EndpointDataSource> sources) =>
+        sources.SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText ?? string.Empty)
+            .ToHashSet(StringComparer.Ordinal);
 }

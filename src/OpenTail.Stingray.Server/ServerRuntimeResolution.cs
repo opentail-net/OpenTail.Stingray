@@ -15,3 +15,15 @@ public sealed class ServerRuntimeResolutionRelay
     internal void Set(ServerRuntimeResolution? resolution) =>
         Interlocked.CompareExchange(ref _resolution, resolution, null);
 }
+
+/// <summary>
+/// Architecture the loaded model resolved to. Null until a model has loaded, so diagnostics can tell
+/// a resolved architecture from the <see cref="OpenTailStingrayServerOptions.Architecture"/> hint.
+/// </summary>
+public sealed class ServerLoadedArchitectureRelay
+{
+    private string? _architecture;
+    public string? Architecture => Volatile.Read(ref _architecture);
+    internal void Set(string architecture) =>
+        Interlocked.CompareExchange(ref _architecture, architecture, null);
+}
