@@ -9,8 +9,9 @@ namespace OpenTail.Stingray.Server;
 /// Observable instruments: values the server and engine already keep, read only when a listener
 /// collects (no work on the request path, no work at all with no listener). Model residency comes
 /// from <see cref="IModelRuntimeManager.GetStats"/>; queue and cache state from the DI engine's
-/// <see cref="IContinuousBatchingObservability"/>. In multi-model mode the engine gauges describe
-/// the DI singleton engine only, the same limitation as <c>/health</c> and <c>/metrics</c>.
+/// <see cref="IContinuousBatchingObservability"/>. In multi-model mode the engine gauges sum the
+/// resident models and the batching gauges report nothing: the same view as <c>/metrics</c>
+/// (see <see cref="ServerDiagnosticsTarget"/>), which never loads or pins a model.
 /// A read that throws yields no measurement; telemetry never breaks serving.
 /// </summary>
 internal sealed class ServerObservableMetrics : IDisposable
@@ -55,7 +56,7 @@ internal sealed class ServerObservableMetrics : IDisposable
         _meter.CreateObservableCounter(name, () => Read(() => read(Manager().GetStats())), unit, description);
 
     private void EngineGauge(string name, string unit, string description, Func<IInferenceEngine, long> read) =>
-        _meter.CreateObservableGauge(name, () => Read(() => read(_services.GetRequiredService<IInferenceEngine>())), unit, description);
+        _meter.CreateObservableGauge(name, () => Read(() => read(DiagnosticsEngine())), unit, description);
 
     private void BatchGauge(string name, string unit, string description, Func<IContinuousBatchingObservability, long> read) =>
         _meter.CreateObservableGauge(name, () => ReadBatch(read), unit, description);
@@ -64,6 +65,9 @@ internal sealed class ServerObservableMetrics : IDisposable
         _meter.CreateObservableCounter(name, () => ReadBatch(read), unit, description);
 
     private IModelRuntimeManager Manager() => _services.GetRequiredService<IModelRuntimeManager>();
+
+    // Same target as /metrics: never loads or pins a model in a multi-model deployment.
+    private IInferenceEngine DiagnosticsEngine() => ServerDiagnosticsTarget.Resolve(_services).Engine;
 
     private static IEnumerable<Measurement<long>> Read(Func<long> read)
     {
@@ -77,7 +81,7 @@ internal sealed class ServerObservableMetrics : IDisposable
     {
         try
         {
-            return _services.GetService<IInferenceEngine>() is IContinuousBatchingObservability { IsContinuousBatching: true } b
+            return DiagnosticsEngine() is IContinuousBatchingObservability { IsContinuousBatching: true } b
                 ? [new Measurement<long>(read(b))]
                 : [];
         }

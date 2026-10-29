@@ -7,7 +7,10 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 /// <summary>
 /// Requests that wait for a shared model load record the wait separately and carry a span link to the load, instead of the
 /// load becoming the child of one arbitrary request (plan section 5, "model load is its own operation").
+/// <para>Runs in a non-parallel collection: the meter and activity listeners are process-wide and the wait histogram has no
+/// model tag, so model acquisitions by concurrently running multi-model tests were counted as extra waits (seen as 6 vs 3).</para>
 /// </summary>
+[Collection(ModelLoadWaitTelemetryCollection.Name)]
 public sealed class ModelLoadWaitTelemetryTests
 {
     private sealed class FakeEngine(string id) : IInferenceEngine
@@ -83,4 +86,10 @@ public sealed class ModelLoadWaitTelemetryTests
             });
         }
     }
+}
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class ModelLoadWaitTelemetryCollection
+{
+    public const string Name = "ModelLoadWaitTelemetry (process-wide listeners)";
 }

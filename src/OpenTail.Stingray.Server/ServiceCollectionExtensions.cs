@@ -95,6 +95,18 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IInferenceEngine>(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;
+
+            // Multi-model deployments have no single engine: every entry loads on demand through
+            // IInferenceService and must stay evictable. Acquiring one here would pin it (below),
+            // which blocks SingleSlot residency for every other model and defeats eviction, and
+            // without a matching top-level ModelPath it fails anyway. Diagnostics read the runtime
+            // manager instead (ServerDiagnosticsTarget), so nothing on the normal path gets here.
+            if (opts.Models.Count > 0)
+                throw new InvalidOperationException(
+                    "OpenTailStingrayServerOptions.Models is configured, so there is no single IInferenceEngine: " +
+                    "models load per request through IInferenceService. Endpoints that need one engine " +
+                    "(/tokenize, /detokenize, /props) are available only in single-model deployments.");
+
             var manager = sp.GetRequiredService<IModelRuntimeManager>();
             var modelId = ModelId.Canonicalize(opts.ModelPath ?? "engine-factory-model");
 
@@ -196,6 +208,20 @@ public static class ServiceCollectionExtensions
         if (named is null)
             throw new InvalidOperationException($"No configured model in OpenTailStingrayServerOptions.Models matches '{id}'.");
 
+        var perModelOpts = ForNamedModel(opts, named);
+
+        // named.EngineFactory (per-model, knows which entry it's building) takes precedence over
+        // the top-level EngineFactory (which has no model identity to dispatch on — see its doc).
+        return (named.EngineFactory ?? opts.EngineFactory ?? (s => InferenceEngineLoader.Load(perModelOpts)))(sp);
+    }
+
+    /// <summary>
+    /// The effective options for one <see cref="NamedModelOptions"/> entry: the shared/global
+    /// settings with the per-model overrides applied. Used by the multi-model loader and by the
+    /// diagnostics endpoints, so both describe the same configuration.
+    /// </summary>
+    internal static OpenTailStingrayServerOptions ForNamedModel(OpenTailStingrayServerOptions opts, NamedModelOptions named)
+    {
         var perModelOpts = opts.Clone();
         perModelOpts.ModelPath = named.ModelPath;
         perModelOpts.MmprojPath = named.MmprojPath;
@@ -203,10 +229,7 @@ public static class ServiceCollectionExtensions
         perModelOpts.Backend = named.Backend ?? opts.Backend;
         perModelOpts.NGpuLayers = named.NGpuLayers ?? opts.NGpuLayers;
         perModelOpts.ContextSize = named.ContextSize ?? opts.ContextSize;
-
-        // named.EngineFactory (per-model, knows which entry it's building) takes precedence over
-        // the top-level EngineFactory (which has no model identity to dispatch on — see its doc).
-        return (named.EngineFactory ?? opts.EngineFactory ?? (s => InferenceEngineLoader.Load(perModelOpts)))(sp);
+        return perModelOpts;
     }
 
     /// <summary>

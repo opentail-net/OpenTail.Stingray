@@ -110,6 +110,63 @@ public sealed class EmbeddingEndpointTests : IClassFixture<WebApplicationFactory
         Assert.Equal(HttpStatusCode.BadRequest, status);
     }
 
+    [Theory]
+    [InlineData("/v1/embeddings")]
+    [InlineData("/api/embed")]
+    [InlineData("/v1/rerank")]
+    public async Task RequestModelPaths_AreIgnoredUnlessTheOperatorOptsIn(string route)
+    {
+        // An existing directory that is not a model. Before the gate, the endpoint tried to load it (and any GGUF a
+        // client named would have been loaded and kept resident); now the request's `model` is just a name.
+        string dir = Directory.CreateTempSubdirectory("stingray-encoder-gate-").FullName;
+        string model = JsonSerializer.Serialize(dir);
+        string body = route == "/v1/rerank"
+            ? "{\"model\":" + model + ",\"query\":\"q\",\"documents\":[\"d\"]}"
+            : "{\"model\":" + model + ",\"input\":\"x\"}";
+        Environment.SetEnvironmentVariable(EncoderModelResolver.RequestPathsEnv, null);
+        Environment.SetEnvironmentVariable("STINGRAY_RERANK_MODEL", null);
+        try
+        {
+            var (status, text) = await Post(route, body);
+            Assert.Equal(HttpStatusCode.NotFound, status);
+            Assert.Contains(EncoderModelResolver.RequestPathsEnv, text, StringComparison.Ordinal);
+            Assert.Null(EncoderModelResolver.Resolve(dir, EncoderModelResolver.EmbeddingEnv));
+
+            Environment.SetEnvironmentVariable(EncoderModelResolver.RequestPathsEnv, "1");
+            Assert.Equal(dir, EncoderModelResolver.Resolve(dir, EncoderModelResolver.EmbeddingEnv));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(EncoderModelResolver.RequestPathsEnv, null);
+            Directory.Delete(dir);
+        }
+    }
+
+    [Fact]
+    public void FailedEncoderLoads_AreNotCachedInTheProcessWideFactory()
+    {
+        // Lazy<T> caches a thrown exception, so a path that failed once used to fail for ever and every failing
+        // path stayed in the static cache. Inspect the private caches directly: nothing observable outside does.
+        string dir = Directory.CreateTempSubdirectory("stingray-encoder-fail-").FullName;
+        try
+        {
+            Assert.Throws<FileNotFoundException>(() => OpenTail.Stingray.Engine.Encoders.EncoderPipelineFactory.GetSharedReranker(dir));
+            Assert.Throws<FileNotFoundException>(() => OpenTail.Stingray.Engine.Encoders.EncoderPipelineFactory.GetResidentEmbedding(dir));
+
+            foreach (string field in new[] { "s_rerank", "s_embedding" })
+            {
+                var cache = (System.Collections.IDictionary)typeof(OpenTail.Stingray.Engine.Encoders.EncoderPipelineFactory)
+                    .GetField(field, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+                    .GetValue(null)!;
+                Assert.False(cache.Contains(Path.GetFullPath(dir)), $"{field} kept the failed load");
+            }
+        }
+        finally
+        {
+            Directory.Delete(dir);
+        }
+    }
+
     [Fact]
     public void ToBase64_IsLittleEndianFloat32()
     {

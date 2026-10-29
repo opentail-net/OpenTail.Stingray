@@ -72,7 +72,28 @@ public static class EncoderPipelineFactory
 
     /// <summary>Resident embedder per model path (for the server): loaded on first use, kept until unloaded.</summary>
     public static ResidentEmbedder GetResidentEmbedding(string model) =>
-        s_embedding.GetOrAdd(Path.GetFullPath(model), p => new Lazy<ResidentEmbedder>(() => new ResidentEmbedder(CreateEmbedding(p)))).Value;
+        GetOrLoad(s_embedding, Path.GetFullPath(model), p => new ResidentEmbedder(CreateEmbedding(p)));
+
+    /// <summary>
+    /// Single-flight load per key. <see cref="Lazy{T}"/> caches a thrown exception for ever, so a failed load
+    /// is removed again: a later call retries (the file may have been fixed), and paths that fail to load do
+    /// not accumulate in the process-wide cache.
+    /// </summary>
+    private static T GetOrLoad<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>(
+        ConcurrentDictionary<string, Lazy<T>> cache, string key, Func<string, T> load)
+    {
+        var lazy = cache.GetOrAdd(key, k => new Lazy<T>(() => load(k)));
+        try
+        {
+            return lazy.Value;
+        }
+        catch
+        {
+            cache.TryRemove(new KeyValuePair<string, Lazy<T>>(key, lazy));
+            throw;
+        }
+    }
 
     /// <summary>Shared embedding pipeline per model path. Prefer <see cref="GetResidentEmbedding"/>, which serialises callers.</summary>
     public static IEmbeddingPipeline GetSharedEmbedding(string model) => GetResidentEmbedding(model).Pipeline;
@@ -90,5 +111,5 @@ public static class EncoderPipelineFactory
 
     /// <summary>Process-lifetime shared reranker per model path (for the server).</summary>
     public static IRerankerPipeline GetSharedReranker(string model) =>
-        s_rerank.GetOrAdd(Path.GetFullPath(model), p => new Lazy<IRerankerPipeline>(() => CreateReranker(p))).Value;
+        GetOrLoad(s_rerank, Path.GetFullPath(model), CreateReranker);
 }

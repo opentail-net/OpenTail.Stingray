@@ -188,6 +188,33 @@ public sealed class StatusDocumentTests : IDisposable
     }
 
     [Fact]
+    public async Task Status_PlacementReportsTheResolvedRuntime_NotTheConfiguredAutoValues()
+    {
+        // Configured: Backend=auto, NGpuLayers=-1 (planner sizes the split), ContextSize=0 (model default).
+        // Before the fix placement echoed those literally ("auto", -1, 0) even after the loader had resolved them.
+        var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+                services.Configure<OpenTailStingrayServerOptions>(options =>
+                {
+                    options.Backend = ServerBackend.Auto;
+                    options.NGpuLayers = -1;
+                    options.ContextSize = 0;
+                    options.EngineFactory = _ => new LoadedEngine(
+                        new StatusFakeEngine("smol.gguf"), "llama", null,
+                        RuntimeResolution: new ServerRuntimeResolution("vulkan", "vulkan-hybrid", "gguf", 8192, 20));
+                })));
+        _factories.Add(factory);
+
+        using var document = await GetStatusAsync(factory.CreateClient());
+        var placement = document.RootElement.GetProperty("placement");
+        Assert.Equal("vulkan", placement.GetProperty("backend").GetString());
+        Assert.Equal(20, placement.GetProperty("gpu_layers").GetInt32());
+        Assert.Equal(8192, placement.GetProperty("context_size").GetInt32());
+        Assert.Equal(20, document.RootElement.GetProperty("configuration").GetProperty("resolved")
+            .GetProperty("gpu_layers").GetInt32());
+    }
+
+    [Fact]
     public async Task Status_LatencySummariesAreEmptyRatherThanZeroBeforeAnyRequest()
     {
         var client = CreateClient(new StatusFakeEngine("smol.gguf"));

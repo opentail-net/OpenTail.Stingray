@@ -98,7 +98,7 @@ public static class InferenceEngineLoader
             .Distinct()
             .ToArray();
 
-        var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat);
+        var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat) with { GpuLayers = plan.GpuLayers };
         long? gpuWeightBytes = plan.Placement?.GpuWeightBytes;
         var engine = instance.Engine is ContinuousBatchingEngine cbe
             ? new OwnedDisposableEngine(cbe, instance)

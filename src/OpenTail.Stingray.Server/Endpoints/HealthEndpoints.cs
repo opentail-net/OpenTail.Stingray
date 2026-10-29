@@ -5,17 +5,22 @@ public static class HealthEndpoints
 {
     public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/health", (IInferenceEngine engine, ServerMetrics metrics) =>
-            Results.Ok(new HealthStatus("ok", engine.ModelId,
-                (long)metrics.Uptime.TotalSeconds)));
+        // Diagnostics never load or pin a model in a multi-model deployment: see ServerDiagnosticsTarget.
+        app.MapGet("/health", (IServiceProvider services, ServerMetrics metrics) =>
+        {
+            var target = ServerDiagnosticsTarget.Resolve(services);
+            return Results.Ok(new HealthStatus("ok", target.Model,
+                (long)metrics.Uptime.TotalSeconds, target.ConfiguredModels));
+        });
 
         app.MapGet("/metrics", HandleMetrics);
         return app;
     }
 
-    private static Task HandleMetrics(HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics,
+    private static Task HandleMetrics(HttpContext ctx, IServiceProvider services, ServerMetrics metrics,
         RequestConcurrencyGate admissionGate)
     {
+        var engine = ServerDiagnosticsTarget.Resolve(services).Engine;
         ctx.Response.ContentType = "text/plain; version=0.0.4";
         double uptime = metrics.Uptime.TotalSeconds;
         long totalRequests = metrics.TotalRequests;
@@ -104,4 +109,8 @@ public static class HealthEndpoints
         $"opentail_llm_batched_full_logits_sequences_total {m.BatchedFullLogitsSequences}\n";
 }
 
-public sealed record HealthStatus(string Status, string Model, long UptimeSeconds);
+/// <summary><c>/health</c> body. In a multi-model deployment <see cref="Model"/> is the default alias
+/// (where a request without <c>model</c> goes) and <see cref="Models"/> lists every configured alias;
+/// single-model deployments omit <see cref="Models"/>.</summary>
+public sealed record HealthStatus(string Status, string Model, long UptimeSeconds,
+    IReadOnlyList<string>? Models = null);

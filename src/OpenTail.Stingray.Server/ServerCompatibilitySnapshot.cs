@@ -12,7 +12,8 @@ public sealed record ServerCompatibilitySnapshot(
     string Architecture,
     ServerApiSurface Api,
     ServerRuntimeCapabilities Runtime,
-    ServerEffectiveCompatibilityConfiguration Configuration)
+    ServerEffectiveCompatibilityConfiguration Configuration,
+    IReadOnlyList<string>? Models = null)
 {
     /// <summary>Creates the snapshot from the fully bound server options and loaded engine.</summary>
     /// <param name="mappedRoutes">Route patterns the host actually mapped. <c>null</c> means the complete
@@ -20,12 +21,15 @@ public sealed record ServerCompatibilitySnapshot(
     /// that calls that method gets. A subset host must pass its real routes so the snapshot never claims one it did not map.</param>
     /// <param name="loadedArchitecture">Architecture the loaded model resolved to. <c>null</c> falls back to
     /// <see cref="OpenTailStingrayServerOptions.Architecture"/>, which is only a hint.</param>
+    /// <param name="configuredModels">Every configured alias in a multi-model deployment; <c>null</c> (omitted
+    /// on the wire) for a single-model one.</param>
     public static ServerCompatibilitySnapshot Create(
         OpenTailStingrayServerOptions options,
         IInferenceEngine engine,
         IServerSessionRuntime? sessions = null,
         IReadOnlyCollection<string>? mappedRoutes = null,
-        string? loadedArchitecture = null)
+        string? loadedArchitecture = null,
+        IReadOnlyList<string>? configuredModels = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -97,19 +101,21 @@ public sealed record ServerCompatibilitySnapshot(
                 DisableThinking: options.DisableThinking,
                 PreserveThinking: options.PreserveThinking,
                 ToolGrammarRequested: options.ToolGrammar,
-                SpecType: options.SpecType.ToString().ToLowerInvariant()));
+                SpecType: options.SpecType.ToString().ToLowerInvariant()),
+            Models: configuredModels);
     }
 
     /// <summary>
     /// Whether <c>/v1/embeddings</c> / <c>/v1/rerank</c> can answer: the routes are always mapped, but they only
-    /// work when the environment names a real checkpoint (a request can also name one by path, which this
-    /// diagnostics view cannot know). Reports presence only; it does not load the model.
+    /// work when the environment names a real checkpoint (with <c>STINGRAY_ENCODER_REQUEST_PATHS=1</c> a request can
+    /// also name one by path, which this diagnostics view cannot know). Reports presence only; it does not load the model.
     /// </summary>
     private static ServerFeatureAvailability EncoderAvailability(string envVar, string kind) =>
         Endpoints.EncoderModelResolver.Resolve(null, envVar) is { } path
             ? new ServerFeatureAvailability(true, $"Default {kind} model: {Path.GetFileName(path.TrimEnd('/', '\\'))}.")
-            : new ServerFeatureAvailability(false,
-                $"No default {kind} model: set {envVar} to a checkpoint directory or GGUF file, or name one in the request.");
+            : new ServerFeatureAvailability(false, Endpoints.EncoderModelResolver.RequestPathsAllowed
+                ? $"No default {kind} model: set {envVar} to a checkpoint directory or GGUF file, or name one in the request."
+                : $"No default {kind} model: set {envVar} to a checkpoint directory or GGUF file.");
 }
 
 /// <summary>HTTP APIs supplied by <see cref="EndpointRouteBuilderExtensions.MapOpenTailStingray"/>.</summary>

@@ -25,7 +25,8 @@ public sealed record ServerStatusSnapshot(
     ServerStatusMemory Memory,
     ServerStatusBatching? Batching,
     ServerStatusConfiguration Configuration,
-    string[] Warnings)
+    string[] Warnings,
+    IReadOnlyList<string>? Models = null)
 {
     /// <summary>Schema version of the emitted document. Bump on any breaking field change.</summary>
     public const int CurrentSchemaVersion = 1;
@@ -49,7 +50,8 @@ public sealed record ServerStatusSnapshot(
         ServerEnvironmentOverrideReceipt? environmentOverrides = null,
         CpuBatchedPrefillCapability? cpuBatchedPrefill = null,
         ServerRuntimeResolution? runtimeResolution = null,
-        string? loadedArchitecture = null)
+        string? loadedArchitecture = null,
+        IReadOnlyList<string>? configuredModels = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -145,10 +147,14 @@ public sealed record ServerStatusSnapshot(
             Model: engine.ModelId,
             Architecture: loadedArchitecture ?? options.Architecture,
             UptimeSeconds: (long)uptimeSeconds,
+            // Placement reports where the model actually runs once the built-in loader has resolved
+            // it ("auto" / -1 / 0 become the concrete backend, layer count and context). Before a
+            // load, or for a caller-supplied engine factory, the configured values are all there is.
+            // The configured backend and layer count stay visible in /capabilities' configuration.
             Placement: new ServerStatusPlacement(
-                Backend: options.Backend.ToString().ToLowerInvariant(),
-                GpuLayers: options.NGpuLayers,
-                ContextSize: options.ContextSize,
+                Backend: runtimeResolution?.Backend ?? options.Backend.ToString().ToLowerInvariant(),
+                GpuLayers: runtimeResolution?.GpuLayers ?? options.NGpuLayers,
+                ContextSize: runtimeResolution?.ContextSize is > 0 ? runtimeResolution.ContextSize : options.ContextSize,
                 MaxBatchSize: options.MaxBatchSize,
                 ContinuousBatching: continuousBatching,
                 SpecType: options.SpecType.ToString().ToLowerInvariant()),
@@ -176,8 +182,9 @@ public sealed record ServerStatusSnapshot(
                     SessionPersistenceConfigured: !string.IsNullOrWhiteSpace(options.SessionStorageDirectory)),
                 runtimeResolution is null ? null : new ServerStatusResolvedRuntime(
                     runtimeResolution.Backend, runtimeResolution.ForwardPass,
-                    runtimeResolution.ModelFormat, runtimeResolution.ContextSize)),
-            Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
+                    runtimeResolution.ModelFormat, runtimeResolution.ContextSize, runtimeResolution.GpuLayers)),
+            Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated),
+            Models: configuredModels);
     }
 
     /// <summary>
@@ -292,7 +299,8 @@ public sealed record ServerStatusResolvedRuntime(
     string Backend,
     string ForwardPass,
     string ModelFormat,
-    int ContextSize);
+    int ContextSize,
+    int? GpuLayers = null);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(
