@@ -205,7 +205,7 @@ hoc at each read site rather than in one place.
 | `--strength` |  | Strength for img2img generation (0.0 to 1.0, default: 0.75). Higher values add more variation from the initial image. |
 | `--t5-tokenizer` | stable | (FLUX) Path to T5 tokenizer.json |
 | `--t5xxl` | stable | (FLUX) Path to T5-XXL encoder safetensors |
-| `--text-encoder` | stable | (sd-cli mode only) Path to LLM-style text encoder GGUF |
+| `--text-encoder` | stable | Path to the LLM-style text encoder GGUF (FLUX.2: Mistral-Small; also used by sd-cli mode) |
 | `--umt5-encoder` | stable | (Wan) Path to the real UMT5-XXL text encoder safetensors (converted from Wan-AI/Wan2.1-T2V-1.3B's models_t5_umt5-xxl-enc-bf16.pth) |
 | `--umt5-tokenizer` | stable | (Wan) Path to the real UMT5 tokenizer.json (Wan-AI/Wan2.1-T2V-1.3B's google/umt5-xxl/tokenizer.json) |
 | `--upscale-blend` | expert | Blend factor for the upscaled result (0.0–1.0). 1.0 = full RRDB (sharpest), <1.0 softens by blending with bicubic. Default 1.0. |
@@ -359,7 +359,7 @@ hoc at each read site rather than in one place.
 | `--repeat-penalty` | stable | Repetition penalty (1.0 = disabled, >1.0 penalizes repeated tokens, default: 1.1). Mirrors llama.cpp's --repeat-penalty/--repeat_penalty. |
 | `--seed` | stable | RNG seed (-1 = random, default: -1) |
 | `--single-turn` | stable | Generate one response and exit |
-| `--spec-draft-n-max` | expert | Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 1 (a 2-token verify batch — the measured optimum). Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp. |
+| `--spec-draft-n-max` | expert | Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 3, or 1 (a 2-token verify batch, the measured optimum) on the CPU hybrid-GDN pass. Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp. |
 | `--spec-draft-n-min` | expert | Min draft tokens per MTP step (default: 0). Mirrors llama.cpp. Currently rejected at parse time when > 0 since N=1 is the only supported draft length; issue #37. |
 | `--spec-draft-p-min` | expert | Min draft probability for MTP probabilistic accept (default: 1.0 = strict argmax-match, byte-identical to no-MTP baseline). 0.75 mirrors llama.cpp; values in (0, 1) accept drafts whose softmax probability under the verifier meets the threshold even when they aren't argmax (issue #38). |
 | `--spec-lookahead` | expert | Number of draft tokens per speculative step with --draft-model (default: 4) |

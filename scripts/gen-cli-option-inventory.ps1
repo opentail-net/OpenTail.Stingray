@@ -27,7 +27,8 @@ $rows = [System.Collections.Generic.List[object]]::new()
 foreach ($file in Get-ChildItem -Path $cliDir -Filter *.cs -Recurse |
          Where-Object { $_.FullName -notlike '*obj*' -and $_.FullName -notlike '*bin*' }) {
     $lines = Get-Content -LiteralPath $file.FullName
-    $command = [IO.Path]::GetFileNameWithoutExtension($file.Name)
+    # Partial-class files (RunCommand.Settings.cs) belong to their command (RunCommand).
+    $command = ([IO.Path]::GetFileNameWithoutExtension($file.Name) -split '\.')[0]
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $m = [regex]::Match($lines[$i], '\[CommandOption\("([^"]+)"[^\]]*\)\]')
         if (-not $m.Success) { continue }
