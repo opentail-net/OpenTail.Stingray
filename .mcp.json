@@ -15,13 +15,6 @@
         "--db-path", "C:/git/opentail/opentail.db",
         "--allow-writes"
       ]
-    },
-    "screenshot": {
-      "type": "stdio",
-      "command": "C:/Git-Public/OpenTail.Stingray/examples/screenshot-mcp/target/release/screenshot-mcp.exe",
-      "args": [
-        "mcp", "--transport", "stdio"
-      ]
     }
   }
 }
