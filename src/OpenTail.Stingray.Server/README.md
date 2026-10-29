@@ -22,7 +22,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenTailStingray(opt =>
 {
     opt.ModelPath = "models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf";
-    opt.GpuLayers = -1; // -1 = all layers on GPU; 0 = pure CPU
+    opt.NGpuLayers = -1; // -1 = all layers on GPU; 0 = pure CPU
 });
 
 var app = builder.Build();
@@ -48,7 +48,7 @@ in-flight cap and takes precedence when explicitly set.
 Bind from configuration instead:
 
 ```csharp
-// appsettings.json: { "OpenTail.Stingray": { "ModelPath": "...", "GpuLayers": -1 } }
+// appsettings.json: { "OpenTail.Stingray": { "ModelPath": "...", "NGpuLayers": -1 } }
 builder.Services.AddOpenTailStingray(builder.Configuration);
 ```
 

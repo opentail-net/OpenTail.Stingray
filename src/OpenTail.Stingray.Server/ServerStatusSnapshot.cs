@@ -48,7 +48,8 @@ public sealed record ServerStatusSnapshot(
         int admissionCapacity,
         ServerEnvironmentOverrideReceipt? environmentOverrides = null,
         CpuBatchedPrefillCapability? cpuBatchedPrefill = null,
-        ServerRuntimeResolution? runtimeResolution = null)
+        ServerRuntimeResolution? runtimeResolution = null,
+        string? loadedArchitecture = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -142,7 +143,7 @@ public sealed record ServerStatusSnapshot(
             SchemaVersion: CurrentSchemaVersion,
             Status: saturated ? "saturated" : "ok",
             Model: engine.ModelId,
-            Architecture: options.Architecture,
+            Architecture: loadedArchitecture ?? options.Architecture,
             UptimeSeconds: (long)uptimeSeconds,
             Placement: new ServerStatusPlacement(
                 Backend: options.Backend.ToString().ToLowerInvariant(),

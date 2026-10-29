@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<SessionModelRegistry>();
         services.TryAddSingleton<CpuPrefillRuntimeReceiptRelay>();
         services.TryAddSingleton<ServerRuntimeResolutionRelay>();
+        services.TryAddSingleton<ServerLoadedArchitectureRelay>();
 
         // Request admission gate. Resolved lazily so the options object is fully bound
         // (config + the host's inline Configure) by first construction. A positive
@@ -133,6 +134,7 @@ public static class ServiceCollectionExtensions
                     : "Sessions are disabled by server configuration.");
             sp.GetRequiredService<CpuPrefillRuntimeReceiptRelay>().Set(loaded.CpuBatchedPrefill);
             sp.GetRequiredService<ServerRuntimeResolutionRelay>().Set(loaded.RuntimeResolution);
+            sp.GetRequiredService<ServerLoadedArchitectureRelay>().Set(loaded.Architecture);
 
             return loaded.Engine;
         });
