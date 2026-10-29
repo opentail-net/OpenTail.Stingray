@@ -24,9 +24,9 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * Through `dotnet test`: use `--filter-class <Name>` or `--filter-method <Name>` (e.g., `dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class QwenAsrTests`). This has been unreliable in practice (silently reports "Zero tests ran" even for a real, discoverable test) — if it does, don't keep retrying flag variants; fall back to invoking the built `.exe` directly.
    * When invoking built test `.exe` directly (`tests/<Project>/bin/<Config>/net10.0/<Project>.exe -class <Name>`): the class name must be **fully namespace-qualified** (e.g. `-class OpenTail.Stingray.Tests.Audio.CosyVoice3ClipGenDebugTests`, not just `CosyVoice3ClipGenDebugTests`) — the bare class name silently matches zero tests. Build the test project first (`dotnet build tests/<Project> -c Release`) since the `.exe` doesn't rebuild itself.
 4. **Hard Compiler & Build Constraints**:
-   * `TreatWarningsAsErrors` is enabled globally â all compiler warnings must be fixed.
-   * `InvariantGlobalization` is enabled â no culture-specific string operations.
-   * NativeAOT / trim analyzers are active â no reflection-heavy patterns or dynamic code generation; use source-generated JSON (`OpenTailStingrayJsonContext`).
+   * `TreatWarningsAsErrors` is enabled globally — all compiler warnings must be fixed.
+   * `InvariantGlobalization` is enabled — no culture-specific string operations.
+   * NativeAOT / trim analyzers are active — no reflection-heavy patterns or dynamic code generation; use source-generated JSON (`OpenTailStingrayJsonContext`).
 5. **Vulkan SPIR-V Shaders**:
    * Shaders are defined in `src/OpenTail.Stingray.Vulkan/Shaders.cs` and precompiled into `Shaders.Precompiled.g.cs`. If GLSL shader constants change, run `scripts/gen-spirv.ps1` (requires Vulkan SDK) or tests will fail on table drift.
 6. **Do not use subagents in this project**:
@@ -89,21 +89,21 @@ dotnet publish src/OpenTail.Stingray.Server.Host -c Release -r win-x64
 
 The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
 
-1. **Core** (`OpenTail.Stingray.Core`) â Central types & abstractions (`IComputeBackend`, `IForwardPass`, `ITokenizer`, `ITokenConstraint`), GGUF memory-mapped parser, BPE/SPM tokenizers, Jinja chat templates, and grammar-constrained JSON schema decoding.
+1. **Core** (`OpenTail.Stingray.Core`) — Central types & abstractions (`IComputeBackend`, `IForwardPass`, `ITokenizer`, `ITokenConstraint`), GGUF memory-mapped parser, BPE/SPM tokenizers, Jinja chat templates, and grammar-constrained JSON schema decoding.
 2. **Compute Backends**:
-   * `OpenTail.Stingray.Cpu` â AVX2/AVX-512 SIMD kernels (`SimdKernels`), Q4_K/Q6_K/Q8 dequantization (`Dequantize`), Gated-DeltaNet kernels (`GdnKernels`).
-   * `OpenTail.Stingray.Cuda` â cuBLAS GEMM, NVRTC runtime kernels (`CudaTextKernels`, `CudaWsKernels`), GPU buffer pools.
-   * `OpenTail.Stingray.Vulkan` â Vortice.Vulkan compute shaders, SPIR-V pipeline cache.
-3. **Engine** (`OpenTail.Stingray.Engine`) â Forward pass dispatch (`ForwardPass`, `CudaForwardPass`, `HybridGdnForwardPass`), paged KV cache (`PagedKvCache`), token sampling (`Sampler`), continuous batching (`ContinuousBatchingEngine`), and speculative decoding (`MtpDecoder`, `DSparkDecoder`).
+   * `OpenTail.Stingray.Cpu` — AVX2/AVX-512 SIMD kernels (`SimdKernels`), Q4_K/Q6_K/Q8 dequantization (`Dequantize`), Gated-DeltaNet kernels (`GdnKernels`).
+   * `OpenTail.Stingray.Cuda` — cuBLAS GEMM, NVRTC runtime kernels (`CudaTextKernels`, `CudaWsKernels`), GPU buffer pools.
+   * `OpenTail.Stingray.Vulkan` — Vortice.Vulkan compute shaders, SPIR-V pipeline cache.
+3. **Engine** (`OpenTail.Stingray.Engine`) — Forward pass dispatch (`ForwardPass`, `CudaForwardPass`, `HybridGdnForwardPass`), paged KV cache (`PagedKvCache`), token sampling (`Sampler`), continuous batching (`ContinuousBatchingEngine`), and speculative decoding (`MtpDecoder`, `DSparkDecoder`).
 4. **Domain Pipelines**:
-   * `OpenTail.Stingray.Audio` â Native TTS/ASR (`CosyVoice 2/3`, `Qwen3-TTS 12Hz`, `Fish Speech S2 Pro`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `Chatterbox-Turbo`, `Orpheus-TTS`, `Parler-TTS`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Alibaba Qwen3-ASR & ForcedAligner`, `Silero VAD`).
-   * `OpenTail.Stingray.Diffusion` â Text-to-image/video (`ZImageDiT`, `FluxDiT`, `RRDBNet` Real-ESRGAN upscaler, `VaeDecoder`).
-   * `OpenTail.Stingray.Vision` â Multimodal vision (`UnifiedVisionPipeline` for Gemma 4 `gemma4uv`/`gemma4v`, Gemma 3, Llama 4).
-   * `OpenTail.Stingray.TurboQuant` â KV cache compression (KVarN Hadamard + Sinkhorn variance normalization).
-   * `OpenTail.Stingray.Sessions` â Hot-session lifecycle, prefix sharing, and revisioned state management.
+   * `OpenTail.Stingray.Audio` — Native TTS/ASR (`CosyVoice 2/3`, `Qwen3-TTS 12Hz`, `Fish Speech S2 Pro`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `Chatterbox-Turbo`, `Orpheus-TTS`, `Parler-TTS`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Alibaba Qwen3-ASR & ForcedAligner`, `Silero VAD`).
+   * `OpenTail.Stingray.Diffusion` — Text-to-image/video (`ZImageDiT`, `FluxDiT`, `RRDBNet` Real-ESRGAN upscaler, `VaeDecoder`).
+   * `OpenTail.Stingray.Vision` — Multimodal vision (`UnifiedVisionPipeline` for Gemma 4 `gemma4uv`/`gemma4v`, Gemma 3, Llama 4).
+   * `OpenTail.Stingray.TurboQuant` — KV cache compression (KVarN Hadamard + Sinkhorn variance normalization).
+   * `OpenTail.Stingray.Sessions` — Hot-session lifecycle, prefix sharing, and revisioned state management.
 5. **Frontends**:
-   * `OpenTail.Stingray.Cli` â CLI entry point (`run`, `image`, `perplexity`, `list-metadata`, `list-tensors`).
-   * `OpenTail.Stingray.Server` / `Server.Host` â High-performance ASP.NET Core endpoint library and runnable AOT host.
+   * `OpenTail.Stingray.Cli` — CLI entry point (`run`, `image`, `perplexity`, `list-metadata`, `list-tensors`).
+   * `OpenTail.Stingray.Server` / `Server.Host` — High-performance ASP.NET Core endpoint library and runnable AOT host.
 
 ---
 
