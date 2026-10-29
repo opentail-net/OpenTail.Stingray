@@ -60,6 +60,17 @@ public sealed partial class RunCommand
         return withBos;
     }
 
+    /// <summary>
+    /// True when <see cref="FormatPrompt"/> will fall back to the hardcoded ChatML wrapper for a vocabulary that has no
+    /// <c>&lt;|im_start|&gt;</c> token. Base models without a chat template (GPT-2, StarCoder2, ...) then read the markers as
+    /// literal text and continue them (<c>&lt;|imp…</c>), which looks like a model bug but is prompt formatting.
+    /// </summary>
+    internal static bool UsesUnsupportedChatMlFallback(string arch, bool hasChatTemplate, bool rawPrompt,
+        IReadOnlyDictionary<string, int> specialTokens) =>
+        !rawPrompt && !hasChatTemplate
+        && ArchitectureRegistry.FallbackChat(arch) == FallbackChatFormat.ChatMl
+        && !specialTokens.ContainsKey("<|im_start|>");
+
     internal static string FormatPrompt(string userMessage, string? systemPrompt, bool enableThinking = true, bool injectDefaultSystem = true)
     {
         // STINGRAY_RAW_PROMPT=1 bypasses the chat template entirely. Used for parity testing

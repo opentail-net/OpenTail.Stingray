@@ -190,6 +190,12 @@ public sealed partial class RunCommand
             AnsiConsole.MarkupLine("[dim]Chat template overridden via --chat-template.[/]");
         }
 
+        if (UsesUnsupportedChatMlFallback(s_arch, s_jinja is not null,
+                Environment.GetEnvironmentVariable("STINGRAY_RAW_PROMPT") == "1", tokenizer.SpecialTokens))
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] this model has no chat template and its vocabulary has no " +
+                "<|im_start|> token, so the ChatML fallback wrapper will be read as plain text. For a base model, set " +
+                "STINGRAY_RAW_PROMPT=1 for raw text completion.");
+
         // --logit-bias: TOKEN_ID+BIAS / TOKEN_ID-BIAS entries into a bias map.
         IReadOnlyDictionary<int, float>? logitBiasMap = null;
         if (settings.LogitBias is { Length: > 0 } biasEntries
