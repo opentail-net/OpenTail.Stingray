@@ -83,14 +83,13 @@ updated with dated evidence in the same pass.
     **Remaining headroom:** a k=2 verify is still ~1.4x a plain step (floor ~1.0x = one DRAM pass of 12.2 GiB, ~0.33 s). Left on the
     table: attention layers still run per token (~0.05 s at k=2), lm_head Q5_K 2-input kernel is float (not Q8_K) arithmetic, and
     IQ2_XS/Q3_K/IQ2_XXS FFN tensors (~5% of FFN) have no shared-decode kernel. **Counter-example measured the same day: Qwen3.6-27B UD-Q3_K_XL is SLOWER with MTP (2.0-2.1 vs 2.6 t/s plain, all depths), see PerformanceLeague; cause not diagnosed (quant-mix coverage of the shared-decode kernels is the first suspect).** Evidence for depth 1 is Qwen3.8 only; other
-    CPU hybrid-GDN MTP models are unmeasured. The CLI help still says "defaults to 1 / batch max 2", which was stale before this
-    (the pre-migration default was 3 / 4). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
+    CPU hybrid-GDN MTP models are unmeasured. The `--spec-draft-n-max` help now states the real default (3, or 1 on the CPU hybrid-GDN pass; fixed 2026-10-29). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
     Reference: llama.cpp k=2 batch costs 1.4 plain steps; ours is now in the same range.
     **Output equality (resolved 2026-10-08): MTP is exact.** With `--repeat-penalty 1.0`, plain greedy and MTP greedy produce
     byte-identical text over 96 tokens (batched verify, depth 1). The earlier apparent divergence ("planet’s surface" vs "planet,
     serving") was the CLI's default repetition penalty 1.1 being applied by plain decoding only: **an explicit `--spec-type mtp`
-    skips the history-penalty check that auto mode makes, so it silently ignores `--repeat-penalty`.** That is a behaviour gap worth
-    a warning or a documented note (follow-up), not a numerical bug. Single/2-input/4-input kernels are pinned bit-identical for
+    skips the history-penalty check that auto mode makes, so it silently ignores `--repeat-penalty`.** Not a numerical bug; the CLI now prints a note when
+    `--spec-type mtp` meets a history penalty (`RunCommand.Speculative.cs`). Single/2-input/4-input kernels are pinned bit-identical for
     Q4_K, Q5_K, Q6_K and the IQ formats (`IqSharedDecodeMultiInputTests`, finite data asserted).
 
 
@@ -112,8 +111,8 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - GPU paths;
    - untested variants: MoE Nemotron-H, LFM2-VL/Audio, and the Nemotron-Nano-12B-v2-VL vision tower
      end to end; Falcon-H1 should come almost free.
-8. **ONNX pipelines**: SenseVoice and ONNX Paraformer work but are not wired into `stingray stt`;
-    now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
+8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt` (`--model sensevoice` /
+    `paraformer`). Open: now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
 9. **Gemma 1 (`gemma`)**: needs the Gemma-2 semantics and a checkpoint to verify with. Gemma 2 was fixed on the CPU on
    2026-10-11 (§1 item 7).
 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
