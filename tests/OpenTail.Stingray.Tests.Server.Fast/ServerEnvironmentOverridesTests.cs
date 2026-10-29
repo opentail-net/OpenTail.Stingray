@@ -120,5 +120,33 @@ public sealed class ServerEnvironmentOverridesTests
             ],
             receipt.Names);
     }
+
+    [Fact]
+    public void Apply_AcceptsDocumentedSentinelsAndRejectsOutOfContractValues()
+    {
+        var options = new OpenTailStingrayServerOptions
+        {
+            PrefillChunkTokens = 512,
+            KvBudgetMb = 4096,
+            NGpuLayers = 8,
+            Backend = ServerBackend.Cpu,
+        };
+        string? Environment(string name) => name switch
+        {
+            "STINGRAY_PREFILL_CHUNK" => "-1",
+            "STINGRAY_KV_BUDGET_MB" => "0",
+            "STINGRAY_N_GPU_LAYERS" => "-2",
+            "STINGRAY_BACKEND" => "99",
+            _ => null,
+        };
+
+        var applied = ServerEnvironmentOverrides.Apply(options, Environment);
+
+        Assert.Equal(-1, options.PrefillChunkTokens);
+        Assert.Equal(0, options.KvBudgetMb);
+        Assert.Equal(8, options.NGpuLayers);
+        Assert.Equal(ServerBackend.Cpu, options.Backend);
+        Assert.Equal(["STINGRAY_PREFILL_CHUNK", "STINGRAY_KV_BUDGET_MB"], applied);
+    }
 }
 

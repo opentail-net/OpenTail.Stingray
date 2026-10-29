@@ -19,20 +19,24 @@ public static class ServerEnvironmentOverrides
         ApplyInt("STINGRAY_MAX_BATCH", value => value > 0, value => options.MaxBatchSize = value);
         ApplyInt("STINGRAY_MAX_QUEUE", value => value >= 0, value => options.MaxQueuedRequests = value);
         ApplyInt("STINGRAY_MAX_CONCURRENT", value => value > 0, value => options.MaxConcurrentRequests = value);
-        ApplyInt("STINGRAY_PREFILL_CHUNK", value => value >= 0, value => options.PrefillChunkTokens = value);
-        ApplyLong("STINGRAY_KV_BUDGET_MB", value => value != 0, value => options.KvBudgetMb = value);
+        // -1 selects the automatic chunk size (PrefillChunkTokens contract).
+        ApplyInt("STINGRAY_PREFILL_CHUNK", value => value >= -1, value => options.PrefillChunkTokens = value);
+        // 0 = automatic budget, negative = unlimited, positive = explicit MiB (KvBudgetMb contract).
+        ApplyLong("STINGRAY_KV_BUDGET_MB", _ => true, value => options.KvBudgetMb = value);
         ApplyLong("STINGRAY_PREFIX_CACHE_MB", _ => true, value => options.PrefixCacheMb = value);
         ApplyLong("STINGRAY_PREFILL_DEQUANT_MB", _ => true, value => options.PrefillDequantCacheMb = value);
 
         string? backend = environment("STINGRAY_BACKEND");
         if (!string.IsNullOrWhiteSpace(backend)
-            && Enum.TryParse(backend, ignoreCase: true, out ServerBackend selectedBackend))
+            && Enum.TryParse(backend, ignoreCase: true, out ServerBackend selectedBackend)
+            && Enum.IsDefined(selectedBackend))
         {
             options.Backend = selectedBackend;
             applied.Add("STINGRAY_BACKEND");
         }
 
-        ApplyInt("STINGRAY_N_GPU_LAYERS", _ => true, value => options.NGpuLayers = value);
+        // -1 = all layers on GPU, 0 = CPU only, positive = that many layers.
+        ApplyInt("STINGRAY_N_GPU_LAYERS", value => value >= -1, value => options.NGpuLayers = value);
         ApplyString("STINGRAY_KV_DTYPE", value => options.KvType = value);
         ApplyEnabled("STINGRAY_TQ", () => options.TurboQuant = true);
         ApplyString("STINGRAY_TQ_MODE", value => options.TqMode = value);
