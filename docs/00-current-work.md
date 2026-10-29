@@ -101,7 +101,9 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 2. Model coverage
 
-1. **GLM-4.5 / 4.6 / 4.7 incl. Air (`glm4moe`)**: a top open family; GLM-4 dense already runs.
+1. **GLM (`glm4moe`), follow-ups.** GLM-4.5-Air was admitted on 2026-10-04 (Q2_K, CPU and Vulkan layer split;
+   STATUS row). Open: other quantisations and the GLM-4.6 / 4.7 checkpoints on real weights, and Vulkan offload
+   beyond `-g 4` (every expert of a resident layer is uploaded, so device memory runs out). GLM-4 dense already runs.
 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
    CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
    - Mamba-2 / short-conv support in the batched `PrefillCore` (prefill is token by token: Granite
