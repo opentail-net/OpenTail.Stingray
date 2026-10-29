@@ -69,7 +69,7 @@ Fixed model files, prompt, seed, steps, CFG and resolution; verify the device an
 At least five alternating A/B/A/B runs on the short workload; compare medians and spread, not the best run; then
 the full target for finalists. Re-run the existing Qwen Image numerical check against `sd-cli` (same noise and
 settings): a speedup that changes the result beyond tolerance is not a win. Keep a change only if it is measurably
-faster; revert otherwise. Write measured numbers into `docs/PerformanceLeague.md`-style records, dated.
+faster; revert otherwise. Write measured numbers into `PerformanceLeague.md`-style records, dated.
 
 ### B5. What iGPU timings cannot prove
 A GPU path losing to or beating the CPU here describes this APU and driver, not a discrete GPU. A roughly 16 GB

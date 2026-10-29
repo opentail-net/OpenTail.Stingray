@@ -210,7 +210,7 @@ a pass (REJECT, divergence, unpinned or mismatched golden, unreadable golden, ar
 mismatch (or, with `--strict`, any skipped / unpinned / near-tie). Neither separates "failed the check" from "the tool errored";
 read the printed verdict (or `scout`'s JSON) to tell them apart. Splitting them is deliberately not done here: other callers rely on `1`.
 
-The tokenizer-shape classification and layer-0 inventory it prints live in `ArchitectureTriage` (`src/OpenTail.Stingray.Cli/ArchitectureTriage.cs`),
+The tokenizer-shape classification and layer-0 inventory it prints live in `ArchitectureTriage` (`src/OpenTail.Stingray.Engine/Scout/ArchitectureTriage.cs`),
 shared with `scout` so the two cannot drift.
 
 Automates the mechanical half of the architecture-admission workflow that

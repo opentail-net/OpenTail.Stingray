@@ -261,7 +261,7 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
       `ForwardPass.IsSingleDistinctTokenPrompt`. The hybrid path has no such guard but measured no
       collapse. RWKV is unverified (no checkpoint on disk), noted in ADR-0003
 - [x] Heavy suite with int8 on: 166/1/58, the only failure being known item 24. Committed `d7fcf135`
-- [ ] `docs/1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md` (in `docs/done/`): note
+- [ ] `docs/done/13-granite4-h-small-moe-ppl-parity-plan.md`: note
       dense on, MoE still off
 - [ ] Re-measure prefill with the new default **uncontended, one run at a time**: SmolLM2-1.7B,
       Qwen2.5-0.5B, Gemma-3-4B, Gemma-4-12B; dated League rows; fill ADR-0003's speed table

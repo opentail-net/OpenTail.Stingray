@@ -652,7 +652,7 @@ Phase 3.
       KV-layer sharing, `attention_k_eq_v`, per-head V norm, and a real `windowSize` parameter for
       `PrefillCoreAttention` is a multi-feature engineering project, not a quick fix or a flag
       flip. `docs/done/gemma4-12b-evidence.md`'s own conclusion stands: scope this properly (check
-      `docs/cpu-prefill-repack-gemm-plan.md` for reusable batched-prefill design) before attempting
+      `docs/done/cpu-prefill-repack-gemm-plan.md` for reusable batched-prefill design) before attempting
       it, and do NOT try to force the existing path again — that route is confirmed memory-unsafe,
       not just slow-to-verify. **Phase 6 is correctly closed at "well-understood, real,
       substantial follow-on work" for this pass — matches the category, doesn't need re-deriving.**

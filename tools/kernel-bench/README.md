@@ -27,7 +27,7 @@ identical data.
 
 ## Why an isolated benchmark is legitimate *here*
 
-`docs/perf-loop-progress.md` records three cases where an isolated microbenchmark disagreed with
+`docs/done/perf-loop-progress.md` records three cases where an isolated microbenchmark disagreed with
 end-to-end (iteration 24: a reproduced 2.4-2.6x isolated win that was an 11.9% e2e **loss**;
 `ACT_SOA_CPA`: +10-15% kernel, e2e-neutral). So isolation is untrustworthy for *"will this make the
 app faster?"*.
