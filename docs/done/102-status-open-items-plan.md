@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Working log. Items 1, 2, 4-9, 11, 12, 14, 15 and 17 done; #13 done for SD3, FLUX.2 and Qwen Image. Still open, carried forward to ../00-current-work.md: #10 CosyVoice 2 and #13 HunyuanVideo (both blocked on an independent reference), #16 `glm4moe`, the follow-ups listed under #14/#15/#17 (batched prefill, rewind, GPU, MoE variants), and the Youtu-VL one-window PPL gap.
+> **ARCHIVED 2026-09-27.** Working log. Items 1, 2, 4-9, 11, 12, 14, 15 and 17 done; #13 done for SD3, FLUX.2 and Qwen Image. At archive time, #10 CosyVoice 2 and #13 HunyuanVideo (both blocked on an independent reference), #16 `glm4moe`, the follow-ups listed under #14/#15/#17 (batched prefill, rewind, GPU, MoE variants), and the Youtu-VL one-window PPL gap were carried forward to ../00-current-work.md. The Youtu-VL PPL gap was subsequently closed as not reproducible on 2026-10-20 (see follow-up below).
 
 # STATUS open items — fixable on this PC (plan, 2026-09-26)
 
@@ -543,4 +543,15 @@ The total is 38. EUR."), so the
   unchanged with an f32 KV cache, and a Q LoRA or RoPE fault is ruled out. The regression suites
   and the DeepSeek-V2-Lite check are green (run by the hand-off model, 2026-09-26; timings show
   real weights ran). Next: the vision encoder checkerboard check (hand-off test 4).
+
+- 2026-10-20 follow-up: the reported Youtu-VL text PPL gap did not reproduce on the current
+  checkout. With the real `models/_models/youtu-vl-4b-Q8_0.gguf` and the same
+  `scripts/kvarn-gate/wiki.test.raw` (1,290,590 bytes), Stingray token-by-token perplexity at
+  `-c 2048` scored 2,047 targets in 405.1 s: total PPL 11.6769; positions [1024,2048) PPL
+  13.2928. The pinned local llama.cpp `b10306-cpu` `llama-perplexity -c 2048 -t 12 --chunks 1`
+  scored the same file/model at PPL 13.2990 (62.16 s/pass). Stingray `--batched` produced the
+  identical per-token NLL dump (SHA-256
+  `A3B16223E96FA91EA7408683A985C5BFC80D0B18F98B5FB7F90A50028DA8BA9A`) and identical bucket
+  scores. The earlier +5% window is therefore closed as not reproducible; no code change was
+  justified. Raw NLL dumps remain in OS temp, not the repository.
 

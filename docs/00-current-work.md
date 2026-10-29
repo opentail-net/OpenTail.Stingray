@@ -31,18 +31,17 @@ updated with dated evidence in the same pass.
 
 ## 1. Correctness of what is already claimed
 
-1. **Vision features that exist only on the CPU `ForwardPass`.** 2D M-RoPE image positions
-   (PaddleOCR-VL, Qwen2.5-VL, …) and Granite 4.0 Vision deepstack are not applied by the CUDA and
-   Vulkan passes, nor by the server's image path (`InferenceEngine` handles Gemma-style placeholders
-   only). Today those models give correct answers from the CLI on CPU only. From #6 and #9 in
-   [done/102](done/102-status-open-items-plan.md).
+1. **Remaining vision execution gaps.** CUDA image input still lacks text-decoder M-RoPE image
+   positions and deepstack; the server's image path still handles Gemma-style placeholders only.
+   Vulkan Qwen3-VL M-RoPE and deepstack are implemented: the real Qwen3VL-2B Q8_0 + mmproj
+   `Qwen3VlVulkanMRopeParityTests` ran 2/2 tests in 54.457 s on 2026-10-20 (CPU/Vulkan parity,
+   with no-M-RoPE and no-deepstack controls). Remaining CUDA verification is blocked on CUDA
+   hardware (none available here); server multimodal routing remains an unimplemented product path.
+   From #6 and #9 in [done/102](done/102-status-open-items-plan.md).
 2. **Per-pipeline diffusion end-to-end smoke tests**: real weights, small resolution, a stored
    reference, and a loud failure when the checkpoint is missing. Item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
-9. **Youtu-VL text**: one 1024-token wikitext window is +5% PPL vs llama.cpp (others −2.1% to
-    +0.8%). Diff per-token log-probs over wiki.test.raw [1024,2048) against `llama-server`.
-    #5 in [done/102](done/102-status-open-items-plan.md).
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
