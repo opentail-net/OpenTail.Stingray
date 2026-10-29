@@ -15,11 +15,15 @@ src/
 ├── OpenTail.Stingray.Cpu/        <- Managed SIMD kernels (AVX-512, AVX2, ARM Neon) & thread pool
 ├── OpenTail.Stingray.Vulkan/     <- SPIR-V compute shaders, memory allocator, GPU dispatch
 ├── OpenTail.Stingray.Cuda/       <- Managed CUDA driver interop & custom CUDA kernels
+├── OpenTail.Stingray.Pipeline/   <- VRAM → pinned RAM → NVMe memory hierarchy, SLRU expert cache, prefetcher
+├── OpenTail.Stingray.TurboQuant/ <- KV-cache compression (Lloyd-Max codebooks, KVarN)
 ├── OpenTail.Stingray.Engine/     <- Public API facade, Model, ModelContext, Executors, ChatSession
+├── OpenTail.Stingray.Sessions/   <- Transactional, revisioned hot-session orchestration
 ├── OpenTail.Stingray.Audio/      <- TTS (Piper, Kokoro, Qwen3-TTS), STT (Whisper), DSP resamplers
 ├── OpenTail.Stingray.Vision/     <- Unified vision embedders (Qwen-VL, Pixtral, DeepSeek-OCR, etc.)
 ├── OpenTail.Stingray.Diffusion/  <- DiT pipelines (FLUX.1, SD 3.5, Wan Video, Z-Image-Turbo)
-├── OpenTail.Stingray.Server/     <- ASP.NET Core OpenAI & Anthropic compatible API server
+├── OpenTail.Stingray.Server/     <- ASP.NET Core OpenAI & Anthropic compatible API server (library)
+├── OpenTail.Stingray.Server.Host/ <- Runnable NativeAOT host for the server library
 ├── OpenTail.Stingray.Cli/        <- Command-line tool (stingray)
 └── OpenTail.Stingray/            <- Primary NuGet metapackage entry point
 ```
