@@ -115,7 +115,8 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
      end to end; Falcon-H1 should come almost free.
 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer work but are not wired into `stingray stt`;
     now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
-9. **Gemma 1 / Gemma 2**: no `ModelGraph` branch at all (no local checkpoint to verify with).
+9. **Gemma 1 (`gemma`)**: needs the Gemma-2 semantics and a checkpoint to verify with. Gemma 2 was fixed on the CPU on
+   2026-10-11 (§1 item 7).
 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
 11. **Missing GGML op kernels**: none left; RWKV6 / RWKV7 closed 2026-10-01 (see
     [done/bugstofix-resolved-2026-10.md](done/bugstofix-resolved-2026-10.md); the rest of the old op gap: [done/17](done/17-ggml-op-coverage-verification-plan.md)).

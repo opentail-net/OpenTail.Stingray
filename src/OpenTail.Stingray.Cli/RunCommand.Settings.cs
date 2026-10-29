@@ -157,7 +157,7 @@ public sealed partial class RunCommand
         public float DSparkMinConfidence { get; init; }
 
         [CommandOption("--spec-draft-n-max")]
-        [Description("Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 1 (a 2-token verify batch — the measured optimum). Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp.")]
+        [Description("Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 3, or 1 (a 2-token verify batch, the measured optimum) on the CPU hybrid-GDN pass. Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp.")]
         [DefaultValue(0)]
         public int SpecDraftNMax { get; init; }
 

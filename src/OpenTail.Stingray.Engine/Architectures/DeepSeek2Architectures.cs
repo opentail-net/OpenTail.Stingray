@@ -16,7 +16,7 @@ internal static class DeepSeek2Architectures
         Id = "deepseek2",
         Status = AdmissionStatus.Admitted,
         // The dedicated MLA GPU pass is Vulkan-only and full-offload; generic CPU remains supported.
-        // Enforced by RunCommand.cs:1992-2005 and InferenceEngineLoader.cs:559-569.
+        // Enforced by ForwardPassSelection (the DeepSeek2Mla branch), which the CLI and the server reach through ExecutionPlanner.
         ForwardPassFamily = ForwardPassFamily.DeepSeek2Mla,
         SupportedBackends = SupportedBackends.Cpu | SupportedBackends.Vulkan,
         BackendLimitation = "DeepSeek2 MLA supports CPU or full Vulkan offload; CUDA and partial GPU offload use CPU.",

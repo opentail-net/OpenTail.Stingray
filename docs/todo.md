@@ -27,7 +27,7 @@ one external-access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed, deny win
 - [ ] **Estimator**: MLA (DeepSeek2), hybrid/GDN and RWKV are Unknown (blocked); other MoE families unmeasured (only Phi-3.5-MoE: experts not repacked); only one machine calibrated; GPU placement deliberately not estimated (CLAUDE.md rule 13). Re-measure when the engine changes (the Q4_K repack copy is why a Q4_K_M file costs ~1.8x its size).
 - [ ] **Leave-one-out** (`scripts/scout-leave-one-out.ps1`) again whenever signatures grow; still n=12. Observed split: <=11 differences = real near-relative, >=14 = nothing close.
 - [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
-- [ ] Unrelated finding: `CLAUDE.md` says `examples/*.cpp` and `tools/llama.cpp` are "checked into this repo". They are git-ignored (0 tracked files), so other contributors do not have them. Decide the wording.
+- [x] Unrelated finding (resolved: CLAUDE.md rule 8 now says they are git-ignored local checkouts): `CLAUDE.md` said `examples/*.cpp` and `tools/llama.cpp` were "checked into this repo". They are git-ignored (0 tracked files), so other contributors do not have them. Decide the wording.
 - [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
 
 ## Idea from chat: known-good checkpoints, favourites, local availability (2026-10-09)

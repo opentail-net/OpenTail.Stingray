@@ -20,7 +20,7 @@ internal static partial class OtherAdmittedArchitectures
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
         // CPU or full Vulkan only; CUDA and partial GPU requests fall back to CPU.
-        // Enforced by RunCommand.cs:2035-2054 and InferenceEngineLoader.cs:620-634.
+        // Enforced by ForwardPassSelection (the GptOss branch), which the CLI and the server reach through ExecutionPlanner.
         ForwardPassFamily = ForwardPassFamily.GptOss,
         SupportedBackends = SupportedBackends.Cpu | SupportedBackends.Vulkan,
         BackendLimitation = "gpt-oss supports CPU or full Vulkan offload only; CUDA and partial offload use CPU.",
