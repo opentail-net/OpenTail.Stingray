@@ -12,7 +12,7 @@ Does RyuJIT emit competitive code for quantized dot kernels, or not? OpenTail.St
 **structural** (threading, layout, dispatch — fixable). Nobody has separated the two, and the
 answer changes the roadmap.
 
-**Scope discipline:** this is an isolated microbenchmark. `docs/perf-loop-progress.md` records
+**Scope discipline:** this is an isolated microbenchmark. `docs/done/perf-loop-progress.md` records
 three cases where isolated numbers disagreed with end-to-end (iteration 24: a reproduced 2.4-2.6x
 isolated win that was an 11.9% e2e **loss**). So it is *not* evidence that any change will make the
 app faster. It is only valid because both sides run the same algorithm on the same data under the
@@ -129,6 +129,6 @@ proceeding; do not compare against that number.
 - **C# faster** — treat as a bug in the harness until proven otherwise. Check the C++ build is
   Release with `GGML_NATIVE=ON`, and re-check the checksums.
 
-Whatever the outcome, record it in `docs/perf-loop-progress.md` as a numbered iteration with n, sd,
+Whatever the outcome, record it in `docs/done/perf-loop-progress.md` as a numbered iteration with n, sd,
 and the exact shapes. A negative result with its reason is as valuable as a win — roughly half that
 log is documented negatives, and that is deliberate.
