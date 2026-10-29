@@ -119,7 +119,7 @@ leads to the write-up. Reuse the approach, but check the paths and env vars firs
 | `bench-390-ab.ps1` | #390: op-offload MoE prefill, pinned-buffer A/B |
 | `bench-390-models.ps1` | #390: re-measure of the CUDA GDN-hybrid CPU-MoE rows |
 | `bench-390-sweep.ps1` | #390: prefill crossover sweep for register-mode op-offload |
-| `bench-all.ps1` | Early multi-model sweep (SmolLM2, Qwen3, MoE, Llama 4 Scout, Gemma 4); some paths are hard-coded to `E:models` |
+| `bench-all.ps1` | Early multi-model sweep (SmolLM2, Qwen3, MoE, Llama 4 Scout, Gemma 4); some paths are hard-coded to `E:\models` |
 | `bench-moe-rerun.ps1` | MoE re-run with `bench-all.ps1`'s model paths |
 | `bench-carnice.ps1` | Carnice (Qwen3.6-35B-A3B-MTP) CUDA hybrid |
 | `bench-q8k-validation.ps1` | #103: multi-prompt validation on Carnice |
