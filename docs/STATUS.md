@@ -167,7 +167,7 @@ Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan comp
   - Alibaba Qwen2.5-VL / Qwen3-VL
   - DeepSeek-OCR & DeepSeek-OCR2
   - Mistral Pixtral 12B
-  - LLaVA-1.5, LLaVA-NeXT, LLaVA-OneVision
+  - LLaVA-1.5, LLaVA-NeXT (AnyRes geometry, token counts and first-token output checked against llama.cpp b10306; pixel-level resize/pad and per-view embedding parity not yet verified, see `docs/1-correctness/bugstofix.md` item 15), LLaVA-OneVision (not verified)
   - OpenGVLab InternVL 2.5 / 3 / 4
   - OpenBMB MiniCPM-V 2.6
   - Zhipu AI GLM-4V, GLM-4.5V, GLM-OCR

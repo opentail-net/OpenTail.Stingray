@@ -143,6 +143,12 @@ In addition, the byte-level BPE pre-tokenizer split patterns in
 `src/llama-vocab.cpp` (the `llm_tokenizer_bpe` regex table), and are therefore
 derived source rather than a format reference.
 
+The DeepSeek-V3.2 and DeepSeek-V4 architecture ports are also **derived from**
+llama.cpp's `src/models/deepseek32.cpp` and `src/models/deepseek4.cpp`. Their
+functions cite those reference files by line range (`src/OpenTail.Stingray.Engine/DeepSeek32*.cs`,
+`src/OpenTail.Stingray.Engine/DeepSeek4*.cs`). The DeepSeek-V4.1 port (`DeepSeek41*.cs`)
+records `deepseek4.cpp` as its reference in the port plan but does not cite it in code.
+
 No llama.cpp or ggml binary is bundled with OpenTail.Stingray.
 
 - Upstream: <https://github.com/ggml-org/llama.cpp>

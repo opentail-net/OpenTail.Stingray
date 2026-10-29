@@ -77,11 +77,10 @@ jobs:
   # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
   # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
   # (MetricsSupport off, or instruments trimmed). Verified locally on win-x64 (fails with MetricsSupport=false, passes with true).
-  # NOT yet verified on Linux, so it is non-blocking (continue-on-error) until a green run has been seen here.
+  # Blocking: the Linux job passed on main at bb7d1f68 and 9085aed1 (2026-10-13 and 2026-10-14).
   aot-telemetry:
-    name: NativeAOT telemetry self-test (non-blocking)
+    name: NativeAOT telemetry self-test
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5
