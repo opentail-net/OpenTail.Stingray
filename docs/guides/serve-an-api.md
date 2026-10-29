@@ -38,7 +38,7 @@ set an environment variable. Environment variables win.
 |---|---|---|
 | `ModelPath` | `STINGRAY_MODEL` | The model file to serve |
 | (image projector) | `STINGRAY_MMPROJ` | The `mmproj-*.gguf` for a vision model |
-| `NGpuLayers` | `STINGRAY_N_GPU_LAYERS` | GPU layers (-1 is all, 0 is CPU) |
+| `NGpuLayers` | `STINGRAY_N_GPU_LAYERS` | GPU layers (-1 lets the planner size the GPU/CPU split, all layers when they fit; 0 is CPU; N pins N layers) |
 | `MaxBatchSize` | `STINGRAY_MAX_BATCH` | Requests generated together (default 1) |
 | `MaxQueuedRequests` | `STINGRAY_MAX_QUEUE` | How many may wait; past that the server answers HTTP 429 (default 16) |
 

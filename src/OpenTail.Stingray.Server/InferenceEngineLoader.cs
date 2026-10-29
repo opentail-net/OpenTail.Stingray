@@ -69,8 +69,8 @@ public static class InferenceEngineLoader
             if (!instance.ForwardPass.SupportsEmbeddingInput)
                 throw new InvalidOperationException(
                     "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
-                    "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a " +
-                    $"Gemma 4 model that fits VRAM. The configured pass ({instance.ForwardPass.GetType().Name}) does not support it.");
+                    "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload of a Gemma 4 model " +
+                    $"(NGpuLayers=-1 when the planner fits every layer in VRAM). The configured pass ({instance.ForwardPass.GetType().Name}) does not support it.");
             if (plan.Batching?.MaxBatchSize > 1 && instance.Engine is ContinuousBatchingEngine)
                 throw new InvalidOperationException(
                     "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
@@ -211,7 +211,7 @@ public static class InferenceEngineLoader
         if (!fwd.SupportsHiddenTaps)
             throw new InvalidOperationException(
                 "DSpark requires a tap-capable dense forward pass (CPU, NGpuLayers=0, or full " +
-                "CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV). " +
+                "CUDA offload, NGpuLayers=-1 with every layer fitting VRAM; no MoE / Gemma-4 / TurboQuant / SnapKV). " +
                 $"The configured pass ({fwd.GetType().Name}) can't capture hidden taps.");
 
         string stPath = spec.DSparkModelPath!;

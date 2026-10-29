@@ -35,7 +35,7 @@ public static class ServerEnvironmentOverrides
             applied.Add("STINGRAY_BACKEND");
         }
 
-        // -1 = all layers on GPU, 0 = CPU only, positive = that many layers.
+        // -1 = TierPlanner sizes the GPU/CPU split, 0 = CPU only, positive = pin that many layers.
         ApplyInt("STINGRAY_N_GPU_LAYERS", value => value >= -1, value => options.NGpuLayers = value);
         ApplyString("STINGRAY_KV_DTYPE", value => options.KvType = value);
         ApplyEnabled("STINGRAY_TQ", () => options.TurboQuant = true);

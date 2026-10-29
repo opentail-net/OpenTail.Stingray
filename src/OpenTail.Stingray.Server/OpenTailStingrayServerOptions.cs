@@ -76,8 +76,8 @@ public sealed class OpenTailStingrayServerOptions
     /// Optional path to a multimodal projector GGUF (mmproj-*.gguf) enabling image input
     /// (issue #253). Only Gemma 4 <c>gemma4uv</c> projectors are supported today, and only on a
     /// backend whose forward pass accepts precomputed-embedding input (CPU, i.e.
-    /// <see cref="NGpuLayers"/>=0, or full CUDA offload, <see cref="NGpuLayers"/>=-1, of a model
-    /// that fits VRAM). Set via this property, the <c>STINGRAY_MMPROJ</c> environment variable, or
+    /// <see cref="NGpuLayers"/>=0, or full CUDA offload, <see cref="NGpuLayers"/>=-1 with every
+    /// layer fitting VRAM). Set via this property, the <c>STINGRAY_MMPROJ</c> environment variable, or
     /// the <c>OpenTail.Stingray:MmprojPath</c> configuration key. When unset, image content blocks
     /// are rejected with a clear error.
     /// </summary>
@@ -89,7 +89,8 @@ public sealed class OpenTailStingrayServerOptions
     /// property or the <c>STINGRAY_DSPARK_MODEL</c> environment variable. When set, greedy
     /// no-thinking requests decode through <c>DSparkDecoder</c>; requires the single-user
     /// engine (<see cref="MaxBatchSize"/> 1) on a tap-capable dense forward pass
-    /// (CPU, <see cref="NGpuLayers"/>=0, or full CUDA offload, <see cref="NGpuLayers"/>=-1).
+    /// (CPU, <see cref="NGpuLayers"/>=0, or full CUDA offload, <see cref="NGpuLayers"/>=-1 with
+    /// every layer fitting VRAM).
     /// </summary>
     public string? DSparkModelPath { get; set; }
 
@@ -167,7 +168,8 @@ public sealed class OpenTailStingrayServerOptions
     /// <summary>
     /// Number of model layers to offload to the GPU. Mirrors the CLI's <c>--n-gpu-layers</c>
     /// (<c>-g</c>): <c>0</c> = CPU only, <c>-1</c> = let TierPlanner size the split from
-    /// available VRAM, <c>N</c> = explicit. Default <c>0</c>.
+    /// available VRAM (every layer on the GPU only when the model fits; otherwise a partial
+    /// offload), <c>N</c> = pin N layers. Default <c>0</c>.
     /// </summary>
     public int NGpuLayers { get; set; } = 0;
 
