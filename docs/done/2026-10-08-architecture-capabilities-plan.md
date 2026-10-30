@@ -2,7 +2,7 @@
 
 > Completed items moved to [done/2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md](../done/2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
-**Date:** 2026-10-08. **Status:** All phases (0-5) done 2026-10-08. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
+**Date:** 2026-10-08. **Status:** All phases (0-5) done 2026-10-08. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](../2-coverage/2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.
 
 ## Verdict
@@ -60,14 +60,14 @@ Rule that keeps the boundary honest: **a descriptor says what the model can do; 
 
 Each phase ends green: `dotnet build` 0 warnings (warnings are errors), the `.Fast` suites pass, and the phase-specific check below. One commit per phase.
 
-- [x] **0. Baseline and guard (do first; makes the rest safe)** (0.3 deferred)
-  - [ ] 0.3 (deferred: low value, table is private) Test that every key in `PrefillHandoffFamilies` names a registered architecture.
+- **0. Baseline and guard (do first; makes the rest safe)** (0.3 deferred)
+  - (moved to 2-coverage/2026-10-08-architecture-semantics-admission-plan.md) 0.3 (deferred: low value, table is private) Test that every key in `PrefillHandoffFamilies` names a registered architecture.
   - **Exit:** baseline + guard committed, passing on the unchanged tree.
 
 
 
-- [x] **3. Structural traits; shrink Core's parser (inventory #1)** (done 2026-10-08)
-  - [ ] 3.1 Decide D1 (below).
+- **3. Structural traits; shrink Core's parser (inventory #1)** (done 2026-10-08)
+  - (moved to 2-coverage/2026-10-08-architecture-semantics-admission-plan.md) 3.1 Decide D1 (below).
   - **Exit:** `ModelHyperparams` equality test across all admitted architectures (the old-vs-new equality harness from the semantics plan) still passes; real-weight spot checks on Granite-H, NemotronH, LFM2 and Qwen3.8 (these are the hybrids that exercise the moved rules); static-plan output diff clean.
 
 

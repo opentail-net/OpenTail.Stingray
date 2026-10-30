@@ -135,3 +135,8 @@ resolution path; admission stays fail-closed; real-weight receipts intact; no re
 - 2026-10-08 2.3/3.4/4.4 tests added (baseline-only test, semantics-hook smoke over every hooked descriptor + unique-registration, Model.Load/ModelDescription/resolver convergence on 3 real headers). 4.4 static-plan CLI diff not run separately: ModelDescription facts are pure functions of the hyperparams the snapshot gate already pins.
 - 2026-10-08 7.4 docs: superseded/historical banners on 10-06 plan, 10-05 registry plan, 10-05 selection matrix; link from 00-current-work.md.
 - 2026-10-08 Phase 8 exercises recorded as analysis (see Exercise results); no synthetic new architecture was added to the manifest. 9.1 Release solution build: 0 warnings, 0 errors.
+
+## Open items moved from 2026-10-08-architecture-capabilities-plan.md (2026-10-30)
+
+- [ ] 0.3 (deferred: low value, table is private). Test that every key in `PrefillHandoffFamilies` names a registered architecture. Checked 2026-10-30: `PrefillHandoffFamiliesTests` covers receipted families (`ReceiptedFamilies_AreAdmitted`), not every key.
+- [x] 3.1 Decide D1 (done, confirmed 2026-10-30): may Core accept a traits input from Engine (recommended yes, via `ModelArchitectureSemanticsContext`). Checked 2026-10-30: the context type lives in Core and is used from `ModelGraph.cs`, which suggests D1 is already implemented. Confirm and tick, or record the alternative.
