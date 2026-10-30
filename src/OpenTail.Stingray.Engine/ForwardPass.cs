@@ -1631,7 +1631,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// going through the dequant-cache/BLAS path; falls back to two separate
     /// <see cref="MatMulBatchedCached"/> calls (preserving existing, unchanged behavior) whenever
     /// the dequant cache IS active for either tensor, or the dual Q8 dispatch doesn't support the
-    /// dtype (Q5_K/Q2_K/Float32/Q8_0 have no _8In/_4In dot -- same set TryMatMulBatchedQ8 itself
+    /// dtype (Q5_K/Q2_K/Float32 have no int8 dot -- same set TryMatMulBatchedQ8 itself
     /// falls back for).
     /// </summary>
     /// <summary>

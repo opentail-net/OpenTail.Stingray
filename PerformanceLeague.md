@@ -1646,6 +1646,27 @@ Wall time for one `stingray image` run including model load, `--backend cpu --se
 | Z-Image-Turbo Q4_0 | 2 | 75 s / 63 s |
 | SD 3.5 Medium Q4_K_M | 20 | 61 s (one run; 4 steps gives a flat field, not usable) |
 
+## Q8_0 batched prefill scheduling, CPU (2026-10-30)
+
+Q8_0 weights now use the int8 batched-prefill dispatch (`TryMatMulBatchedQ8`: activations quantised once per token,
+16-row blocks x token groups) instead of one pass over every weight row per four tokens. The dots and the quantiser
+are the ones the old path used, so the output is **bit-identical** (`MatMulBatchedQ8EquivalenceTests`) and the
+generated text below was identical in every pair. Interleaved runs, control `STINGRAY_CPU_PREFILL_Q8=0` (old path
+for Q8_0), raw prompt, greedy, CPU, 8 threads; llama.cpp b10306 `llama-bench -p N -t 8 -r 2` on the same token
+count. Machine load moved llama.cpp's Granite 1B figure between 115 and 139 t/s across sessions.
+
+| Model (Q8_0) | Prompt tokens | Old path t/s (2 runs) | New path t/s (2 runs) | Gain | llama.cpp pp t/s | Ratio (new) |
+|---|---:|---:|---:|---:|---:|---:|
+| granite-4.0-h-1b | 687 | 96.3 / 105.1 | 143.8 / 141.7 | +42% | 114.8 | 1.24x |
+| granite-4.0-h-350m | 687 | 305.2 / 341.9 | 517.2 / 518.5 | +60% | 485.5 | 1.07x |
+| Qwen3-0.6B | 708 | 229.6 / 235.3 | 374.7 / 364.3 | +59% | 385.5 | 0.96x |
+| ERNIE-4.5-0.3B | 850 | 362.3 / 370.7 | 554.0 / 599.1 | +57% | 539.0 | 1.07x |
+| LFM2-1.2B | 780 | 138.9 / 160.0 | 207.1 / 184.7 | +31% | 185.0 | 1.06x |
+| gpt2 | 864 | 863.5 / 937.8 | 1501.3 / 1483.2 | +66% | 1654.7 | 0.90x |
+
+Decode is unchanged (single-token path). Granite 4.0-H 1B profile before the change: Mamba-2 in/out projections
+2.39 s and conv/scan 0.65 s of 6.8 s trunk for 687 tokens, so the gap was GEMM scheduling, not the recurrence.
+
 ## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
 
 Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the tokenizer), 24 generated tokens, `--temp 0 --single-turn --no-display-prompt -t 6`, three runs per cell, median. llama.cpp: `tools/llama.cpp/llama-bench.exe -p 512 -n 128 -t 6 -ngl 0 -r 1`, three invocations, median (prefill = pp512, decode = tg128 at depth 0). One process at a time on an idle machine. Caveats: ours measures decode at about 500 tokens of context while `tg128` runs from an empty cache, and this document already shows our decode eroding with context, so the decode ratios here are somewhat pessimistic; the size of that effect was not separated for these models. Raw runs: scratchpad `league.txt` / `league2.txt` (not committed).

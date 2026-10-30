@@ -159,6 +159,37 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
         return result;
     }
 
+    private static byte[] MakeQ8_0Weights(int rows, int cols, int seed)
+    {
+        int bytesPerRow = (cols / 32) * 34;
+        var rng = new Random(seed);
+        var bytes = new byte[rows * bytesPerRow];
+        rng.NextBytes(bytes);
+        for (int off = 0; off + 34 <= bytes.Length; off += 34)
+            WriteHalf(bytes, off, 0.01f + (off % 7) * 0.001f);
+        return bytes;
+    }
+
+    private static float[] ReferenceQ8_0(byte[] weights, float[] input, int batchSize, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 34;
+        var result = new float[batchSize * rows];
+        var scratch = new byte[SimdKernels.Q8_0ScratchBytes(cols)];
+        fixed (byte* w = weights)
+        fixed (float* inp = input)
+        fixed (byte* s = scratch)
+        fixed (float* r = result)
+        {
+            for (int n = 0; n < batchSize; n++)
+            {
+                SimdKernels.QuantizeRowToQ8_0(inp + (long)n * cols, cols, s);
+                for (int row = 0; row < rows; row++)
+                    r[(long)n * rows + row] = SimdKernels.DotQ8_0_Q8_0(w + (long)row * bytesPerRow, s, cols);
+            }
+        }
+        return result;
+    }
+
     private static float[] RunBatched(byte[] weights, float[] input, int batchSize, int rows, int cols, DType dtype)
     {
         var result = new float[batchSize * rows];
@@ -232,6 +263,30 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
 
     // ── Gate and fallback behaviour ──────────────────────────────────────────
 
+    // Q8_0 joined the dispatch on 2026-10-30 for its row-block x token-group schedule only: same quantizer and dots as
+    // the fp32-tier Q8_0 MatVec4In, so it must equal both the per-token Q8_0 dot and MatMulBatched with allowQ8: false.
+    [Theory]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(17)]  // groups of 4 + a single-token remainder, across row blocks
+    [InlineData(40)]
+    public void Q8_0_BatchedMatchesPerTokenDotAndTheFp32TierPath(int batchSize)
+    {
+        const int rows = 37, cols = 96;   // rows not a multiple of the 16-row block
+        var weights = MakeQ8_0Weights(rows, cols, 21);
+        var input = PseudoRandomFloats(batchSize * cols, 22);
+
+        var batched = RunBatched(weights, input, batchSize, rows, cols, DType.Q8_0);
+        Assert.Equal(ReferenceQ8_0(weights, input, batchSize, rows, cols), batched);
+
+        var tier = new float[batchSize * rows];
+        fixed (byte* w = weights)
+        fixed (float* inp = input)
+        fixed (float* r = tier)
+            SimdKernels.MatMulBatched(r, w, inp, batchSize, rows, cols, DType.Q8_0, allowQ8: false);
+        Assert.Equal(tier, batched);
+    }
+
     [Fact]
     public void GateOff_MatMulBatchedNeverCallsTheQ8Path()
     {
@@ -270,7 +325,6 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
     [InlineData(DType.Float32)]
     [InlineData(DType.Q5_K)]
     [InlineData(DType.Q2_K)]
-    [InlineData(DType.Q8_0)] // has single-input Q8 dots but no _4In -- must still fall back
     public void UnsupportedDtype_FallsBackRatherThanCrashing(DType dtype)
     {
         const int rows = 64, cols = 512, batchSize = 8;
