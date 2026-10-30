@@ -1,6 +1,240 @@
-# Vulkan quantized GEMM: closing the gap to ggml-vulkan (plan, 2026-10-10)
+# Vulkan quantized GEMM: owner file
 
-## Checklist (2026-10-30; checked against the progress log)
+**Owner:** this file (2026-10-30). It replaces two separate docs, kept below verbatim as parts:
+
+1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see [../../../workstreams/vulkan-gemm-llm-prefill.md](../../../workstreams/vulkan-gemm-llm-prefill.md), which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
+2. **Part 2, FP16-tile project** (was `2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md`). It is the diffusion-side GEMM project, and it carries the numerics decision.
+
+Not included: the CPU expert-GEMM plan ([../../2026-10-04-q4k-expert-gemm-plan.md](../../2026-10-04-q4k-expert-gemm-plan.md)). It is about CPU MoE prefill, not Vulkan, so it keeps its own file.
+
+The measurement rules are in [../../../reference/performance-measurement-rules.md](../../../reference/performance-measurement-rules.md).
+
+---
+
+## Part 1: Path 1 / Path 2 scaffold (older state)
+
+## Vulkan quantized matmul — Path 1 / Path 2 scaffold
+
+> Completed items moved to [done/vulkan-gemm-README-completed-items-2026-10.md](../../../done/vulkan-gemm-README-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
+The same shape as `docs/repack-gemm/` on the CPU side: an incumbent (Path 1), a reserved slot for a
+faster future kernel (Path 2), a runtime switch between them, and counters so the choice is decided
+by measurement rather than argument.
+
+**Path 2 does not exist.** This document exists so the decision to write it — or to delete the
+scaffold and walk away — can be made from numbers that are available today.
+
+### Why
+
+Every quantized matmul shader in `Shaders.cs` is a `MatVec*`. The five `Sgemm*` shaders are dense
+float, serving the diffusion path. So the quantized matmul is matrix-**vector** with register
+blocking over tokens: one workgroup per 8 output rows, `acc[MAX_NTOK]` accumulators in VGPRs, a
+weight word reused across up to `MaxBatchVerifyK` = 16 tokens. Above 16 tokens `GpuForwardPass`
+chunks, and every chunk re-streams the whole model.
+
+This is structurally what the CPU prefill was before Path 2 landed there. The CPU fix was not a
+wider register tile — it was another level of the memory hierarchy, a repacked tile that stayed
+resident while activation columns streamed past. The GPU equivalent is a weight tile in shared
+memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
+
+### Actionable items checklist
+
+- [ ] **Tiled Q6_K shader**: Implement tiled Q6_K kernel for `ffn_down` (1418 of 9914 dispatches) to remove fallback to Path 1.
+- [ ] **Widen tile & prefill chunk**: Raise BN > 16 (chunk 32 / chunk 64) once Q6_K is supported, chasing the projected 1.36x ceiling.
+- [ ] **Perplexity gate**: Run Wikitext-2 (8191 scored tokens) validation on Path 2 before considering making it default.
+
+### Using it
+
+| variable | effect |
+|---|---|
+| `STINGRAY_VULKAN_MM_PATH` | `3` (default since 2026-10-11), `1` (old multi-token mat-vec) or `2`. Path 2 declines every shape today and falls through to Path 1. |
+| `STINGRAY_VULKAN_MM_STATS` | `1` to count dispatches and weight bytes; off by default so an unmeasured run is byte-identical to before. |
+
+```
+STINGRAY_VULKAN_MM_STATS=1 opentail-llm-cli -m model.gguf --backend vulkan -g -1 -f prompt.txt
+```
+
+Code: `src/OpenTail.Stingray.Vulkan/VulkanMatMulPath.cs` (switch + counters), the seam and
+`TryMatMulBatchedPath2` stub in `VulkanBackend.MatMulBatched`, tests in
+`tests/.../VulkanMatMulPathTests.cs` (27, no GPU required).
+
+### Baseline, measured
+
+AMD Radeon integrated, Vulkan 1.3, SmolLM2-1.7B-Instruct-Q4_K_M (1006.7 MiB), 931-token prompt:
+
+```
+[GpuForwardPass] prefill N=931 chunk=16
+[VulkanMatMul] path=Path1
+  dispatches : path1=9914 path2=0 declines=0 fallback=0
+  amortization: 15.78 tokens/dispatch (156416 token-dispatches over 9914 dispatches)
+  weight I/O : 54626.6 MiB total, 58.7 MiB/token over 931 tokens
+Prefill: 931 tokens, 74.5 t/s
+```
+
+Three cross-checks that the counters measure what they claim:
+
+- 9914 dispatches / 59 chunks ≈ 168 = 24 layers × 7 trunk matmuls. Structure matches the model.
+- 54626.6 MiB / 59 chunks = **925.9 MiB per chunk** against a **1006.7 MiB** model file. The
+  difference is embeddings and output, which are not trunk matmuls. Weight I/O is real.
+- `fallback=0` — no dtype fell to the per-token loop on this model.
+
+Setting `STINGRAY_VULKAN_MM_PATH=2` reports `declines=9914`, identical weight I/O, and 74.7 t/s
+against 74.5. The seam costs nothing and cannot change an answer.
+
+### The prize is 1.54x, not 59x — measured
+
+53.3 GiB streamed to prefill 931 tokens of a 1 GiB model looks like a 59x redundancy, and that was
+the number this scaffold was built to chase. It is the wrong number, and the chunk-size split makes
+the right one measurable without writing a single line of GLSL.
+
+Chunk size is inversely proportional to how many times prefill streams the weights, so sweeping it
+is a direct experiment on how much of prefill time is weight bandwidth. Same prompt, same model,
+`STINGRAY_VULKAN_PREFILL_CHUNK`:
+
+| chunk | prefill t/s | weight GiB | time (s) |
+|---:|---:|---:|---:|
+| 1 | 12.2 | 841.8 | 76.31 |
+| 2 | 22.7 | 421.3 | 41.01 |
+| 4 | 37.9 | 210.7 | 24.56 |
+| 8 | 58.4 | 105.8 | 15.94 |
+| 16 | 75.3 | 53.3 | 12.36 |
+
+Two-point fit on the extremes, checked against the three interior points (all within 4.3%):
+
+```
+time(s) ≈ weight_GiB / 12.33 + 8.04
+```
+
+Weight streaming costs **12.33 GiB/s marginal**, and there is a **fixed 8.04 s** that no amount of
+weight amortization touches. At the default chunk of 16 that splits as **4.3 s of weights against
+8.0 s of everything else** — so weights are 35% of prefill, not the whole of it.
+
+Therefore, with weight traffic driven to zero:
+
+| chunk | projected t/s | vs chunk 16 |
+|---:|---:|---:|
+| 32 | 91 | 1.21x |
+| 64 | 102 | 1.36x |
+| 128 | 108 | 1.44x |
+| ∞ (perfect GEMM) | **116** | **1.54x** |
+
+**1.54x is the ceiling**, assuming a tiled kernel adds no cost of its own and leaves the fixed 8.04 s
+untouched. Most of it arrives by chunk 32–64; the tail is worth little. A real kernel lands below
+this.
+
+#### What the fixed 8.04 s is, and why it matters more
+
+Activation traffic is `(rows / N_ROWS) × nTok × cols × 4` bytes per dispatch — each workgroup covers
+8 rows and re-reads the whole activation block. The dispatch count falls as `1/chunk` while per-
+dispatch activation traffic rises linearly with it, so **total activation traffic is chunk-
+independent**, which is exactly why it sits in the fixed term and not the slope. That it fits the
+constant so cleanly is corroboration, not coincidence.
+
+So a Path 2 that only widens the tile chases the smaller half. A Path 2 that stages activations in
+shared memory attacks the larger one. Any tiled kernel written here should be designed against the
+8.04 s, not the 53.3 GiB.
+
+### Path 2 exists: tiled Q4_K GEMM, +4.6%
+
+`Shaders.MatMulTiledQ4K` — BM=64 rows x BN=16 tokens, BK=64, TM=TN=2, both operands staged in LDS
+with llama.cpp's `+1` bank-conflict padding. BK=64 is one Q4_K "c-chunk" (8 dwords whose low nibbles
+are sub-block 2c and high nibbles 2c+1), so the dequant is structurally identical to the incumbent's
+and the two differ in one variable only.
+
+| | Path 1 | Path 2 |
+|---|---|---|
+| prefill, 931 tok | 74.5 t/s | **77.9 t/s** (1.046x) |
+| dispatches served | 9914 | 8496 (+1418 Q6_K declines → Path 1) |
+| weight I/O | 54626.6 MiB | 54626.6 MiB — *unchanged* |
+
+Weight traffic is identical, so the gain is purely structural: no per-token shared-memory tree
+reduction (Path 1 runs 16 of them, 7 barriers each, per workgroup), and each staged value is reused
+across the tile instead of re-read per lane. Full suite passes on **both** paths, 1261/1261.
+
+#### Why it is only 4.6% of a possible 54%
+
+BN is still 16, so the tile amortizes exactly as many tokens as Path 1 did and streams the weights
+the same 59 times. **The prize needs BN > 16, and that is now a `#define` rather than a register
+array** — the `acc[MAX_NTOK]`-per-VGPR ceiling that capped Path 1 does not exist here.
+
+The blocker is Q6_K. `ffn_down` is Q6_K (1418 of 9914 dispatches, 1 per layer), it declines to Path 1,
+and Path 1 throws above nTok=16. So raising the chunk requires a **tiled Q6_K shader first** — that
+is the next commit, and it unlocks chunk 64 for a projected 1.36x.
+
+#### Numerics: Path 2 is not a drop-in
+
+Path 2 carries one running sum per output across K; Path 1 forms per-lane partials then a tree
+reduction. Same additions, different association. Measured **9.4e-3 max abs logit delta against the
+per-token path, versus 5e-3 for Path 1** — it broke `BatchedPrefill_ShortPromptBelowOneChunk_
+MatchesPerToken` on first run.
+
+The tolerance is now path-aware rather than loosened, so Path 1's tighter guarantee is preserved and
+Path 2's looser one is stated with its reason. Greedy argmax matches on both.
+
+**Path 2 must not become the default on a 4.6% speed win alone.** A delta at this scale is inside the
+noise that flipped 2 of 6 short-prompt argmaxes when int8 activations were tried. It needs the same
+perplexity gate the CPU's Path 2 cleared (wikitext-2, 8191 scored tokens), which has not been run for
+this kernel.
+
+### Toolchain: unblocked
+
+`glslc` built from source at `examples/glslc/shaderc` — **5,568,512 bytes**, shaderc v2026.4-dev /
+glslang 11.1.0-1516 / spirv-tools v2026.3.
+
+**Regenerating the whole SPIR-V table drifts ~33 of 89 shaders** against the committed bytes, because
+that toolchain is much newer than whatever produced them. The regenerated table passes all 1261 tests
+and is performance-neutral (74.9/75.5 vs 74.5/75.3 t/s) — but that is one AMD iGPU, so it is not
+evidence for other drivers, and it was restored rather than adopted.
+
+New shaders therefore splice in instead: bump `Count`, add one hash-keyed `case` line, append one
+`_sNN` array. The switch does not care about ordering. `VulkanPrecompiledShaderTests` confirms the
+other 89 entries stay byte-identical.
+
+### Previously: blocked on a toolchain, not on effort
+
+**This machine has no Vulkan SDK and no `glslc`.** `ShaderCompiler` serves a committed SPIR-V table
+and shells out to `glslc` only on a table miss, and `tools/SpirvGen` needs the SDK to regenerate it —
+so a new or edited shader cannot be compiled here at all, and `VulkanPrecompiledShaderTests` fails on
+drift by design. No Path 2 kernel was written, because an unverifiable one is worse than none.
+
+This is the same shape as the CUDA finding in `../done/gpu-review-log.md`: a real defect, a cheap fix,
+blocked on a toolchain rather than hardware. **Installing the Vulkan SDK unblocks it** — no different
+GPU required.
+
+The cheapest first increment, when unblocked: `MatVecBatchedQ4K` and `MatVecBatchedQ6K` with
+`MAX_NTOK` at 32, gated behind Path 2, `Path2MaxTokensPerDispatch` raised to match, and the `nTok`
+range check in `MatMulBatched` relaxed. Projected 1.21x, and it tests the register-pressure question
+the existing shader comment leaves open ("32 was not tried") for a few lines of change. Note
+`Path2Cap_CannotExceed_WhatPath1CanFallBackTo` will fail until the Path 1 shaders are widened too —
+that is deliberate: Path 2 may decline any shape, and a decline falls through to a Path 1 that would
+otherwise throw on the wider chunk.
+
+**To drop the whole thing:** delete `VulkanMatMulPath.cs`, the seam and stub in `VulkanBackend.cs`,
+the report block in `GpuForwardPass.Prefill`, the two test files, and three entries in
+`KnownEnvironmentVariables`. The `MaxBatchVerifyK` / `MaxPrefillChunk` split is worth keeping
+regardless — it is what made the sweep above possible.
+
+### Negative result: the metric was wrong first
+
+The first version divided weight bytes by the summed `nTok` and reported **357.6 KiB/token**. The
+true figure is **58.7 MiB/token** — off by 168x, the number of matmuls in the model, because summed
+`nTok` counts token-*dispatches* and not tokens.
+
+It was caught by running the counters on hardware and checking the total against an independently
+computed model size, before any conclusion was drawn from them. `WeightBytesPerToken` now requires
+the caller to pass the token count, `Report(0)` omits the line rather than fabricating it, and
+`BytesPerToken_IsNotDerivableFromTokenDispatches` pins the distinction.
+
+The headline metric was changed to **tokens/dispatch** for the same reason: it needs no external
+input, so it cannot be mis-attributed this way at all.
+
+---
+
+## Part 2: FP16-tile project (diffusion)
+
+## Vulkan quantized GEMM: closing the gap to ggml-vulkan (plan, 2026-10-10)
+
+### Checklist (2026-10-30; checked against the progress log)
 
 Note: the status line above ("proposed, not started") is stale; the progress log below records work done on 2026-10-10.
 
@@ -15,10 +249,10 @@ Note: the status line above ("proposed, not started") is stale; the progress log
 - [ ] Phase 5: propagate and document
 
 Status: **proposed, not started** (for second opinion before any kernel work). Owner: the Qwen Image performance
-thread; see [the diffusion samples and Qwen plan](diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples)
+thread; see [the diffusion samples and Qwen plan](../../diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples)
 for the measurements this builds on.
 
-## 1. Goal and success criteria
+### 1. Goal and success criteria
 
 Make Stingray's Vulkan dequant-in-shader GEMM family (`SgemmQ3K/Q4K/Q5K`, in `src/OpenTail.Stingray.Vulkan/Shaders.cs`)
 as fast as the reference matmul in ggml-vulkan on the same GPU, then go further where the data allows.
@@ -32,7 +266,7 @@ as fast as the reference matmul in ggml-vulkan on the same GPU, then go further 
 A phase is kept only if it is measurably faster and numerically acceptable (CLAUDE.md rules 7, 11, 13). iGPU-only
 timings describe this APU and driver; they say nothing definitive about a discrete GPU.
 
-## 2. Evidence so far (all measured 2026-10-10, 5700G / Vega 8, wave64, 63 GB shared RAM, Vulkan)
+### 2. Evidence so far (all measured 2026-10-10, 5700G / Vega 8, wave64, 63 GB shared RAM, Vulkan)
 
 - The DiT forward is GEMM-bound: of about 24 s per forward, MLP + norm 57%, QKV 19%, out-proj/gate 8%,
   QK-norm/concat/RoPE 8%, attention 6%, modulation 1%. Everything outside the 60 blocks is under 100 ms.
@@ -49,7 +283,7 @@ timings describe this APU and driver; they say nothing definitive about a discre
   per block (about 2.2 s per forward) is spent on a stream that needs about 5 ms. 58 of 60 blocks are Q3_K, so the
   shapes are representative.
 
-## 3. What the reference does differently (ggml-vulkan, `examples/stable-diffusion.cpp/ggml/src/ggml-vulkan/`)
+### 3. What the reference does differently (ggml-vulkan, `examples/stable-diffusion.cpp/ggml/src/ggml-vulkan/`)
 
 Verified in the vendored source, not assumed:
 
@@ -72,9 +306,9 @@ Verified in the vendored source, not assumed:
 8. **A per-op timing/FLOP logger** (`GGML_VK_PERF_LOGGER`), which is the model for our profiling.
 9. **Implicit-GEMM conv (`conv2d_mm`)** with no im2col, relevant to VAE decode (about 9 s of the 2-step baseline).
 
-## 4. Phases (each is a separate, reversible change with its own A/B)
+### 4. Phases (each is a separate, reversible change with its own A/B)
 
-### Phase 0: harness and safety net (no behaviour change)
+#### Phase 0: harness and safety net (no behaviour change)
 - **Establish the baseline properly.** The 24.4 s and 20.6 s figures come from single runs (an earlier uninstrumented
   run took 138.2 s against 115.4 s instrumented), so first record the median and spread of at least five
   uninstrumented runs of both Stingray and the reference, keeping one-time weight upload separate from steady-state
@@ -98,7 +332,7 @@ Verified in the vendored source, not assumed:
 - Enumerate every caller of the quantized GEMM (Qwen, FLUX.1/2, SD3.5/MMDiT, Wan, Z-Image, Vulkan LLM prefill) and give
   each a before-snapshot (speed and output).
 
-### Phase 1: small-M kernel (provisional estimate: about 1.9 s per forward, about 8%; lowest risk)
+#### Phase 1: small-M kernel (provisional estimate: about 1.9 s per forward, about 8%; lowest risk)
 The saving is an estimate to test, not an expected result: it compares today's M=12 GEMM time with one-row matvec
 time, and a one-row matvec is not a prediction for a kernel that handles several rows while reusing decoded weights
 (twelve separate matvecs would re-read the weights twelve times).
@@ -112,7 +346,7 @@ time, and a one-row matvec is not a prediction for a kernel that handles several
   (target: a stated fraction of that ceiling, fixed after the ceiling is measured). Gate on parity and on end-to-end
   forward time.
 
-### Phase 2: tile and layout fix for long K (expected 6-8%)
+#### Phase 2: tile and layout fix for long K (expected 6-8%)
 - Try, in order, isolating the simple reversible changes before the invasive one: (a) a 128x128 / 128-thread config
   with higher occupancy (2+ workgroups per CU); (b) a K-loop-order change on its own; (c) the chunked-MLP layout.
 - (c) must pay its whole cost. The 112 ms to 77.6 ms result is an isolated GEMM measurement. The production path has to
@@ -123,7 +357,7 @@ time, and a one-row matvec is not a prediction for a kernel that handles several
 - Measure each against the sweep table and the end-to-end forward; keep the best.
 - Decide split-K only if a config leaves tiles under-filling the 8 CUs.
 
-### Phase 3: new tiled kernel family (the big-upside phase; uncertain)
+#### Phase 3: new tiled kernel family (the big-upside phase; uncertain)
 Two different ideas were bundled in the first draft and are now separate experiments, because FP16 shared storage and
 FP16-pair dot products are different optimisations and the benefit of either depends on the generated shader, the
 device features and compiler behaviour (vectorisation, conversion overhead and occupancy all matter).
@@ -153,17 +387,17 @@ to meet the FP32 tolerance automatically. So:
 - A documented, evidence-based acceptance threshold (latent cosine and PSNR) against both the current Stingray path and
   the reference, recorded in code, tests, a decision note and the performance docs, with the switch above as rollback.
 
-### Phase 4: fusions and epilogues (each small, each measured)
+#### Phase 4: fusions and epilogues (each small, each measured)
 - Bias add and GELU into the GEMM epilogue (the MLP group has two extra passes over a 1024x12288 buffer).
 - QK-norm + concat + RoPE as one or two dispatches (that group is 8% of the forward).
 - Attention: profile after the GEMM work; only act if it grows past about 10%.
 
-### Phase 5: propagate and document
+#### Phase 5: propagate and document
 - Re-run FLUX.1, FLUX.2, SD3.5, Wan, Z-Image and Vulkan LLM prefill: speed and output checks versus the Phase 0 snapshot.
 - Update `PerformanceLeague.md`, `STATUS.md` (only if a verified status changes), `RUNNING.md` timings, and the sample
   gallery README with the new Qwen numbers.
 
-## 5. Expected outcome (honest range, to be replaced by measurements)
+### 5. Expected outcome (honest range, to be replaced by measurements)
 
 | After | Qwen forward | Notes |
 |---|---|---|
@@ -177,7 +411,7 @@ A full 512x512, 20-step generation is 40 forwards: about 16.5 minutes today, abo
 iGPU shares system memory with the CPU, so a large multiple is unlikely; the same kernels may do much better on a
 discrete GPU, which this machine cannot show.
 
-## 6. Risks and mitigations
+### 6. Risks and mitigations
 
 - **Cross-model regression:** the kernel family is shared. Mitigation: Phase 0 snapshots, per-phase environment-switch
   rollback (`STINGRAY_VK_QGEMM=legacy`), and no merge without Phase 5-style checks.
@@ -187,7 +421,7 @@ discrete GPU, which this machine cannot show.
 - **Shader table drift:** shaders are precompiled; every change needs `scripts/gen-spirv.ps1` and the drift test.
 - **Effort sink:** Phase 3 is open-ended. Mitigation below.
 
-## 7. Stop rules
+### 7. Stop rules
 
 - Each phase has a measured gate; a phase that does not beat the previous best by more than run-to-run noise
   (about 2-3% on the forward) is reverted.
@@ -198,7 +432,7 @@ discrete GPU, which this machine cannot show.
   1.2 TFLOP/s is reported, not gated.
 - Stop the whole effort at reference parity (G1) unless the user asks for the stretch target.
 
-## 8. Questions for the second opinion
+### 8. Questions for the second opinion
 
 1. Is the Phase order right (small-M, then stride/tile, then FP16 tiles), or is there a cheaper route to the long-K
    throughput loss than chunked layouts? What would explain a stride-dependent loss on a UMA iGPU (TLB reach, memory
@@ -210,7 +444,7 @@ discrete GPU, which this machine cannot show.
 5. Is FP16 activation overflow a realistic risk for MM-DiT residual streams, and what is the cheapest guard?
 6. Reasonable stop criteria for a kernel project on a non-representative GPU.
 
-## 9. Second opinion received (ChatGPT, 2026-10-10: 8/10, keep the plan and revise in place)
+### 9. Second opinion received (ChatGPT, 2026-10-10: 8/10, keep the plan and revise in place)
 
 Incorporated above: (1) Phase 0 now establishes a repeatable median baseline, records the environment and finds the
 reference's actual shader variant on this GPU before the FP16 explanation is trusted; (2) the Phase 1 saving is marked
@@ -224,9 +458,9 @@ assumed better; shape-specific tiling and the small-M path are the immediate pri
 target for this device; FP16 overflow is unproven and must be measured, not guarded pre-emptively; the stop criteria
 are reasonable once unified. Not expanding into attention or unrelated fusions while the GEMM work is unmeasured.
 
-## 10. Progress log
+### 10. Progress log
 
-### Phase 0 (partial) and reference data, 2026-10-10
+#### Phase 0 (partial) and reference data, 2026-10-10
 `GGML_VK_PERF_LOGGER=1` on `sd-cli` (same GPU, one forward, 512x512). Reference device line: `uma 1, fp16 1, bf16 0, warp size
 64, shared memory 32768, int dot 0, matrix cores none`. Reference GPU time per call (its m = our N, its n = our M):
 
@@ -244,7 +478,7 @@ not specific to our kernel, and the chunked layout could beat the reference ther
 baselines, the real `maxComputeSharedMemorySize`, and which pipeline variant ggml selected (the logger names the op and
 shape but not the shader variant).
 
-### Phase 1 (small-M kernel), 2026-10-10: kept
+#### Phase 1 (small-M kernel), 2026-10-10: kept
 - New kernels `SgemmQ3KSmall / Q4KSmall / Q5KSmall` (`Shaders.cs`): same decode and K loop as the large kernels, workgroup
   tile 16 activation rows x 64 weight rows, 128 threads (8x16), 2x4 register tile per thread. Used when M is at most
   `STINGRAY_VK_QGEMM_SMALLM` (default 32; 0 disables). M=1 stays on the matvec. First attempt used an 8x8 per-thread tile in a
@@ -259,14 +493,14 @@ shape but not the shader variant).
 - Follow-up candidates for M-small MLP-down (K=12288): a smaller BN for more workgroups, a larger BK to halve barrier
   overhead, or split-K with a reduce; worth about 0.2 s per forward, so low priority.
 
-### Phase 2(a) 128x128 tile with 256 threads, 2026-10-10: rejected, reverted
+#### Phase 2(a) 128x128 tile with 256 threads, 2026-10-10: rejected, reverted
 Derived mechanically from the large kernel (workgroup 16x16, 128 activation rows x 128 weight rows, 32 KiB shared tiles, two
 workgroups per CU). Output checksums bit-identical to the existing kernel. Standalone benchmark, Q3_K, M=1024: MLP-up
 78.3 -> 93.9 ms (worse), MLP-down 111.6 -> 105.4 ms (-6%), QKV/out 18.5 -> 19.6 ms (worse). Used only for K=12288 it would save
 about 0.36 s per forward (1.5%), below the plan's 2-3% noise floor, so it was not kept. Occupancy is therefore not what
 limits MLP-up; the reference's 65 ms there likely comes from its inner-loop formulation, which stays a Phase 3 question.
 
-### Phase 2(c) chunked image-stream MLP, 2026-10-10: kept
+#### Phase 2(c) chunked image-stream MLP, 2026-10-10: kept
 - Image-stream MLP weights are stored as 4 up-projection row slices and 4 down-projection K slices (3072 wide), uploaded as
   raw quantized tensors (down slices re-gathered per row at upload), and the hidden activation lives in four 3072-wide buffers
   (`QwenImageGpuWeights.TryUploadMlpChunks`, `QwenImageGpuWorkspace.ImgMlpChunks`, `QwenImageModel.RunBlockGpu`). Up
@@ -282,7 +516,7 @@ limits MLP-up; the reference's 65 ms there likely comes from its inner-loop form
   `QwenImageSdCppParityTests` velocity cosine 0.999676 / relative L2 0.0255 and `QwenImageGpuParityTests` cosine 0.996550 /
   max diff 0.3071 are unchanged to the printed precision with the switch on or off.
 
-### Checkpoint after Phases 1 and 2(c), 2026-10-10 (same session, alternating A/B, 512x512, GPU, 3 steps, CFG 1)
+#### Checkpoint after Phases 1 and 2(c), 2026-10-10 (same session, alternating A/B, 512x512, GPU, 3 steps, CFG 1)
 Steady forward block time (the first forward is 3-4 s slower in both builds because of cold weights, and is excluded):
 
 | Build | Round 1 | Round 2 | Typical |
@@ -296,7 +530,7 @@ drift is about 5%, so treat the gain as 2-3 s and the remaining gap as 1-1.5 s. 
 Per-shape reference deficits left: MLP-up at M=1024 (65 ms vs about 78 ms: roughly 0.8 s per forward) and the QKV/out shapes
 (about 1 ms each: 0.3 s); the reference has no advantage on MLP-down, which our chunking now beats.
 
-### Phase 2 MLP-up follow-ups, 2026-10-10: nothing cheap left, stopped
+#### Phase 2 MLP-up follow-ups, 2026-10-10: nothing cheap left, stopped
 - Fully unrolling the 32-step compute loop (the kernel keeps an 8-step inner unroll with `dont_unroll` on the outer): checksums
   bit-identical, no speed change (3072x3072 chunk 18.7 ms vs 18.7-19.3; MLP-up 78 ms vs 78-79 ms). Rejected, reverted.
 - Together with the raster-order swap, split-K, and the 128x128 / 256-thread tile (all rejected above), the cheap structural

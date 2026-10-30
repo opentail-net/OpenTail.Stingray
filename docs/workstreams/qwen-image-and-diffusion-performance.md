@@ -1,7 +1,7 @@
 # Workstream: Qwen Image and diffusion performance
 
 **Owner:** this file. **Last verified:** 2026-10-30.
-**Plans:** [Part 4 of the diffusion owner file](../4-performance/diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples) (samples and Qwen Image plan) and [../4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md](../4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md) (the diffusion FP16-tile GEMM project).
+**Plans:** [Part 4 of the diffusion owner file](../4-performance/diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples) (samples and Qwen Image plan) and [../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion](../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion) (the diffusion FP16-tile GEMM project).
 
 ## Correct state
 

@@ -1,7 +1,7 @@
 # Workstream: Vulkan GEMM for LLM prefill
 
 **Owner:** this file. **Last verified:** 2026-10-30 against the leads log (`4-performance/2026-10-10-inference-improvement-leads-plan.md`, Lead 2).
-**Not the same thread as** the diffusion FP16-tile project in [../4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md](../4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md), which is diffusion work.
+**Not the same thread as** the diffusion FP16-tile project in [../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion](../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion), which is diffusion work.
 
 ## Correct state
 

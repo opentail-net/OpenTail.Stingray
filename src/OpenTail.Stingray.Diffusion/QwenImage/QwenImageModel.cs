@@ -361,7 +361,7 @@ public sealed class QwenImageModel : IDisposable
         int ffDim = HiddenDim * 4;
         if (bw.ImgMlpUpChunks is { } upChunks && bw.ImgMlpDownChunks is { } downChunks)
         {
-            // Chunked MLP (docs/4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md, Phase 2c): the 12288-wide hidden
+            // Chunked MLP (docs/4-performance/gpu/vulkan-gemm/vulkan-gemm.md (Part 2), Phase 2c): the 12288-wide hidden
             // activation is kept as four contiguous 3072-wide slices. The quantized GEMM runs a K=12288 product far slower than four
             // K=3072 products over contiguous buffers (measured), so the up projection is computed slice by slice (each slice
             // gets its own bias slice and GELU) and the down projection accumulates the four partial products. Only the order
