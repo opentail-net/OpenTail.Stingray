@@ -1,5 +1,18 @@
 # Diffusion samples to finish, and the Qwen Image performance plan (2026-10-10)
 
+## Checklist (2026-10-30; checked against the log)
+
+- [x] SD1.5, SDXL-Turbo, SDXL base (1024), FLUX.1-schnell, Z-Image-Turbo, SD3.5 Medium (section A "already done")
+- [x] Wan 2.1 one frame (CPU); LTX-Video one frame (abstract output)
+- [ ] Qwen Image Q3_K_S at 512x512 on the GPU (section A order 1; first attempt hit the 20-minute cap on CPU)
+- [ ] Wan 2.2 14B, one frame, 256x256
+- [ ] HunyuanVideo 720 fp8, one frame, 256x256
+- [ ] FLUX.2-dev + Mistral-Small-3.2-24B, 512x512 (never run before)
+- [ ] B0 workload: built and under test (status 2026-10-10)
+- [x] B1 baseline: measured results section (Qwen Image Q3_K_S, 60/60 blocks resident)
+- [ ] B2 instrument, B3 candidate optimisations, B4 A/B protocol on each change
+- [ ] B5 iGPU limits recorded (not a discrete-GPU result)
+
 Two goals: finish the apple gallery in `docs/diffusion-samples/`, and find out why Qwen Image is so slow. This
 machine has an integrated Radeon only, so every timing here is an iGPU timing (CLAUDE.md rule 13). Rules 7, 11
 and 12 apply: measure before and after, flag any performance-pass cost, and a timing is only evidence if the log

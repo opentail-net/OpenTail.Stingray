@@ -27,18 +27,31 @@ Within each section the first items have the biggest effect for the least work. 
 CLAUDE.md: real weights, an independent reference, timed test runs (rule 12), and the STATUS row
 updated with dated evidence in the same pass.
 
+## Workstreams: owner docs
+
+Items below are grouped by thread. Each thread has one owner doc that holds the full text; other docs point to it. Stage folders (`1-correctness/`, `2-coverage/`, `3-product-and-runtime/`, `4-performance/`) hold the detail.
+
+- **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
+- **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
+- **Vulkan GEMM for LLM prefill** (owner: [workstreams/vulkan-gemm-llm-prefill.md](workstreams/vulkan-gemm-llm-prefill.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image workstream).
+- **Qwen Image and diffusion performance** (owner: [workstreams/qwen-image-and-diffusion-performance.md](workstreams/qwen-image-and-diffusion-performance.md)): no backlog item for Qwen Image; items 8 and 9 (section 4, diffusion) are FLUX.
+- **Batched MoE prefill** (owner: [workstreams/batched-moe-prefill.md](workstreams/batched-moe-prefill.md)): item 5 (section 4, GPU).
+- **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
+- **First run, catalogue and public surface** (owner: [workstreams/first-run-and-public-surface.md](workstreams/first-run-and-public-surface.md)): item 1 (section 3).
+- **Gemma** (owner: [workstreams/gemma.md](workstreams/gemma.md)): items 7 and 9 (sections 1 and 2).
+
 ---
 
 ## 1. Correctness of what is already claimed
 
-1. **Remaining vision execution gaps.** CUDA image input still lacks text-decoder M-RoPE image
+- [ ] 1. **Remaining vision execution gaps.** CUDA image input still lacks text-decoder M-RoPE image
    positions and deepstack; the server's image path still handles Gemma-style placeholders only.
    Vulkan Qwen3-VL M-RoPE and deepstack are implemented: the real Qwen3VL-2B Q8_0 + mmproj
    `Qwen3VlVulkanMRopeParityTests` ran 2/2 tests in 54.457 s on 2026-10-20 (CPU/Vulkan parity,
    with no-M-RoPE and no-deepstack controls). Remaining CUDA verification is blocked on CUDA
    hardware (none available here); server multimodal routing remains an unimplemented product path.
    From #6 and #9 in [done/102](done/102-status-open-items-plan.md).
-2. **Per-pipeline diffusion end-to-end smoke tests, remaining pipelines.** Done 2026-10-30 for the five image
+- [ ] 2. **Per-pipeline diffusion end-to-end smoke tests, remaining pipelines.** Done 2026-10-30 for the five image
    pipelines with local weights (SD 1.5, SDXL-Turbo, FLUX.1-schnell, Z-Image-Turbo, SD 3.5 Medium):
    `ImageCommandSmokeTests` runs the real CLI at 256x256 on the CPU and compares a fingerprint (channel means,
    luma std, 8x8 average hash) with `tests/OpenTail.Stingray.Tests.Cli/Baselines/ImageSmoke/`; a missing
@@ -47,22 +60,22 @@ updated with dated evidence in the same pass.
    much slower here. The baselines are a regression guard (our own known-good output), not an independent
    reference. Origin: item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
-6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
-12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
+- [ ] 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
+- [ ] 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
     `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
     checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
-13. **HunyuanVideo numeric verification — BLOCKED**: the vendored sd.cpp supports HunyuanVideo
+- [ ] 13. **HunyuanVideo numeric verification — BLOCKED**: the vendored sd.cpp supports HunyuanVideo
     1.5 only; patched to load v1 it produces noise (1-step velocity cosine 0.187), so it is not an
     independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
     an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
     [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
-14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #15 LLaVA-NeXT/OneVision residuals
+- [ ] 14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #15 LLaVA-NeXT/OneVision residuals
     (pixel-level and per-view embedding parity unverified).
     Closed 2026-10-09: #24 DeepSeek-V2-Lite greedy receipt vs Q3_K kernel (retained e7b7aa8a AVX2 Q3_K dot; characterized token-9 near-tie; explicit receipt in `DeepSeek2GreedyParityTests`; landed IQ4_NL folded MoE path) and #22 stale numpy-golden vision parity tests (retired in favor of active `LlamaMtmdVisionParityTests` oracles).
     Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted) and #23 (DeepSeek-V2-Lite receipt pinned to Q8 prefill).
-15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
+- [ ] 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
-17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
+- [ ] 17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
     Use `--spec-type mtp --no-thinking --temp 0` (auto mode does not engage it: it also requires no history penalty).
     2026-10-08 history: MTP was silently unreachable from the CLI after the plan-driven refactor (fixed, `RunCommand.cs`);
     once reachable it was *slower* than plain (1.8-2.0 t/s). Measured cause: a verify step cost ~0.26 s + ~0.33 s per extra token
@@ -95,14 +108,14 @@ updated with dated evidence in the same pass.
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
-7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Gemma 1 (`gemma`) still needs the same semantics and a checkpoint to verify.** See [the sanity-check findings](4-performance/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
+- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) is a separate case: no golden, no local checkpoint, no STATUS row.** See [the sanity-check findings](4-performance/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
 
 ## 2. Model coverage
 
-1. **GLM (`glm4moe`), follow-ups.** GLM-4.5-Air was admitted on 2026-10-04 (Q2_K, CPU and Vulkan layer split;
+- [ ] 1. **GLM (`glm4moe`), follow-ups.** GLM-4.5-Air was admitted on 2026-10-04 (Q2_K, CPU and Vulkan layer split;
    STATUS row). Open: other quantisations and the GLM-4.6 / 4.7 checkpoints on real weights, and Vulkan offload
    beyond `-g 4` (every expert of a resident layer is uploaded, so device memory runs out). GLM-4 dense already runs.
-2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
+- [ ] 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
    CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
    - prefill is batched (`Mamba2Prefill`, `ShortConvPrefill` in `PrefillCore`), and since 2026-10-30 Q8_0 uses the
      int8 batched dispatch: Granite 4.0-H 1B 142 vs llama.cpp 115 t/s, 350M 518 vs 486 (PerformanceLeague, "Q8_0
@@ -112,18 +125,18 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    - GPU paths;
    - untested variants: MoE Nemotron-H, LFM2-VL/Audio, and the Nemotron-Nano-12B-v2-VL vision tower
      end to end; Falcon-H1 should come almost free.
-8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt` (`--model sensevoice` /
+- [ ] 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt` (`--model sensevoice` /
     `paraformer`). Open: now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
-9. **Gemma 1 (`gemma`)**: needs the Gemma-2 semantics and a checkpoint to verify with. Gemma 2 was fixed on the CPU on
+- [ ] 9. **Gemma 1 (`gemma`)**: needs the Gemma-2 semantics and a checkpoint to verify with. Gemma 2 was fixed on the CPU on
    2026-10-11 (§1 item 7).
-10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
-11. **Missing GGML op kernels**: none left; RWKV6 / RWKV7 closed 2026-10-01 (see
+- [ ] 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
+- [x] 11. **Missing GGML op kernels**: none left; RWKV6 / RWKV7 closed 2026-10-01 (see
     [done/bugstofix-resolved-2026-10.md](done/bugstofix-resolved-2026-10.md); the rest of the old op gap: [done/17](done/17-ggml-op-coverage-verification-plan.md)).
-12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow
+- [ ] 12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
-13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
-    [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
-14. **TensorSharp coverage wave** (from 2026-10-02; the user's current focus, ahead of the items
+- [ ] 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
+    [reference/058-deepseek-full-lineage-implementation-plan.md](reference/058-deepseek-full-lineage-implementation-plan.md).
+- [ ] 14. **TensorSharp coverage wave** (from 2026-10-02; the user's current focus, ahead of the items
     above while it runs).
     - **Done:** spin worker pool (opt-in), ggml Q8 cross-check, `Q1_0`/`Q2_0` verified, Bonsai2
       PRISM ported (gated). Muse-Glimmer **admitted 2026-10-03** (text, CPU only).
@@ -138,25 +151,25 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 3. Product and runtime
 
-- **Architecture semantics in the descriptor** (adding a model = one component, no central edits): plan and live checklist in
+- [ ] **Architecture semantics in the descriptor** (adding a model = one component, no central edits): plan and live checklist in
   [2-coverage/2026-10-08-architecture-semantics-admission-plan.md](2-coverage/2026-10-08-architecture-semantics-admission-plan.md).
 
-1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
+- [ ] 1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
    around task commands. [3-product-and-runtime/103-front-door-design.md](3-product-and-runtime/103-front-door-design.md).
    2026-10-11 evidence: the README recipes around the task commands landed (root, package and CLI READMEs; their snippets build against the packed package), and `stingray setup chat` then `stingray chat` ran on a clean model home (5 to 6 s total). **Not yet run:** the CLI `speak` and `transcribe` recipes (`setup speak` asks the user to accept a voice data licence; the Speech and QuickStart samples exercised the same engines). Close this item once those two are run and recorded.
-2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
+- [ ] 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
    knobs, and an owner decision per obsolete-looking switch.
    [3-product-and-runtime/04-quality-of-life-improvements-plan.md](3-product-and-runtime/04-quality-of-life-improvements-plan.md).
-3. **Multi-model runtime**: execution-level service quantum / starvation protection (Phase 6) and
+- [ ] 3. **Multi-model runtime**: execution-level service quantum / starvation protection (Phase 6) and
    durable session restore across a restart in multi-model mode.
    [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
-4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
+- [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
    per-session LoRA in the batched engine, and forward-pass context isolation for forks
    (`IForwardPass.CreateContext` still returns `this`).
    [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
-5. **Releases**: follow [3-product-and-runtime/nuget-release-checklist.md](3-product-and-runtime/nuget-release-checklist.md).
-6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
+- [ ] 5. **Releases**: follow [3-product-and-runtime/nuget-release-checklist.md](3-product-and-runtime/nuget-release-checklist.md).
+- [ ] 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
    Phases 4-6, the ONNX-runtime path for engines that already have native ports.
 
 ## 4. Performance
@@ -172,59 +185,59 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
-2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
+- [ ] 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
-3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
-4a. Spin-then-park CPU worker pool (TensorSharp `CpuWorkerPool`) for the tiny-model decode gap
+- [ ] 3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
+- [ ] 4a. Spin-then-park CPU worker pool (TensorSharp `CpuWorkerPool`) for the tiny-model decode gap
    (SmolLM2-135M ~0.55x, Qwen2.5-0.5B ~0.75x): an experiment the earlier `PersistentThreadPool`
    loss did not cover. §1 of
    [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md).
-4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
+- [ ] 4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
    projection), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
    in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
-5. Batched prefill for the Vulkan layer split (`VulkanLayerSplitForwardPass` prefills per token).
-6. Raw-quant matvec bandwidth on Vulkan (gpt-oss decode is MXFP4 matvec-bound, ~18 GB/s here).
-7. General multi-`VkBuffer` sharding for tensors beyond `maxStorageBufferRange`: undesigned, not
+- [ ] 5. Batched prefill for the Vulkan layer split (`VulkanLayerSplitForwardPass` prefills per token).
+- [ ] 6. Raw-quant matvec bandwidth on Vulkan (gpt-oss decode is MXFP4 matvec-bound, ~18 GB/s here).
+- [ ] 7. General multi-`VkBuffer` sharding for tensors beyond `maxStorageBufferRange`: undesigned, not
    needed by any current checkpoint ([done/084](done/084-vulkan-large-tensor-sharding-plan.md)).
 
 **Diffusion** ([4-performance/diffusion/](4-performance/diffusion))
-8. FLUX.2 GPU: Experiment 3 (production-shape GEMM ladder) and the `DoubleBlockGpu` row-offset
+- [ ] 8. FLUX.2 GPU: Experiment 3 (production-shape GEMM ladder) and the `DoubleBlockGpu` row-offset
    audit; a true quantized GEMM (the `VulkanMatMulPath` "Path 2" seam is not implemented; it would
    help FLUX.1 too). [093](4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
-9. FLUX.1 DiT gap to sd.cpp: 132.0 s vs the 99.8 s target (~1.32x) since the 2026-09-25 flash
+- [ ] 9. FLUX.1 DiT gap to sd.cpp: 132.0 s vs the 99.8 s target (~1.32x) since the 2026-09-25 flash
    attention:
    [069](4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md), Phase 6 of
    [094](4-performance/diffusion/094-diffusion-performance-plan.md).
-10. HunyuanVideo: blocks are compute-bound at ~42% of the iGPU's fp32 peak (the GEMM kernel is the
+- [ ] 10. HunyuanVideo: blocks are compute-bound at ~42% of the iGPU's fp32 peak (the GEMM kernel is the
     lever); the VAE mid-block causal attention is still scalar (measure its share first).
-11. Cross-model DRY and perf-doc consistency: Phase 9 of [094](4-performance/diffusion/094-diffusion-performance-plan.md).
-12. LTX-Video has no C++ comparison yet (sd.cpp's path for it is blocked).
+- [ ] 11. Cross-model DRY and perf-doc consistency: Phase 9 of [094](4-performance/diffusion/094-diffusion-performance-plan.md).
+- [ ] 12. LTX-Video has no C++ comparison yet (sd.cpp's path for it is blocked).
 
 **Audio** ([4-performance/audio/](4-performance/audio))
-13. MiniMax-Music3 flow-transformer GPU residency, which matters only on a real GPU (the vocoder gap
+- [ ] 13. MiniMax-Music3 flow-transformer GPU residency, which matters only on a real GPU (the vocoder gap
     closed 2026-09-28, [done/066](done/066-minimax-music3-future-plan.md)):
     [079](4-performance/audio/079-minimax-music3-gpu-residency-plan.md).
-14. MusicGen / AudioGen performance and DRY passes (CFG as a batch-2 GEMM, a T5 kernel shared with
+- [ ] 14. MusicGen / AudioGen performance and DRY passes (CFG as a batch-2 GEMM, a T5 kernel shared with
     Parler) plus top-p sampling. "Known gaps" in [done/062](done/062-musicgen-implementation-plan.md).
-15. CosyVoice3 ODE step count: the fewer-steps A/B (by ear plus a Whisper round trip) was never run;
+- [ ] 15. CosyVoice3 ODE step count: the fewer-steps A/B (by ear plus a Whisper round trip) was never run;
     the default is still 10. Item 2 of [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md).
-16. Stable Audio 3: `IStableAudio3Engine` consolidation now that three variants exist (Sprint 3 of
+- [ ] 16. Stable Audio 3: `IStableAudio3Engine` consolidation now that three variants exist (Sprint 3 of
     [done/065](done/065-stable-audio-3-medium-smallsfx-future-plan.md)).
-17. TTS/ASR GPU residency, one engine at a time:
+- [ ] 17. TTS/ASR GPU residency, one engine at a time:
     [080](4-performance/audio/080-tts-asr-gpu-residency-checklist.md). The Vulkan `--backend`
     audits are closed ([done/052](done/052-vulkan-backend-for-tts-engines-plan.md),
     [done/053](done/053-vulkan-backend-audit-remaining-audio-engines.md)); Whisper, Parakeet and
     FunASR encoders are named future candidates there.
 
 **Measurement gaps in `PerformanceLeague.md`**
-18. Vision timings: Pixtral 12B and GLM-4.6V (gated; need an `HF_TOKEN` with the licence accepted),
+- [ ] 18. Vision timings: Pixtral 12B and GLM-4.6V (gated; need an `HF_TOKEN` with the licence accepted),
     LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL, Llama 4 vision.
-19. Llama-4 Scout 17B-16E: no ratio vs llama.cpp (the ~93 GB download failed once; its state is
+- [ ] 19. Llama-4 Scout 17B-16E: no ratio vs llama.cpp (the ~93 GB download failed once; its state is
     unknown, and it does not fit this machine's 64 GB RAM).
 
-20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
+- [ ] 20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
     **2.6 t/s**, MTP **2.0-2.1 t/s** at every draft depth (accept 76% / 62% / 45% at depth 1 / 2 / 3), i.e. 0.77-0.81x of plain.
     The same engine on Qwen3.8-27B (same `qwen35` architecture and MTP head, different quant mix) wins by +12% (2.7 vs 2.4); see
     item 17 and `PerformanceLeague.md`. Not diagnosed. First steps: (a) diff the tensor-dtype histograms of the two files, especially
@@ -239,8 +252,8 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 [9-external-hardware/90-external-hardware-work.md](9-external-hardware/90-external-hardware-work.md):
 CUDA release evidence, Gemma 4 12B on CUDA, CUDA gate/up fusion, the CUDA graph default, ARM64.
 Also waiting on hardware:
-- CUDA passes apply `rope_freqs` for Gemma 4 only, so Llama-3.1-style models on CUDA are wrong at
+- [ ] CUDA passes apply `rope_freqs` for Gemma 4 only, so Llama-3.1-style models on CUDA are wrong at
   long context (fixed on Vulkan 2026-09-26).
-- CUDA partial offload for the newer architectures (Vulkan `-g N` is done).
-- Discrete-GPU measurements before changing any default: speculative decoding with a draft model
+- [ ] CUDA partial offload for the newer architectures (Vulkan `-g N` is done).
+- [ ] Discrete-GPU measurements before changing any default: speculative decoding with a draft model
   on Vulkan, the UMT5 GPU path, gpt-oss on Vulkan.

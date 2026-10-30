@@ -1,6 +1,6 @@
 # ExecutionPlan Runtime Architecture — Completed Chunks & Acceptance Evidence
 
-> **COMPLETED 2026-10-07.** Split verbatim out of [../3-product-and-runtime/2026-10-06-execution-plan-runtime-architecture-plan.md](../3-product-and-runtime/2026-10-06-execution-plan-runtime-architecture-plan.md).
+> **COMPLETED 2026-10-07.** Split verbatim out of [2026-10-06-execution-plan-runtime-architecture-plan.md](2026-10-06-execution-plan-runtime-architecture-plan.md).
 > All 10 implementation chunks, 25 acceptance criteria, and closure enforcement contracts were completed and verified on 2026-10-07.
 
 ---

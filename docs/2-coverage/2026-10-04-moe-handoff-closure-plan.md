@@ -1,6 +1,8 @@
 # Plan: close the CPU-prefill handoff, one model family at a time (2026-10-04)
 
-Status (2026-10-04, later): **steps 1-3 closed; step 4 (GLM-4.5-Air) closed on the Vulkan layer split: CPU path admitted, `-g 4` works, receipt `(glm4moe, VulkanLayerSplit)` from a CPU-prefill handoff test (more than 4 GPU layers still needs the expert slot cache: all 128 experts per resident layer are uploaded); step 5 (Llama 4) Vulkan-hybrid handoff receipt, closed past 8192 too (chunked attention and NoPE temperature tuning implemented d8ca10da; 9430-token CPU run matches llama-server, hybrid handoff at 9429 tokens passes, 2026-10-04); step 6 (speed league) done: ours is below llama.cpp on CPU for all five MoE models (0.21-0.84x), see PerformanceLeague.md.** 7 families now have path-specific receipts (6 MoE on the Vulkan hybrid). Context: [coverage matrix](2026-10-04-moe-handoff-coverage.md), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
+> Completed items moved to [done/2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md](../done/2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
+Status (2026-10-04, later): **steps 1-3 closed; step 4 (GLM-4.5-Air) closed on the Vulkan layer split: CPU path admitted, `-g 4` works, receipt `(glm4moe, VulkanLayerSplit)` from a CPU-prefill handoff test (more than 4 GPU layers still needs the expert slot cache: all 128 experts per resident layer are uploaded); step 5 (Llama 4) Vulkan-hybrid handoff receipt, closed past 8192 too (chunked attention and NoPE temperature tuning implemented d8ca10da; 9430-token CPU run matches llama-server, hybrid handoff at 9429 tokens passes, 2026-10-04); step 6 (speed league) done: ours is below llama.cpp on CPU for all five MoE models (0.21-0.84x), see PerformanceLeague.md.** 7 families now have path-specific receipts (6 MoE on the Vulkan hybrid). Context: [coverage matrix](#family-coverage-table-merged-2026-10-30-from-2026-10-04-moe-handoff-coveragemd), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
 
 **End-of-day state (2026-10-04, ~20:40):** steps 1-6 closed (step 4 on the Vulkan layer split, step 5 including past 8192, step 6 speed league recorded: ours is 0.21-0.84x of llama.cpp on CPU for these MoE models). Extension wave: `hunyuan-moe` CPU-admitted (Stage A passed; **Stage B not run**: the harness stopped the first attempt for low memory, rerun `LayerSplitCpuPrefillHandoffTests.HunyuanA13B_Handoff_GpuKvEqualsCpuAndDecodeAgrees` alone on an idle machine); `afmoe` CPU-admitted and receipted on `VulkanLayerSplit` (attention output gate ported to the full Vulkan pass, runs full GPU); `cohere2moe` classified, no checkpoint small enough. Receipts now (family, path): olmoe/qwen3moe/qwen3/qwen2moe/llama+experts/phimoe/llama4 on `VulkanHybrid`; olmoe/qwen2moe/phimoe on `VulkanFullGpu`; glm4moe and afmoe on `VulkanLayerSplit`; none on `CudaHybrid` (no NVIDIA GPU here). Open: hunyuan Stage B, Stage A2 routing checks (parked), CUDA evidence, afmoe sliding window beyond 2048 tokens, GLM above 4 GPU layers (needs the expert slot cache).
 
@@ -76,19 +78,8 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 ## Tracking
 
-Update the coverage table in [2026-10-04-moe-handoff-coverage.md](2026-10-04-moe-handoff-coverage.md) after each family, and keep this checklist:
+Update the coverage table in the section "Family coverage table" below after each family, and keep this checklist:
 
-- [x] Step 0 shared test plumbing (receipts keyed by (family, path); fingerprints; Theory over model files)
-- [x] 1. `qwen2moe` (2026-10-04): Stage A (found and fixed 3 bugs, below), Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(qwen2moe, VulkanHybrid)`. Vulkan full-GPU (2026-10-04, later): `GpuForwardPass` now applies the shared-expert sigmoid gate and uses own shared-expert scratch; `GpuCpuPrefillHandoffTests` on Qwen1.5-MoE passes (prefill cosine 0.9995, decode 0.998-1.0), receipt `(qwen2moe, VulkanFullGpu)`. Not done for this family: CUDA, router-level check (Stage A2; PPL 4.7838 against 4.8144 ± 0.78 stands in for it). Weights kept at `H:\_models` (F: is full; `models/_models` points at F:) until Mixtral needs the room.
-- [x] 2. `llama+experts` (Mixtral, 2026-10-04): Stage A, Stage B on the Vulkan hybrid at 1 and 4 GPU layers, receipt `(llama+experts, VulkanHybrid)`. Not done: Vulkan full-GPU, CUDA, Stage A2 routing check (PPL stands in), the 2- and 4-slot `STINGRAY_MOE_SLOTS` boundary and warm-up cost question (only 16 and 4 slots were run). Weights kept in `H:\_models`.
-- [x] 3. `phimoe` (2026-10-04): LongRoPE, norm biases and LM-head bias in the Vulkan hybrid, Stage B at both RoPE regimes, receipt `(phimoe, VulkanHybrid)`. Vulkan full-GPU (2026-10-04, later): `GpuForwardPass` now adds the RMSNorm biases and `output.bias`; `GpuCpuPrefillHandoffTests` on Phi-3.5-MoE (ctx 1024, short factors only) passes (prefill cosine 0.99995, decode >= 0.9987), receipt `(phimoe, VulkanFullGpu)`. Not done: full-GPU at the long-factor regime (ctx > 4096), CUDA hybrid (no LongRoPE), Stage A2.
-- [x] 4. `glm4moe` (2026-10-04, partial by design): Stage A done and the CPU path admitted; the first "no GPU path to hand to" gap was closed later the same day: Vulkan layer split `-g 4` plus a layer-split CPU-prefill handoff, receipt `(glm4moe, VulkanLayerSplit)` (see the last GLM results entry). Disk: GLM-4.5-Air-Q2_K (45.3 GB) is on `H:\_models`, nothing was deleted (H: had 235 GB free).
-- [x] 5. `llama4` (2026-10-04, CPU Stage A only): reading done, Scout Q3_K_M in `H:/_models/Q3_K_M/`, Stage A passes (below). No handoff receipt: the Vulkan paths were not exercised, so the handoff stays Unverified for this family.
-- [x] 6. **Speed league for the MoE lot** (done 2026-10-04: rows in PerformanceLeague.md "MoE lot"; ours is 0.21-0.84x of llama.cpp on CPU on all five, llama.cpp has no GPU backend here; found and fixed the GLM `-g -1` crash by capping auto offload to a 4-layer split) (added 2026-10-04 at the user's request): measure, then record dated rows in [PerformanceLeague.md](../../PerformanceLeague.md) (its existing table format and methodology: `tools/llama.cpp/llama-bench.exe -m <gguf> -p 512 -n 128 -t 6`, versus our CLI on `docs/reference/benchmark-prompt.txt -n 24 --temp 0 --single-turn --no-display-prompt`). **Never run while another heavy test or download is running** (the numbers would be contention, not speed); one model at a time, several repetitions, median.
-  - Models: Qwen1.5-MoE-A2.7B Q4_K_M, Mixtral-8x7B i1-Q4_K_S, Phi-3.5-MoE Q3_K_M, GLM-4.5-Air Q2_K, Llama-4-Scout Q3_K_M (all in `H:\_models`); OLMoE and Qwen3-Coder-30B already have rows and are re-run only if the code under them changed.
-  - **Part A, llama.cpp alone, three modes:** (1) CPU (`-ngl 0`); (2) mixed CPU+GPU (`-ngl N`) and (3) GPU-only (`-ngl 99`), each *only if the vendored `tools/llama.cpp` has a GPU backend that works on this machine*. It has the RPC backend and no Vulkan backend at the time of writing (the backfill plan says building one is a separate project), so modes 2 and 3 are recorded as "not available here" unless that is built; do not substitute a different build without saying so. The machine has only an integrated GPU sharing system RAM (CLAUDE.md rule 13), so a GPU row here is not evidence about discrete GPUs.
-  - **Part B, our engine, after all pending code changes in this plan are committed and verified:** the same three modes: CPU (`-g 0`), mixed (`-g N`: Vulkan hybrid, or the layer split for GLM, with N stated) and GPU-only (`-g -1`, which falls back to the hybrid when the model does not fit; say which path actually ran). Same prompt lengths, same thread count, reported as prefill and decode tokens per second and as a ratio to llama.cpp in the same mode.
-  - Rules: report what ran (path, thread count, quantisation, context), keep failures and "not available" as rows rather than omitting them, and do not conclude "the GPU path is slow" from the iGPU alone.
 
 Realistic total for 1-3: about a week. 4 and 5 depend on disk and on whether they are wanted.
 
@@ -182,3 +173,67 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 - **`cohere2moe` (2026-10-04): classified, no Stage A.** Step A outcome: *not worth it on this hardware*. The only Cohere MoE found (web search, 2026-10-04) is Command A+ (released 2026-05-20, Apache 2.0): 218B total, 25B active, 128 experts top-8, vision input. That is roughly 70 GB or more even at Q2, against 64 GB of RAM here, and the family would also need LayerNorm, parallel residual and the sliding-window/NoPE mix in the GPU passes (all refused for partial offload today). No small `cohere2moe` checkpoint was found, so nothing was downloaded. Revisit if a small variant is published.
 - **`afmoe` on the Vulkan layer split (2026-10-04, later)**: the attention output gate is now in `GpuForwardPass` (gate matmul beside Q/K/V, `SigmoidMulInPlace` before the output projection; no shader change). `UnsupportedReason` no longer refuses it, `PartialOffloadUnsupportedReason` refuses it ("full Vulkan offload only") so the hybrid and CUDA passes keep refusing, and the batched GPU trunk excludes it. The layer-split handoff accepts the CPU pass's per-token `Prefill` for gated models (they have no batched CPU trunk; a first attempt silently did not run the handoff for that reason, so the refusal reason is now recorded). `LayerSplitCpuPrefillHandoffTests` (now one Fact per checkpoint, so a single heavy model can be run alone): Trinity Mini Q4_K_M, `-g 4`, 198-token prompt, 47 s real run: GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps cosine 0.9956-0.9999, 1 near-tie argmax flip of 41. Receipt `(afmoe, VulkanLayerSplit)`. Not done: full-GPU check, the hybrid and CUDA gate, sliding window beyond 2048 tokens, Stage A2. Note this layer-split handoff for gated models is a per-token CPU prefill, not a speed-up.
 - **afmoe full-GPU run and the auto-offload cap (2026-10-04, later)**: `stingray -m Trinity-Mini-Q4_K_M.gguf -g 32 -c 1024` runs all 32 layers on the Vulkan pass (the output gate on the GPU) and prints the same 20-token greedy answer as the CPU run ("Okay, the user is asking about the capital of France. Let me start by recalling basic geography facts"); decode 10.3 t/s against 9.6 on CPU. This is a text comparison on one short prompt, not a logit parity test (the layer-split handoff test carries the numeric evidence). The GLM `-g -1` guard (cap to a 4-layer split) was capping afmoe too, because both have leading dense layers and selection-bias routing; narrowed to models of 30 GB or more (GLM 45 GB dies, afmoe 16 GB runs), so afmoe's auto `-g -1` now takes the full GPU pass. The 30 GB threshold is a measured two-point rule, not a derived limit.
+
+## Open (checked 2026-10-30 against the status line)
+
+- [ ] hunyuan-moe Stage B: not run (the first attempt was stopped for low memory)
+- [ ] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome)
+- [ ] llama4: no handoff receipt yet (Stage A only)
+
+## Family coverage table (merged 2026-10-30 from 2026-10-04-moe-handoff-coverage.md)
+
+Companion to [the batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md). The handoff (CPU batched prefill, then copy K/V into the hybrid or GPU cache) turned OLMoE's 631-token prefill from about 24 into 130-140 tok/s. This page is about how far that spreads and how a family earns it.
+
+## How others decide a MoE family is usable (read 2026-10-04)
+
+| Project | Mechanism | What we take |
+|---|---|---|
+| llama.cpp | One generic `build_moe_ffn` used by 58 model builders; families differ by parameters (gating function, weight normalisation, scale, shared expert). Mixtral is `arch = llama` with `n_expert == 8`. | Do not key on the architecture name alone: a `llama` header with experts is its own family. |
+| FreeToken | `docs/models.md` lists named known-good checkpoints; "other checkpoints of the same architecture work too". The MoE *strategy* (fused / offload / cpu / hybrid) is chosen per machine from a measured bandwidth profile, never per model. A family-wide test matrix checks correctness. | Strategy is a measurement (done: `stingray calibrate`); admission is per family and evidence-backed. |
+| TensorSharp | Publishes per-checkpoint benchmark tables against llama.cpp. | Receipts name a checkpoint and numbers. |
+
+Our bar (hybrid-vs-CPU logit parity on a real checkpoint, near-tie argmax rule) is stricter than any of these. It stays.
+
+## The gate (code: `Engine/PrefillHandoffFamilies.cs`)
+
+Two layers instead of a name list.
+
+1. **Structural** (from the GGUF header). The handoff moves per-head K and V rows, so these are `Incompatible` and no setting lifts that: MLA (`*.attention.kv_lora_rank > 0`), recurrent or convolution state (`*.ssm.*`, `*.shortconv.*`, `*.full_attention_interval`), a forward pass of its own (`gpt-oss`), LongRoPE (`rope_factors_short.weight`; the hybrid cannot decode it).
+2. **Evidence**. `Admitted` only with a receipt (a named parity test) in `PrefillHandoffFamilies.Receipts`. A structurally fine family without one is `Unverified`; `STINGRAY_HYBRID_CPU_PREFILL=all` runs it anyway, for experiments.
+
+Refusals now say which of the two applies. Tests: `PrefillHandoffFamiliesTests` (synthetic headers, plus real headers of the checkpoints that exist on this machine: OLMoE and Qwen3-Coder classify Admitted; DeepSeek-V2-Lite, LFM2-8B-A1B, gpt-oss classify Incompatible; the Granite-H-small header was not found by the test on this run and skipped).
+
+## Coverage matrix
+
+"Header-checked" means the classifier was run on a real header on this machine. Other rows are from the code and from knowledge of the model architectures, not from a checkpoint.
+
+| Family (GGUF arch) | Class | Status today | Basis | Next step |
+|---|---|---|---|---|
+| OLMoE (`olmoe`) | ordinary KV | **Admitted** | parity receipt, header-checked | none |
+| Qwen3-MoE (`qwen3moe`) | ordinary KV | **Admitted** | parity receipt on Qwen3-Coder-30B, header-checked | none |
+| Qwen3 dense (`qwen3`) | ordinary KV | **Admitted** | parity receipt (0.6B) | none |
+| Qwen2-MoE (`qwen2moe`) | ordinary KV, shared expert | **Admitted on Vulkan hybrid and full-GPU** (2026-10-04); CUDA unverified | receipts on both Vulkan paths; found and fixed 3 bugs (expert width, shared-expert gate, hybrid scratch) | CUDA only |
+| Mixtral (`llama` + experts) | ordinary KV | **Admitted on Vulkan hybrid** (2026-10-04); full-GPU and CUDA unverified | receipt on the Vulkan hybrid (Nous-Hermes-2-Mixtral); top-k renormalisation fixed | full-GPU, CUDA |
+| Phi-3.5-MoE (`phimoe`) | ordinary KV + LongRoPE | **Admitted on Vulkan hybrid and full-GPU (short factors tested)** (2026-10-04); CUDA hybrid Incompatible (no LongRoPE) | Vulkan hybrid at both RoPE regimes; full-GPU only at the short-factor regime (ctx 1024) | full-GPU long factors (ctx > 4096), CUDA LongRoPE |
+| Llama 4 (`llama4`) | ordinary KV, MoE top-1 + shared expert, NoPE every 4th layer, L2 QK-norm, chunked attention | **Admitted on Vulkan hybrid**, including past the 8192 chunk boundary (2026-10-04); CUDA unverified | Scout Q3_K_M: CPU parity vs llama-server, hybrid handoff at 4 and 1 GPU layers (40 steps); chunked attention + temperature tuning implemented; CPU 9430-token run matches llama-server (24 positions, 16 confident, 0 near-tie differences); hybrid handoff at 9429 tokens into 4 GPU layers, 6 decode steps cosine 0.9994-0.99996 vs all-CPU (`Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu`, 3130 s) | CUDA; sequential-GPU-prefill comparison at this length (hours) not run |
+| GLM-4.5 / Air (`glm4moe`) | ordinary KV, sigmoid gating + selection bias, leading dense layers | CPU path admitted, Vulkan layer split works (-g 4); **admitted on `VulkanLayerSplit`** (2026-10-04) | `LayerSplitCpuPrefillHandoffTests`: GLM-4.5-Air Q2_K, -g 4, 205 tokens, GPU K/V equal to the CPU pass, prefill logits equal, 40 decode steps cosine >= 0.9946, 0 flips | -g above 4 (needs the expert slot cache), CUDA |
+| Hunyuan-A13B (`hunyuan-moe`) | ordinary KV, 64 experts top-8 + shared expert, QK-norm after RoPE | CPU path admitted (2026-10-04, Q3_K_S); **no handoff receipt** | `HunyuanMoeGreedyParityTests`: 39 confident positions match llama-server, PPL 219.8 vs 201.6 +/- 53.7 | GPU paths (layer split candidate), receipt |
+| Arcee Trinity Mini (`afmoe`) | ordinary KV, 128 experts top-8 + shared, sigmoid + bias routing, leading dense layers, attention output gate, sliding/global layers | CPU path admitted (2026-10-04, Q4_K_M, < 2048 tokens); **admitted on `VulkanLayerSplit`** (gate ported to the full Vulkan pass; 198 tokens, GPU K/V equals CPU, 40 decode steps cosine >= 0.9956) | `AfmoeGreedyParityTests`: 31 confident positions match llama-server, PPL 6.84 vs 7.11 +/- 1.21 | hybrid and CUDA gate, > 2048-token window |
+| Hunyuan-MoE | ordinary KV | not admitted at all | recognised in `ModelGraph` only | out of scope until admitted |
+| DeepSeek-V2/V3/R1 (`deepseek2`) | MLA | **Incompatible** | header-checked on DeepSeek-V2-Lite | separate latent-cache handoff, not this one |
+| LFM2-MoE (`lfm2moe`) | short-conv state | **Incompatible** | header-checked | separate class |
+| Granite-4-H (`granitehybrid`) | Mamba-2 state | **Incompatible** | header-checked | separate class |
+| Qwen3.5/3.6 (`qwen35*`) | gated delta-net hybrid | **Incompatible** | header-checked on Qwen3.6-27B | separate class |
+| gpt-oss | own forward pass | **Incompatible** | by rule | separate class |
+
+Count that matters: **7 admitted families (6 MoE: OLMoE, Qwen3-MoE, Qwen2-MoE, Mixtral, Phi-MoE, Llama 4; plus dense Qwen3) of 13 rows, all on Vulkan only (10 path-specific receipts)**; GLM-4.5 has a receipt on the Vulkan layer split path only (`-g 4`); 5 are a different class entirely, so the handoff should never claim them.
+
+Per-family closure plan, in order: [2026-10-04-moe-handoff-closure-plan.md](2026-10-04-moe-handoff-closure-plan.md).
+
+## What it takes to admit one more family
+
+1. Obtain one checkpoint (disk budget: one at a time; for `qwen2moe`, the smallest published checkpoint is the sensible first proof).
+2. Run the existing hybrid-vs-CPU parity test on it (`VulkanHybridOlmoeParityTests` pattern: cosine > 0.99, near-tie rule, byte-exact K/V).
+3. Add the receipt line, name the test, and update this table. Never add a line without a passing run.
+
+Nothing here has been downloaded: the two ordinary-KV MoE checkpoints on disk are already admitted, so no further family can be proven without a download.

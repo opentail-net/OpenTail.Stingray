@@ -1,4 +1,6 @@
 > **Reprioritized 2026-08-08 — now runway position 4.** Item 1 is now DONE (2026-08-15): both
+
+> Completed items moved to [done/04-quality-of-life-improvements-plan-completed-items-2026-10.md](../done/04-quality-of-life-improvements-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 > inventories are name-complete against source AND fully classified row-by-row, not just via a
 > partial summary register. See [00-current-work.md](../00-current-work.md) Priority 3.
 
@@ -9,10 +11,6 @@ and typed host-key classification are now in place. Environment ownership and ex
 
 ## Remaining work
 
-- [x] 1. **DONE, 2026-08-15 / 2026-09-02.** Env-var/CLI inventory reconciliation, alias dedup, and a
-   dead-switch sampling check (0 of 20 sampled `bench`/`experimental` rows were dead). Split out to
-   [done/quality-of-life-improvements-plan-item1-env-var-inventories.md](../done/quality-of-life-improvements-plan-item1-env-var-inventories.md)
-   2026-09-27.
 - [ ] 2. Extend effective configuration from static plan inputs to real server/loader startup values.
    Server environment precedence is centralized in `ServerEnvironmentOverrides`; `/status`
    publishes its non-sensitive applied-variable receipt and a `configuration.bound` snapshot

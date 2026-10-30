@@ -1,5 +1,13 @@
 # Documentation Architecture Plan: Grounded Consolidation & Authoritative References
 
+## Checklist (2026-10-30; checked against the repo)
+
+- [ ] Phase 1: audit and assign ownership (the ownership map is in the plan; no audit record found)
+- [ ] Phase 2: correct the public front door (README recipes landed 2026-10-11; see `00-current-work.md` item 3.1; the rest is not re-checked)
+- [ ] Phase 3: consolidate existing user guides and references
+- [x] Phase 4: architecture cards and technical guides (34 files in `docs/models/`, 14 in `docs/guides/`)
+- [ ] Phase 5: documentation index and automated verification (no doc-consistency test found for the status matrix)
+
 > **Status:** Implementation-Ready Plan (Incorporating Review Corrections)  
 > **Date:** October 9, 2026  
 > **Scope:** Full documentation suite for OpenTail.Stingray (Core, Engine, Audio, Vision, Diffusion, Server, CLI)  

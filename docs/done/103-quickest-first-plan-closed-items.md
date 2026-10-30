@@ -427,3 +427,8 @@
     verified; chat re-hashed a copied file. Each printed run command worked; Whisper transcribed the Piper clip word-exact.
     `ModelCatalogTests` (local HTTP stub) cover resume and hash mismatch. Core 699 passed / 48 skipped, CLI 374 / 1 skipped.
   - Found: Qwen2.5-0.5B CPU is 0.24x llama.cpp on decode (logged under 16 above).
+
+## 16. Product items: completed sub-items (moved from 103-quickest-first-plan.md, 2026-10-30)
+
+  - [x] `stingray setup` and first-run experience, front-door step 2. DONE 2026-09-28: catalog (3 entries), model home, SHA-checked resumable installs, `setup`, `models`. Steps 3-4 (path-free task commands, C# facade, docs-as-tests) remain in the front-door design doc.
+  - [x] Qwen2.5-0.5B (the catalog's default chat model) CPU speed: decode 23 vs llama.cpp 98 tok/s, prompt 80 vs 379 (0.24x / 0.21x, 2026-09-28). Found while measuring the catalog; much worse than SmolLM2-1.7B's 0.89x. DONE 2026-09-28 (dbdbe2a): int8 Q5_0 kernels, decode 28 -> 66 tok/s (0.29x -> 0.67x), prefill 35 -> ~318 tok/s (~0.84x), perplexity unchanged (11.98 vs llama.cpp 12.01). Decode is still 0.67x of llama.cpp. Numbers in `PerformanceLeague.md`.

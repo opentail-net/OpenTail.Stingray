@@ -62,7 +62,7 @@ even if it happens to load.
 - **Runs on the CPU but not with full Vulkan offload (`-g -1`):** the hybrid and recurrent Granite
   4.0-H, LFM2 and Nemotron-H models, OLMo and OLMo 2, and the MLA models Youtu-VL and Kimi-VL (as of
   2026-10-11; the full list with the error for each is in
-  [2-coverage/2026-10-11-checkpoints-not-supported-yet.md](2-coverage/2026-10-11-checkpoints-not-supported-yet.md)).
+  [reference/2026-10-11-checkpoints-not-supported-yet.md](reference/2026-10-11-checkpoints-not-supported-yet.md)).
 - **Known partial results:** DeepSeek-V2-Lite matched llama.cpp's greedy output with int8 prefill
   (the CPU default again since 2026-10-02, [ADR-0003](reference/adr-0003-cpu-int8-prefill-default.md)),
   but since the Q3_K kernel rewrite `e7b7aa8a` it departs at token 9 on the test prompt

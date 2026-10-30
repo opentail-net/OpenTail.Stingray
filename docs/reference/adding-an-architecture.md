@@ -3,7 +3,7 @@
 **Principle.** An `ArchitectureDescriptor` says what is true of the *model*. The planner (`ExecutionPlanner`, `ForwardPassSelection`) decides what to do on *this machine for this request*. A descriptor never says "use CUDA"; it says "I can run on CUDA" (`Capabilities`), and the planner reads only `descriptor.Capabilities` (a test enforces it). Registration is static (`BuiltInArchitectures`, no reflection), so NativeAOT and trimming stay clean. There is no dynamic plugin loading, deliberately.
 
 Measured 2026-10-08 by actually adding a hypothetical dense family and a hypothetical Mamba-2 hybrid to the working tree and running the guards
-([plan](../2-coverage/2026-10-08-architecture-capabilities-plan.md), Phase 5): the code edit is one descriptor plus one manifest line. The rest below are
+([plan](../done/2026-10-08-architecture-capabilities-plan.md), Phase 5): the code edit is one descriptor plus one manifest line. The rest below are
 deliberate gates, not code.
 
 **Admitting a checkpoint as an agent?** Start with [architecture-admission-agent-playbook.md](architecture-admission-agent-playbook.md) (run `stingray scout` first).

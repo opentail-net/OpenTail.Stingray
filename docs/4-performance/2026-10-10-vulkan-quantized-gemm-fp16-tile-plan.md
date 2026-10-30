@@ -1,5 +1,19 @@
 # Vulkan quantized GEMM: closing the gap to ggml-vulkan (plan, 2026-10-10)
 
+## Checklist (2026-10-30; checked against the progress log)
+
+Note: the status line above ("proposed, not started") is stale; the progress log below records work done on 2026-10-10.
+
+- [ ] Phase 0: harness and safety net (partial; the reference data is recorded)
+- [x] Phase 1: small-M kernel (kept, 2026-10-10)
+- [x] Phase 2(c): chunked image-stream MLP (kept, 2026-10-10; about 2.6 s, 10.7%, faster)
+- [x] Phase 2(a): 128x128 tile with 256 threads (rejected and reverted, 2026-10-10)
+- [x] Phase 2 MLP-up follow-ups: stopped, nothing cheap left (2026-10-10)
+- [ ] Five-run median of the Phase 1 + 2(c) checkpoint (outstanding per the log)
+- [ ] Phase 3: new tiled kernel family (the big-upside phase; needs its numerics decision)
+- [ ] Phase 4: fusions and epilogues
+- [ ] Phase 5: propagate and document
+
 Status: **proposed, not started** (for second opinion before any kernel work). Owner: the Qwen Image performance
 thread; see [the diffusion samples and Qwen plan](2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)
 for the measurements this builds on.

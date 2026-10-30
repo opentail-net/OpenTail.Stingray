@@ -1,5 +1,15 @@
 # Documentation Claim Reconciliation Plan
 
+## Checklist
+
+- [ ] R1. Public C# example: model-home resolution
+- [ ] R2. Diffusion claims: HunyuanVideo and Wan 2.2
+- [ ] R3. AVX-512: implemented path versus verified execution
+- [ ] R4. Environment registry: source-of-truth filename and drift checks
+- [ ] R5. TurboQuant KV-cache modes and the guide's scope
+- [ ] Audit report with an evidence row per disagreement (none found in `docs/` on 2026-10-30)
+- [ ] Targeted plan and document edits applied (only the evidence-backed ones)
+
 > **Status:** Proposed — evidence-gathering pass, not an implementation verdict  
 > **Date:** October 9, 2026  
 > **Scope:** Resolve five specific disagreements found while reviewing the documentation architecture plan.  

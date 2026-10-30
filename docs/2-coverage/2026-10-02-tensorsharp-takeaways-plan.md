@@ -1,5 +1,7 @@
 # TensorSharp takeaways (2026-10-02)
 
+> Completed items moved to [done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md](../done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 Source: `examples/TensorSharp/TensorSharp` (BSD 3-Clause; https://github.com/zhongkaifu/TensorSharp).
 Any ported code adds its file to the existing TensorSharp section of `THIRD_PARTY_NOTICES.md`.
 TensorSharp's published speed numbers come from its GGML (llama.cpp) native backend, so they say
@@ -27,12 +29,6 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
     gap is: SmolLM2-135M ~0.55x and Qwen2.5-0.5B ~0.75x of llama.cpp, attributed to per-call
     overhead (`perf-sweep-plan.md`).
 - **Plan:**
-  - [x] Port behind a switch (e.g. `STINGRAY_CPU_POOL=spin`) and route `SimdKernels`'s matvec
-     `Parallel.For` sites through it.
-  - [x] Prove the dispatch happened (a call counter).
-  - [x] Run an interleaved A/B on 135M / 360M / Qwen2.5-0.5B decode and one 7B; outputs must be
-     bit-identical, since only scheduling changes.
-  - [x] Keep it only if it is measurably better; record the result either way.
 - **Expect less than claimed:** this machine has 8 cores, not 122.
 
 ### Result, 2026-10-02: shipped **opt-in** (`STINGRAY_CPU_POOL=spin`)
@@ -194,4 +190,4 @@ The user's policy:
 | GLM-5.x (`glm-dsa`, `glm5next`) | 2026-10-03 | `Engine/GlmDsa*.cs`, `Engine/Glm5Next*.cs`, `Tests.ForwardPass.Fast/GlmDsaSyntheticTests.cs` (4 tests), `Tests.ForwardPass.Fast/Glm5NextSyntheticTests.cs` (3 tests); `// glm-dsa`, `// glm5next — NOT admitted` blocks in `ModelCompatibility.cs` | llama.cpp `src/models/glm-dsa.cpp`, `src/models/glm5-next.cpp` (`bed0a8566`, b10306), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa/` | Real-checkpoint verification (>236 GiB RAM hardware required); MTP heads, vision tower deferred **Revised 2026-10-03:** smoke tests only (finite logits), no numeric oracle run. `glm5next` mHC token-state bug fixed (regression test added); K-pool sparse selection missing (throws past `indexer.top_k` keys). GLM-5.3 Q2_K_XL is downloading for a paged real-weight run. |
 | DiffusionGemma (`diffusion-gemma`) | 2026-10-03 | `Diffusion/DiffusionGemma/*.cs` (Gemma-4 MoE backbone, multi-block causal prefill, persistent KV, bidirectional canvas, self-conditioning MLP, EntropyBound sampler, strict tensor loader), `Tests.Diffusion/DiffusionGemmaTests.cs` (31 unit/pipeline tests passing); `// diffusion-gemma — NOT admitted` block in `ModelCompatibility.cs` (real checkpoint guarded by `DiffusionGemmaRealCheckpointGuardTests` per Rule 14) | llama.cpp (`gemma4.cpp` backbone) + TensorSharp `Models/DiffusionGemma/` | Real-weight checkpoint verification on `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB); unadvertised in CLI/STATUS **Revised 2026-10-04:** implementation complete and synthetically verified (31 tests in `DiffusionGemmaTests` passing); pending Phase 9/13 real Q4_K_M checkpoint verification against llama.cpp and TensorSharp. |
 | DeepSeek V4 / V4.1 Flash (`deepseek4`, `deepseek41`) | 2026-10-03 | `Engine/DeepSeek4*.cs`, `Engine/DeepSeek41*.cs`, `Tests.Core/DeepSeek4AlphaTests.cs` (32 tests), `Tests.Core/DeepSeek41AlphaTests.cs` (7 tests); `// deepseek4`, `// deepseek41 — NOT admitted` blocks in `ModelCompatibility.cs` | llama.cpp `src/models/deepseek4.cpp` (b10306), TensorSharp `Models/DeepSeek4/` (103-case PyTorch oracle) | Real-checkpoint verification (>64 GB RAM hardware required; V4 ~98 GB, V4.1 ~335 GB); DSpark, vision, MTP deferred **Revised 2026-10-03:** V4 smoke test uses ratio 0 only (CSA unexercised), no llama.cpp comparison; V4.1 is partial (raw-attention trunk, refuses ratios 1/2 and YaRN, no indexer, F32-only Engram) with corrected `moe_intermediate_size` 2304 and indexer heads 32. V4 (98.6 GB) can be paged from disk and checked against b10306; V4.1 (335 GB) does not fit. |
-| DeepSeek-V3.2 (`deepseek32`) | 2026-10-03 | `Engine/DeepSeek32Alpha.cs`, `Engine/DeepSeek32TensorSet.cs`, `Engine/DeepSeek32ForwardPass.cs`, `Tests.Core/DeepSeek32AlphaTests.cs`; `// deepseek32 — NOT admitted` block in `ModelCompatibility.cs` | llama.cpp `src/models/deepseek32.cpp`; see [058 DeepSeek lineage plan](058-deepseek-full-lineage-implementation-plan.md), Phase 1 | No real-checkpoint run; indexer Hadamard rotation and MTP are unimplemented, and MLA absorption math has not been independently verified. |
+| DeepSeek-V3.2 (`deepseek32`) | 2026-10-03 | `Engine/DeepSeek32Alpha.cs`, `Engine/DeepSeek32TensorSet.cs`, `Engine/DeepSeek32ForwardPass.cs`, `Tests.Core/DeepSeek32AlphaTests.cs`; `// deepseek32 — NOT admitted` block in `ModelCompatibility.cs` | llama.cpp `src/models/deepseek32.cpp`; see [058 DeepSeek lineage plan](../reference/058-deepseek-full-lineage-implementation-plan.md), Phase 1 | No real-checkpoint run; indexer Hadamard rotation and MTP are unimplemented, and MLA absorption math has not been independently verified. |

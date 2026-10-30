@@ -1,5 +1,24 @@
 # OpenTail.Stingray: Public Developer Surface and Front Door — Implementation Plan
 
+## Checklist (2026-10-30; code checked)
+
+- [ ] A1. Prove the public API with a compiling consumer (samples exist under `samples/`; no consumer compile test found)
+- [ ] A2. Audit ownership, disposal and lock-order protocol
+- [ ] A3. Audit misleading parameter options
+- [ ] A4. Interface conformance, incomplete-turn semantics, behaviour tests
+- [x] B1. Shared catalogue resolution (`src/OpenTail.Stingray.Cli/CatalogTaskResolver.cs`)
+- [x] B2. `stingray chat` (`ChatCommand.cs`)
+- [x] B3. `stingray speak` (`SpeakCommand.cs`)
+- [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
+- [ ] B5. Register commands and update catalogue run templates
+- [ ] B6. CLI tests for the task commands
+- [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
+- [ ] C2. Front-door and API documents
+- [ ] D1. Compile the public C# sample (samples exist; compile against the package not re-checked)
+- [ ] D2. Verify the actual NuGet package
+- [ ] D3. Model-backed task qualification
+- [ ] E. Close-out and release-quality review
+
 > **Status update 2026-10-11** (a product-flow pass; it verified the items below and did not re-audit the other phases of this plan):
 >
 > - **Exercised end to end:** `stingray setup chat` (468.6 MiB, pinned revision, SHA-256 verified, a "fits this machine" check) followed by `stingray chat "..."` on a clean model home took 5 to 6 seconds in total on a Ryzen 7 5700G; `stingray chat` chose the integrated GPU through Vulkan automatically. Path-free model resolution through `ModelHome` also works in the Chat and Speech samples.
@@ -444,7 +463,7 @@ The root README may be more tutorial-oriented than the NuGet README, but it must
 Update:
 
 * `docs/3-product-and-runtime/103-front-door-design.md`
-* `docs/3-product-and-runtime/2026-10-06-llamasharp-api-realignment-plan.md`
+* `docs/done/2026-10-06-llamasharp-api-realignment-plan.md`
 
 Record the real status of the facade, task commands, package README and executable documentation tests. Resolve their current differences in status language and milestone checkboxes.
 

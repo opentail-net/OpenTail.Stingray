@@ -1,5 +1,7 @@
 # Front door: README and first-run experience (design, 2026-09-26)
 
+> Completed items moved to [done/103-front-door-design-completed-items-2026-10.md](../done/103-front-door-design-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 **Status (2026-09-27): Step 1 done** (README.md moved/rewritten around a working quick start;
 old matrix now `docs/STATUS.md` — confirmed by STATUS.md's own banner and the current README's
 structure). **Step 2 done 2026-09-28**: catalog (`src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs`, three
@@ -65,15 +67,9 @@ two-minute demo and the tool for non-developers.
    | image | FLUX.1-schnell GGUF (city96) + VAE + encoders (comfyanonymous), or Z-Image-Turbo | Apache-2.0; needs a size warning |
    | embed / rerank | bge-small / ms-marco MiniLM (HF) | already used in the CLI examples |
 
-- [x] 2. **A model home outside the repo**: `%LOCALAPPDATA%\stingray\models` / `~/.cache/stingray/models`,
-   overridable, searched after explicit paths. The repo-relative `models/` stays a developer
-   convenience.
-- [x] 3. **`stingray setup <task>`**: shows size, licence and expected speed, asks, then downloads the
-   bundle through the existing `pull` machinery (resumable, sha-checked).
 - [ ] 4. **Task commands that need no paths once set up**: `stingray chat`, `speak`, `transcribe`,
    `describe`, `image`. A missing model gives a one-line fix (`run: stingray setup speak (63 MB)`),
    never a stack trace.
-- [x] 5. **`stingray models`** (the per-task view; RAM-based hiding of options is not done): installed bundles, which tasks are ready, what to run to fix the rest.
 - [ ] 6. **A small library facade** so the README's C# is three lines per task, and the snippets are
    compiled by a test so they cannot rot:
    `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
@@ -114,10 +110,6 @@ two-minute demo and the tool for non-developers.
 
 ## Order of work
 
-- [x] 1. Move `README.md` to `docs/STATUS.md`; write the new README around what works today: explicit
-   model downloads, commands and C# that have actually been run. Fix the NuGet README's
-   non-compiling snippets in the same pass. (DONE 2026-09-27)
-- [x] 2. Starter manifest + model home + `setup` + `models`. (DONE 2026-09-28; embed/rerank, describe-image and image entries not yet: each needs a public file whose hash matches a tested one)
 - [ ] 3. Task commands and the library facade; rewrite the README's recipes around them.
 - [ ] 4. Docs-as-tests.
 

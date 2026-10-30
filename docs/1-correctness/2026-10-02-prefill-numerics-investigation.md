@@ -1,5 +1,19 @@
 # Prefill numerics investigation, 2026-10-02
 
+## Checklist
+
+- [x] 1. Evidence gathering (code and history)
+- [x] 2. llama.cpp's own recurrence (reviewer)
+- [x] 3. Attribution matrix design
+- [x] 4. First result: short prompts
+- [x] 5. Higher-precision recurrence reference D
+- [x] 6. Full matrix, prompt as the statistical unit
+- [x] 7. GDN probe: born in the recurrence or amplified downstream
+- [x] 8. Prefill -> decode continuity
+- [x] 9. The two KL outliers and the row check
+- [x] 10. int8 default interaction
+- [x] 11. ggml cross-check on identical rows (done 2026-10-02)
+
 **Question:** are the fast (chunked/batched) prompt-processing paths less accurate than the
 per-token path, enough to justify slower defaults?
 
@@ -157,9 +171,26 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
    Those were the predefined "really bad turn" criteria, and none was met.
 
 ## Open / follow-up
-- ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
+- [ ] ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
   vendored `ggml-base.dll`): is 1e-2 per projection normal int8 noise or a defect?
-- 27B MTP validation: boundary, ~500, ~2000 tokens; A vs E vs llama.cpp; continuity; MTP draft
-  acceptance.
-- Re-baseline `MtpDecoder_GreedyParity_LlamaCpp` on the optimized path when its checkpoint is
-  available.
+- [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
+- [ ] Re-baseline `MtpDecoder_GreedyParity_LlamaCpp`: see ADR-0002 (open follow-ups).
+
+### Follow-ups from the MoE audit (moved from docs/todo.md, 2026-10-30)
+
+- [ ] NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
+      rel-RMS per projection (vs 9e-7 for the F32 GEMM). Compare our `QuantizeRowToQ8KS` + dot
+      against ggml's `quantize_row_q8_K` + `vec_dot_q4_K_q8_K` on the same rows, to tell normal
+      int8 noise (activation amax/rms 25-90 here) from a defect
+- [ ] Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
+      0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
+      ggml Q8_K (1 scale/256) per weight type; align where it differs
+- [ ] Q3_K batched path uses Q8_KS while decode uses Q8_K (claimed; verify in
+      `TryResolveQ8Dispatch`). Unifying on Q8_K would make Q3_K prefill match decode and ggml
+- [ ] MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
+      instead of per expert bucket: k-fold less quantize work, identical activations per token
+- [ ] MoE: keep router and SiLU*up in F32, quantize only at GEMM inputs (check current code)
+- [ ] MoE: small prompts (N <= 32) through the folded decode-style dispatch (bit-identical to
+      decode, fewer tiny GEMMs); measure
+- [ ] Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`
+

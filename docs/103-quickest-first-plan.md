@@ -4,6 +4,8 @@ Written 2026-09-27 at the user's request. **This file sets the working order.** 
 same problems exist, such as the themed backlog in [00-current-work.md](00-current-work.md) and
 [1-correctness/bugstofix.md](1-correctness/bugstofix.md). Those remain the detail and evidence
 sources, but work proceeds in the order below.
+Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archived in [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md).
+
 
 ## Rules
 
@@ -22,15 +24,6 @@ sources, but work proceeds in the order below.
 
 ---
 
-## Minutes
-
-### 1. Commit the GLM entry in bugstofix.md
-- [x] **1. Commit the GLM entry in bugstofix.md** (DONE 2026-09-27, `99b6b53`) — archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 2. Rerun the real-weight landscape sweep
-- [x] **2. Rerun the real-weight landscape sweep** (DONE 2026-09-28, `scripts/sweep-tests.ps1`) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
----
 
 ## About an hour
 
@@ -42,51 +35,11 @@ sources, but work proceeds in the order below.
   - [ ] **Done when:** PPL within ~0.3% of llama.cpp; add STATUS/RUNNING rows, and entry in MODELS.md if it qualifies.
   - *Note:* uses `deepseek2` in llama.cpp, not `glm4moe`, so it may already work. Waits for Item 2 sweep to free machine.
 
-### 4. Gemma 4 E4B vision (`gemma4v`) parity
-- [x] **4. Gemma 4 E4B vision (`gemma4v`) parity** (DONE 2026-09-27) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
 
-### 5. Wire the ONNX speech-to-text pipelines into `stingray stt`
-- [x] **5. Wire the ONNX speech-to-text pipelines into `stingray stt`** (DONE 2026-09-27, `4874ea4`) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 6. Finish the silent-no-op test sweep
-- [x] **6. Finish the silent-no-op test sweep** (DONE 2026-09-28) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
----
-
-## A few hours, cause already narrowed
-
-### 7. GLM-4.5 (`glm4moe`) Q5_K×Q8_K kernel and gated decode path
-- [x] **7. GLM-4.5 (`glm4moe`) Q5_K×Q8_K kernel and gated decode path** (implementation and synthetic-validation scope complete; real-weight evaluation split to item 19) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 8. Jinja chat-template gaps
-- [x] **8. Jinja chat-template gaps** (DONE 2026-09-27, `4ed6866`) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 9. Empty KV rows for layers without attention
-- [x] **9. Empty KV rows for layers without attention** (DONE 2026-09-27, `c4cea41`) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 10. FunASR-Nano on real speech
-- [x] **10. FunASR-Nano on real speech** (DONE 2026-09-27 as a bug entry, `fea7873`) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
----
-
-## A few hours, cause unknown
-
-Timebox each at half a day, write down what was learned, and move on if blocked.
-
-- [x] **11. Unknown-cause set** (all initial sub-items 11.a–11.f resolved) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-  - [x] **11.a** LFM2 0.24% PPL gap (CLOSED 2026-10-01)
-  - [x] **11.b** Youtu-VL: one 1024-token window +5% PPL vs llama.cpp (DONE 2026-09-27, `9568823`)
-  - [x] **11.c** NaN in `ForwardPass`'s f16 `qwen3` path (DONE 2026-09-27)
-  - [x] **11.d** `HybridGdnChunkedPrefill_MatchesSequentialPrefill` failure with real weights (DONE 2026-09-28)
-  - [x] **11.e** Stable Audio 3 padding masks in the APG norm (DONE 2026-09-28)
-  - [x] **11.f** Classic LLaVA-1.5 missing image token / ordering (DONE 2026-09-27)
 
 ---
 
 ## A day or more
-
-### 12. Batched prompt processing for the recurrent families
-- [x] **12. Batched prompt processing for the recurrent families** (DONE 2026-09-28) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
 
 ### 13. MoE variants of the recurrent families
 - [ ] **13. MoE variants of the recurrent families**
@@ -95,16 +48,8 @@ Timebox each at half a day, write down what was learned, and move on if blocked.
   - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
 
-### 14. Architectural additions & missing features
-- [x] **14. Architectural additions & missing features** (DONE 2026-09-28) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
-### 15. Performance items
-- [x] **15. Performance items** (CLOSED for this machine 2026-09-28; discrete-GPU items moved to 18) — details archived to [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md)
-
 ### 16. Product items
 - [ ] **16. Product items**
-  - [x] `stingray setup` and first-run experience, front-door step 2. DONE 2026-09-28: catalog (3 entries), model home, SHA-checked resumable installs, `setup`, `models`. Steps 3-4 (path-free task commands, C# facade, docs-as-tests) remain in the front-door design doc.
-  - [x] Qwen2.5-0.5B (the catalog's default chat model) CPU speed: decode 23 vs llama.cpp 98 tok/s, prompt 80 vs 379 (0.24x / 0.21x, 2026-09-28). Found while measuring the catalog; much worse than SmolLM2-1.7B's 0.89x. DONE 2026-09-28 (dbdbe2a): int8 Q5_0 kernels, decode 28 -> 66 tok/s (0.29x -> 0.67x), prefill 35 -> ~318 tok/s (~0.84x), perplexity unchanged (11.98 vs llama.cpp 12.01). Decode is still 0.67x of llama.cpp. Numbers in `PerformanceLeague.md`.
   - [ ] Configuration ownership.
   - [ ] Multi-model runtime phases.
   - [ ] Session `Fork()` context isolation.
