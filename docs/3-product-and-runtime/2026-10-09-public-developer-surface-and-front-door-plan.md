@@ -2,7 +2,7 @@
 
 ## Checklist (2026-10-30; code checked)
 
-- [x] A1. Prove the public API with a compiling consumer: `scripts/verify-package-consumers.ps1` compiles against the packed packages with no project reference (1.0.8 on 2026-10-11; re-run for 1.0.9).
+- [x] A1. Prove the public API with a compiling consumer: `scripts/verify-package-consumers.ps1`, 1.0.9 re-run on 2026-10-30: 17 checks, 0 failed (exit 0). Earlier 1.0.8 run: 2026-10-11.
 - [ ] A2. Audit ownership, disposal and lock-order protocol
 - [ ] A3. Audit misleading parameter options
 - [ ] A4. Interface conformance, incomplete-turn semantics, behaviour tests
@@ -10,11 +10,12 @@
 - [x] B2. `stingray chat` (`ChatCommand.cs`)
 - [x] B3. `stingray speak` (`SpeakCommand.cs`)
 - [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
-- [ ] B5. Register commands (done: `Program.cs:115-119`, checked 2026-10-30) and update catalogue run templates (not re-checked)
+- [x] B5. Register commands (`Program.cs:115-119`) and update catalogue run templates (`ModelCatalog.cs` now uses `stingray chat`, `speak`, `transcribe`; checked 2026-10-30)
+- [ ] B5 item 3, application name: align `SetApplicationName` (`Program.cs:68` still says `opentail-llm-cli`)
 - [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs`; checked 2026-10-30)
 - [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
-- [x] D1. Compile the public C# samples and README snippets against the package: 13 of 13 on 2026-10-11 (1.0.8); re-run for 1.0.9 pending.
+- [x] D1. Compile the public C# samples and README snippets against the package: 13 of 13 on 2026-10-11 (1.0.8); 1.0.9 re-run on 2026-10-30 passed (17 checks, 0 failed).
 - [ ] D2. Verify the actual NuGet package
 - [ ] D3. Model-backed task qualification
 - [ ] E. Close-out and release-quality review
@@ -634,7 +635,7 @@ two-minute demo and the tool for non-developers.
 2. Give a first success in minutes. It uses only commands and code that have been run, from a
    clean directory, against publicly downloadable models.
 3. State costs up front: download size, RAM, GPU optional, rough speed on ordinary hardware.
-4. Organise by what people want to do: chat, describe an image, speak text, transcribe audio,
+4. (Historical, 2026-10-30: `describe` and `image` are not part of the current plan.) Organise by what people want to do: chat, describe an image, speak text, transcribe audio,
    generate an image, embed and rerank, serve an OpenAI-compatible API. Each recipe has the same
    shape: what you get, what to download, the command or C#, what you will see.
 5. Use progressive disclosure: quick start, then recipes, then library/server, then links to depth
@@ -701,7 +702,9 @@ two-minute demo and the tool for non-developers.
 
 ### Order of work
 
-- [ ] 3. Task commands and the library facade; rewrite the README's recipes around them.
+**Historical (2026-10-30).** This order predates the implementation. Current status: `chat`, `speak` and `transcribe` are implemented and registered; the separate library facade is superseded (§3.2); `describe` and `image` are not part of the current plan. Items below are not current work unless re-adopted.
+
+- [x] 3. (Historical.) Task commands: done (registered; see B2 to B4). The library facade is superseded by §3.2. Rewriting the README recipes around them is C2.
 - [ ] 4. Docs-as-tests.
 
 Steps 2–4 are the substance. Step 1 makes the front page truthful now.

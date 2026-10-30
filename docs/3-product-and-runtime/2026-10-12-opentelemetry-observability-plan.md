@@ -1,6 +1,6 @@
 # OpenTelemetry Observability for Stingray
 
-**Status:** Draft plan (2026-10-12), revised after review by three independent reviewers and a fresh read of the code. Not started. Phase 1 is deliberately small (one vertical slice); everything else follows it. Every open question in §11 now carries a proposed answer, and none is decided until the owner confirms.  
+**Status:** Draft plan (2026-10-12), revised after review by three independent reviewers and a fresh read of the code. Partly implemented (checked 2026-10-30): Phases 2 to 6 (first cut) and the CLI bridge landed on 2026-10-13 per the progress log; the acceptance criteria at the end are not yet verified. Phase 1 is deliberately small (one vertical slice); everything else follows it. Every open question in §11 now carries a proposed answer, and none is decided until the owner confirms.  
 **Target:** .NET 10 / C# 14, NativeAOT-safe, local-first.  
 **Scope:** metrics and traces for the generation serving path (Server) and the inference engine, with an optional, off-by-default way to capture content. Audio, diffusion and vision pipelines are a later phase (§6, Phase 7).
 

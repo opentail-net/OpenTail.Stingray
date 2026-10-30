@@ -39,7 +39,10 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 - **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
 - **First run, catalogue and public surface** (owner: [workstreams/first-run-and-public-surface.md](workstreams/first-run-and-public-surface.md)): item 1 (section 3).
 - **Gemma** (owner: [workstreams/gemma.md](workstreams/gemma.md)): items 7 and 9 (sections 1 and 2).
-- **Scout and architecture admission** (owner: [workstreams/scout-and-admission.md](workstreams/scout-and-admission.md)): no backlog item of its own; the deferred phases are in the workstream.- **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header is out of date.- **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).- **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
+- **Scout and architecture admission** (owner: [workstreams/scout-and-admission.md](workstreams/scout-and-admission.md)): no backlog item of its own; the deferred phases are in the workstream.
+- **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header is out of date.
+- **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).
+- **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
 
 ---
 
