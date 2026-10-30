@@ -85,3 +85,21 @@ That gives the `<|imp…` / `<` output the sweep saw.
 and points at `STINGRAY_RAW_PROMPT=1` (`RunCommand.UsesUnsupportedChatMlFallback`, `ChatMlFallbackWarningTests`).
 Whether base models should default to raw completion instead is an owner decision. It changes default output, so it
 is not changed here.
+
+## Follow-up 2026-10-30: Apertus-8B (backlog §1.14 "Apertus greedy re-check vs llama-server --no-jinja")
+
+`swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M.gguf`, same method (raw prompt, greedy, CPU, 32 tokens). `llama-server` needs
+`--no-jinja`: its parser rejects this GGUF's chat template and the server exits at load. `llama-completion` is
+unaffected.
+
+- `def fibonacci(n):`: **identical** to llama.cpp.
+- `The capital of France is`: identical for 22 tokens (` Paris, and the country has a population of approximately 67
+  million people. France is known for its rich`), then Stingray ` history` vs llama.cpp ` cultural heritage`.
+
+The split is a near-tie. llama.cpp gives ` cultural` −0.777 and ` history` −0.943 (0.17 nats). Stingray's prefill over
+the same text gives ` cultural` −0.772 and ` history` −0.994, the same order and within 0.05. A Stingray decode step
+from a prefilled `…known for its` also picks ` cultural` (logit 27.02 vs 26.90). Only the run that *decoded* all 21
+tokens one by one picked ` history`. The prefill (int8 batched tier) and decode paths fill the KV cache with slightly
+different values, which is the documented ADR-0003 gap, and that is enough to flip a 0.12-0.17 nat tie. No Apertus
+defect.
+
