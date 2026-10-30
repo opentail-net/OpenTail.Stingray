@@ -15,6 +15,12 @@ These apply to every model and were confirmed while admitting the models below.
 - Run all commands from the repository root folder (`c:\Git-Public\OpenTail.Stingray`). All relative paths (such as `models/_models/...` or `models/sd15/...`) resolve from the root.
 - If `stingray` is not installed as a global tool on your system `PATH`, invoke the compiled CLI directly via `.\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.exe` (or `dotnet run --project src/OpenTail.Stingray.Cli -c Release --`).
 
+**Threads.**
+- CPU work uses one thread per physical core by default; set `-t N` or `STINGRAY_CPU_THREADS=N` to change it.
+- With exactly one thread, decode switches to llama.cpp's activation format (Q8_K) and the repacked Q4_K kernel, which
+  is about 3x faster on one core (Mistral-7B Q4_K_M: 5.1 vs 1.7 t/s) at llama.cpp-level perplexity. The output can
+  differ slightly from a multi-thread run of the same prompt. Details: PerformanceLeague, "Decode activation format".
+
 **Memory.**
 - Weights are memory-mapped, not copied. Stingray loads the parts every token uses (embeddings,
   attention, dense and shared-expert FFNs) into RAM up front.

@@ -40,7 +40,7 @@ public sealed unsafe partial class ForwardPass
             return;
         }
 
-        if (SimdKernels.DecodeViaGemm && SimdKernels.Q8PrefillEnabled)
+        if (SimdKernels.DecodeUsesGemm && SimdKernels.Q8PrefillEnabled)
             MatMulBatchedDualCached(_ffnGate, in _wGate[layer], _ffnUp, in _wUp[layer], _normBuf, 1, _intermDim, _embDim);
         else
             SimdKernels.MatVecDual(_ffnGate, _wGate[layer].DataPtr, _ffnUp, _wUp[layer].DataPtr,

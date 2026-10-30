@@ -1729,8 +1729,10 @@ paired column: SmolLM2's first scored position (right after BOS) is 22.5 nats un
 
 Q8_K reaches the memory limit with about 4 threads instead of 16 (2.3-3x per thread), at the cost of llama.cpp-level
 rather than slightly better perplexity. At 16 threads it is 5-7% slower, because a GEMM kernel at N = 1 does extra
-work. A dedicated single-row path (`RepackedGemm.GemvQ4K8x8Q8K` exists) should remove that. Whether to switch the
-default is an owner decision.
+work. A dedicated single-row path (`RepackedGemm.GemvQ4K8x8Q8K` exists) should remove that. **Decision (2026-10-30): Q8_K decode is used automatically with one CPU thread** (`-t 1` or
+`STINGRAY_CPU_THREADS=1`; `SimdKernels.DecodeUsesGemm`); with more threads the default stays Q8_KS.
+`STINGRAY_CPU_DECODE_VIA_GEMM=1` still forces it at any thread count. Check after the change, Mistral-7B Q4_K_M:
+1 thread 5.1 t/s (was 1.7; llama.cpp 4.0-4.7), 8 threads (the default, physical cores) 8.8 t/s (llama.cpp 8.6-9.45).
 
 ## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
 
