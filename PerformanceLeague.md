@@ -1697,6 +1697,41 @@ one scale per 32 elements for accuracy, which forces a convert + FMA per sub-blo
 accumulates integers across the super-block. Switching decode to Q8_K would match llama.cpp's numerics and kernel
 structure but gives up the ~4x tighter noise envelope Q8_KS was chosen for.
 
+## Decode activation format: Q8_KS (default) vs Q8_K (2026-10-30)
+
+Question: what would Q4_K/Q6_K decode gain and lose by using ggml's Q8_K activations (one scale per 256) instead of
+Q8_KS (one per 32, issue #107)? The Q8_K arm is the existing `STINGRAY_CPU_DECODE_VIA_GEMM=1` switch, which runs
+decode through the default Q4_K prefill kernel (Path 2, the port of llama.cpp's `ggml_gemm_q4_K_8x8_q8_K`) at N = 1.
+Note that **prefill already uses Q8_K for Q4_K**, so the current default mixes formats between prefill and decode.
+
+**Quality.** wikitext-2 test, one 1024-token chunk, CPU, scored token by token (the decode path). llama.cpp b10306
+`llama-perplexity -c 1024 --chunks 1` scores the chunk's second half, so Stingray is shown on the same half.
+
+| Model (Q4_K_M) | llama.cpp PPL | Q8_KS PPL | Q8_K PPL | Q8_K - Q8_KS, paired mean dNLL (pos > 1) |
+|---|---:|---:|---:|---|
+| SmolLM2-1.7B | 5.151 | 5.172 | 5.168 | -0.0036 +/- 0.0043 (no difference) |
+| Qwen3-4B | 7.688 | 7.624 | 7.715 | +0.0089 +/- 0.0039 (Q8_K +0.9% PPL, ~2.3 SE) |
+| Mistral-7B | 3.035 | 3.012 | 3.019 | +0.0035 +/- 0.0021 (+0.35%, marginal) |
+
+Q8_K lands where llama.cpp does; Q8_KS is slightly better than llama.cpp on Qwen3-4B. One outlier excluded from the
+paired column: SmolLM2's first scored position (right after BOS) is 22.5 nats under Q8_KS and 10.3 under Q8_K.
+
+**Speed.** Decode t/s, 24 tokens, interleaved, two runs each:
+
+| Model | Threads | Q8_KS | Q8_K (GEMM at N = 1) |
+|---|---:|---|---|
+| Mistral-7B Q4_K_M | 1 | 1.7, 1.7 | **5.2, 5.0** (llama.cpp 4.0) |
+| | 4 | 5.1, 6.5 | **8.0, 8.1** (llama.cpp 8.6) |
+| | 16 | 8.6, 8.6 | 8.2, 8.0 (llama.cpp 8.3) |
+| Qwen3-4B Q4_K_M | 1 | 3.5, 3.6 | **8.1, 8.2** |
+| | 4 | 12.4, 12.5 | 13.0, 13.3 |
+| | 16 | 13.9, 14.2 | 13.2, 12.8 |
+
+Q8_K reaches the memory limit with about 4 threads instead of 16 (2.3-3x per thread), at the cost of llama.cpp-level
+rather than slightly better perplexity. At 16 threads it is 5-7% slower, because a GEMM kernel at N = 1 does extra
+work. A dedicated single-row path (`RepackedGemm.GemvQ4K8x8Q8K` exists) should remove that. Whether to switch the
+default is an owner decision.
+
 ## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
 
 Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the tokenizer), 24 generated tokens, `--temp 0 --single-turn --no-display-prompt -t 6`, three runs per cell, median. llama.cpp: `tools/llama.cpp/llama-bench.exe -p 512 -n 128 -t 6 -ngl 0 -r 1`, three invocations, median (prefill = pp512, decode = tg128 at depth 0). One process at a time on an idle machine. Caveats: ours measures decode at about 500 tokens of context while `tg128` runs from an empty cache, and this document already shows our decode eroding with context, so the decode ratios here are somewhat pessimistic; the size of that effect was not separated for these models. Raw runs: scratchpad `league.txt` / `league2.txt` (not committed).
