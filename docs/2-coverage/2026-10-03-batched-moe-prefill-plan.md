@@ -1,15 +1,13 @@
 # Plan: batched MoE prefill for the Vulkan hybrid / GPU paths
 
+> Completed items moved to [done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md](../done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 ## Checklist (2026-10-30; code checked)
 
-- [x] Phase 0: instrument and baseline (OLMoE; section "Implementation status")
-- [x] Phase 1: CPU-prefill fast path with exact KV handoff (code: `HybridPrefillHandoff.cs`, `GpuPrefillHandoff.cs`)
-- [x] Phase 1b: full-offload `GpuForwardPass` handoff (code: `GpuForwardPass.cs`)
 - [ ] Phase 1 CUDA variant: written, compiles, never run (no NVIDIA GPU here; code: `CudaHybridPrefillHandoff.cs`)
 - [ ] Phase 2: batched hybrid trunk with host MoE (gated on the Phase 0/1 measurements)
 - [ ] Phase 3: GPU grouped-expert prefill on Vulkan (3a and, if justified, 3b)
 - [ ] Phase 4: oversized experts, streamed per chunk (regime C)
-- [x] Phase 5 (measured chooser built 2026-10-04; code: `Engine/Calibration/ExpertCalibration.cs`). Engine does not read the profile yet.
 - [ ] Phase 6: discrete-GPU decode miss split and device-side cache decisions
 - [ ] Decision for the user: approve Phase 0 + 1 as the first implementation (Phase 1 is done; Phases 2-5 gated on its measurements)
 - [ ] Decision for the user: a discrete-GPU machine for Phase 3/4 speed measurement

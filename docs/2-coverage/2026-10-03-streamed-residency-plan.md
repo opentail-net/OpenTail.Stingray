@@ -1,5 +1,7 @@
 # Streamed residency for oversized MoE (Vulkan hybrid first)
 
+> Completed items moved to [done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md](../done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 Written 2026-10-03. Part of the TensorSharp / SharpMind selective-port work
 (`examples/tensorsharp-parity-selective-port-plan.md`, `examples/sharpmind-parity-selective-port-plan.md`). The
 question: how should Stingray run a mixture-of-experts model whose experts do not fit the accelerator budget, and how
@@ -65,16 +67,6 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
 
 ## 3. Done (all on the Vulkan hybrid path, `-g N` on a MoE model)
 
-- [x] `STINGRAY_MOE_TIMING=1` diagnostic (where a layer-step's time goes)
-- [x] `STINGRAY_MOE_SLOTS=N` to force a small cache for testing
-- [x] Fallback input copy (defect 1); same change applied to `VulkanHybridGdnForwardPass`, which has no local checkpoint
-  to run (build-verified only)
-- [x] Upload outside the lock (defect 2); `ExpertSlotManagerConcurrencyTests`, shown to fail on the old code
-- [x] Slot leases (defect 3); `VulkanHybridOlmoeParityTests` at 8 and 16 slots
-- [x] Memory-bounded test (`StreamedExpertMemoryBoundTests`) and a `VulkanBackend.LiveBufferCount` diagnostic
-- [x] Eviction correctness: logits within cosine 0.996-0.999 of CPU with no argmax flips on OLMoE (64 experts) at 8 and 16
-  slots, and Qwen3-Coder-30B-A3B (128 experts x 4 GPU layers through 16 slots): cosine 0.9982, one argmax flip on a
-  near-tie (allowed by the test contract: only a gap above 2 % of the logit range fails)
 
 ## 4. Acceptance matrix (SharpMind's, adapted to experts)
 
@@ -109,3 +101,12 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
    the experts a prefill is about to touch.
 7. **Larger-than-RAM run** (GLM-5.3 Q2_K_XL, 236 GiB, paged, correctness only) once the download completes and the
    architecture is verified.
+
+## Open (checked 2026-10-30 against the status line)
+
+- [ ] Prefill on the streamed path (not done; status line)
+- [ ] CUDA streamed path (not done)
+- [ ] Leases for VulkanHybridGdnForwardPass (it uses TryGetCached; defect 3 remains possible at tiny capacities)
+- [ ] Residency abstraction (TensorResidency, planner, IResidencyManager), only after the prefill design exists
+- [ ] Automatic split planning that accounts for page cache, and per-chunk parallel prefault of experts
+- [ ] Larger-than-RAM run (GLM-5.3 Q2_K_XL, 236 GiB, paged, correctness only)

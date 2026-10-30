@@ -1,5 +1,7 @@
 # DiffusionGemma port plan (`diffusion-gemma` / `diffusion_gemma`)
 
+> Completed items moved to [done/2026-10-03-diffusiongemma-port-plan-completed-items-2026-10.md](../done/2026-10-03-diffusiongemma-port-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 **Status (revised 2026-10-04): IN PROGRESS / IMPLEMENTATION REFERENCE NOW AVAILABLE.**
 The repository now contains a complete local checkout of TensorSharp at:
 
@@ -363,18 +365,6 @@ expert down scale           [128]
 
 **Objective: eliminate all avoidable semantic uncertainty before implementation.**
 
-* [x] Real GGUF tensor inventory verified.
-* [x] 30-layer architecture verified.
-* [x] 25 SWA / 5 full layer schedule verified.
-* [x] 128 experts / top-8 verified.
-* [x] 256-token canvas verified.
-* [x] Full-layer V-from-K behaviour verified.
-* [x] Gemma-4 block ordering verified against llama.cpp.
-* [x] TensorSharp implementation acquired locally.
-* [x] TensorSharp prompt-KV implementation identified.
-* [x] TensorSharp EntropyBound sampler implementation identified.
-* [x] TensorSharp step-0 self-conditioning behaviour identified.
-* [x] TensorSharp temperature schedule identified.
 
 Remaining contract questions must be limited to cases where authoritative sources genuinely disagree.
 
@@ -1543,3 +1533,9 @@ dual encoder/decoder execution modes
 ```
 
 This is the architectural work worth retaining after DiffusionGemma itself is complete.
+
+## Open (checked 2026-10-30 against the status line)
+
+- [ ] Download the real Q4_K_M GGUF (16.8 GB) and run the Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler)
+- [ ] Level 4 paged real-weight run (00-current-work item 14)
+- [ ] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass), from the HF or vLLM source
