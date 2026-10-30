@@ -5,10 +5,10 @@
 - [x] P0 first-run seam (`src/OpenTail.Stingray.Cli/SetupFlow.cs`)
 - [ ] P0 leftover: `pull`'s download and listing parser still use their own client and parser
 - [x] P1 shared preflight for `chat` and `setup`
-- [ ] P1 leftover: `run` and `serve` not wired to the preflight; estimator still in the Cli project
+- [x] P1 leftover: `run` and `serve` call `LoadPreflight` (`RunCommand.cs:228`, `InferenceEngineLoader.cs:35`; checked 2026-10-30). Estimator location not re-checked.
 - [x] P2 variants and qualification scope (Qwen2.5 0.5B, 1.5B, 7B goldens under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`)
 - [ ] P3 favourites: `Favourites.cs` and `ModelsCommand.cs` exist; end-to-end `models use` not re-checked
-- [ ] P4 inventory and verify: `--verify` exists (`ModelsCommand.cs`); `--local` not found in code
+- [x] P4 inventory and verify: `-l|--local` and `--verify` both exist (`ModelsCommand.cs`; checked 2026-10-30, the earlier "not found" was a search miss on the short alias).
 - [ ] P5 docs as tests: a test that fails when a cited file, hash or evidence disappears
 
 **Status:** In progress (2026-10-09). **P0 first-run seam DONE** (`SetupFlow`; `chat`/`speak`/`transcribe` offer to install a missing model, interactive only; `pull --revision` and default commit pin). P0 leftovers: `pull`'s download and listing parser still use their own client/parser instead of the gateway/`HubClient`. **P1 shared preflight DONE for `chat` and `setup`** (see 061; Unknown warns rather than blocks; `run`/`serve` not wired, estimator still in the Cli project). **P2 DONE (2026-10-10):** `FamilyId` + `Qualifications` on `CatalogEntry`; three Qwen2.5 chat entries (0.5b default Exact 32/32, 1.5b and 7b NearTie 31/32, each pinned to a llama-server 10306 golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`); `setup` offers the largest smaller qualified same-family model that fits when the chosen one does not; `models <task>` and the setup summary print a scoped "Qualified" row (unqualified entries say so). **P3 favourites, P4 `models --local [--verify]` DONE** (cards F, E). **P5 partly done:** catalogue guards plus a test that every cited golden exists and pins the entry's file name, size and SHA-256; README/STATUS rows citing catalogue ids not yet covered. Speeds on the 1.5b/7b rows are single golden runs (33.3 and 8.0 tok/s decode), not rule-7 measurements. Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.

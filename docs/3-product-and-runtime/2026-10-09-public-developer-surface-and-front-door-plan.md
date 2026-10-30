@@ -10,8 +10,8 @@
 - [x] B2. `stingray chat` (`ChatCommand.cs`)
 - [x] B3. `stingray speak` (`SpeakCommand.cs`)
 - [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
-- [ ] B5. Register commands and update catalogue run templates
-- [ ] B6. CLI tests for the task commands
+- [ ] B5. Register commands (done: `Program.cs:115-119`, checked 2026-10-30) and update catalogue run templates (not re-checked)
+- [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs`; checked 2026-10-30)
 - [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
 - [ ] D1. Compile the public C# sample (samples exist; compile against the package not re-checked)
