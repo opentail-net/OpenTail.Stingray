@@ -168,6 +168,8 @@ numerical validation; no single-run result counts. An iGPU loss is not evidence 
 sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **CPU, LLM** (the closed CPU kernel programme is [done/05](done/05-cpu-architecture-kernel-opportunities.md))
+   Before new kernel work, read [4-performance/2026-10-30-cpu-quantized-gemm-survey.md](4-performance/2026-10-30-cpu-quantized-gemm-survey.md):
+   other projects' int8 GEMMs, and the tinyBLAS register-tile experiment that did not help here.
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
