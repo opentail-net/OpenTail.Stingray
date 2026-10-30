@@ -25,6 +25,8 @@
 - [ ] Decide whether Path 3 becomes the default (the gate in the leads log: at least 2x today's Vulkan prefill, and identical greedy output)
 - [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite
 
+- [ ] K-quants other than Q4_K and Q6_K stay off the batched Vulkan trunk. `GpuForwardPass.ComputeCanBatchedTrunk` accepts only Q4_K and Q6_K weights (checked 2026-10-30). SmolLM2-1.7B Q5_K_M prefills at 22.3 tok/s against 235 for its Q4_K_M file (PerformanceLeague, 2026-10-11 recheck, finding 5). Path 3 (`SgemmQuant`) already covers Q3_K, Q4_K, Q5_K and Q6_K, so the work is to extend the trunk gate; measure per the [measurement rules](../reference/performance-measurement-rules.md).
+
 ## Decisions for the owner
 
 - Path 3 default: yes or no, after the open items above.

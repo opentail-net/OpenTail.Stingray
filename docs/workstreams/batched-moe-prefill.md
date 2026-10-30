@@ -20,6 +20,8 @@
 - [ ] CUDA variant: run on an NVIDIA machine
 - [ ] Phase 6 (discrete GPU only)
 
+- [ ] Gemma 4 on Vulkan with a prompt below the CPU-prefill handoff threshold runs at 9.3 tok/s (PerformanceLeague, 2026-10-11 recheck, finding 5). The minimum is `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32 (`Planning/EngineEnvironment.cs`), the same gate as llama.cpp's op offload (`HybridPrefillHandoff.cs`). The 19-token prompt skips the handoff. Gemma 4 has its own batched trunk (`ForwardGemma4`, `GpuForwardPass.cs`): check which path a short Gemma 4 prompt takes before changing the threshold.
+
 ## Decisions for the owner
 
 - Sign-off on Phase 0 and Phase 1 as the first implementation. Phase 1 is built; this is recorded for the owner's approval.

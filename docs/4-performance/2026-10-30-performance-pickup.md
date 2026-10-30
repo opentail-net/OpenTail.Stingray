@@ -26,7 +26,7 @@ Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / referen
 
 ## Remaining gaps, ranked (latest measurement for each)
 
-The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [diffusion/094](diffusion/094-diffusion-performance-plan.md) (with [069](diffusion/069-flux-vulkan-gemm-perf-handoff.md) and [093](diffusion/093-flux2-gpu-performance-optimization-plan.md) for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Rows 8, 9, 11 and 12 have no owning plan yet; their evidence is in PerformanceLeague.md.
+The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [diffusion/094](diffusion/094-diffusion-performance-plan.md) (with [069](diffusion/069-flux-vulkan-gemm-perf-handoff.md) and [093](diffusion/093-flux2-gpu-performance-optimization-plan.md) for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Row 11 is owned by the [Vulkan GEMM workstream](../workstreams/vulkan-gemm-llm-prefill.md) and row 12 by the [batched MoE prefill workstream](../workstreams/batched-moe-prefill.md). Rows 8 and 9 have no owning plan yet; their evidence is in PerformanceLeague.md.
 
 | # | Area | Workload | Ratio | Measured | Where the time goes / first step |
 |---|---|---|---:|---|---|
