@@ -33,12 +33,12 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 
 - **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
 - **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
-- **Vulkan GEMM and GPU LLM kernels** (owner: [4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md](4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md)): item 6 (section 4, GPU: raw-quant matvec bandwidth).
-- **Qwen Image and diffusion performance** (owner: [4-performance/2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md](4-performance/2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)): items 8–9 (section 4, diffusion).
-- **Batched MoE prefill** (owner: [2-coverage/2026-10-03-batched-moe-prefill-plan.md](2-coverage/2026-10-03-batched-moe-prefill-plan.md)): item 5 (section 4, GPU: batched prefill for the Vulkan layer split).
+- **Vulkan GEMM for LLM prefill** (owner: [workstreams/vulkan-gemm-llm-prefill.md](workstreams/vulkan-gemm-llm-prefill.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image workstream).
+- **Qwen Image and diffusion performance** (owner: [workstreams/qwen-image-and-diffusion-performance.md](workstreams/qwen-image-and-diffusion-performance.md)): no backlog item for Qwen Image; items 8 and 9 (section 4, diffusion) are FLUX.
+- **Batched MoE prefill** (owner: [workstreams/batched-moe-prefill.md](workstreams/batched-moe-prefill.md)): item 5 (section 4, GPU).
 - **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
-- **First run, catalogue and public surface** (owner: [3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md)): item 1 (section 3).
-- **Gemma** (owner: [models/gemma.md](models/gemma.md)): items 7 and 9 (section 1 and section 2).
+- **First run, catalogue and public surface** (owner: [workstreams/first-run-and-public-surface.md](workstreams/first-run-and-public-surface.md)): item 1 (section 3).
+- **Gemma** (owner: [workstreams/gemma.md](workstreams/gemma.md)): items 7 and 9 (sections 1 and 2).
 
 ---
 
