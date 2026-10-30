@@ -44,6 +44,8 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 - **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).
 - **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
 - **Configuration and sessions** (owner: [workstreams/configuration-and-sessions.md](workstreams/configuration-and-sessions.md)): no backlog item of its own; plan 010 is planning only.
+- **CPU performance** (owner: [workstreams/cpu-performance.md](workstreams/cpu-performance.md)): no backlog item of its own; the pickup doc is the index.
+- **Audio GPU residency** (owner: [workstreams/audio-gpu-residency.md](workstreams/audio-gpu-residency.md)): no backlog item of its own; discrete-GPU work is in section 9.
 
 ---
 

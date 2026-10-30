@@ -1,5 +1,7 @@
 # Inference improvement leads (plan, 2026-10-10)
 
+**Workstreams:** Lead 2 (Vulkan prefill) is in [Vulkan GEMM for LLM prefill](../workstreams/vulkan-gemm-llm-prefill.md); the Qwen Image thread is in [Qwen Image and diffusion performance](../workstreams/qwen-image-and-diffusion-performance.md).
+
 > Completed items moved to [done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md](../done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
 Status: **in progress; the status board below is the source of truth (the intro text after it predates the work).** Order of work: first let the sample-image queue finish (Wan 2.2, HunyuanVideo, FLUX.2; see
@@ -32,7 +34,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **C4** Residuals: Q6_K and Q5_K (about 1.2x behind), Q4_0 (about 1.2x), MXFP4 (25 vs 35.9 GB/s: six-word funnel loads, several rows per workgroup).
 
 ### D. Qwen Image (earlier thread; the plan for it lives in the other plan file)
-- [ ] **D3** FP16-tile GEMM project (the only large-upside item left; carries the numerics decision). Plan: [the quantized GEMM plan](2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md).
+- [ ] **D3** FP16-tile GEMM project (the only large-upside item left; carries the numerics decision). Plan: [the quantized GEMM plan](gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion).
 
 ### E. Other leads and deferred work
 - [ ] **E2** Lead 4: MoE decode gap (OLMoE 0.50x).

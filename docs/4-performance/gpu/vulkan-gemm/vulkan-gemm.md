@@ -248,7 +248,7 @@ Note: the status line above ("proposed, not started") is stale; the progress log
 - [ ] Phase 4: fusions and epilogues
 - [ ] Phase 5: propagate and document
 
-Status: **proposed, not started** (for second opinion before any kernel work). Owner: the Qwen Image performance
+Status (corrected 2026-10-30): Phase 1 (small-M kernel) and Phase 2(c) (chunked MLP) kept on 2026-10-10; Phase 2(a) rejected; Phase 3 and later not started. The progress log below is the record. Originally: proposed, not started (for second opinion before any kernel work). Owner: the Qwen Image performance
 thread; see [the diffusion samples and Qwen plan](../../diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples)
 for the measurements this builds on.
 

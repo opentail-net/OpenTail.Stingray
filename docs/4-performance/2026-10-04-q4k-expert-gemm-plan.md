@@ -1,5 +1,7 @@
 # Q4_K (and Q6_K) GEMM for CPU MoE expert prefill
 
+**Workstream:** [CPU performance](../workstreams/cpu-performance.md).
+
 ## Checklist (2026-10-30; code checked)
 
 - [ ] Option A (repack each expert on the fly) or Option B (exact tiled GEMM): owner decision in section 7

@@ -1,5 +1,7 @@
 # 2026-10-02 prefill numerics investigation: experiment code
 
+> Experiment code for the prefill-numerics investigation ([1-correctness/2026-10-02-prefill-numerics-investigation.md](../../../1-correctness/2026-10-02-prefill-numerics-investigation.md)). Not a plan.
+
 Reproduction kit for [the investigation record](../../../1-correctness/2026-10-02-prefill-numerics-investigation.md)
 behind [ADR-0002](../../../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) and
 [ADR-0003](../../../reference/adr-0003-cpu-int8-prefill-default.md). The method itself is written

@@ -10,6 +10,8 @@
 
 # MiniMax-Music3 Transformer GPU Residency Plan (2026-09-13)
 
+**Workstream:** [audio GPU residency](../../workstreams/audio-gpu-residency.md).
+
 ## Context — read `docs/069` (FLUX) and `docs/072`/`docs/073` (Wan) first
 
 Same transformation FLUX and Wan already went through: per-matmul CPU/GPU ping-pong → real GPU

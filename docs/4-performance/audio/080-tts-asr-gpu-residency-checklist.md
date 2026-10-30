@@ -2,6 +2,8 @@
 
 > Completed items moved to [done/080-tts-asr-gpu-residency-checklist-completed-items-2026-10.md](../../done/080-tts-asr-gpu-residency-checklist-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
+> **Status (checked 2026-10-30, file-level only):** 28 open items; the items were not re-run. **Workstream:** [audio GPU residency](../../workstreams/audio-gpu-residency.md).
+
 ## Context and how to use this doc
 
 This is a **checklist**, not a per-model deep plan like `docs/069`/`docs/071`-`079` — those cover

@@ -3,6 +3,8 @@
 > Completed items moved to [done/perf-sweep-plan-completed-items-2026-10.md](../done/perf-sweep-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
 > **STATUS 2026-10-02.** Horizontal Pass A, Phase 5, and Phase 16 are also closed and moved verbatim to
+
+**Workstream:** [CPU performance](../workstreams/cpu-performance.md). Checked 2026-10-30: 22 open items; the pickup doc gives the current ranking.
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md).
 > **STATUS 2026-10-01.** Horizontal Passes B and C and Phases 7 and 15 are also closed and moved to the same file. **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
