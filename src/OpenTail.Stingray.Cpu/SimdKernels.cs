@@ -9620,45 +9620,38 @@ public static unsafe class SimdKernels
             sbyte* q8    = qsArr + b * 256;
             short* bsumsB = bsums + b * 16;
 
+            // Per super-block, not per sub-block: unpack all eight scales/mins at once (ggml's kmask trick) and form the
+            // eight sub-block factors dSub[k] * (d * sc[k]) as one vector. Same per-lane float operations as the scalar
+            // form, so each row stays bit-identical to DotQ4K_Q8KS and the _4In/_8In kernels.
+            var dSubV = Vector256.LoadUnsafe(ref *dSub);
+            LoadQ4KScalesMins(sc0, out var scF0, out var minF0);
+            LoadQ4KScalesMins(sc1, out var scF1, out var minF1);
+            var f0 = Avx.Multiply(dSubV, Avx.Multiply(Vector256.Create(d0), scF0));
+            var f1 = Avx.Multiply(dSubV, Avx.Multiply(Vector256.Create(d1), scF1));
+
             // min-correction terms use each row's own d/dmin but the shared bsums/dSub
-            min0 += MinCorrectionQ4K(bsumsB, dSub, LoadQ4KMins(sc0), dm0, one16);
-            min1 += MinCorrectionQ4K(bsumsB, dSub, LoadQ4KMins(sc1), dm1, one16);
+            min0 += MinCorrectionQ4K(bsumsB, dSub, minF0, dm0, one16);
+            min1 += MinCorrectionQ4K(bsumsB, dSub, minF1, dm1, one16);
 
             for (int chunk = 0; chunk < 4; chunk++)
             {
                 // Q8KS activation vectors — loaded ONCE, shared by both rows.
                 var qlo_act = Vector256.LoadUnsafe(ref *(q8 + chunk * 64)).AsSByte();
                 var qhi_act = Vector256.LoadUnsafe(ref *(q8 + chunk * 64 + 32)).AsSByte();
+                var kLo = Vector256.Create(2 * chunk);
+                var kHi = Vector256.Create(2 * chunk + 1);
 
-                // ---- row 0: unpack nibbles and accumulate ----
-                {
-                    GetScaleMinK4(2 * chunk,     sc0, out byte s0lo, out _);
-                    GetScaleMinK4(2 * chunk + 1, sc0, out byte s0hi, out _);
-                    var qb0   = Vector256.LoadUnsafe(ref *(qs0 + chunk * 32));
-                    var lo0   = Avx2.And(qb0, m0F);
-                    var hi0   = Avx2.And(Avx2.ShiftRightLogical(qb0.AsInt16(), 4).AsByte(), m0F);
-                    var i0lo  = DotU8I8ToI32(lo0, qlo_act, one16);
-                    var i0hi  = DotU8I8ToI32(hi0, qhi_act, one16);
-                    facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0lo),
-                                            Vector256.Create(dSub[2 * chunk    ] * (d0 * s0lo)), facc0);
-                    facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0hi),
-                                            Vector256.Create(dSub[2 * chunk + 1] * (d0 * s0hi)), facc0);
-                }
+                var qb0 = Vector256.LoadUnsafe(ref *(qs0 + chunk * 32));
+                var i0lo = DotU8I8ToI32(Avx2.And(qb0, m0F), qlo_act, one16);
+                var i0hi = DotU8I8ToI32(Avx2.And(Avx2.ShiftRightLogical(qb0.AsInt16(), 4).AsByte(), m0F), qhi_act, one16);
+                facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0lo), Avx2.PermuteVar8x32(f0, kLo), facc0);
+                facc0 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0hi), Avx2.PermuteVar8x32(f0, kHi), facc0);
 
-                // ---- row 1: unpack nibbles and accumulate ----
-                {
-                    GetScaleMinK4(2 * chunk,     sc1, out byte s1lo, out _);
-                    GetScaleMinK4(2 * chunk + 1, sc1, out byte s1hi, out _);
-                    var qb1   = Vector256.LoadUnsafe(ref *(qs1 + chunk * 32));
-                    var lo1   = Avx2.And(qb1, m0F);
-                    var hi1   = Avx2.And(Avx2.ShiftRightLogical(qb1.AsInt16(), 4).AsByte(), m0F);
-                    var i1lo  = DotU8I8ToI32(lo1, qlo_act, one16);
-                    var i1hi  = DotU8I8ToI32(hi1, qhi_act, one16);
-                    facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1lo),
-                                            Vector256.Create(dSub[2 * chunk    ] * (d1 * s1lo)), facc1);
-                    facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1hi),
-                                            Vector256.Create(dSub[2 * chunk + 1] * (d1 * s1hi)), facc1);
-                }
+                var qb1 = Vector256.LoadUnsafe(ref *(qs1 + chunk * 32));
+                var i1lo = DotU8I8ToI32(Avx2.And(qb1, m0F), qlo_act, one16);
+                var i1hi = DotU8I8ToI32(Avx2.And(Avx2.ShiftRightLogical(qb1.AsInt16(), 4).AsByte(), m0F), qhi_act, one16);
+                facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1lo), Avx2.PermuteVar8x32(f1, kLo), facc1);
+                facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1hi), Avx2.PermuteVar8x32(f1, kHi), facc1);
             }
         }
         sum0 = Vector256.Sum(facc0) - min0;
@@ -10002,6 +9995,24 @@ public static unsafe class SimdKernels
         var bf = Avx.ConvertToVector256Single(bsum8);
         var dv = Vector256.LoadUnsafe(ref *dSub);
         return dmin * Vector256.Sum(Avx.Multiply(Avx.Multiply(dv, mins), bf));
+    }
+
+    /// <summary>
+    /// All eight 6-bit scales and mins of a Q4_K super-block, widened to float, decoded with three 32-bit mask operations
+    /// (ggml's <c>utmp</c>/<c>kmask</c> unpack in <c>ggml_vec_dot_q4_K_q8_K</c>) instead of sixteen <see cref="GetScaleMinK4"/>
+    /// calls. Lane j equals GetScaleMinK4(j, sc) exactly (pinned by <c>Q4KScaleUnpackTests</c>).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void LoadQ4KScalesMins(byte* sc, out Vector256<float> scales, out Vector256<float> mins)
+    {
+        const uint kmask1 = 0x3f3f3f3f, kmask2 = 0x0f0f0f0f, kmask3 = 0x03030303;
+        uint u0 = Unsafe.ReadUnaligned<uint>(sc), u1 = Unsafe.ReadUnaligned<uint>(sc + 4), u2 = Unsafe.ReadUnaligned<uint>(sc + 8);
+        uint s0 = u0 & kmask1;
+        uint s1 = (u2 & kmask2) | (((u0 >> 6) & kmask3) << 4);
+        uint m0 = u1 & kmask1;
+        uint m1 = ((u2 >> 4) & kmask2) | (((u1 >> 6) & kmask3) << 4);
+        scales = Avx.ConvertToVector256Single(Avx2.ConvertToVector256Int32(Vector128.Create(s0, s1, 0u, 0u).AsByte()));
+        mins = Avx.ConvertToVector256Single(Avx2.ConvertToVector256Int32(Vector128.Create(m0, m1, 0u, 0u).AsByte()));
     }
 
     /// <summary>

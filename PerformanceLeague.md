@@ -1667,6 +1667,36 @@ count. Machine load moved llama.cpp's Granite 1B figure between 115 and 139 t/s 
 Decode is unchanged (single-token path). Granite 4.0-H 1B profile before the change: Mamba-2 in/out projections
 2.39 s and conv/scan 0.65 s of 6.8 s trunk for 687 tokens, so the gap was GEMM scheduling, not the recurrence.
 
+## Decode is compute-bound per thread, not bandwidth-bound (2026-10-30)
+
+Greedy decode, 64 tokens, raw prompt, CPU, default threads (16) vs `llama-bench -t 8` (b10306):
+
+| Model | Stingray t/s | llama.cpp t/s | Ratio |
+|---|---:|---:|---:|
+| Qwen3-0.6B Q8_0 | 47.0 | 54.9 | 0.86x |
+| granite-4.0-h-1b Q8_0 | 18.9 | 21.0 | 0.90x |
+| SmolLM2-1.7B Q4_K_M | 27.1 | 35.0 | 0.77x |
+| Qwen2.5-3B Q4_K_M | 15.8 | 19.6 | 0.80x |
+| Qwen3-4B Q4_K_M | 12.5 | 14.9 | 0.84x |
+| Mistral-7B Q4_K_M | 7.5 | 9.2 | 0.81x |
+| Qwen3-8B Q4_K_M | 6.9 | 8.3 | 0.84x |
+
+Thread scaling on Mistral-7B Q4_K_M (decode t/s, Stingray / llama.cpp): 1 thread 1.2 / 4.0, 2: 2.2 / 7.2,
+4: 3.8 / 8.6, 6: 5.1 / 8.7, 8: 6.2 / 8.6, 16: 7.7 / 8.3. llama.cpp saturates memory at 4 threads (~37 GB/s of weights,
+so the 36.8 GB/s "DRAM ceiling" in this file's header is an underestimate); Stingray scales with threads, i.e. its
+Q4_K x Q8_KS dot is ~3.3x more expensive per weight byte. Single-thread profile: FFN 76%, QKV 13%, output 11%,
+attention 0.25%. The gap is uniform across model sizes, so it is kernel cost, not per-token overhead.
+
+**Fixed (bit-identical):** the decode two-row Q4_K kernel now unpacks the eight scales/mins once per super-block
+(ggml's `kmask` trick, `LoadQ4KScalesMins`) and forms the eight sub-block factors as one vector, instead of scalar
+`GetScaleMinK4` + multiply + broadcast per 32 elements. Mistral-7B, interleaved, identical output: 1 thread
+1.4 -> 1.65 t/s (+18%), 4 threads 3.9 -> 5.0 (+28%), 16 threads 7.8 -> 7.8 (unchanged: no longer kernel-bound there).
+
+**Not changed (owner decision):** the rest of the per-thread gap is the activation format. Q8_KS (issue #107) keeps
+one scale per 32 elements for accuracy, which forces a convert + FMA per sub-block; ggml's Q8_K has one per 256 and
+accumulates integers across the super-block. Switching decode to Q8_K would match llama.cpp's numerics and kernel
+structure but gives up the ~4x tighter noise envelope Q8_KS was chosen for.
+
 ## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
 
 Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the tokenizer), 24 generated tokens, `--temp 0 --single-turn --no-display-prompt -t 6`, three runs per cell, median. llama.cpp: `tools/llama.cpp/llama-bench.exe -p 512 -n 128 -t 6 -ngl 0 -r 1`, three invocations, median (prefill = pp512, decode = tg128 at depth 0). One process at a time on an idle machine. Caveats: ours measures decode at about 500 tokens of context while `tg128` runs from an empty cache, and this document already shows our decode eroding with context, so the decode ratios here are somewhat pessimistic; the size of that effect was not separated for these models. Raw runs: scratchpad `league.txt` / `league2.txt` (not committed).
