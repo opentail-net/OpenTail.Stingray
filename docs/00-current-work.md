@@ -105,8 +105,9 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    beyond `-g 4` (every expert of a resident layer is uploaded, so device memory runs out). GLM-4 dense already runs.
 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
    CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
-   - Mamba-2 / short-conv support in the batched `PrefillCore` (prefill is token by token: Granite
-     1B 17 tok/s vs llama.cpp ~110);
+   - prefill is batched (`Mamba2Prefill`, `ShortConvPrefill` in `PrefillCore`), and since 2026-10-30 Q8_0 uses the
+     int8 batched dispatch: Granite 4.0-H 1B 142 vs llama.cpp 115 t/s, 350M 518 vs 486 (PerformanceLeague, "Q8_0
+     batched prefill scheduling"). Remaining: the conv and scan still walk tokens in order (0.65 s of 6.8 s);
    - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
      prefix cache is off for these models), and no zero KV rows for recurrent layers;
    - GPU paths;

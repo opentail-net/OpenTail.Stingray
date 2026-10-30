@@ -557,9 +557,21 @@ public static unsafe class SimdKernels
                 scratchBytesPerToken = Q8_0ScratchBytes(cols);
                 bytesPerRow = (cols / 32) * 22;
                 return true;
+            case DType.Q8_0:
+                // Same quantizer and dots as the fp32-tier Q8_0 MatVec4In (QuantizeRowToQ8_0, then
+                // DotQ8_0_Q8_0_4In_Avx2 / DotQ8_0_Q8_0), so every output is bit-identical to it. What
+                // this adds is the row-block x token-group schedule: that tier dispatched one pass over
+                // ALL rows per four tokens, re-streaming the whole weight matrix N/4 times per prefill.
+                quantize = QuantizeRowToQ8_0;
+                dot8 = null;
+                dot4 = DotQ8_0_Q8_0_4In;
+                dot1 = DotQ8_0_Q8_0;
+                scratchBytesPerToken = Q8_0ScratchBytes(cols);
+                bytesPerRow = (cols / 32) * 34;
+                return true;
             default:
-                // Q8_0 has single-input Q8 dots only (no _4In/_2In); Q5_K, Q2_K, Float32 have
-                // no int8 dot at all. All fall back to the existing per-token loop.
+                // Q5_K, Q2_K and Float32 have no int8 dot at all: they fall back to the existing
+                // per-token loop.
                 quantize = null!; dot8 = null; dot4 = null!; dot1 = null!;
                 scratchBytesPerToken = 0; bytesPerRow = 0;
                 return false;
@@ -7396,6 +7408,23 @@ public static unsafe class SimdKernels
     /// those of the single dot, so each result is bit-identical to it (pinned by
     /// <c>SimdKernelsQ8KSTests.MatVec4In_BitwiseMatchesSingleMatVec</c>).
     /// </summary>
+    /// <summary><see cref="DotQ8_0_Q8_0_4In_Avx2"/> with a scalar fallback, in the <c>FourInDot</c> shape the batched Q8
+    /// prefill dispatch uses. Each output is bit-identical to <see cref="DotQ8_0_Q8_0"/> on the same scratch row.</summary>
+    internal static void DotQ8_0_Q8_0_4In(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int cols,
+        out float r0, out float r1, out float r2, out float r3)
+    {
+        int nb = cols / 32;
+        if (Avx2.IsSupported && Fma.IsSupported)
+        {
+            DotQ8_0_Q8_0_4In_Avx2(row, s0, s1, s2, s3, nb, out r0, out r1, out r2, out r3);
+            return;
+        }
+        r0 = DotQ8_0_Q8_0_Scalar(row, s0, nb);
+        r1 = DotQ8_0_Q8_0_Scalar(row, s1, nb);
+        r2 = DotQ8_0_Q8_0_Scalar(row, s2, nb);
+        r3 = DotQ8_0_Q8_0_Scalar(row, s3, nb);
+    }
+
     internal static void DotQ8_0_Q8_0_4In_Avx2(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int numBlocks,
         out float r0, out float r1, out float r2, out float r3)
     {
