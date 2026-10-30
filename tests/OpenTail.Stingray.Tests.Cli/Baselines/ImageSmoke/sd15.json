@@ -1,0 +1,9 @@
+{
+  "command": "image -m models/sd15/v1-5-pruned-emaonly.safetensors -p a red apple on a wooden table -W 256 -H 256 --steps 4 --seed 42 --backend cpu -o",
+  "meanR": 149.429,
+  "meanG": 70.448,
+  "meanB": 50.312,
+  "lumaStd": 33.886,
+  "aHash": "F00E066707EEFCF0",
+  "sha256": "7A1C128F8F4B8D4CDE48729B123AE77DEDEFDC1D9B2ACEB3A23E241E37CBE1DE"
+}

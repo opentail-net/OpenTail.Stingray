@@ -1,0 +1,9 @@
+{
+  "command": "image -m models/_models/sd3.5_medium-Q4_K_M.gguf --clip-l models/sd35-medium-aux/text_encoder/model.fp16.safetensors --clip-g models/sd35-medium-aux/text_encoder_2/model.fp16.safetensors --vae models/sd35-medium-aux/vae/diffusion_pytorch_model.safetensors --clip-tokenizer models/clip_tokenizer.json -p a red apple on a wooden table -W 256 -H 256 --steps 20 --seed 42 --backend cpu -o",
+  "meanR": 165.273,
+  "meanG": 79.345,
+  "meanB": 43.186,
+  "lumaStd": 50.161,
+  "aHash": "FFFF0F06040F1F7C",
+  "sha256": "0E53C77877D501F8768AACF2DA74605B9F4BBC38F9D114A956140609542588E4"
+}

@@ -1,0 +1,9 @@
+{
+  "command": "image -m models/_models/z_image_turbo-Q4_0.gguf --vae models/z-image-turbo/vae/diffusion_pytorch_model.safetensors --qwen-encoder models/_models/Z-Image-AbliteratedV1.Q5_K_M.gguf --qwen-tokenizer models/z-image-turbo/tokenizer/tokenizer.json -p a red apple on a wooden table -W 256 -H 256 --steps 2 --seed 42 --backend cpu -o",
+  "meanR": 173.482,
+  "meanG": 101.936,
+  "meanB": 82.099,
+  "lumaStd": 53.673,
+  "aHash": "1F0707878F9FFFFF",
+  "sha256": "C9850D94BBDDEF3728A93D3CE5065C268C190792D818840FA34E99C53575F728"
+}

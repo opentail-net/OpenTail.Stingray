@@ -1,0 +1,9 @@
+{
+  "command": "image -m models/flux1-schnell/flux1-schnell-Q4_K_S.gguf --vae models/flux1-schnell/ae.safetensors --clip-l models/flux1-schnell/clip_l.safetensors --clip-tokenizer models/flux1-schnell/tokenizer_clip/tokenizer.json --t5xxl models/flux1-schnell/t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer models/flux1-schnell/tokenizer_t5/tokenizer.json -p a red apple on a wooden table -W 256 -H 256 --steps 2 --seed 42 --backend cpu -o",
+  "meanR": 82.581,
+  "meanG": 41.928,
+  "meanB": 24.419,
+  "lumaStd": 53.073,
+  "aHash": "FFE3F7F300000000",
+  "sha256": "4CA48B7B9C995B7B921A7391E88CC483D586D13FE72F3B0774C85C1015151AA1"
+}

@@ -1,0 +1,9 @@
+{
+  "command": "image -m models/sd_xl_turbo_1.0_fp16.safetensors -p a red apple on a wooden table -W 256 -H 256 --steps 1 --seed 42 --backend cpu -o",
+  "meanR": 114.029,
+  "meanG": 91.503,
+  "meanB": 80.06,
+  "lumaStd": 25.038,
+  "aHash": "FFE0C3C3F7380000",
+  "sha256": "88C20377D3638B598BC077E15D61FBDFC2D34C12AD8B06832BB12FEE6E2239D8"
+}

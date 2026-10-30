@@ -85,6 +85,14 @@ stingray capture-golden -m <model.gguf>
 stingray verify-goldens
 ```
 
+Before committing changes to shared diffusion code (`DiffusionOps`, schedulers, loaders, Vulkan GEMM), run the image
+pipeline smoke tests (about 4 minutes, needs the checkpoints under `models/`):
+```bash
+dotnet build src/OpenTail.Stingray.Cli -c Release
+dotnet build tests/OpenTail.Stingray.Tests.Cli -c Release
+STINGRAY_RUN_HEAVY_TESTS=1 tests/OpenTail.Stingray.Tests.Cli/bin/Release/net10.0/OpenTail.Stingray.Tests.Cli.exe -class OpenTail.Stingray.Tests.Cli.ImageCommandSmokeTests
+```
+
 ---
 
 ## 4. Managed SIMD & Memory Guidelines
