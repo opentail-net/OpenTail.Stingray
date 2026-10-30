@@ -765,6 +765,8 @@ STINGRAY_VULKAN_UMA_FRACTION=1.1 STINGRAY_DENSE_FFN_GPU_MARGIN_MB=256 dotnet run
 | OLMoE-1B-7B Q4_K_M | decode (original, ~7 tok, early EOS) | CPU | 28.2 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (515 tok) | CPU | 124.8 t/s | 180.82 t/s | **0.69x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (515 tok prompt, 24 tok gen, no early EOS) | CPU | 25.3 t/s | 50.58 t/s | **0.50x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; full 24-token run, not early-EOS-truncated like the row above) |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (802 tok; llama-bench pp687) | CPU | 162.5 / 182.6 t/s | 218.41 +/- 36.85 t/s | **~0.8x** | 2026-10-30 | re-measure, stingray CLI 2 runs (8 threads) + `llama-bench -t 8 -r 2`; token counts differ, llama.cpp noisy |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (64 tok gen, short prompt) | CPU | 43.5 / 43.8 t/s | 53.67 +/- 0.34 t/s | **0.81x** | 2026-10-30 | re-measure (was 0.50x on 2026-09-10); stingray CLI 2 runs + `llama-bench tg64 -t 8` |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (515 tok) | Vulkan iGPU | 25.0 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. Much worse than CPU prefill (25.0 vs 124.8 t/s) — same iGPU-trails-CPU-on-prefill pattern as Qwen3-8B and Gemma-4 |
 | OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (515 tok prompt, 24 tok gen) | Vulkan iGPU | 21.1 t/s | — | — | 2026-09-10 | new coverage; close to CPU decode (21.1 vs 25.3 t/s) |
 

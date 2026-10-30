@@ -161,6 +161,10 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 
 ## 4. Performance
 
+**Paused 2026-10-30 (owner decision).** To resume, start from
+[4-performance/2026-10-30-performance-pickup.md](4-performance/2026-10-30-performance-pickup.md): ranked remaining gaps,
+what was already tried, untested leads and the measuring rules.
+
 Rules: dispatch proof, interleaved control/candidate samples, named-model end-to-end measurement,
 numerical validation; no single-run result counts. An iGPU loss is not evidence against a GPU path
 (CLAUDE.md rule 13). Do not reopen the closed Q4_K repacked-GEMM investigation. The cross-model
