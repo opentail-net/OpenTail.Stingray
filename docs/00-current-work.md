@@ -27,6 +27,19 @@ Within each section the first items have the biggest effect for the least work. 
 CLAUDE.md: real weights, an independent reference, timed test runs (rule 12), and the STATUS row
 updated with dated evidence in the same pass.
 
+## Workstreams: owner docs
+
+Items below are grouped by thread. Each thread has one owner doc that holds the full text; other docs point to it. Stage folders (`1-correctness/`, `2-coverage/`, `3-product-and-runtime/`, `4-performance/`) hold the detail.
+
+- **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
+- **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
+- **Vulkan GEMM and GPU LLM kernels** (owner: [4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md](4-performance/2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md)): item 6 (section 4, GPU: raw-quant matvec bandwidth).
+- **Qwen Image and diffusion performance** (owner: [4-performance/2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md](4-performance/2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)): items 8–9 (section 4, diffusion).
+- **Batched MoE prefill** (owner: [2-coverage/2026-10-03-batched-moe-prefill-plan.md](2-coverage/2026-10-03-batched-moe-prefill-plan.md)): item 5 (section 4, GPU: batched prefill for the Vulkan layer split).
+- **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
+- **First run, catalogue and public surface** (owner: [3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md)): item 1 (section 3).
+- **Gemma** (owner: [models/gemma.md](models/gemma.md)): items 7 and 9 (section 1 and section 2).
+
 ---
 
 ## 1. Correctness of what is already claimed

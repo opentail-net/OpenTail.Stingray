@@ -150,22 +150,8 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
 - [ ] `docs/RUNNING.md`: note rows measured 2026-10-01..02 used the F32 default
 - [ ] Commit only these hunks
 
-## Follow-ups: closing the remaining gaps (from the other AI's MoE audit; verify each first)
-- [ ] NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
-      rel-RMS per projection (vs 9e-7 for the F32 GEMM). Compare our `QuantizeRowToQ8KS` + dot
-      against ggml's `quantize_row_q8_K` + `vec_dot_q4_K_q8_K` on the same rows, to tell normal
-      int8 noise (activation amax/rms 25-90 here) from a defect
-- [ ] Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
-      0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
-      ggml Q8_K (1 scale/256) per weight type; align where it differs
-- [ ] Q3_K batched path uses Q8_KS while decode uses Q8_K (claimed; verify in
-      `TryResolveQ8Dispatch`). Unifying on Q8_K would make Q3_K prefill match decode and ggml
-- [ ] MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
-      instead of per expert bucket: k-fold less quantize work, identical activations per token
-- [ ] MoE: keep router and SiLU*up in F32, quantize only at GEMM inputs (check current code)
-- [ ] MoE: small prompts (N <= 32) through the folded decode-style dispatch (bit-identical to
-      decode, fewer tiny GEMMs); measure
-- [ ] Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`
+## Follow-ups: closing the remaining gaps
+- [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
 
 # TODO: TensorSharp takeaways (user order 2026-10-02: 1, 2, 3, then 4)
 
@@ -177,9 +163,7 @@ stays internal). Uncommitted.
 - Each port adds its file to the TensorSharp section of `THIRD_PARTY_NOTICES.md`
 
 ## Follow-ups (not blocking)
-- [ ] 27B MTP validation with the same probe (Qwen3.6-27B and Qwen3.8-27B): short/boundary, ~500,
-      ~2000 tokens; A vs E vs llama.cpp at the first generated token, `<think>` boundary, first
-      post-boundary tokens, one normal position; prefill->decode continuity
+- [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 - [ ] MTP draft acceptance, StrictSequential vs Optimized prefill, same prompts: accepted per
       round, acceptance by draft position, generated output (identical draft traces not required)
 - [ ] llama.cpp b10306 comparison via `llama-server` pre-sampling `n_probs`
