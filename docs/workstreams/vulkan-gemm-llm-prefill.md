@@ -1,5 +1,7 @@
 # Workstream: Vulkan GEMM for LLM prefill
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** this file. **Last verified:** 2026-10-30 against the leads log (`4-performance/2026-10-10-inference-improvement-leads-plan.md`, Lead 2).
 **Not the same thread as** the diffusion FP16-tile project in [../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion](../4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion), which is diffusion work.
 

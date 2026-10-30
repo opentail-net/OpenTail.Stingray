@@ -659,7 +659,7 @@ two-minute demo and the tool for non-developers.
    | image | FLUX.1-schnell GGUF (city96) + VAE + encoders (comfyanonymous), or Z-Image-Turbo | Apache-2.0; needs a size warning |
    | embed / rerank | bge-small / ms-marco MiniLM (HF) | already used in the CLI examples |
 
-- [ ] 4. **Task commands that need no paths once set up**: `stingray chat`, `speak`, `transcribe`,
+- [ ] 4. **SUPERSEDED (2026-10-30; describe and image are not part of the current plan; chat, speak and transcribe are implemented).** Task commands that need no paths once set up: `stingray chat`, `speak`, `transcribe`,
    `describe`, `image`. A missing model gives a one-line fix (`run: stingray setup speak (63 MB)`),
    never a stack trace.
 - [ ] 6. **SUPERSEDED by §3.2 (no separate facade).** A small library facade so the README's C# is three lines per task, and the snippets are
@@ -667,7 +667,7 @@ two-minute demo and the tool for non-developers.
    `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
    `Speech.SynthesizeAsync(...)` / `Transcriber.TranscribeAsync(...)`. The facade is built on the
    existing engines, not new math.
-- [ ] 7. **Docs-as-tests**: every README command and snippet is exercised by a test (downloads cached),
+- [ ] 7. **Docs-as-tests** (partly done: `scripts/verify-package-consumers.ps1` compiles README snippets and samples, 17 checks on 1.0.9; running the README commands is not covered). Every README command and snippet exercised by a test (downloads cached),
    so the README fails CI before it lies.
 
 ### Model catalog (refined with the user, 2026-09-26)

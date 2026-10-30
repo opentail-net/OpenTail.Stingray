@@ -40,7 +40,7 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 - **First run, catalogue and public surface** (owner: [workstreams/first-run-and-public-surface.md](workstreams/first-run-and-public-surface.md)): item 1 (section 3).
 - **Gemma** (owner: [workstreams/gemma.md](workstreams/gemma.md)): items 7 and 9 (sections 1 and 2).
 - **Scout and architecture admission** (owner: [workstreams/scout-and-admission.md](workstreams/scout-and-admission.md)): no backlog item of its own; the deferred phases are in the workstream.
-- **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header is out of date.
+- **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header was corrected on 2026-10-30; the acceptance items remain open.
 - **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).
 - **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
 - **Configuration and sessions** (owner: [workstreams/configuration-and-sessions.md](workstreams/configuration-and-sessions.md)): no backlog item of its own; plan 010 is planning only.

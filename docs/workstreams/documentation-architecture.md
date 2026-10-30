@@ -1,5 +1,7 @@
 # Workstream: documentation architecture
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** [../3-product-and-runtime/2026-10-09-documentation-architecture-plan.md](../3-product-and-runtime/2026-10-09-documentation-architecture-plan.md). **Last verified:** 2026-10-30.
 
 ## Correct state (from the plan's checklist, checked 2026-10-30)

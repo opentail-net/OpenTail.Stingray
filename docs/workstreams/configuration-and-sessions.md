@@ -1,5 +1,7 @@
 # Workstream: configuration and session forking
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owners:** [../3-product-and-runtime/04-quality-of-life-improvements-plan.md](../3-product-and-runtime/04-quality-of-life-improvements-plan.md) (configuration, observability gaps, compatibility) and [../3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md](../3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md) (session forking). **Last verified:** 2026-10-30.
 
 ## Correct state

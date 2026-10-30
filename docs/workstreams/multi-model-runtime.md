@@ -1,5 +1,7 @@
 # Workstream: multi-model runtime, residency and scheduling
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** [../3-product-and-runtime/032-multi-model-inference-runtime-plan.md](../3-product-and-runtime/032-multi-model-inference-runtime-plan.md). **Completed slices:** [../done/032-multi-model-inference-runtime-plan-completed-items-2026-10.md](../done/032-multi-model-inference-runtime-plan-completed-items-2026-10.md). **Last verified:** 2026-10-30.
 
 ## Correct state (from the plan's status section)

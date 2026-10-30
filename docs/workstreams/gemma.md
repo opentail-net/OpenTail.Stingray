@@ -1,5 +1,7 @@
 # Workstream: Gemma
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** this file. **Last verified:** 2026-10-30.
 **Evidence:** [../done/2026-10-11-llm-reply-sanity-check.md](../done/2026-10-11-llm-reply-sanity-check.md) (the Gemma 2 fix record). **Card:** [../models/gemma.md](../models/gemma.md). **Status row:** [../STATUS.md](../STATUS.md).
 

@@ -1,5 +1,7 @@
 # Workstream: checkpoint scout and architecture admission
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** [../3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md](../3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md). **Playbook:** [../reference/architecture-admission-agent-playbook.md](../reference/architecture-admission-agent-playbook.md). **Last verified:** 2026-10-30.
 
 ## Correct state

@@ -1,5 +1,7 @@
 # Workstream: batched MoE prefill
 
+> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+
 **Owner:** this file. **Last verified:** 2026-10-30.
 **Plan:** [../2-coverage/2026-10-03-batched-moe-prefill-plan.md](../2-coverage/2026-10-03-batched-moe-prefill-plan.md). **Related:** [../2-coverage/2026-10-04-moe-handoff-closure-plan.md](../2-coverage/2026-10-04-moe-handoff-closure-plan.md) (handoff receipts), [../2-coverage/2026-10-03-streamed-residency-plan.md](../2-coverage/2026-10-03-streamed-residency-plan.md).
 
