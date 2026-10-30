@@ -1633,6 +1633,19 @@ hand and untested.
 
 ---
 
+### Smoke-test workload, CPU, 256x256 (2026-10-30)
+
+Wall time for one `stingray image` run including model load, `--backend cpu --seed 42`, the workload of
+`ImageCommandSmokeTests`. Two runs each; output was byte-identical between runs. No C++ reference was timed.
+
+| Pipeline | Steps | Wall, run 1 / run 2 |
+|---|---:|---:|
+| SD 1.5 | 4 | 15 s / 13 s |
+| SDXL-Turbo | 1 | 14 s / 10 s |
+| FLUX.1-schnell Q4_K_S | 2 | 75 s / 50 s |
+| Z-Image-Turbo Q4_0 | 2 | 75 s / 63 s |
+| SD 3.5 Medium Q4_K_M | 20 | 61 s (one run; 4 steps gives a flat field, not usable) |
+
 ## MoE lot, CPU and Vulkan iGPU (2026-10-04, Step 6 of the MoE handoff closure plan)
 
 Method: `docs/reference/benchmark-prompt.txt` (468-587 tokens depending on the tokenizer), 24 generated tokens, `--temp 0 --single-turn --no-display-prompt -t 6`, three runs per cell, median. llama.cpp: `tools/llama.cpp/llama-bench.exe -p 512 -n 128 -t 6 -ngl 0 -r 1`, three invocations, median (prefill = pp512, decode = tg128 at depth 0). One process at a time on an idle machine. Caveats: ours measures decode at about 500 tokens of context while `tg128` runs from an empty cache, and this document already shows our decode eroding with context, so the decode ratios here are somewhat pessimistic; the size of that effect was not separated for these models. Raw runs: scratchpad `league.txt` / `league2.txt` (not committed).

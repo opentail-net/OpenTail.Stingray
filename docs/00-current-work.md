@@ -38,8 +38,14 @@ updated with dated evidence in the same pass.
    with no-M-RoPE and no-deepstack controls). Remaining CUDA verification is blocked on CUDA
    hardware (none available here); server multimodal routing remains an unimplemented product path.
    From #6 and #9 in [done/102](done/102-status-open-items-plan.md).
-2. **Per-pipeline diffusion end-to-end smoke tests**: real weights, small resolution, a stored
-   reference, and a loud failure when the checkpoint is missing. Item 4 of §4 in
+2. **Per-pipeline diffusion end-to-end smoke tests, remaining pipelines.** Done 2026-10-30 for the five image
+   pipelines with local weights (SD 1.5, SDXL-Turbo, FLUX.1-schnell, Z-Image-Turbo, SD 3.5 Medium):
+   `ImageCommandSmokeTests` runs the real CLI at 256x256 on the CPU and compares a fingerprint (channel means,
+   luma std, 8x8 average hash) with `tests/OpenTail.Stingray.Tests.Cli/Baselines/ImageSmoke/`; a missing
+   checkpoint fails under `STINGRAY_RUN_HEAVY_TESTS=1`. All five ran bit-identical to the reference, 219 s total.
+   Not covered yet: FLUX.2, Qwen Image and the video pipelines (Wan, LTX-Video, HunyuanVideo), which are
+   much slower here. The baselines are a regression guard (our own known-good output), not an independent
+   reference. Origin: item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
