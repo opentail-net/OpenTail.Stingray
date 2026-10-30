@@ -1,12 +1,12 @@
 # Workstream: first run and public surface
 
 **Owner:** this file. **Last verified:** 2026-10-30.
-**Plans:** [../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md) (catalogue, first-run seam, favourites), [../3-product-and-runtime/103-front-door-design.md](../3-product-and-runtime/103-front-door-design.md) (front door), [../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md) (public C# surface and task commands).
+**Plans:** [../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md) (catalogue, first-run seam, favourites), [front-door design](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30) (front door), [../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md) (public C# surface and task commands).
 
 ## Correct state
 
 - **Known-good plan (status 2026-10-09, checked against code 2026-10-30):** P0 first-run seam done (`SetupFlow.cs`). P1 shared preflight done for `chat` and `setup`, not yet for `run` and `serve`. P2 qualification done (Qwen2.5 0.5B, 1.5B and 7B goldens). P3 favourites code present, end-to-end `models use` not re-checked. P4 `--verify` present, `--local` not found. P5 docs-as-tests open.
-- **Front door:** steps 1 and 2 done. Steps 3 (starter manifest, recipes) and 4 (task commands) are open in [../3-product-and-runtime/103-front-door-design.md](../3-product-and-runtime/103-front-door-design.md).
+- **Front door:** steps 1 and 2 done. Steps 3 (starter manifest, recipes) and 4 (task commands) are open in [front-door design](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30).
 - **Recipes (2026-10-11):** README recipes landed. `stingray setup chat` then `stingray chat` ran on a clean model home in 5 to 6 s. **Not run:** the CLI `speak` and `transcribe` recipes.
 - **Task command files exist:** `ChatCommand.cs`, `SpeakCommand.cs`, `TranscribeCommand.cs`, `CatalogTaskResolver.cs`.
 - **Public C# surface:** the samples exist under `samples/`. No compile test for an external consumer was found, so the plan's A1 and D1 are open.

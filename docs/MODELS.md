@@ -68,7 +68,7 @@ both the `.onnx` and its `.onnx.json`.
 
 Image generation also needs the text encoders' tokenizer files, and the VAE (`ae.safetensors`)
 requires signing in to Hugging Face and accepting the model's terms first. A guided setup that
-assembles all of this is planned ([103](3-product-and-runtime/103-front-door-design.md)); until then see the FLUX row in
+assembles all of this is planned ([front-door design](3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30)); until then see the FLUX row in
 [STATUS.md](STATUS.md).
 
 ## Search and retrieval

@@ -7,7 +7,7 @@ using OpenTail.Stingray.Core.Catalog;
 namespace OpenTail.Stingray.Tests.Core;
 
 /// <summary>
-/// The model catalog's own rules (docs/3-product-and-runtime/103-front-door-design.md) and the
+/// The model catalog's own rules (docs/3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md (front-door design section)) and the
 /// installer's download / resume / SHA-256 behaviour, against a local HTTP server (no network).
 /// </summary>
 public sealed class ModelCatalogTests

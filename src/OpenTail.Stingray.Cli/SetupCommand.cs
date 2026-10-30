@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Cli;
 /// <summary>
 /// <c>stingray setup &lt;task|id&gt;</c>: shows what a catalog bundle costs (size, licence, RAM,
 /// speed), asks, then downloads and SHA-256-checks it into the model home. Front-door step 2
-/// (<c>docs/3-product-and-runtime/103-front-door-design.md</c>).
+/// (<c>docs/3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md (front-door design section)</c>).
 /// </summary>
 public sealed class SetupCommand : Command<SetupCommand.Settings>
 {

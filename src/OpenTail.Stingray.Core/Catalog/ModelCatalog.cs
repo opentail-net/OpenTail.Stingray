@@ -72,7 +72,7 @@ public sealed record CatalogEntry(
 /// The recommended model per task: a small, curated list, not the coverage list (that is
 /// <c>docs/STATUS.md</c>; anything else still works through <c>pull -r</c> / <c>-m</c>).
 ///
-/// <para>Rules for adding an entry (<c>docs/3-product-and-runtime/103-front-door-design.md</c>):
+/// <para>Rules for adding an entry (<c>docs/3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md (front-door design section)</c>):
 /// a public source with the SHA-256 Hugging Face reports, a green status row, and a test or
 /// compiled sample that ran on those exact files. One default per task (the first entry for that
 /// task), at most three alternatives, each justified by a user-level reason.</para>
