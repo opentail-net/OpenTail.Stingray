@@ -160,7 +160,7 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **References:** TensorSharp `Models/MiniMaxH3`, upstream HF code.
 
 ### 6. DeepSeek V4 / V4.1 Flash (V4 review + V4.1 distinct architecture)
-- Stingray has V4 alpha code (`DeepSeek4*.cs`, plan [058](058-deepseek-full-lineage-implementation-plan.md)), never run.
+- Stingray has V4 alpha code (`DeepSeek4*.cs`, plan [058](../reference/058-deepseek-full-lineage-implementation-plan.md)), never run.
 - **Design:**
   - V4 Flash (`deepseek4`): 43 layers, hidden 4096, 64 heads, head dim 512, compression ratios 0/4/128, 256+1 MoE (top-6, sqrtsoftplus), x4 mHC, 64x128 indexer top-512, 1 NextN.
   - V4.1 Flash (`deepseek41`): distinct architecture with 40 layers, hidden 5120, compression ratios 0/1/2, 384+1 MoE (scale 1.5), dual ~196B Engram tables (layers 1 & 14, 4-gram, 99k compressed vocab), 8 index-source layers, candidate top-2048 x block 8, 3 NextN layers, DSpark (layers 37-39).
@@ -169,3 +169,13 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **References:**
   - V4: llama.cpp `src/models/deepseek4.cpp` (local source + vendored b10306 as local oracle).
   - V4.1: TensorSharp `Models/DeepSeek4/` (`DeepSeek41Model.cs`, `DeepSeek4CpuExecutor.V41.cs`, `Dsv41EngramData.cs`) validated under 103-case PyTorch oracle (100/103 passed).
+
+## Open items moved from 058-deepseek-full-lineage-implementation-plan.md (2026-10-30)
+
+- [ ] Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
+  dense-layer code path (`leading_dense_block_count` layers) is confirmed working, since V1 is
+  architecturally a subset.
+
+- [ ] Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
+  existing working vision branch. Not a rebuild.
+

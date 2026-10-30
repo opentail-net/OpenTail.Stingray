@@ -134,7 +134,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 - [ ] 12. **Lower priority, not planned**: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow
     Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large); DeepSeek-OCR v1 (no checkpoint).
 - [ ] 13. **Out of scope for this PC**: DeepSeek-V3.2 / V4, alpha code never run on real weights.
-    [2-coverage/058-deepseek-full-lineage-implementation-plan.md](2-coverage/058-deepseek-full-lineage-implementation-plan.md).
+    [reference/058-deepseek-full-lineage-implementation-plan.md](reference/058-deepseek-full-lineage-implementation-plan.md).
 - [ ] 14. **TensorSharp coverage wave** (from 2026-10-02; the user's current focus, ahead of the items
     above while it runs).
     - **Done:** spin worker pool (opt-in), ggml Q8 cross-check, `Q1_0`/`Q2_0` verified, Bonsai2

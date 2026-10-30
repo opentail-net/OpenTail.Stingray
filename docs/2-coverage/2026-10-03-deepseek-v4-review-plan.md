@@ -1,6 +1,6 @@
 # DeepSeek V4 / V4.1 review plan (`deepseek4`, `deepseek41`)
 
-**Status (revised 2026-10-03):** V4 has reviewed alpha code (never compared with llama.cpp; its only test does not exercise CSA). V4.1 is **partial**: raw-attention trunk only, and it refuses real configs. Neither is verified. ([058](058-deepseek-full-lineage-implementation-plan.md))
+**Status (revised 2026-10-03):** V4 has reviewed alpha code (never compared with llama.cpp; its only test does not exercise CSA). V4.1 is **partial**: raw-attention trunk only, and it refuses real configs. Neither is verified. ([058](../reference/058-deepseek-full-lineage-implementation-plan.md))
 This plan governs the review of existing V4 alpha code and the architectural definition of V4.1.
 **Policy:** Both architectures remain **not admitted and not advertised** (CLAUDE.md rule 14).
 
@@ -57,7 +57,7 @@ This plan governs the review of existing V4 alpha code and the architectural def
 
 ## Existing V4 Alpha Status in Stingray
 
-Per plan [058](058-deepseek-full-lineage-implementation-plan.md), Stingray's existing `DeepSeek4ForwardPass.cs` has:
+Per plan [058](../reference/058-deepseek-full-lineage-implementation-plan.md), Stingray's existing `DeepSeek4ForwardPass.cs` has:
 - **Implemented**: Raw attention, HCA (ratio 128), basic mHC Sinkhorn, MoE routing, indexer scoring.
 - **Gaps & Uncertainties to Resolve**:
   - CSA (ratio 4) is currently unimplemented.
@@ -120,3 +120,31 @@ Tests: `DeepSeek4AlphaTests` / `DeepSeek41AlphaTests` (component and metadata ch
 ---
 
 **Effort:** the original estimates covered port + smoke tests. Remaining for V4: a CSA-exercising synthetic test, the b10306 comparison, then the paged real-weight run. Remaining for V4.1: ratios 1/2 attention, the indexer, YaRN, dtype-aware Engram, an oracle comparison.
+
+## Open items moved from 058-deepseek-full-lineage-implementation-plan.md (2026-10-30)
+
+Moved here because this is the live DeepSeek plan. The "Hadamard note above" in these items refers to the 058 document, now [../reference/058-deepseek-full-lineage-implementation-plan.md](../reference/058-deepseek-full-lineage-implementation-plan.md).
+
+- [ ] Run any real-weight verification — this has never executed even once, since there is no
+  DeepSeek-V4 GGUF available this session. Every claim above is "believed correct from reading
+  the reference," not measured.
+
+- [ ] Add rollback/multi-sequence support for the compressed-KV state cache.
+
+- [ ] Add `mtp_only`/`trunk_only` conditional-tensor detection (deepseek4.cpp:93-95) — this port's
+  loader treats every conditional tensor as simply optional.
+
+- [ ] Add batched/packed prefill — `Prefill` is a plain per-token loop over `Forward`, not amortized.
+
+- [ ] **Phase 0 — `deepseek4` (V4)**: Alpha code structurally written (`DeepSeek4Alpha.cs`, `DeepSeek4ForwardPass.cs`, 15 unit tests); CSA/HCA attention completion + real-weight verification open (needs ~99 GB checkpoint).
+
+- [ ] **Phase 1 — `deepseek32` (V3.2)**: Alpha code structurally written (`DeepSeek32Alpha.cs`); real-weight verification open.
+
+- [ ] If `k_rot` is present (see Hadamard note above), apply it to Q/kv before scoring and to the
+   attention output afterward.
+
+- [ ] 1. **Hadamard transform primitive** (`HadamardTransform` kernel + a decision on whether `k_rot` is
+   a loaded weight or code-generated) — needed before anything else if real checkpoints populate
+   `k_rot`; independent of the rest, so worth resolving first since it's a small, self-contained
+   unknown.
+

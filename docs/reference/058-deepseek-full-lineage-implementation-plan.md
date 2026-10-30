@@ -1,7 +1,7 @@
 > **2026-10-03:** the V4 review and next-step work moved to
 
 > Completed items moved to [done/058-deepseek-full-lineage-implementation-plan-completed-items-2026-10.md](../done/058-deepseek-full-lineage-implementation-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
-> [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md) (review against
+> [2026-10-03-deepseek-v4-review-plan.md](../2-coverage/2026-10-03-deepseek-v4-review-plan.md) (review against
 > llama.cpp `deepseek4.cpp` + TensorSharp, a synthetic llama.cpp b10306 check, then V4.1 as a
 > separate architecture). This document remains the historical implementation lineage and alpha
 > record. Don't use its old download questions or estimates as the current work queue.
@@ -124,13 +124,6 @@ without that risked silently corrupting working architectures):
   any function they exercise, only added new ones).
 
 **Explicitly NOT done yet**:
-- [ ] Run any real-weight verification — this has never executed even once, since there is no
-  DeepSeek-V4 GGUF available this session. Every claim above is "believed correct from reading
-  the reference," not measured.
-- [ ] Add rollback/multi-sequence support for the compressed-KV state cache.
-- [ ] Add `mtp_only`/`trunk_only` conditional-tensor detection (deepseek4.cpp:93-95) — this port's
-  loader treats every conditional tensor as simply optional.
-- [ ] Add batched/packed prefill — `Prefill` is a plain per-token loop over `Forward`, not amortized.
 
 **Update, same day — HCA (compress_ratio==128) attention added, CSA (ratio==4) still deferred**:
 - `DeepSeek4ForwardPass`'s constructor now accepts `compress_ratio` 0 (raw) or 128 (HCA); ratio 4
@@ -228,8 +221,6 @@ The vendored llama.cpp reference declares five distinct architecture strings
 
 ### Overview Checklist
 
-- [ ] **Phase 0 — `deepseek4` (V4)**: Alpha code structurally written (`DeepSeek4Alpha.cs`, `DeepSeek4ForwardPass.cs`, 15 unit tests); CSA/HCA attention completion + real-weight verification open (needs ~99 GB checkpoint).
-- [ ] **Phase 1 — `deepseek32` (V3.2)**: Alpha code structurally written (`DeepSeek32Alpha.cs`); real-weight verification open.
 - [ ] **Phase 3 — Mop-up**: Verify any remaining legacy variants.
 
 ### Phase 0 — `deepseek4` (V4): full implementation, current priority
@@ -436,11 +427,6 @@ Phase 2 without a new checkpoint-download decision having been made for option (
 
 ### Phase 3 — mop-up
 
-- [ ] Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
-  dense-layer code path (`leading_dense_block_count` layers) is confirmed working, since V1 is
-  architecturally a subset.
-- [ ] Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
-  existing working vision branch. Not a rebuild.
 
 ## CSA (compress_ratio==4) decomposition — precise implementation plan
 
@@ -642,15 +628,9 @@ Once the above produces a working CSA-compressed-block store and a working LID t
 tested), the actual attention step is a bounded, mechanical extension of what
 `DeepSeek4ForwardPass.RawAttention`/HCA's `GetKeyOrCompressed` already do:
 
-- [ ] If `k_rot` is present (see Hadamard note above), apply it to Q/kv before scoring and to the
-   attention output afterward.
 
 ### Summary: ordered list of what to build, with dependencies
 
-- [ ] 1. **Hadamard transform primitive** (`HadamardTransform` kernel + a decision on whether `k_rot` is
-   a loaded weight or code-generated) — needed before anything else if real checkpoints populate
-   `k_rot`; independent of the rest, so worth resolving first since it's a small, self-contained
-   unknown.
 
 Steps 2-3 are the direct extension of what HCA already proved out (same compression math, +
 different gather). Step 1 is a genuinely new, independent primitive. Steps 4-5 are new but
@@ -663,4 +643,4 @@ piece of this Phase 0 alpha.
 The pre-Phase-0 download and `--allow-unverified-arch` questions that stood here are retired. The
 download questions are moot on this 64 GB PC, and `deepseek2` has since been admitted and verified.
 Current next steps for V4/V4.1 live in
-[2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md).
+[2026-10-03-deepseek-v4-review-plan.md](../2-coverage/2026-10-03-deepseek-v4-review-plan.md).
