@@ -60,7 +60,6 @@ updated with dated evidence in the same pass.
     (pixel-level and per-view embedding parity unverified).
     Closed 2026-10-09: #24 DeepSeek-V2-Lite greedy receipt vs Q3_K kernel (retained e7b7aa8a AVX2 Q3_K dot; characterized token-9 near-tie; explicit receipt in `DeepSeek2GreedyParityTests`; landed IQ4_NL folded MoE path) and #22 stale numpy-golden vision parity tests (retired in favor of active `LlamaMtmdVisionParityTests` oracles).
     Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted) and #23 (DeepSeek-V2-Lite receipt pinned to Q8 prefill).
-    Also: Apertus greedy re-check vs `llama-server --no-jinja`.
 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
 17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
