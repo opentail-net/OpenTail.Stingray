@@ -12,7 +12,7 @@
 - [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
 - [x] B5. Register commands (`Program.cs:115-119`) and update catalogue run templates (`ModelCatalog.cs` now uses `stingray chat`, `speak`, `transcribe`; checked 2026-10-30)
 - [ ] B5 item 3, application name: align `SetApplicationName` (`Program.cs:68` still says `opentail-llm-cli`)
-- [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs`; checked 2026-10-30)
+- [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs` exists; tests not run on 2026-10-30)
 - [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
 - [x] D1. Compile the public C# samples and README snippets against the package: 13 of 13 on 2026-10-11 (1.0.8); 1.0.9 re-run on 2026-10-30 passed (17 checks, 0 failed).

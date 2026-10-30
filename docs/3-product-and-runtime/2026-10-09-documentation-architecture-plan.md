@@ -8,7 +8,7 @@
 - [x] Phase 4: architecture cards and technical guides (34 files in `docs/models/`, 14 in `docs/guides/`)
 - [ ] Phase 5: documentation index and automated verification (no doc-consistency test found for the status matrix)
 
-> **Status:** Implementation-Ready Plan (Incorporating Review Corrections)  
+> **Status (updated 2026-10-30):** Phase 4 done; Phase 2 partly done; Phases 1, 3 and 5 open (see the checklist above). Originally: Implementation-Ready Plan (Incorporating Review Corrections)  
 > **Date:** October 9, 2026  
 > **Scope:** Full documentation suite for OpenTail.Stingray (Core, Engine, Audio, Vision, Diffusion, Server, CLI)  
 > **Core Standard:** A capability may be advertised only when its implementation status and verification evidence support the exact claim being made. The existence of a class, a port, or an architecture name is not sufficient evidence.

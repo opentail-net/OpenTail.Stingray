@@ -6,6 +6,8 @@
 
 # Quality-of-life improvements — current work
 
+**Workstream:** [configuration and sessions](../workstreams/configuration-and-sessions.md).
+
 **Status:** planning/diagnostics baseline shipped; deterministic static-plan decision fixtures
 and typed host-key classification are now in place. Environment ownership and execution parity remain.
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planning only. No implementation in this document. Written as the flagged immediate
+Planning only. No implementation in this document. **Checked 2026-10-30:** still planning only; `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`). The guard this section cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale. **Workstream:** [configuration and sessions](../workstreams/configuration-and-sessions.md). Written as the flagged immediate
 follow-up to the bug-fix pass that added a fail-loud guard (`InferenceSession.cs`,
 `ThrowIfForwardPassNotIsolated`) instead of implementing this — see that pass's plan for
 context. This document scopes what implementing the real thing actually requires.

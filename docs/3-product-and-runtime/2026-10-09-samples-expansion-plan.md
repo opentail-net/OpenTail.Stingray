@@ -7,7 +7,7 @@
 - [ ] Priority 2 samples (extra setup)
 - [ ] Section 7: automated verification for every sample and for package-consumer samples
 
-> **Status:** Proposed — inventory and scope first, then add verified examples in small batches  
+> **Status (updated 2026-10-30):** Phase 0 done (`samples/README.md`). Originally: proposed — inventory and scope first, then add verified examples in small batches  
 > **Date:** October 9, 2026  
 > **Scope:** Improve the repository's runnable C# samples across the library's real capabilities, especially diffusion and audio, without turning `samples/` into an unmaintained copy of the docs.
 > **Progress 2026-10-11:** Phase 0 was re-run against HEAD. The four samples labelled "package consumer" (Chat, Speech, Diffusion, ChatServer) referenced internal source projects; each now has a package build mode (`-p:StingrayPackageVersion`) and builds against the packed package (`scripts/verify-package-consumers.ps1`). Every sample has a README with prerequisites, expected output taken from a real 2026-10-11 run, known limitations and verification; ChatServer, QuickStart and HotRouting gained READMEs, and HotRouting is documented as a demonstration that falls back to a simulation when its model file is absent. `ProductSurfaceContractTests` checks the classification against the project files. **No new samples were added:** the Priority 1 and 2 items in section 5 (vision, embeddings, music, video, other speech engines) were not started, and no runtime check of the samples runs in CI (the runs were done by hand).

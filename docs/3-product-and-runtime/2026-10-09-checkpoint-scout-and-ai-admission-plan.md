@@ -10,7 +10,7 @@
 - [x] Phase 5a: agent playbook (`docs/reference/architecture-admission-agent-playbook.md`)
 - [ ] Phase 5b: calibration (deferred)
 
-**Status:** Proposed implementation plan (2026-10-09). Drafted by another AI; reviewed against HEAD (all named files/commands exist). **Committed scope: Phases 1–2 plus a short playbook and the optional pretest script (§8.1). Phases 4–5 are deferred, see §8.1.**  
+**Status (updated 2026-10-30):** Phases 0 to 2 and the playbook done; Phase 3 implemented as a script; Phases 4 and 5b deferred. Originally: proposed implementation plan (2026-10-09). Drafted by another AI; reviewed against HEAD (all named files/commands exist). **Committed scope: Phases 1–2 plus a short playbook and the optional pretest script (§8.1). Phases 4–5 are deferred, see §8.1.**  
 **Check 2026-10-11:** `stingray scout -r bartowski/SmolLM2-135M-Instruct-GGUF --quants --budget 32G` ran against a public repository: it judged 23 quantisations from their indexes (no weights downloaded), printed the inspected commit, the architecture with its admission status (`llama (Admitted)`) and a fit verdict per quantisation, and needed no environment variable. `pull --revision` and the playbook `docs/reference/architecture-admission-agent-playbook.md` exist. Not re-verified in that check: the rest of Phase 2 and the optional pretest script.
 **Target:** .NET 10 / C# 14, NativeAOT-safe, local-first  
 **Primary constraint:** Make useful progress on the existing 64 GB RAM development machine; do not make oversized real-weight runs a prerequisite for the scout itself.  

@@ -6,6 +6,8 @@
 
 ## Status
 
+**Workstream:** [multi-model runtime](../workstreams/multi-model-runtime.md). The status below is as last written; the workstream records the 2026-10-30 check.
+
 **Phases 1, 2, and 4 implemented. Phase 3 at 9 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue
 step of the eviction hierarchy, bounded, observable, fair among queued waiters, and now immune to

@@ -43,6 +43,7 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 - **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header is out of date.
 - **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).
 - **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
+- **Configuration and sessions** (owner: [workstreams/configuration-and-sessions.md](workstreams/configuration-and-sessions.md)): no backlog item of its own; plan 010 is planning only.
 
 ---
 
