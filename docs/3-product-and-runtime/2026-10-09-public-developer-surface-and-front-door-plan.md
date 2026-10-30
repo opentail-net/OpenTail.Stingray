@@ -2,7 +2,7 @@
 
 ## Checklist (2026-10-30; code checked)
 
-- [ ] A1. Prove the public API with a compiling consumer (samples exist under `samples/`; no consumer compile test found)
+- [x] A1. Prove the public API with a compiling consumer: `scripts/verify-package-consumers.ps1` compiles against the packed packages with no project reference (1.0.8 on 2026-10-11; re-run for 1.0.9).
 - [ ] A2. Audit ownership, disposal and lock-order protocol
 - [ ] A3. Audit misleading parameter options
 - [ ] A4. Interface conformance, incomplete-turn semantics, behaviour tests
@@ -14,7 +14,7 @@
 - [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs`; checked 2026-10-30)
 - [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
-- [ ] D1. Compile the public C# sample (samples exist; compile against the package not re-checked)
+- [x] D1. Compile the public C# samples and README snippets against the package: 13 of 13 on 2026-10-11 (1.0.8); re-run for 1.0.9 pending.
 - [ ] D2. Verify the actual NuGet package
 - [ ] D3. Model-backed task qualification
 - [ ] E. Close-out and release-quality review
@@ -103,7 +103,7 @@ The existing command implementations are:
 
 The command app currently registers the existing commands as the default/path-oriented run command, `tts`, and `stt`. It also registers `setup` and `models`.
 
-It does not yet provide the intended simple `chat`, `speak`, and `transcribe` user-facing command set.
+The `chat`, `speak` and `transcribe` task commands are registered (`Program.cs:115-119`; checked 2026-10-30). Their remaining gap is the catalogue run templates (B5), not registration.
 
 The correct approach is to reuse the existing inference and speech implementations, not create alternate implementations of token generation, TTS, or ASR.
 
@@ -589,6 +589,7 @@ The guiding principle is: **make Stingray's easiest path genuinely easy, and ens
 ## Front-door design (merged 2026-10-30)
 
 Merged from `103-front-door-design.md`. Its text is kept as it was, with headings nested one level down. Its open items are listed here, and the catalogue rules it defines are in the "Model catalog" part below.
+**Status of this historical design (2026-10-30).** Kept for its catalogue rules and its problem statement. Decisions made since then take precedence: the canonical example uses the model, context, executor and session chain, with no separate `StingrayChat` facade (§3.2); the `describe` and `image` task commands are not part of the current plan. Items marked SUPERSEDED below are not work to do.
 
 > Completed items moved to [done/103-front-door-design-completed-items-2026-10.md](../done/103-front-door-design-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
@@ -660,7 +661,7 @@ two-minute demo and the tool for non-developers.
 - [ ] 4. **Task commands that need no paths once set up**: `stingray chat`, `speak`, `transcribe`,
    `describe`, `image`. A missing model gives a one-line fix (`run: stingray setup speak (63 MB)`),
    never a stack trace.
-- [ ] 6. **A small library facade** so the README's C# is three lines per task, and the snippets are
+- [ ] 6. **SUPERSEDED by §3.2 (no separate facade).** A small library facade so the README's C# is three lines per task, and the snippets are
    compiled by a test so they cannot rot:
    `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
    `Speech.SynthesizeAsync(...)` / `Transcriber.TranscribeAsync(...)`. The facade is built on the

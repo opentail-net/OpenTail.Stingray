@@ -39,6 +39,7 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 - **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
 - **First run, catalogue and public surface** (owner: [workstreams/first-run-and-public-surface.md](workstreams/first-run-and-public-surface.md)): item 1 (section 3).
 - **Gemma** (owner: [workstreams/gemma.md](workstreams/gemma.md)): items 7 and 9 (sections 1 and 2).
+- **Scout and architecture admission** (owner: [workstreams/scout-and-admission.md](workstreams/scout-and-admission.md)): no backlog item of its own; the deferred phases are in the workstream.- **OpenTelemetry observability** (owner: [workstreams/observability.md](workstreams/observability.md)): no backlog item of its own; its header is out of date.- **Multi-model runtime** (owner: [workstreams/multi-model-runtime.md](workstreams/multi-model-runtime.md)): item 3 (section 3).- **Documentation architecture** (owner: [workstreams/documentation-architecture.md](workstreams/documentation-architecture.md)): no backlog item of its own.
 
 ---
 
@@ -168,7 +169,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    (`IForwardPass.CreateContext` still returns `this`).
    [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
-- [ ] 5. **Releases**: follow [3-product-and-runtime/nuget-release-checklist.md](3-product-and-runtime/nuget-release-checklist.md).
+- [ ] 5. **Releases**: follow [reference/nuget-release-checklist.md](reference/nuget-release-checklist.md).
 - [ ] 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
    Phases 4-6, the ONNX-runtime path for engines that already have native ports.
 

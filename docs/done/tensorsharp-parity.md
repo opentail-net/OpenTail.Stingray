@@ -1,4 +1,5 @@
 # TensorSharp parity matrix (Phase 0 of the selective-port plan)
+**Scope (2026-10-30):** this completes the Phase 0 survey only. It is not evidence that TensorSharp parity work as a whole is complete. The matrix still describes unverified capabilities and remaining gaps.
 
 Written 2026-10-03 for `examples/tensorsharp-parity-selective-port-plan.md` (local-only, not tracked).
 This is the anti-scope-creep fence: every TensorSharp capability gets one row, a Stingray status, and a

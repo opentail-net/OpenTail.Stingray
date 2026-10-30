@@ -1,4 +1,5 @@
 # Plan: a Stingray page on OpenTail.Web.Public
+> **External.** This plan is for the `OpenTail.Web.Public` site, which is outside this repository. It is kept here for coordination only; the repository does not own that site.
 
 ## Checklist (2026-10-30; checked against the repo)
 

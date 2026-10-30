@@ -1,6 +1,6 @@
 # Completed items split from 103-front-door-design.md (2026-10-30)
 
-Finished items moved verbatim out of [../3-product-and-runtime/103-front-door-design.md](../3-product-and-runtime/103-front-door-design.md). Open items stay there. Each block notes the section it came from.
+Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30). Open items stay there. Each block notes the section it came from.
 
 > from: ## The front door (tooling)
 - [x] 2. **A model home outside the repo**: `%LOCALAPPDATA%\stingray\models` / `~/.cache/stingray/models`,
