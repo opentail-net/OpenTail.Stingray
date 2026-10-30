@@ -1,5 +1,7 @@
 # TensorSharp takeaways (2026-10-02)
 
+> Completed items moved to [done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md](../done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 Source: `examples/TensorSharp/TensorSharp` (BSD 3-Clause; https://github.com/zhongkaifu/TensorSharp).
 Any ported code adds its file to the existing TensorSharp section of `THIRD_PARTY_NOTICES.md`.
 TensorSharp's published speed numbers come from its GGML (llama.cpp) native backend, so they say
@@ -27,12 +29,6 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
     gap is: SmolLM2-135M ~0.55x and Qwen2.5-0.5B ~0.75x of llama.cpp, attributed to per-call
     overhead (`perf-sweep-plan.md`).
 - **Plan:**
-  - [x] Port behind a switch (e.g. `STINGRAY_CPU_POOL=spin`) and route `SimdKernels`'s matvec
-     `Parallel.For` sites through it.
-  - [x] Prove the dispatch happened (a call counter).
-  - [x] Run an interleaved A/B on 135M / 360M / Qwen2.5-0.5B decode and one 7B; outputs must be
-     bit-identical, since only scheduling changes.
-  - [x] Keep it only if it is measurably better; record the result either way.
 - **Expect less than claimed:** this machine has 8 cores, not 122.
 
 ### Result, 2026-10-02: shipped **opt-in** (`STINGRAY_CPU_POOL=spin`)

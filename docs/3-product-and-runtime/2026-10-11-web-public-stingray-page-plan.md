@@ -1,5 +1,11 @@
 # Plan: a Stingray page on OpenTail.Web.Public
 
+## Checklist (2026-10-30; checked against the repo)
+
+- [ ] `stingray.html` page (not present in `C:\Git\OpenTail\extensions\OpenTail.Web.Public`; the site has `index.html`, `audio.html`, `text.html`, `tui.html`, `transformations.html`)
+- [ ] Owner decision: GitHub and NuGet URLs and the repo's public status to link
+- [ ] Reconcile with the other AI's draft
+
 Status: proposed, 2026-10-11. Written before seeing the other AI's draft; to be reconciled with it. Site: `C:\Git\OpenTail\extensions\OpenTail.Web.Public` (static HTML, `styles.css`, `site.js`).
 
 ## What I found on the site first

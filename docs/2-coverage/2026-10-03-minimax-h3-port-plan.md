@@ -1,5 +1,7 @@
 # MiniMax-H3 port plan (video + native 32 kHz stereo audio)
 
+> Completed items moved to [done/2026-10-03-minimax-h3-port-plan-completed-items-2026-10.md](../done/2026-10-03-minimax-h3-port-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 **Status (revised 2026-10-03): FOUNDATION ONLY.** Layout, dual schedulers, AdaLN, MM-RoPE, both VAE decoders, output export and a synthetic pipeline exist with synthetic tests. It is **not a complete port**: no real text-encoder conditioning, no real DiT weight loader, no VAE encode, no conditioning modes, no parity with upstream. **Policy:** port now, prove later; kept off the CLI model list and the
 diffusion docs until verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
 
@@ -121,21 +123,9 @@ float arrays), VAE encode, and the I2V/FL2V/Ref2VA conditioning modes.
 - [~] **5. Host Output:**
   - [~] WAV export for 32 kHz stereo audio latent decode (`MiniMaxH3OutputExporter.ExportAudioWav`).
   - [~] Frame export / video container writer for decoded video frames (`MiniMaxH3OutputExporter.ExportVideo`).
-- [x] **6. Experimental Gate:**
-  - [x] Unadvertised in CLI/STATUS until real checkpoint verified (CLAUDE.md Rule 14).
 
 ## Verification Ladder
 
-- [x] **Exact Shape & Layout Validation:** synthetic tests for `MiniMaxH3Layout`, coordinate bounds, and channel-major patch-minor ordering.
-- [x] **Synthetic Component Tests:**
-   - [x] Check dual flow schedule values for video ($shift=12$) and audio ($shift=3$).
-   - [x] Check AdaLN curve table interpolation and modulation projections ($8 \to 96768$).
-   - [x] Test an isolated single DiT block forward pass with packed video+audio tokens and full 5376d/7168d/96768d dimensions.
-   - [x] Test Audio VAE decode (32-channel to 32 kHz stereo).
-   - [x] Test Video VAE 3D temporal chunking (<=22 frames vs >22 frames with seam cross-fading).
-   - [x] Test multimodal RoPE 3D spatio-temporal axis decomposition and norm preservation.
-   - [x] Test external `vocab.json` + `merges.txt` BPE tokenizer.
-- [x] **Synthetic End-to-End Tiny H3:** test a video + audio packed denoising step with pipeline Euler integration.
 - [ ] **Real Checkpoint Fixture Parity (Level 3):**
    - [ ] Compare intermediate text embedding against an upstream PyTorch / TensorSharp fixture.
    - [ ] Compare a single DiT velocity step on a fixed seed.

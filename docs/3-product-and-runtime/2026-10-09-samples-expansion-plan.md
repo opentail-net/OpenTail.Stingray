@@ -1,5 +1,12 @@
 # OpenTail.Stingray Samples Expansion Plan
 
+## Checklist (2026-10-30; checked against the repo)
+
+- [x] Phase 0: audit and choose (`samples/README.md` is the index, with its gaps listed)
+- [ ] Priority 1 samples from section 5, each checked against the evidence rules in section 3
+- [ ] Priority 2 samples (extra setup)
+- [ ] Section 7: automated verification for every sample and for package-consumer samples
+
 > **Status:** Proposed — inventory and scope first, then add verified examples in small batches  
 > **Date:** October 9, 2026  
 > **Scope:** Improve the repository's runnable C# samples across the library's real capabilities, especially diffusion and audio, without turning `samples/` into an unmaintained copy of the docs.

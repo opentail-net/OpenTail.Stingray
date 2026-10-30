@@ -1,5 +1,7 @@
 ---
 
+> Completed items moved to [done/032-multi-model-inference-runtime-plan-completed-items-2026-10.md](../done/032-multi-model-inference-runtime-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 # Multi-Model Inference Runtime, Residency & Scheduling
 
 ## Status
@@ -340,15 +342,10 @@ background/speculative model preloading. All out of scope here.
 
 ### Phase Checklist
 
-- [x] **Phase 1: Production `ModelRuntime` abstraction** (Implemented)
-- [x] **Phase 2: Shared residency & single-flight loading** (Implemented)
 - [ ] **Phase 3: Bounded, resource-aware residency** (Slices 1–10 done; accelerator accounting in progress)
-- [x] **Phase 4: Multi-session model execution** (Implemented)
-- [x] **Phase 5: Cross-model concurrent execution** (No-lock half proven with real models)
 - [ ] **Phase 6: Fair scheduling & admission** (Slices 1–4 done; service quantum & starvation protection open)
 - [ ] **Phase 7: OpenTail server integration** (Stateless endpoints and session registry done; durable restore deferred)
 
-- [x] 1. **Production `ModelRuntime` abstraction** and 2. **Shared residency & single-flight loading** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](../done/032-multi-model-runtime-completed-phases.md).
 - [ ] 3. **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
    admission, safe eviction — host RAM first, accelerator accounting added through the same
    abstraction rather than a parallel policy. *Acceptance: two models coexist when resources
@@ -483,7 +480,6 @@ background/speculative model preloading. All out of scope here.
    branches this slice fixed; computing one would mean new placement logic, not just threading an
    existing value through. A CUDA equivalent of the VRAM-capacity probe is parked, not planned —
    no CUDA hardware in this environment to build or verify it against; revisit if that changes.
-- [x] 4. **Multi-session model execution** and 5. **Cross-model concurrent execution** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](../done/032-multi-model-runtime-completed-phases.md).
 - [ ] 6. **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
    starvation protection, cancellation, queue limits — deliberately simple policy.
    **Slice 1 done: the "queue" step itself** (docs/032's own eviction hierarchy: unused → idle →

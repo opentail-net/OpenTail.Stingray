@@ -1,5 +1,11 @@
 # Q4_K (and Q6_K) GEMM for CPU MoE expert prefill
 
+## Checklist (2026-10-30; code checked)
+
+- [ ] Option A (repack each expert on the fly) or Option B (exact tiled GEMM): owner decision in section 7
+- [ ] Plan section 5 implementation (no expert GEMM code found in `src/`, 2026-10-30)
+- [ ] Measure with real weights and record the result in `PerformanceLeague.md`
+
 Written 2026-10-04. **Status: plan only, nothing implemented.** Follows the CPU profile in
 [2026-10-03-batched-moe-prefill-plan.md](../2-coverage/2026-10-03-batched-moe-prefill-plan.md) (section "CPU path profile and experiments").
 

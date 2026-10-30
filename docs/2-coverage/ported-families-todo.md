@@ -1,5 +1,7 @@
 # Families to port now, prove later (todo)
 
+> Completed items moved to [done/ported-families-todo-completed-items-2026-10.md](../done/ported-families-todo-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+
 User policy, 2026-10-02: port these families from their reference code now; prove them on real
 checkpoints when there is capacity; meanwhile **don't admit and don't advertise them**. The
 rules are in CLAUDE.md rule 14 and §4 of
@@ -111,10 +113,6 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total: 125B lang + 51B PLE + 4B MTP; smallest quant ~72.5 GB; does not fit this PC; synthetic gate only).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [x] Port
-- [x] Not-admitted block
-- [x] Table row
-- [x] Specification & synthetic tests passing (24 tests in `Qwen4ExpAlphaTests`, `Qwen4ExpRoutedMoeTests`, `Qwen4ExpMoeRoutingTests`, `Qwen4ExpGuardTests`)
 - [ ] Real-weight verification (paged execution on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S ~72.5 GB)
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
@@ -126,11 +124,6 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **References:**
   - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries know it too and serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
   - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`, includes K-pool, mHC, KDA recurrence, MTP), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
-- [x] Port `glm-dsa`
-- [x] Port `glm5next`
-- [x] Add not-admitted blocks
-- [x] Add table rows
-- [x] Specification tests passing (`GlmDsaSyntheticTests`, `Glm5NextSyntheticTests`)
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
@@ -140,11 +133,7 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Weights:** Muse-Glimmer-30B; GGUF sizes on the card are about 3-10 GB for the parts listed.
 - **References:** TensorSharp `Models/MuseGlimmer` (cites `llama.cpp/src/models/muse-glimmer.cpp`,
   which is present in the local copy at `bed0a8566`).
-- [x] Port text tower
 - [ ] Port vision tower (deferred)
-- [x] Add not-admitted block
-- [x] Add table row
-- [x] Specification test (level 2) passing (`MuseGlimmerSyntheticTests`)
 
 ### 4. DiffusionGemma (`diffusion-gemma`, alias `diffusion_gemma`)
 - **Design:**
@@ -157,10 +146,6 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB; fits 64 GB machine).
 - **Reuse:** Stingray's Gemma 4 primitives, MoE routing, and PagedKvCache.
 - **References:** HF reference implementation, TensorSharp `Models/DiffusionGemma`, Unsloth / llama.cpp DiffusionGemma runner.
-- [x] Port (`src/OpenTail.Stingray.Diffusion/DiffusionGemma/*.cs`: Gemma-4 MoE backbone, multi-block causal prefill, persistent KV, bidirectional canvas, self-conditioning MLP, EntropyBound sampler, and strict tensor loader)
-- [x] Add not-admitted block in `ModelCompatibility.cs` (real checkpoint guarded by `DiffusionGemmaRealCheckpointGuardTests` per Rule 14)
-- [x] Add table row
-- [x] Specification & synthetic tests passing (32 tests in `DiffusionGemmaTests`)
 - [ ] Real-weight verification (Phase 9/13 ladder against llama.cpp and TensorSharp on `diffusiongemma-26B-A4B-it-Q4_K_M.gguf`)
 
 ### 5. MiniMax-H3 (video + native 32 kHz stereo audio)
@@ -173,11 +158,6 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Reuse:** Stingray's diffusion pipeline (Wan, HunyuanVideo, LTX) and audio VAE code. A
   diffusion project, not an LLM arch.
 - **References:** TensorSharp `Models/MiniMaxH3`, upstream HF code.
-- [x] Port (`src/OpenTail.Stingray.Diffusion/MiniMaxH3/*.cs`)
-- [x] Add a not-advertised entry; diffusion has no `ModelCompatibility` allowlist, so keep it off
-      the CLI's model list until verified
-- [x] Add table row
-- [x] 13 unit / pipeline tests passing (`MiniMaxH3Tests.cs`)
 
 ### 6. DeepSeek V4 / V4.1 Flash (V4 review + V4.1 distinct architecture)
 - Stingray has V4 alpha code (`DeepSeek4*.cs`, plan [058](058-deepseek-full-lineage-implementation-plan.md)), never run.
@@ -189,7 +169,3 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **References:**
   - V4: llama.cpp `src/models/deepseek4.cpp` (local source + vendored b10306 as local oracle).
   - V4.1: TensorSharp `Models/DeepSeek4/` (`DeepSeek41Model.cs`, `DeepSeek4CpuExecutor.V41.cs`, `Dsv41EngramData.cs`) validated under 103-case PyTorch oracle (100/103 passed).
-- [x] Review and fix existing V4 alpha (CSA ratio 4, 8-group output LoRA, Hadamard on indexer)
-- [x] Implement V4.1 distinct architecture (`deepseek41`): ratios 0/1/2, 384+1 MoE, Engram subsystem (`DeepSeek41*.cs`)
-- [x] Add not-admitted blocks and update table rows
-- [x] Specification tests passing (`DeepSeek4AlphaTests`, `DeepSeek41AlphaTests`)

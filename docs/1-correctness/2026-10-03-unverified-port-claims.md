@@ -1,5 +1,19 @@
 # Unverified claims in the 2026-10-02/03 coverage wave
 
+## Checklist
+
+- [x] Muse-Glimmer admitted, text only, CPU only (code: `Architectures/MuseGlimmerArchitecture.cs`; admission logged 2026-10-03)
+- [x] DiffusionGemma temperature contract aligned to the reference schedule (table row resolved)
+- [x] DiffusionGemma EntropyBound token acceptance (resolved, see table)
+- [x] Provenance: DeepSeek-V4.1 attribution in `THIRD_PARTY_NOTICES.md` (checked 2026-10-30, line 149; the claim below that it is missing is out of date)
+- [ ] Qwen 3.8 Flash Next: Level 4 paged real-weight run
+- [ ] GLM-5.x: real-weight run and K-pool selection check
+- [ ] DiffusionGemma: real Q4_K_M parity ladder against llama.cpp (backbone) and TensorSharp (canvas/sampler)
+- [ ] MiniMax-H3: beyond foundation (real checkpoint)
+- [ ] DeepSeek-V4: real-weight check (the synthetic test does not exercise CSA)
+- [ ] DeepSeek-V4.1: real 40-layer schedule (the synthetic fixture has 2 layers)
+- [ ] Bonsai2 PRISM: real-weight verification (gated behind `STINGRAY_EXPERIMENTAL_PRISM=1`)
+
 Written 2026-10-03 after two external reviews and a code check. Everything here is something that
 **could not be checked yet**, either because the reference was not available, the checkpoint does not fit,
 or the check has not been run. None of it blocks the "not admitted, not advertised" policy

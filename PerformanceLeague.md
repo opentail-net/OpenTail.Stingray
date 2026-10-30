@@ -1942,7 +1942,7 @@ Phi-3-mini 0.127 -> 0.112, jais-590M 0.205 -> 0.169, Ornith-9B 0.066 -> 0.063, S
 
 ## Scratch arena experiment, phase P0 (2026-10-10): no-go
 
-Plan: `docs/4-performance/2026-10-09-scratch-arena-experiment-plan.md`. Question: does reusing scratch memory across prefill calls make CPU prefill measurably faster (go threshold about 2%)?
+Plan: `docs/done/2026-10-09-scratch-arena-experiment-plan.md`. Question: does reusing scratch memory across prefill calls make CPU prefill measurably faster (go threshold about 2%)?
 
 * **Per-call matmul scratch is not on the hot path here.** The three per-call `NativeMemory.Alloc`/`Free` sites in `SimdKernels` (`TryMatMulBatchedQ8`, `TryMatMulBatchedDualQ8`, `TryMatMulBatchedQ4Kx8`) were temporarily routed through a counting wrapper. An 835-token prefill saw zero calls on Qwen2.5-1.5B Q4_K_M, Qwen2.5-7B Q4_K_M, Gemma-3-4B Q4_K_M and Qwen3-VL-2B Q8_0. The other matmul scratch buffers (`RepackedGemmPath2`, `Q6KPrefillGemm`) are already thread-local and reused. The "about 120 alloc/free pairs of 1-10 MB per chunk" premise does not hold for these paths.
 * **What does allocate per call: `ForwardPass.PrefillCore`**, about ten large `AllocZeroed` buffers once per prefill call (not per layer). Sizes at N=835: Qwen2.5-1.5B about 95 MiB, Qwen2.5-7B about 200 MiB.

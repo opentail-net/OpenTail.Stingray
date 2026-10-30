@@ -1,5 +1,19 @@
 # Prefill numerics investigation, 2026-10-02
 
+## Checklist
+
+- [x] 1. Evidence gathering (code and history)
+- [x] 2. llama.cpp's own recurrence (reviewer)
+- [x] 3. Attribution matrix design
+- [x] 4. First result: short prompts
+- [x] 5. Higher-precision recurrence reference D
+- [x] 6. Full matrix, prompt as the statistical unit
+- [x] 7. GDN probe: born in the recurrence or amplified downstream
+- [x] 8. Prefill -> decode continuity
+- [x] 9. The two KL outliers and the row check
+- [x] 10. int8 default interaction
+- [x] 11. ggml cross-check on identical rows (done 2026-10-02)
+
 **Question:** are the fast (chunked/batched) prompt-processing paths less accurate than the
 per-token path, enough to justify slower defaults?
 
@@ -157,9 +171,9 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
    Those were the predefined "really bad turn" criteria, and none was met.
 
 ## Open / follow-up
-- ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
+- [ ] ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
   vendored `ggml-base.dll`): is 1e-2 per projection normal int8 noise or a defect?
-- 27B MTP validation: boundary, ~500, ~2000 tokens; A vs E vs llama.cpp; continuity; MTP draft
+- [ ] 27B MTP validation: boundary, ~500, ~2000 tokens; A vs E vs llama.cpp; continuity; MTP draft
   acceptance.
-- Re-baseline `MtpDecoder_GreedyParity_LlamaCpp` on the optimized path when its checkpoint is
+- [ ] Re-baseline `MtpDecoder_GreedyParity_LlamaCpp` on the optimized path when its checkpoint is
   available.

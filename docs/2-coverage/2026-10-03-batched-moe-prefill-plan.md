@@ -1,5 +1,19 @@
 # Plan: batched MoE prefill for the Vulkan hybrid / GPU paths
 
+## Checklist (2026-10-30; code checked)
+
+- [x] Phase 0: instrument and baseline (OLMoE; section "Implementation status")
+- [x] Phase 1: CPU-prefill fast path with exact KV handoff (code: `HybridPrefillHandoff.cs`, `GpuPrefillHandoff.cs`)
+- [x] Phase 1b: full-offload `GpuForwardPass` handoff (code: `GpuForwardPass.cs`)
+- [ ] Phase 1 CUDA variant: written, compiles, never run (no NVIDIA GPU here; code: `CudaHybridPrefillHandoff.cs`)
+- [ ] Phase 2: batched hybrid trunk with host MoE (gated on the Phase 0/1 measurements)
+- [ ] Phase 3: GPU grouped-expert prefill on Vulkan (3a and, if justified, 3b)
+- [ ] Phase 4: oversized experts, streamed per chunk (regime C)
+- [x] Phase 5 (measured chooser built 2026-10-04; code: `Engine/Calibration/ExpertCalibration.cs`). Engine does not read the profile yet.
+- [ ] Phase 6: discrete-GPU decode miss split and device-side cache decisions
+- [ ] Decision for the user: approve Phase 0 + 1 as the first implementation (Phase 1 is done; Phases 2-5 gated on its measurements)
+- [ ] Decision for the user: a discrete-GPU machine for Phase 3/4 speed measurement
+
 Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status: plan only, nothing implemented.**
 
 **Revision 2026-10-03 (after an external review; each point was checked against the code before adopting).** Corrected: the hybrid's CPU KV is `KvCache` (FP32, `[maxSeqLen, kvDim]` per layer), not the `PagedKvCache` that `ForwardPass` uses; the hybrid's GPU KV is FP32 (`gpu.Allocate` default dtype), the fp16 KV I cited belongs to `GpuForwardPass`, so Phase 1 has no precision conversion; Phase 1 is fresh sequences only (`startPos == 0`); `PagedKvCache` can narrow itself to BF16 (explicitly via `STINGRAY_KV_DTYPE` / `STINGRAY_KV_STORE`, or automatically at 1,024 tokens in `auto` mode), so the CPU prefill pass must be pinned to F32 KV or the handoff would silently put BF16-rounded K/V into the hybrid.
