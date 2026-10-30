@@ -1,6 +1,6 @@
 # Forward-pass selection and refusal matrix
 
-> **Historical snapshot (pre-`5c591e6`).** Selection is now plan-driven (`ExecutionPlanner` -> `ExecutionPlan` -> `ArchitectureDescriptor.ConstructForwardPass`). Current plan: [2026-10-08-architecture-semantics-admission-plan.md](2026-10-08-architecture-semantics-admission-plan.md).
+> **Historical snapshot (pre-`5c591e6`).** Selection is now plan-driven (`ExecutionPlanner` -> `ExecutionPlan` -> `ArchitectureDescriptor.ConstructForwardPass`). Current plan: [2026-10-08-architecture-semantics-admission-plan.md](../2-coverage/2026-10-08-architecture-semantics-admission-plan.md).
 
 Characterization of the current CLI and server loader selection paths. This document records existing behavior; it does not propose or make runtime changes. Line numbers are source lines re-read on 2026-10-05 and should be refreshed after source edits.
 

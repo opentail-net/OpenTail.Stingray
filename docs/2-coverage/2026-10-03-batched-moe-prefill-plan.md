@@ -210,7 +210,7 @@ Choose among: CPU full prefill (Phase 1), host-routed hybrid (Phase 2), GPU-resi
 
 ### Which families get the handoff (2026-10-04)
 
-The handoff gate is no longer an architecture-name list: a structural check (MLA, recurrent state, own forward pass, LongRoPE are incompatible) then a parity receipt. Coverage matrix, how other engines decide, and the admission recipe: [2026-10-04-moe-handoff-coverage.md](2026-10-04-moe-handoff-coverage.md).
+The handoff gate is no longer an architecture-name list: a structural check (MLA, recurrent state, own forward pass, LongRoPE are incompatible) then a parity receipt. Coverage matrix, how other engines decide, and the admission recipe: [family coverage table](2026-10-04-moe-handoff-closure-plan.md#family-coverage-table-merged-2026-10-30-from-2026-10-04-moe-handoff-coveragemd).
 
 ### Phase 5 status: measured chooser built (2026-10-04)
 
