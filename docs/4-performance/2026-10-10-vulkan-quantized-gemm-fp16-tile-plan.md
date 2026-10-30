@@ -15,7 +15,7 @@ Note: the status line above ("proposed, not started") is stale; the progress log
 - [ ] Phase 5: propagate and document
 
 Status: **proposed, not started** (for second opinion before any kernel work). Owner: the Qwen Image performance
-thread; see [the diffusion samples and Qwen plan](2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)
+thread; see [the diffusion samples and Qwen plan](diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples)
 for the measurements this builds on.
 
 ## 1. Goal and success criteria

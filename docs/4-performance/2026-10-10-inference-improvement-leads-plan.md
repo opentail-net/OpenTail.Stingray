@@ -3,7 +3,7 @@
 > Completed items moved to [done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md](../done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
 Status: **in progress; the status board below is the source of truth (the intro text after it predates the work).** Order of work: first let the sample-image queue finish (Wan 2.2, HunyuanVideo, FLUX.2; see
-[the samples and Qwen plan](2026-10-10-diffusion-samples-and-qwen-image-performance-plan.md)), then take the leads below in
+[the samples and Qwen plan](diffusion/diffusion-performance.md#part-4-qwen-image-and-the-image-samples)), then take the leads below in
 order. These leads came from reading the performance league ([PerformanceLeague.md](../../PerformanceLeague.md)), the backlog
 ([00-current-work.md](../00-current-work.md)) and the vendored reference code in `examples/`. Several league rows date from
 September, so **each lead starts by re-measuring today's number** before any code changes.

@@ -26,12 +26,12 @@ Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / referen
 
 ## Remaining gaps, ranked (latest measurement for each)
 
-The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [diffusion/094](diffusion/094-diffusion-performance-plan.md) (with [069](diffusion/069-flux-vulkan-gemm-perf-handoff.md) and [093](diffusion/093-flux2-gpu-performance-optimization-plan.md) for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Row 11 is owned by the [Vulkan GEMM workstream](../workstreams/vulkan-gemm-llm-prefill.md) and row 12 by the [batched MoE prefill workstream](../workstreams/batched-moe-prefill.md). Rows 8 and 9 have no owning plan yet; their evidence is in PerformanceLeague.md.
+The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [the diffusion owner file](diffusion/diffusion-performance.md) (Part 1 umbrella; Parts 2 and 3 for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Row 11 is owned by the [Vulkan GEMM workstream](../workstreams/vulkan-gemm-llm-prefill.md) and row 12 by the [batched MoE prefill workstream](../workstreams/batched-moe-prefill.md). Rows 8 and 9 have no owning plan yet; their evidence is in PerformanceLeague.md.
 
 | # | Area | Workload | Ratio | Measured | Where the time goes / first step |
 |---|---|---|---:|---|---|
 | 1 | Image diffusion, Vulkan iGPU vs `sd-cli` | SD 1.5 end to end (512x512, 20 steps) | 0.47x (2.14x slower) | 2026-09-16 | UNet denoise GEMMs. sd.cpp uses quantised matmul and wave ops, we use FP16/FP32 tiled GEMMs. **Biggest single lever across all pipelines.** |
-| 2 | | FLUX.1-schnell end to end | 0.51x | 2026-09-16 | DiT loop ~1.95x; T5-XXL text encode 0.40x (2.49x slower). See [diffusion/069](diffusion/069-flux-vulkan-gemm-perf-handoff.md), [diffusion/094](diffusion/094-diffusion-performance-plan.md). |
+| 2 | | FLUX.1-schnell end to end | 0.51x | 2026-09-16 | DiT loop ~1.95x; T5-XXL text encode 0.40x (2.49x slower). See [the diffusion owner file](diffusion/diffusion-performance.md). |
 | 3 | | SD 3.5 Medium end to end | 0.53x | 2026-09-16 | MMDiT denoise loop is ~all of the delta. |
 | 4 | | SDXL-Turbo end to end | 0.63x | 2026-09-17 | UNet loop 2.32x. The VAE is already faster than C++. |
 | 5 | ASR, CPU vs audio.cpp | Voxtral-Mini-4B, 14 s clip | 0.46x | 2026-09-17 | Already 23x faster than the first port; declared a plateau. Profile before touching. |

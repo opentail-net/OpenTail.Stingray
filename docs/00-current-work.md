@@ -208,14 +208,14 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 **Diffusion** ([4-performance/diffusion/](4-performance/diffusion))
 - [ ] 8. FLUX.2 GPU: Experiment 3 (production-shape GEMM ladder) and the `DoubleBlockGpu` row-offset
    audit; a true quantized GEMM (the `VulkanMatMulPath` "Path 2" seam is not implemented; it would
-   help FLUX.1 too). [093](4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
+   help FLUX.1 too). [Part 3 (FLUX.2)](4-performance/diffusion/diffusion-performance.md#part-3-flux2-double-block-plan).
 - [ ] 9. FLUX.1 DiT gap to sd.cpp: 132.0 s vs the 99.8 s target (~1.32x) since the 2026-09-25 flash
    attention:
-   [069](4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md), Phase 6 of
-   [094](4-performance/diffusion/094-diffusion-performance-plan.md).
+   [Part 2 (FLUX.1 handoff)](4-performance/diffusion/diffusion-performance.md#part-2-flux1-vulkan-gemm-handoff), Phase 6 of
+   [Part 1 (umbrella)](4-performance/diffusion/diffusion-performance.md#part-1-umbrella-plan).
 - [ ] 10. HunyuanVideo: blocks are compute-bound at ~42% of the iGPU's fp32 peak (the GEMM kernel is the
     lever); the VAE mid-block causal attention is still scalar (measure its share first).
-- [ ] 11. Cross-model DRY and perf-doc consistency: Phase 9 of [094](4-performance/diffusion/094-diffusion-performance-plan.md).
+- [ ] 11. Cross-model DRY and perf-doc consistency: Phase 9 of [Part 1 (umbrella)](4-performance/diffusion/diffusion-performance.md#part-1-umbrella-plan).
 - [ ] 12. LTX-Video has no C++ comparison yet (sd.cpp's path for it is blocked).
 
 **Audio** ([4-performance/audio/](4-performance/audio))

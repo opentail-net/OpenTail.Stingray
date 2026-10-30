@@ -16,7 +16,7 @@
 
 ## Where the rules came from
 
-- Rule 1: the `dotnet test` contamination incident, recorded in the FLUX handoff (`4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md`) and the TTS/ASR residency docs.
+- Rule 1: the `dotnet test` contamination incident, recorded in the diffusion owner file, Part 2 (`4-performance/diffusion/diffusion-performance.md`) and the TTS/ASR residency docs.
 - Rules 2 and 7: [../../docs/4-performance/2026-10-30-performance-pickup.md](../4-performance/2026-10-30-performance-pickup.md) ("How to measure") and the CPU quantised GEMM survey.
 - Rule 6: the numerics method, [numerics-investigation-method.md](numerics-investigation-method.md).
 - Rule 9: CLAUDE.md rule 13.
