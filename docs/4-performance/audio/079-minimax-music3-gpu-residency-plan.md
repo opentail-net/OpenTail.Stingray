@@ -107,9 +107,7 @@ docs.
 - **Never remove or revert existing correct code.**
 - **Ask before committing** — recent work in adjacent areas was committed with explicit
   authorization each time; confirm current expectations rather than assume standing permission.
-- **Run one thing at a time, alone** — check `Get-CimInstance Win32_OperatingSystem | Select
-  FreePhysicalMemory` (PowerShell) before a benchmark; a real incident earlier this session came
-  from an unrelated concurrent `dotnet test` run contaminating a timing measurement.
+- **Measurement rules:** see [../../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md) (one thing at a time, memory check before benchmarks).
 - **Use small synthetic-scale tests for iteration** — a full real run currently costs ~56 minutes
   (CPU), far too slow to iterate against directly.
 

@@ -1,7 +1,7 @@
 # Workstream: Gemma
 
 **Owner:** this file. **Last verified:** 2026-10-30.
-**Evidence:** [../4-performance/2026-10-11-llm-reply-sanity-check.md](../4-performance/2026-10-11-llm-reply-sanity-check.md) (the Gemma 2 fix record). **Card:** [../models/gemma.md](../models/gemma.md). **Status row:** [../STATUS.md](../STATUS.md).
+**Evidence:** [../done/2026-10-11-llm-reply-sanity-check.md](../done/2026-10-11-llm-reply-sanity-check.md) (the Gemma 2 fix record). **Card:** [../models/gemma.md](../models/gemma.md). **Status row:** [../STATUS.md](../STATUS.md).
 
 ## Correct state
 

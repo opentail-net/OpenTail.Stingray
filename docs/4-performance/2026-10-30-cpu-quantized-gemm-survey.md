@@ -64,8 +64,7 @@ Both kernels were removed; do not retry this without a new idea about the ALU ch
 3. **VNNI hosts:** a `vpdpbusd` path shortens the chain by one instruction (not testable on this machine).
 4. **Later, separately:** T-MAC-style LUT kernels for the 1-2 bit formats, once those families matter.
 
-Every step follows the CLAUDE.md performance rules: interleaved control/candidate runs, named models end to end,
-output equality or a recorded numerics delta, and the PerformanceLeague row.
+Every step follows the [measurement rules](../reference/performance-measurement-rules.md).
 
 ## Not verified here
 

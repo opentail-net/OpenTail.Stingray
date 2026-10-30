@@ -89,10 +89,7 @@ of seconds.
 - **Do not commit without checking with the user first** — this is still someone else's in-flight
   work with fixes layered on top by this session; nothing has been committed to git as of this
   handoff.
-- **Run one thing at a time, alone** — a prior session incident found that an unrelated concurrent
-  `dotnet test` run caused severe memory pressure (~24GB) that both slowed and contaminated a timing
-  run. Check `Get-CimInstance Win32_OperatingSystem | Select FreePhysicalMemory` (PowerShell) is
-  healthy before starting any benchmark, and don't run other heavy processes concurrently with one.
+- **Measurement rules:** see [../../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md) (one thing at a time, memory check before benchmarks).
 - **The existing profiling flags are real and already wired**: `STINGRAY_PROFILE_GPU_SPLIT=1`
   (submit+GPU-exec+fence-wait totals, `VulkanBackend.cs`) and `STINGRAY_PROFILE_DECODE=1`
   (CLIP/T5/setup/DiT-loop/VAE stage split, `ImagePipeline.cs`) are both wired into the FLUX CLI path

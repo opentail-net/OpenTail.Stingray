@@ -226,9 +226,7 @@ first" framing was half wrong.
 - **Never remove or revert existing correct code.**
 - **Ask before committing** — confirm current expectations before committing, don't assume
   standing permission carries forward indefinitely.
-- **Run one thing at a time, alone** — check `Get-CimInstance Win32_OperatingSystem | Select
-  FreePhysicalMemory` (PowerShell) before a benchmark; a real incident earlier this session came
-  from an unrelated concurrent `dotnet test` run contaminating a timing measurement.
+- **Measurement rules:** see [../../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md) (one thing at a time, memory check before benchmarks).
 - **A green "RealWeights" test does not mean it ran against real weights** — per this project's own
   `CLAUDE.md` rule 12, many `*RealWeights*` tests silently no-op (`if (modelPath is null) return;`)
   when a checkpoint isn't present locally, reporting "passed" in ~0.1-0.4s. Check the real per-test

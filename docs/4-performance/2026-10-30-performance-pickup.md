@@ -26,6 +26,8 @@ Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / referen
 
 ## Remaining gaps, ranked (latest measurement for each)
 
+The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [diffusion/094](diffusion/094-diffusion-performance-plan.md) (with [069](diffusion/069-flux-vulkan-gemm-perf-handoff.md) and [093](diffusion/093-flux2-gpu-performance-optimization-plan.md) for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Rows 8, 9, 11 and 12 have no owning plan yet; their evidence is in PerformanceLeague.md.
+
 | # | Area | Workload | Ratio | Measured | Where the time goes / first step |
 |---|---|---|---:|---|---|
 | 1 | Image diffusion, Vulkan iGPU vs `sd-cli` | SD 1.5 end to end (512x512, 20 steps) | 0.47x (2.14x slower) | 2026-09-16 | UNet denoise GEMMs. sd.cpp uses quantised matmul and wave ops, we use FP16/FP32 tiled GEMMs. **Biggest single lever across all pipelines.** |
@@ -72,15 +74,9 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 
 ## How to measure (rules that held up)
 
-- Interleave control and candidate runs (A, B, A, B), at least 2-3 each. Machine load moved llama.cpp's own numbers by
-  15-20% between sessions on 2026-10-30, so compare within one session only.
-- Save the control build first (copy `src/OpenTail.Stingray.Cli/bin/Release/net10.0` aside), then rebuild the candidate.
-- Check output equality (greedy, `--repeat-penalty 1.0`) for every A/B. If numerics change, measure perplexity
-  token by token (`stingray perplexity -c 1024 --dump-nll`) against `llama-perplexity` on the same text, and compare
-  paired per-token NLL, not just the totals.
+- Measurement rules (one run at a time, interleaved A/B, output equality, named models): see [../reference/performance-measurement-rules.md](../reference/performance-measurement-rules.md).
 - Reference: `tools/llama.cpp` (b10306): `llama-bench -p N -n M -t 8 -ngl 0 -r 2`. Kernel-level comparison against
   ggml's own `vec_dot`: `DOTNET_TieredCompilation=0 tools/kernel-bench-cs/... q4k-dot <tools/llama.cpp dir>`.
 - Profilers: `STINGRAY_PROFILE_PREFILL=1` (CPU prefill stages), `STINGRAY_PROFILE_DECODE=1` (decode stages),
   `STINGRAY_PREFILL_PROFILE=1` (CUDA passes; a different name for the CUDA path).
 - Default CPU thread count is the number of physical cores (8 here), not logical processors.
-- The 2026-10-11 recheck is one run per row (see its header); treat a single-digit-percent difference as noise.

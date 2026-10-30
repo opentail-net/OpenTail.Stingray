@@ -106,7 +106,7 @@ stage timings, as was done for Qwen Image. Notes already gathered for that day:
 - **Upside:** several times faster prefill on those models. **Gate:** teacher-forced logit parity against `llama-server`.
 
 ### Lead 4: MoE decode gap (OLMoE 0.50x)
-- **Evidence:** already investigated in [2026-10-04-moe-decode-gap-investigation.md](2026-10-04-moe-decode-gap-investigation.md);
+- **Evidence:** already investigated in [2026-10-04-moe-decode-gap-investigation.md](../done/2026-10-04-moe-decode-gap-investigation.md);
   that document lists what was tried.
 - **First step:** read it, re-measure, and only reopen if a not-yet-tried idea remains (for example the per-expert Q4_K GEMM
   plan in [2026-10-04-q4k-expert-gemm-plan.md](2026-10-04-q4k-expert-gemm-plan.md)). **Upside:** moderate.

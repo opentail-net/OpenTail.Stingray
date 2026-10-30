@@ -108,7 +108,7 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
-- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) is a separate case: no golden, no local checkpoint, no STATUS row.** See [the sanity-check findings](4-performance/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
+- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) is a separate case: no golden, no local checkpoint, no STATUS row.** See [the sanity-check findings](done/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
 
 ## 2. Model coverage
 
@@ -178,8 +178,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 [4-performance/2026-10-30-performance-pickup.md](4-performance/2026-10-30-performance-pickup.md): ranked remaining gaps,
 what was already tried, untested leads and the measuring rules.
 
-Rules: dispatch proof, interleaved control/candidate samples, named-model end-to-end measurement,
-numerical validation; no single-run result counts. An iGPU loss is not evidence against a GPU path
+Measurement rules: [reference/performance-measurement-rules.md](reference/performance-measurement-rules.md). An iGPU loss is not evidence against a GPU path
 (CLAUDE.md rule 13). Do not reopen the closed Q4_K repacked-GEMM investigation. The cross-model
 sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
