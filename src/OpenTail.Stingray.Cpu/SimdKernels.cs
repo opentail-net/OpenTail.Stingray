@@ -466,6 +466,16 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_CPU_DECODE_VIA_GEMM") == "1";
 
     /// <summary>
+    /// Whether CPU decode runs its projections through the prefill GEMM (Q8_K activations, the repacked Q4_K kernel):
+    /// when <see cref="DecodeViaGemm"/> is set, or automatically when decode has exactly one thread
+    /// (<see cref="CpuThreads"/> = 1). Measured 2026-10-30 (PerformanceLeague, "Decode activation format"): with one thread
+    /// it is 2.3-3x faster than the Q8_KS dots (Mistral-7B 1.7 -> 5.1 t/s, Qwen3-4B 3.6 -> 8.1, level with or above
+    /// llama.cpp) at llama.cpp-level perplexity (+0.9% on Qwen3-4B, +0.35% Mistral-7B, none on SmolLM2). With more threads the
+    /// default stays Q8_KS. Consequence: one-thread decode numerics differ slightly from multi-thread decode.
+    /// </summary>
+    public static bool DecodeUsesGemm => DecodeViaGemm || CpuThreads == 1;
+
+    /// <summary>
     /// Use Q8_K activations (as ggml_vec_dot_q5_K_q8_K does) for every Q5_K matvec in the CPU decode path:
     /// single, dual, 2-input and 4-input dispatch plus the decode attention-output call site, and for Q5_1 matvecs
     /// (Q8_1 activations, <c>ggml_vec_dot_q5_1_q8_1</c>) and the folded MoE expert dot.
