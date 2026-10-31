@@ -429,6 +429,82 @@ public sealed class ExecutionPlannerTests : IDisposable
     }
 
     // Execution-affecting settings the runtime must receive through EngineSettings, never from the process environment.
+    private ExecutionPlan PlanTinyModel(string arch, int? pinnedGpuLayers)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, arch),
+            [$"{arch}.block_count"] = (GgufValueType.UInt32, 4u),
+            [$"{arch}.context_length"] = (GgufValueType.UInt32, 2048u),
+            [$"{arch}.embedding_length"] = (GgufValueType.UInt32, 64u),
+            [$"{arch}.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            [$"{arch}.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            [$"{arch}.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            [$"{arch}.vocab_size"] = (GgufValueType.UInt32, 100u),
+        };
+        if (arch == "gemma2")
+        {
+            metadata["gemma2.attn_logit_softcapping"] = (GgufValueType.Float32, 50f);
+            metadata["gemma2.final_logit_softcapping"] = (GgufValueType.Float32, 30f);
+            metadata["gemma2.attention.sliding_window"] = (GgufValueType.UInt32, 4096u);
+        }
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.2.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.3.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
+        var capabilities = new BackendCapabilities(
+            CudaAvailable: false,
+            VulkanAvailable: true,
+            HardwareProfile: new HardwareProfile(VramBytes: 8L * 1024 * 1024 * 1024, RamBytes: 32L * 1024 * 1024 * 1024, CpuCores: 8,
+                EstPcieBandwidthGBps: 16.0, HasAvx512: false),
+            VulkanDeviceName: "Simulated Vulkan GPU",
+            RecommendedThreadCount: 8);
+        return ExecutionPlanner.Plan(desc, new ExecutionRequest
+        {
+            Goal = "balanced", PinnedContextSize = 1024, PinnedKvDtype = "fp32", PinnedGpuLayers = pinnedGpuLayers,
+        }, capabilities);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public void CpuOnlyArchitecture_WithGpuLayersRequested_RunsOnTheCpu_AndTheWarningSaysWhy(int pinnedLayers)
+    {
+        var plan = PlanTinyModel("gemma2", pinnedLayers);
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.Equal(0, plan.GpuLayers);
+        string warning = Assert.Single(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+        Assert.Contains("gemma2", warning);
+        Assert.Contains("softcapping", warning);
+        Assert.Contains($"({pinnedLayers})", warning);
+    }
+
+    [Fact]
+    public void CpuOnlyArchitecture_WithoutAGpuRequest_RunsOnTheCpuWithoutAWarning()
+    {
+        var plan = PlanTinyModel("gemma2", pinnedGpuLayers: null);
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.DoesNotContain(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GpuCapableArchitecture_WithGpuLayersRequested_StillUsesTheGpu_WithoutThatWarning()
+    {
+        var plan = PlanTinyModel("llama", pinnedGpuLayers: -1);
+
+        Assert.Equal("vulkan", plan.Backend);
+        Assert.Equal(4, plan.GpuLayers);
+        Assert.DoesNotContain(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+    }
+
     private static readonly string[] PolicyEnvVars =
     [
         "STINGRAY_KV_DTYPE", "STINGRAY_KV_STORE", "STINGRAY_KV_BF16_MIN_TOKENS",
