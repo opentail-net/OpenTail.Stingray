@@ -241,22 +241,24 @@ public static class AnthropicEndpoints
         var msgId = $"msg_{Guid.NewGuid():N}";
         var modelId = engine.ModelId;
 
+        string[]? stops = req.StopSequences is { Length: > 0 } configuredStops ? configuredStops : null;
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId);
+            await HandleStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, stops);
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, req.OpentailTiming == true);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, req.OpentailTiming == true, stops);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId,
-        bool includeTiming = false)
+        bool includeTiming = false, string[]? stops = null)
     {
         using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         var thinkingSb = new StringBuilder();
         var textSb = new StringBuilder();
         int totalOutputTokens = 0;
@@ -265,7 +267,7 @@ public static class AnthropicEndpoints
 
         try
         {
-            await foreach (var chunk in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var chunk in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 if (chunk.Kind == GenerateChunkKind.Usage)
                 {
@@ -333,13 +335,16 @@ public static class AnthropicEndpoints
         // A trailing unterminated tool call was surfaced as text (not a tool_use block); report
         // max_tokens so the client sees it was cut off. Mirrors the streaming path.
         var stopReason = DetermineStopReason(toolCalls.Count > 0, truncatedCall, truncatedByMaxTokens);
+        string? matchedStop = null;
+        if (stopReason == "end_turn" && stopMatch.Matched is not null) { stopReason = "stop_sequence"; matchedStop = stopMatch.Matched; }
 
         var response = new AnthropicMessageResponse(
             msgId, "message", "assistant",
             contentList.ToArray(),
             modelId, stopReason,
             new AUsage(promptTokens, totalOutputTokens),
-            includeTiming ? OpenTailResponseTiming.From(timing) : null);
+            includeTiming ? OpenTailResponseTiming.From(timing) : null,
+            matchedStop);
 
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(
@@ -349,9 +354,10 @@ public static class AnthropicEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId)
+        string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId, string[]? stops = null)
     {
         using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -525,7 +531,7 @@ public static class AnthropicEndpoints
         bool truncatedByMaxTokens = false;
         try
         {
-            await foreach (var chunk in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var chunk in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 // Out-of-band usage chunk (issue #150): not a generated token. Capture the
                 // prompt-token count for the terminal message_delta usage and skip the rest of
@@ -659,8 +665,10 @@ public static class AnthropicEndpoints
 
         // message_delta
         var stopReason = DetermineStopReason(hasToolCalls, truncatedToolCall, truncatedByMaxTokens);
+        string? matchedStop = null;
+        if (stopReason == "end_turn" && stopMatch.Matched is not null) { stopReason = "stop_sequence"; matchedStop = stopMatch.Matched; }
         var msgDelta = new AMessageDeltaEvent("message_delta",
-            new AMessageDelta(stopReason, null), new AUsage(promptTokens, outputTokens));
+            new AMessageDelta(stopReason, matchedStop), new AUsage(promptTokens, outputTokens));
         await WriteAnthropicEvent(ctx.Response, "message_delta",
             JsonSerializer.Serialize(msgDelta, OpenTailStingrayJsonContext.Default.AMessageDeltaEvent));
 
@@ -1067,7 +1075,10 @@ public sealed record AnthropicMessageRequest(
     // Skills (e.g. fetched client-side from a registry such as skills.sh) folded into this
     // request before rendering: each skill's Instructions prepend to `system`, and its Tools
     // merge into the effective declared tools alongside `tools` — see ApplySkills. docs/051.
-    WireSkill[]? Skills = null);
+    WireSkill[]? Skills = null,
+    // Custom stop strings (wire name stop_sequences). Generation is cut before the first match and cancelled; stop_reason becomes
+    // "stop_sequence" and stop_sequence carries the string that matched.
+    string[]? StopSequences = null);
 
 public sealed record AnthropicThinking(string? Type, int? BudgetTokens);
 
@@ -1098,7 +1109,8 @@ public sealed record AnthropicMessageResponse(
     string Model,
     string StopReason,
     AUsage Usage,
-    OpenTailResponseTiming? OpentailTiming = null);
+    OpenTailResponseTiming? OpentailTiming = null,
+    string? StopSequence = null);
 
 /// <summary>
 /// Heterogeneous content block — covers <c>text</c>, <c>thinking</c>, and <c>tool_use</c>
