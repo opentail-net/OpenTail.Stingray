@@ -55,7 +55,7 @@ public sealed class RuntimeInstance : IDisposable
     /// Strictly validates plan invariants, backend operational status, and architecture admission.
     /// Never reads execution policy from <see cref="Model.Parameters"/>.
     /// </summary>
-    public static RuntimeInstance Create(ExecutionPlan plan, Model model)
+    public static RuntimeInstance Create(ExecutionPlan plan, Model model, IExecutionTurnGate? turnGate = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         long createStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -239,7 +239,7 @@ public sealed class RuntimeInstance : IDisposable
                         $"Continuous batching planned but forward pass '{forwardPass.GetType().Name}' does not implement IBatchedForwardPass.", plan);
                 }
                 int batchSize = plan.Batching.MaxBatchSize > 0 ? plan.Batching.MaxBatchSize : 8;
-                engine = new ContinuousBatchingEngine(batchedPass, tokenizer, model.Architecture, batchSize, thinkTokenId, endThinkTokenId);
+                engine = new ContinuousBatchingEngine(batchedPass, tokenizer, model.Architecture, batchSize, thinkTokenId, endThinkTokenId, turnGate: turnGate);
             }
             else
             {

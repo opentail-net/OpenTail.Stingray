@@ -20,7 +20,7 @@ public static class InferenceEngineLoader
     /// Constructs an inference engine directly from an immutable <see cref="ExecutionPlan"/> (§5.3 of plan).
     /// Guarantees that runtime execution consumes the plan rather than rediscovering execution policy.
     /// </summary>
-    public static LoadedEngine LoadFromPlan(ExecutionPlan plan, string? sessionStorageDirectory = null)
+    public static LoadedEngine LoadFromPlan(ExecutionPlan plan, string? sessionStorageDirectory = null, IExecutionTurnGate? turnGate = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var detectedFormat = DetectModelFormat(plan.ModelPath);
@@ -44,7 +44,7 @@ public static class InferenceEngineLoader
             GpuLayerCount = plan.GpuLayers
         });
 
-        var instance = RuntimeInstance.Create(plan, model);
+        var instance = RuntimeInstance.Create(plan, model, turnGate);
 
         HotSessionRuntime? sessionRuntime = null;
         ColdSessionRuntime? coldSessionRuntime = null;
@@ -192,7 +192,7 @@ public static class InferenceEngineLoader
         };
 
         var plan = ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
-        return LoadFromPlan(plan, opts.SessionStorageDirectory);
+        return LoadFromPlan(plan, opts.SessionStorageDirectory, opts.ExecutionTurnGate);
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
