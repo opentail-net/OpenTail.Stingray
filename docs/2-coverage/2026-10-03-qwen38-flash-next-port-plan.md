@@ -114,24 +114,32 @@ The initial structural port, semantic implementations, and synthetic fixtures ar
 ---
 
 ### Phase 2 — PLE Subsystem Completion
+
+Status for these phases is in the summary matrix above (rows A to P), not in these sections.
 *Objective: Replace the synthetic token-embedding feed in `ExecutePle` with the genuine n-gram hash row gather from the lazy PLE table.*
 
 
 ---
 
 ### Phase 3 — QSA RoPE (Two-Sided Rotary Application)
+
+Status for these phases is in the summary matrix above (rows A to P), not in these sections.
 *Objective: Implement the full 4-section IMRoPE geometry across both the indexer and the main attention paths.*
 
 
 ---
 
 ### Phase 4 — QSA Indexer & K-Pool Block Selection
+
+Status for these phases is in the summary matrix above (rows A to P), not in these sections.
 *Objective: Implement raw indexer-K caching, block pooling, multi-head ReLU scoring, top-k pool selection with tail preservation, and sparse attention masking.*
 
 
 ---
 
 ### Phase 5 — Integration, Guard Removal & Synthetic Parity
+
+Status for phases 2 to 5 is in the summary matrix above (rows A to P), not in these sections.
 
 ---
 

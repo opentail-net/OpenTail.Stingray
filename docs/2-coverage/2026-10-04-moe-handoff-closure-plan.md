@@ -78,7 +78,7 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 ## Tracking
 
-Update the coverage table in the section "Family coverage table" below after each family, and keep this checklist:
+Update the coverage table in the section "Family coverage table" below after each family.
 
 
 Realistic total for 1-3: about a week. 4 and 5 depend on disk and on whether they are wanted.

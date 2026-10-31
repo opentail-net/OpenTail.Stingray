@@ -10,8 +10,8 @@ sidecar process — the engine itself is managed .NET 10 code that runs in your 
 NativeAOT-publishes to a single binary.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
-[![NativeAOT](https://img.shields.io/badge/NativeAOT-ready-green)]()
+![.NET 10](https://img.shields.io/badge/.NET-10-blue)
+![NativeAOT](https://img.shields.io/badge/NativeAOT-ready-green)
 [![NuGet](https://img.shields.io/nuget/v/OpenTail.Stingray.svg)](https://www.nuget.org/packages/OpenTail.Stingray)
 
 > **Built by [opentail.net](https://opentail.net)**

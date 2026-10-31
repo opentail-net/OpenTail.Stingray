@@ -67,6 +67,7 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
 
 ## 3. Done (all on the Vulkan hybrid path, `-g N` on a MoE model)
 
+The decode fix and the expert-cache correctness work are measured in section 1, and the expert warm-up in the batched plan. The completed-items list is archived in [done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md](../done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md).
 
 ## 4. Acceptance matrix (SharpMind's, adapted to experts)
 

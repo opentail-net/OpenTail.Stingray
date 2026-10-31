@@ -145,8 +145,8 @@ Rules for the awkward cases: a cancelled or disconnected request records outcome
 
 **Metrics: Engine (library, so CLI and embedders benefit).** Phase 1 covers model load, prefill, decode, token counts and outcome only; the other rows are Phase 4 or later.
 
-| Instrument | Type, unit | Attributes |
-|---|---|---|
+| Instrument | Type, unit | Attributes | Meaning |
+|---|---|---|---|
 | `opentail.engine.prefill.duration`, `opentail.engine.prefill.tokens` | histogram, s and `{token}` | model, backend | Prompt-processing time and input tokens. Prefill throughput = input tokens / prefill time |
 | `opentail.engine.decode.duration`, `opentail.engine.decode.tokens` | histogram, s and `{token}` | model, backend | Generation time and output tokens. Decode throughput = output tokens / decode time |
 | `opentail.engine.model.load.duration` | histogram, s | model, backend |

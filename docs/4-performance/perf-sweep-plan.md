@@ -337,6 +337,7 @@ ones.
 
 ## Phase 3 — Small-model decode weakness (SmolLM2/Qwen2.5, 0.125x-0.31x at 135M-500M)
 
+Open. The blanket threading fix was reverted (cause 5 above); the spin-then-park pool result and the next steps are in the [pickup doc](2026-10-30-performance-pickup.md), row 7.
 
 ## Phase 2 — Qwen3.6 hybrid-GDN family (0.05x-0.17x across 27B/35B/9B size points)
 
