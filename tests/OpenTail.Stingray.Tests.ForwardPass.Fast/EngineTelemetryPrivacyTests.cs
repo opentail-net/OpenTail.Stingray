@@ -75,6 +75,23 @@ public sealed class EngineTelemetryPrivacyTests
     [Fact]
     public async Task APromptContainingACanary_NeverAppearsInAnyMetricOrSpan_OfEitherEngine()
     {
+        string[] seen = await CaptureBothEngines();
+        // Not vacuous: both engines and the load really did emit telemetry.
+        Assert.Contains(seen, s => s.StartsWith("instrument=opentail.engine.requests", StringComparison.Ordinal));
+        Assert.Contains(seen, s => s.StartsWith("span name=opentail.engine.generate", StringComparison.Ordinal));
+        Assert.True(seen.Length > 30, $"only {seen.Length} telemetry strings captured");
+
+        Assert.DoesNotContain(seen, s => s.Contains(Canary, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(seen, s => s.Contains("canary", StringComparison.OrdinalIgnoreCase));
+        // Paths and user directories never appear either.
+        Assert.DoesNotContain(seen, s => s.Contains(PathCanary, StringComparison.OrdinalIgnoreCase)
+                                         || s.Contains(".gguf", StringComparison.OrdinalIgnoreCase)
+                                         || s.Contains(@"C:\", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Runs the canary scenario through both engines and the load span; returns every captured telemetry string.</summary>
+    private static async Task<string[]> CaptureBothEngines()
+    {
         var captured = new List<string>();
         using var meters = ListenToEverything(captured);
         using var spans = ListenToSpans(captured);
@@ -93,18 +110,39 @@ public sealed class EngineTelemetryPrivacyTests
         using (var load = EngineTelemetry.StartModelLoad())
             EngineTelemetry.RecordModelLoad(load.Activity, "llama", "ForwardPass", EngineTelemetry.OutcomeSuccess, 0.5);
 
-        string[] seen;
-        lock (captured) seen = [.. captured];
-        // Not vacuous: both engines and the load really did emit telemetry.
-        Assert.Contains(seen, s => s.StartsWith("instrument=opentail.engine.requests", StringComparison.Ordinal));
-        Assert.Contains(seen, s => s.StartsWith("span name=opentail.engine.generate", StringComparison.Ordinal));
-        Assert.True(seen.Length > 30, $"only {seen.Length} telemetry strings captured");
+        lock (captured) return [.. captured];
+    }
 
-        Assert.DoesNotContain(seen, s => s.Contains(Canary, StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(seen, s => s.Contains("canary", StringComparison.OrdinalIgnoreCase));
-        // Paths and user directories never appear either.
-        Assert.DoesNotContain(seen, s => s.Contains(PathCanary, StringComparison.OrdinalIgnoreCase)
-                                         || s.Contains(".gguf", StringComparison.OrdinalIgnoreCase)
-                                         || s.Contains(@"C:\", StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Plan section 7: every attribute KEY on every metric, span, span event and span link is on the closed allow-list.
+    /// The per-instrument tests check keys one instrument at a time. This one reads every key from the same capture as the
+    /// canary test, so a key added anywhere in engine telemetry fails here until it is reviewed.
+    /// </summary>
+    [Fact]
+    public async Task EveryEmittedAttributeKey_IsOnTheSection7AllowList()
+    {
+        string[] seen = await CaptureBothEngines();
+        string[] keys = seen.Select(AttributeKeyOf).Where(k => k is not null).Select(k => k!).Distinct(StringComparer.Ordinal).ToArray();
+
+        // Not vacuous: the scenario really produced attribute keys.
+        Assert.True(keys.Length >= 3, $"only {keys.Length} attribute keys captured");
+
+        string[] unexpected = keys.Where(k => !TelemetryAttributePolicy.AllowedAttributeKeys.Contains(k)).Order(StringComparer.Ordinal).ToArray();
+        Assert.True(unexpected.Length == 0,
+            "attribute keys outside the section 7 allow-list (review, then add to TelemetryAttributePolicy): " + string.Join(", ", unexpected));
+    }
+
+    /// <summary>The attribute key of a captured <c>metric tag key=</c>, <c>span tag key=</c>, <c>span event tag key=</c> or <c>span link tag=</c> string; null for any other string.</summary>
+    private static string? AttributeKeyOf(string captured)
+    {
+        string? rest =
+            captured.StartsWith("metric tag key=", StringComparison.Ordinal) ? captured["metric tag key=".Length..] :
+            captured.StartsWith("span tag key=", StringComparison.Ordinal) ? captured["span tag key=".Length..] :
+            captured.StartsWith("span event tag key=", StringComparison.Ordinal) ? captured["span event tag key=".Length..] :
+            captured.StartsWith("span link tag=", StringComparison.Ordinal) ? captured["span link tag=".Length..] :
+            null;
+        if (rest is null) return null;
+        int eq = rest.IndexOf('=');   // link tags are key=value; the key ends at the first '='
+        return eq >= 0 ? rest[..eq] : rest;
     }
 }

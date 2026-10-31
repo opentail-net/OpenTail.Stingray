@@ -32,7 +32,7 @@ Each item ends in its own merged PR, `Tests.Core` run before every merge. A stal
 ## Checklist
 
 Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
-or only partly answered stays unticked, with a note. Last checked 2026-10-31 18:00 against `main` at `d71c8622` (PR 76 merged). Items added by the other session: the P5 and P8 specs (PR 76).
+or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:15 against `main` at `8d3e591a` plus PRs 78 to 82 (merged by the delegate session; PR 81 open). I read each PR description and ran the P9 self-test; the CPU-safe CI suites exercise the rest on this branch.
 
 - [x] Owner decisions recorded as taken provisionally (PR 72)
 - [x] Plan 2 written and linked from `docs/00-current-work.md` (PR 72)
@@ -61,18 +61,21 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 18:
   - [ ] Measure the `startPos > 0` cost before building anything
   - [ ] Receipt text updated
 - [ ] **P7** Documented request parameters audited (unknown JSON properties stay accepted)
-- [ ] **P8** HTTP-disconnect cancellation, end to end
-  - [ ] Check which existing tests already cover it
+  - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
+  - [ ] Each silently dropped field (`stop`, `seed`, `n`, `max_completion_tokens`, `stop_sequences`, Anthropic `tool_choice`) implemented, rejected with a 400, or documented; the audit leaves these decisions open
+- [ ] **P8** HTTP-disconnect cancellation, end to end (PR 81 is open and partial: disconnect, cancellation reaching the engine, slot freed and three mutation checks are covered; releasing the runtime handle is not)
+  - [x] Check which existing tests already cover it (done in PR 81)
   - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
   - [ ] Mutation-checked
 - [ ] **P4** Fair gate measured (two resident models, interleaved, 3 runs; idle machine, so not while another agent is running)
-- [ ] **P5** OpenTelemetry acceptance
-  - [ ] Allow-list test over every instrument and span
-  - [ ] Server-side prompt canary through the HTTP endpoints
-- [ ] **P9** Reproducibility helper used by the benchmark scripts
-- [ ] **P10** `stingray config --show` (narrow), with a redaction test
+- [x] **P5** OpenTelemetry acceptance (PR 80; limit: the fake engine emits no tool calls, so tool-call arguments are not covered)
+  - [x] Allow-list test over every instrument and span
+  - [x] Server-side prompt canary through the HTTP endpoints
+- [x] **P9** Reproducibility helper used by the benchmark scripts (PR 78; self-test run again here: all checks pass)
+- [x] **P10** `stingray config --show` (narrow), with a redaction test (PR 79; source is environment only and the output says so)
 - [ ] Plan 3 written and a final report listing only owner decisions and blocked items
 - [ ] Memory note `project_session_2026_10_31_loop_state.md` updated to the final state
+
 ## Progress
 
 ### P1 - first-decode warm-up after a handoff: done (2026-10-31)

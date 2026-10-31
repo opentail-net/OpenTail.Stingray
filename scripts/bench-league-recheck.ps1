@@ -35,6 +35,7 @@ param(
     [double]$MaxGB = 0,                           # -Set all: skip checkpoints larger than this; 0 = no cap (the engine streams / splits oversized checkpoints)
     [int]$TimeoutMinutes = 25,                    # per run
     [switch]$Resume,
+    [switch]$HashModels,                          # SHA-256 each model once per experiment (slow for 12 GB files); default: size and modified time only
     [string]$OutFile = ''
 )
 
@@ -139,8 +140,11 @@ function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]
     return @{ ok = $false; kind = 'UNSUPPORTED'; why = ($line.Trim() -replace '\|', '/' -replace '\s+', ' ') }
 }
 
-$commit = (git rev-parse --short HEAD 2>$null)
-$dirty = if ((git status --porcelain 2>$null | Measure-Object).Count -gt 0) { '+dirty' } else { '' }
+. (Join-Path $PSScriptRoot 'lib/Repro.ps1')
+$reproBlock = (Get-ReproHeader -RepoRoot $repo -BinaryPath $exe -Backend ($Backends -join ' + ') `
+    -ModelPaths @($work | Where-Object { $_.path } | ForEach-Object { $_.path }) `
+    -Settings @{ scenarios = ($Scenarios -join ','); cpuLong = [bool]$CpuLong; timeoutMin = $TimeoutMinutes } `
+    -RunCount $Runs -Hash:$HashModels -CacheFile "$OutFile.hashes.json") -join "`n"
 $started = Get-Date
 $done = @{}
 if ($Resume -and (Test-Path $OutFile)) {
@@ -149,7 +153,9 @@ if ($Resume -and (Test-Path $OutFile)) {
 @"
 # League recheck, our side (C#), $($started.ToString('yyyy-MM-dd HH:mm')), set '$Set'
 
-Commit ``$commit$dirty``; engine defaults (no env overrides); best of $Runs run(s) per row; scenarios: $($Scenarios -join ', ') (short ~15-40 tok / 500 ~490-580 tok / 2k ~2,000 tok; SnapKV auto-budget 2048 applies); per-run timeout $TimeoutMinutes min$(if ($Set -eq 'all' -and $MaxGB -gt 0) { "; checkpoints over $MaxGB GB skipped" }).
+$reproBlock
+
+Engine defaults (no env overrides); best of $Runs run(s) per row; scenarios: $($Scenarios -join ', ') (short ~15-40 tok / 500 ~490-580 tok / 2k ~2,000 tok; SnapKV auto-budget 2048 applies); per-run timeout $TimeoutMinutes min$(if ($Set -eq 'all' -and $MaxGB -gt 0) { "; checkpoints over $MaxGB GB skipped" }).
 Machine: Ryzen 7 5700G + integrated Radeon (iGPU; rule 13: do not generalise to discrete GPUs). 63 GB RAM.
 
 | Model | GB | Arch | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) |
