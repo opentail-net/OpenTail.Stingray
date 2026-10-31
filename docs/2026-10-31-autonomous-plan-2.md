@@ -62,7 +62,10 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:
   - [ ] Receipt text updated
 - [ ] **P7** Documented request parameters audited (unknown JSON properties stay accepted)
   - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
-  - [ ] Each silently dropped field (`stop`, `seed`, `n`, `max_completion_tokens`, `stop_sequences`, Anthropic `tool_choice`) implemented, rejected with a 400, or documented; the audit leaves these decisions open
+  - [x] P7b: `max_completion_tokens`, `seed`, `top_k` implemented; `n` other than 1 and out-of-range sampling values refused with a 400 naming the field; `parallel_tool_calls`, `user` and `metadata` documented as intentionally ignored (30 tests, mutation-checked)
+  - [ ] P7c: `stop` and `stop_sequences` (text-level matching with holdback in the OpenAI and Anthropic streaming and non-streaming handlers; generation must stop, not just the text)
+  - [ ] P7d: `stream_options.include_usage` (final usage chunk) and Anthropic `tool_choice`
+  - [ ] P7e: error bodies in the OpenAI nested `error` envelope and the Anthropic `type: error` envelope (this server returns a flat body today)
 - [ ] **P8** HTTP-disconnect cancellation, end to end (PR 81 is open and partial: disconnect, cancellation reaching the engine, slot freed and three mutation checks are covered; releasing the runtime handle is not)
   - [x] Check which existing tests already cover it (done in PR 81)
   - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
