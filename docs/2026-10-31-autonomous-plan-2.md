@@ -32,7 +32,7 @@ Each item ends in its own merged PR, `Tests.Core` run before every merge. A stal
 ## Checklist
 
 Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
-or only partly answered stays unticked, with a note. Last checked 2026-10-31 17:30 against `main` at `b9b00e1b` plus PR 76 (open).
+or only partly answered stays unticked, with a note. Last checked 2026-10-31 18:00 against `main` at `d71c8622` (PR 76 merged). Items added by the other session: the P5 and P8 specs (PR 76).
 
 - [x] Owner decisions recorded as taken provisionally (PR 72)
 - [x] Plan 2 written and linked from `docs/00-current-work.md` (PR 72)
@@ -40,7 +40,7 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 17:
 - [ ] **P1b** Housekeeping and the Qwen3-Coder row (two of three sub-items done; the third continues as P1c)
   - [x] `LtxVaeNoiseIsolationTest` writes to a temp directory (PR 75)
   - [x] `SimdKernelsLegacyQ8_1Tests` timing test allows three attempts, mutation-checked (PR 75)
-  - [ ] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds and prefetch refuted (in PR 76, not merged); the cause is **not** established, so this stays open and continues as P1c
+  - [ ] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds and prefetch refuted (merged, PR 76); the cause is **not** established, so this stays open and continues as P1c
 - [ ] **P1c** Find the NaN in hybrid MoE decode and decide about the 0.99 bar for MoE rows
   - [ ] Capture which side returns non-finite logits in the control test
   - [ ] Test the slot-cache candidates (GPU-or-CPU expert choice; lazy-load race)
