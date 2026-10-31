@@ -6,7 +6,7 @@ when an item closes, delete its line here, record the evidence in the model's
 Working notes, measurements and histories go in the item's detail doc or in `done/`, never here.
 
 Latest session report: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). The plan being worked
-from it (open items, each with a box): [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md); finished items and their evidence: [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). The three
+from it (open items, each with a box): [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md); finished items and their evidence: [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md); what remains after it: [plan 3](2026-10-31-autonomous-plan-3.md). The three
 owner decisions were taken provisionally; they are recorded at the end of the session report.
 
 The previous version of this file (a working log up to 2026-09-27, including every fixed bug and
