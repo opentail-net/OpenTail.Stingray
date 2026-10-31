@@ -166,16 +166,16 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CONFIG_DIR` | stable | Overrides per-user configuration directory containing favourites.json. |
-| `STINGRAY_DSPARK_TIMING` | experimental | |
-| `STINGRAY_RAW_PROMPT` | expert | |
-| `STINGRAY_SDCPP` | expert | |
-| `STINGRAY_SPEC_SAMPLE` | experimental | |
+| `STINGRAY_DSPARK_TIMING` | experimental | Diagnostic (`=1`): print the DSpark block timing split (host time, GPU wait including the D2H download sync, and the host Markov/confidence head chain) from the speculative run command. |
+| `STINGRAY_RAW_PROMPT` | expert | `=1` bypasses the chat template and sends the prompt as raw text (llama.cpp `--no-conversation` parity testing). Not for normal use. |
+| `STINGRAY_SDCPP` | expert | Path to the `sd-cli` / `sd` executable used by `image` when no explicit path is given and the file exists. Otherwise `tools`, `tools/sd` and the working or app directory are searched. |
+| `STINGRAY_SPEC_SAMPLE` | experimental | `=0` disables distribution-preserving sampled speculative decoding (temperature above 0 on the model-draft path); greedy speculation is unaffected. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Core, OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MTP_BATCH_MAX` | expert | |
+| `STINGRAY_MTP_BATCH_MAX` | expert | Integer clamped to 2..8, default 4. Maximum tokens in one batched MTP verify (speculation settings; also used by the CUDA hybrid-GDN pass). |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu
 
@@ -206,11 +206,11 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_DISABLE_MTP` | experimental | |
-| `STINGRAY_DSPARK_MIN_CONFIDENCE` | experimental | |
-| `STINGRAY_DSPARK_VERIFY_LEN` | experimental | |
-| `STINGRAY_MTP_DRAFT_N` | expert | |
-| `STINGRAY_TRACE_MTP` | diagnostic | |
+| `STINGRAY_DISABLE_MTP` | experimental | `=1` turns the native MTP head off (speculation setting `MtpEnabled`, default on). |
+| `STINGRAY_DSPARK_MIN_CONFIDENCE` | experimental | DSpark confidence floor in [0, 1]. Resolution order: `--dspark-min-confidence` flag, then this variable, then 0 (disabled: verify the whole block). |
+| `STINGRAY_DSPARK_VERIFY_LEN` | experimental | DSpark per-step verify-length cap (positive integer). Resolution order: `--dspark-verify-len` flag, then this variable, then 0 (uncapped; the confidence trim decides). |
+| `STINGRAY_MTP_DRAFT_N` | expert | MTP draft length (positive integer). Default 3; the CPU hybrid-GDN pass defaults to 1 when neither this variable nor an explicit maximum is set. |
+| `STINGRAY_TRACE_MTP` | diagnostic | Diagnostic (`=1`): print the MTP phase times (draft, verify, commit, in ms) after a speculative run, when drafts were emitted. |
 | `STINGRAY_GC_STATS` | diagnostic | CLI: print GC collections, bytes allocated and total pause at process exit (2026-10-08) |
 | `STINGRAY_EVENTS` | diagnostic | CLI: stream EngineEvents (model loaded, prefill/decode completed, MTP step, GC stats) to stderr as JSON lines (2026-10-08) |
 | `STINGRAY_TELEMETRY` | diagnostic | CLI: attach an in-process listener to the engine `Meter`/`ActivitySource` and print a short instrument report at exit (stderr); needs no collector (2026-10-13; see docs/guides/observability.md) |
@@ -333,7 +333,7 @@ dynamically composed names.
 | `STINGRAY_DECODE_PROFILE` | diagnostic | Diagnostic (`=1`): per-token GPU-trunk versus CPU-MoE time split in the CUDA hybrid-GDN pass (adds a sync after the trunk; negligible perturbation). The trunk:moe ratio shows the decode pole. |
 | `STINGRAY_DECODE_REGIONS` | experimental | |
 | `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | experimental | |
-| `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | |
+| `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | `=1` clears the `BatchVerify` speculation setting (default on). |
 | `STINGRAY_DISABLE_DUAL_Q8` | experimental | |
 | `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | |
 | `STINGRAY_FORCE_CPU_EMBED` | experimental | |
@@ -356,9 +356,9 @@ dynamically composed names.
 | `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_MOE_GPU_ROUTER` | experimental | |
 | `STINGRAY_MOE_THREADS` | experimental | |
-| `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | |
-| `STINGRAY_MTP_MIN_ACCEPT` | experimental | |
-| `STINGRAY_MTP_PROBE_STEPS` | diagnostic | |
+| `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | `=0` disables the batched MoE verify for MTP in the CUDA hybrid-GDN pass. Default on. |
+| `STINGRAY_MTP_MIN_ACCEPT` | experimental | Break-even acceptance for adaptive MTP, a value in [0, 1], default 0.55. The first `STINGRAY_MTP_PROBE_STEPS` steps probe with MTP; if the measured acceptance is below this, the rest of the call uses plain per-token decode (output is unchanged for greedy). `0` means always MTP. |
+| `STINGRAY_MTP_PROBE_STEPS` | diagnostic | Number of probe steps for adaptive MTP (integer of at least 1, default 8). See `STINGRAY_MTP_MIN_ACCEPT`. |
 | `STINGRAY_PER_LAYER_HD_PREFILL` | experimental | |
 | `STINGRAY_PLE_GPU_DEQUANT` | experimental | |
 | `STINGRAY_PREFAULT` | experimental | |
@@ -388,9 +388,9 @@ dynamically composed names.
 | `STINGRAY_Q8_0_Q8K` | experimental | |
 | `STINGRAY_SNAPKV_RECENCY` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
 | `STINGRAY_SNAPKV_WINDOW` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
-| `STINGRAY_SPEC_BATCH_VERIFY` | experimental | |
+| `STINGRAY_SPEC_BATCH_VERIFY` | experimental | `=0` forces the sequential verify fallback in `SpeculativeDecoder` (model-draft and prompt-lookup speculation) even when the target supports batch verify (kill-switch, issue #207). Default on. |
 | `STINGRAY_SPLIT_DECODE_GROUPED` | experimental | |
-| `STINGRAY_TRACE_DSPARK` | diagnostic | |
+| `STINGRAY_TRACE_DSPARK` | diagnostic | Diagnostic (`=1`): print DSpark accepted/emitted draft counts and the acceptance rate after a run. |
 | `STINGRAY_TRACE_LAYERS` | diagnostic | Diagnostic (`=1`): per-layer activation trace in the CUDA hybrid-GDN forward pass. |
 | `STINGRAY_TRACE_NORMS` | diagnostic | Diagnostic (`=1`): per-layer residual L2-norm trace in the CPU forward pass. |
 | `STINGRAY_TRACE_POS` | diagnostic | Diagnostic: restrict the MoE router trace (`STINGRAY_TRACE_ROUTERS`) to one token position `<n>`. Default -1 (every position). |
