@@ -72,6 +72,12 @@ public static class PrefillHandoffFamilies
                 "the other splits of the same checkpoint pass. Not exercised: Llama-3.1-style rope_freqs scaling, LongRoPE, sliding-window llama variants, contexts above 1024. " +
                 "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
                 $"{LlamaArchitecture.Descriptor.Id}|attention.head_count_kv=32"),
+            [(QwenArchitectures.Qwen2.Id, HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests, dense Qwen2.5 (Q/K/V biases, GQA with 2 KV heads) on the Vulkan hybrid (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
+                "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992), " +
+                "Qwen2.5-3B-Instruct Q4_K_M (-g 12: >= 0.9985). Sequential hybrid prefill against the all-CPU pass stays >= 0.998 on the same prompt, so the handoff adds no drift. " +
+                "Not exercised: Qwen2.5-7B (sharded) and 0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",
+                $"{QwenArchitectures.Qwen2.Id}|attention.head_count_kv=2"),
             [("qwen2moe", HandoffPath.VulkanHybrid)] = new(
                 "Goldens/qwen2moe.golden.json (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
                 "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),
