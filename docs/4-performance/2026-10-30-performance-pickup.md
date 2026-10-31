@@ -80,3 +80,17 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 - Profilers: `STINGRAY_PROFILE_PREFILL=1` (CPU prefill stages), `STINGRAY_PROFILE_DECODE=1` (decode stages),
   `STINGRAY_PREFILL_PROFILE=1` (CUDA passes; a different name for the CUDA path).
 - Default CPU thread count is the number of physical cores (8 here), not logical processors.
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code on 2026-10-30. Nothing was measured in this pass.
+
+- **Row 11 (Q5_K off the batched Vulkan trunk) may be stale.** The 22.3 tok/s figure is from 2026-10-11, the same day Path 3 became the default. Path 3's `SgemmQuant` covers Q5_K (leads plan, 2026-10-11 Path 3 entry). Re-measure with `STINGRAY_VULKAN_MM_PATH=3` (the default) before treating this as a gap.
+- **Path 2 is live for Q4_K and Q6_K** (`VulkanBackend.cs` 3177-3183: it returns false for other dtypes, for `nTok > TiledQ4KBn`, and for `cols % 256 != 0`). The Vulkan GEMM doc says Path 2 "declines every shape today". That was true when written and is not true now. Path 3 is still the default, so routing is unchanged.
+- **Lead "two-row Q4_K decode kernel is ~38% slower":** the two-row structure is visible in `SimdKernels.cs` (`MatVecQ4K` uses "dynamically balanced 2-row chunks", as stated in the `MatVecDual` comment near line 1168). I did not verify the bit-identical claim or the 38% figure. The lead's own rule (measure end to end) still applies.
+- **Lead "single-row Q8_K GEMV"** cites `RepackedGemm.GemvQ4K8x8Q8K`. Not checked in this pass.
+- **Row 12 (threshold 19 tokens)** and **rows 8-9** were not re-checked.
+
+**Next checks, in order:** re-measure row 11 on Path 3; A/B the one-row `MatVecQ4K` against the two-row version with the existing equality test; confirm `GemvQ4K8x8Q8K` is wired and cited correctly.

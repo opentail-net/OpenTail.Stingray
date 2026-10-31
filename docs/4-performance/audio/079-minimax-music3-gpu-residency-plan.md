@@ -120,3 +120,16 @@ faster or slower than CPU — report honestly either way, per this session's est
 a real correctness check (numeric parity test, and ideally the by-ear confirmation of the existing
 audio sample this doc flagged as still outstanding). Update `PerformanceLeague.md` only with what
 was actually measured.
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code:
+
+- **The per-matmul GPU hook exists.** `MiniMaxMusic3Transformer.cs` line 50 defines `GetOrCreateGpuWeights(IComputeBackend)`, and `Forward` calls it at lines 150 and 342. That matches the plan's "per-matmul ping-pong" description.
+- **The in-context concatenation is real.** `concatChannels = 2 * inChannels + condDim` gives 2304 (`MiniMaxMusic3Transformer.cs` lines 154 and 850; comment at line 31). This supports the plan's "no cross-attention block" statement.
+
+Not checked: whether `ForwardGpu` or `TransformerBlockGpu` exists (plan step 3). A grep for those names is the next check. The 56-minute CPU baseline and the 489-529 s figures are the doc's own and were not re-run.
+
+Nothing here needs outside research. The open work is the GPU port itself, which needs a real checkpoint and a measured run.

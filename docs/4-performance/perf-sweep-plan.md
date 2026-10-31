@@ -446,3 +446,15 @@ one) or access to a discrete GPU" — batched fusion is the one specific angle N
   re-benchmark showed zero improvement because `tests/OpenTail.Stingray.Tests.Diffusion`'s own DLL
   copy was stale. If a benchmark result looks suspiciously unchanged after a real code fix, check
   `ls -la` timestamps on the test project's referenced DLLs before concluding the fix didn't work.
+
+---
+
+## Research findings (2026-10-30)
+
+Only the Vulkan items below were checked in this pass; the phase rows are unchanged.
+
+- **Phases 4 and 13 (iGPU dispatch overhead):** the subgroup and Path 2 facts in [GR_performance.md](GR_performance.md) apply. The per-dispatch cost premise was not re-measured here. The leads plan's A9 entry measured about 8 us per dependent dispatch plus a barrier, so fusion may not pay (see that plan).
+- **Phase 2 (Qwen3.6 hybrid GDN):** no change. The hybrid decode attention path (`AttentionSplitKvGqa`, leads plan A4) is a Vulkan item and was not verified here.
+- **Phase 6 (Gemma prefill):** the F32-default issue is a policy decision (ADR-0003), not a code gap. No research here changes that classification.
+
+Not checked: the ratios and statuses in the phase list. Those are the sweep's own record.
