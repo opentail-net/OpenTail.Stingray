@@ -623,7 +623,7 @@ background/speculative model preloading. All out of scope here.
    mediated; (2) nothing measures whether sharing a gate improves throughput or latency for two resident models on this machine, so
    `FairModelScheduling` is a fairness guarantee, not a speed claim; (3) a gate covers one compute domain and nothing picks the
    domain automatically, so models on different devices must not share one; (4) there is no starvation guarantee across the
-   admission queue and the gate together beyond each being fair on its own.
+   admission queue and the gate together beyond each being fair on its own. (5) Fairness is per iteration, not per unit of compute time: one long prefill iteration costs far more than a short decode iteration, so a model with long prompts still takes more wall-clock than its turn count suggests. Review fix 2026-10-31: the turn gate's cancellation callback is now registered before a waiter becomes visible to a release (previously a waiter granted in that gap kept an undisposed registration); the two late-race branches are covered by deterministic tests through an internal test seam.
 - [ ] 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*

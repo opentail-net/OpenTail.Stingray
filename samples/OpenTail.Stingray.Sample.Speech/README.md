@@ -21,7 +21,7 @@ This sample demonstrates how to run speech synthesis and speech recognition insi
 You can download the verified default models with SHA-256 integrity using the CLI:
 
 ```bash
-63 MB)~63 MB)
+# 1. Download Piper Lessac medium voice (.onnx + .onnx.json, about 63 MB). Research use only: see the licence note below
 stingray setup speak
 
 # 2. Download Whisper base model (ggml-base.bin, ~141 MB)
