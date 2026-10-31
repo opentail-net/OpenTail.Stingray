@@ -592,6 +592,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _cpuRotatedQuery = Alloc(_numHeads * _headDim);
             _cpuDecompBuf = Alloc(_numHeads * _headDim);
         }
+
+        WarmDecodePathForHandoff();
     }
 
     // ================================================================
