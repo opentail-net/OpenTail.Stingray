@@ -458,3 +458,15 @@ Only the Vulkan items below were checked in this pass; the phase rows are unchan
 - **Phase 6 (Gemma prefill):** the F32-default issue is a policy decision (ADR-0003), not a code gap. No research here changes that classification.
 
 Not checked: the ratios and statuses in the phase list. Those are the sweep's own record.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md).
+
+- **Threading (cause 5, and the "spin-then-park" experiment in the pickup's row 7):** llama.cpp's threadpool now polls before blocking, and the poll is a setting (`--poll`: 0 none, 1 about 128K rounds, 2 about 256K rounds). Polling became the default to match OpenMP behaviour. A later change makes workers that are not active on the current graph skip polling and wait on the condition variable (PR #9461). These are from mirrored commit and PR text returned by search, so treat the details as provisional until read from the source ([CodeLinaro llama.cpp PR 2 patch](https://github.com/CodeLinaro/llama.cpp/pull/2.patch)).
+  - **Relevance:** the spin-then-park experiment should be compared with llama.cpp's **level** setting, not only on/off. The "blanket threading fix" that failed (cause 5) may have been all-or-nothing.
+- **`MinRowsForParallel = 64` is in code** (`SimdKernels.cs` line 10). The row-count-only heuristic the doc calls a failed blanket fix is the one that is still there.
+- **Phase 4 and 13 (dispatch overhead):** no external source contradicts the leads plan's A9 measurement (about 8 us per dependent dispatch plus barrier).
+- **Not checked:** the ratios, the Phase 2 and Phase 6 numbers, and the Gemma prefill default (a policy decision).

@@ -347,3 +347,14 @@ Checked in code:
 Not checked in this pass: the status-board measurements, and the claimed wiring for A6, A9 and the GQA split-KV path. Those are dated measurements that I did not re-run.
 
 Web research: the Vulkan cooperative-matrix limits (RDNA3+ only) bear on Lead 1's ggml comparison. A Vega-class iGPU cannot use that route, so for this machine the ggml reference is the non-coopmat path only.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md).
+
+- **Vulkan dot-product extension for the Lead 1 and Lead 2 kernels:** `VK_VALVE_shader_mixed_float_dot_product` is new and unratified (spec 2026-02-04). It is the extension an FP16-pair dot path would need. OpenTail does not check for it, so it cannot be used for the gfx90c iGPU until someone logs whether this driver exposes it ([Khronos refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_VALVE_shader_mixed_float_dot_product.html)).
+- **Cooperative matrix:** not available on this Vega-class iGPU (RADV exposes it on RDNA3 and newer). Lead 1's ggml comparison is the non-coopmat path only.
+- **Attention (A6, A9, A11):** no external source changes the measurements. The decode attention numbers are internal and stay as measured.
+- **Item A6 naming ("fp16-packed 'bf16'")** is confirmed in code. `GpuForwardPass.cs` labels the half-width KV store "bf16" (line 461: "bf16 is the Vulkan default") while its comment at line 402 says the values are packed with `packHalf2x16`, which is FP16. The `bf16` name is misleading for a reader. The `VulkanBackend.cs` `Bf16` hits are only the separate `VK_KHR_shader_bfloat16` extension check, not the KV store. See the GR doc's Vulkan KV note.

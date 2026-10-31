@@ -577,3 +577,14 @@ Checked in code and vendor docs:
 Not checked: the Qwen Image MLP-chunking, FLUX GEMM and Wan numbers. They are the doc's own measurements, and I did not re-run them.
 
 **Next checks:** log the subgroup range on the iGPU; run the Phase 1 small-M kernel against a one-row matvec loop (the plan's own benchmark) before any Phase 3 work.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts are in [research/2026-10-31-performance-snippets.md](../research/2026-10-31-performance-snippets.md).
+
+- **Qwen Image chunked MLP is in code.** `QwenImageModel.cs`, `QwenImageGpuWeights.cs` and `QwenImageGpuWorkspace.cs` contain the chunk path (13 matches, 2026-10-31). The Part 4 claim is code-backed.
+- **Subgroup and cooperative-matrix limits** (see the Vulkan GEMM doc): the FP16 tile project cannot use cooperative matrix on this iGPU, and the subgroup pin must follow the `requiredSubgroupSize` power-of-two bound ([Khronos](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)).
+- **Long-K throughput drop (Part 4, "stride" finding):** no external source confirmed a TLB or memory-channel cause. The doc's own experiment (contiguous chunks give -31%) is the evidence. It stays a measurement, not a cited mechanism.
+- **Not checked:** the FLUX and Wan timings and the reference numbers. They are the doc's own runs.

@@ -133,3 +133,11 @@ Checked in code:
 Not checked: whether `ForwardGpu` or `TransformerBlockGpu` exists (plan step 3). A grep for those names is the next check. The 56-minute CPU baseline and the 489-529 s figures are the doc's own and were not re-run.
 
 Nothing here needs outside research. The open work is the GPU port itself, which needs a real checkpoint and a measured run.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Web research was not applicable to this plan's open work, which is internal code. The relevant external facts are the Vulkan and CUDA constraints recorded in the GR doc and the Vulkan GEMM doc (subgroup size bounds, cooperative matrix limits on RDNA3 and newer). The plan's residency work needs a checkpoint and a measured run, which this machine does not have for the flow transformer (see the 2026-10-30 notes).
+
+**Verified 2026-10-31:** the `GetOrCreateGpuWeights` hook and the 2304-channel concatenation (both recorded in the 2026-10-30 section). Still not checked: whether `ForwardGpu` or `TransformerBlockGpu` exists (step 3). A grep for those names is the next check.

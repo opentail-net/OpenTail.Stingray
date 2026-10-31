@@ -165,6 +165,16 @@ Checked in code:
 
 Not checked: the step 0 go/no-go (1.4x) has not been run, and nothing has been measured. The profile shares (79%, 37/35/27%) are the plan's own and were not re-measured.
 
-Web research: nothing to add beyond the ggml and ik_llama references already in the survey doc.
+Web research: see the 2026-10-31 section. The llama.cpp CPU `mul_mat_id` source was not reached, so the comparison is still open.
 
 **Next step:** step 0 (section 5) needs no engine change and is still open. The plan has no test project yet.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md).
+
+- **External reference for the CPU MoE path: not reached.** The llama.cpp CPU implementation of `ggml_compute_forward_mul_mat_id` is in `ggml/src/ggml-cpu/ops.cpp`. The web fetch returned only the first 100,000 characters of a 430,000-character file, which ended before the function, and the search returned only GPU or history commits. The local `examples/llama.cpp` and `tools/llama.cpp` directories contain binaries only, with no `ggml` source. So the plan's Option A and Option B cannot yet be compared against how llama.cpp groups tokens per expert on the CPU.
+- **History that does exist:** llama.cpp merged the per-expert operations into one `ggml_mul_mat_id` (commit "group all experts in a single ggml_mul_mat_id", #6505), and it made the experts share one 3D tensor (#6387). Both show the grouping being done inside the operator, not in the graph. That is consistent with the plan's premise that the expert loop is the thing to change.
+- **Next step:** fetch `ops.cpp` in chunks by function, or clone llama.cpp at a recorded revision into the scratchpad and read `ggml_compute_forward_mul_mat_id` there. Record the revision in this doc, as the survey's rules require.

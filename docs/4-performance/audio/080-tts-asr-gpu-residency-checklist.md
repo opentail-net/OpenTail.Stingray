@@ -254,3 +254,11 @@ Checked in code:
 Not checked: the other seven `IForwardPass` models the doc names (VibeVoice, PersonaPlex, OmniVoice, NeuTts, VoxCpm2, QwenTTS, Orpheus). Their perf tests were not read.
 
 The Vulkan backend's behaviour on this iGPU is covered in [GR_performance.md](../GR_performance.md) and the leads plan. Dispatch overhead is measured there, not here.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Web research was not applicable to the performance question. The HiggsAudio perf path is internal (the `IForwardPass` and `CpuBackend` facts were checked on 2026-10-30). The Vulkan and CUDA constraints that would govern a GPU run are in the [GR doc](../GR_performance.md): the CUDA module needs per-architecture guards and the Vulkan pin needs the subgroup bound.
+
+**Still open, unchanged:** the Higgs checkpoint is not on disk, so the one-line backend swap cannot be measured yet.
