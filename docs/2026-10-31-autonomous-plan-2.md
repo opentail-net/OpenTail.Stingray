@@ -12,6 +12,7 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 |---|---|---|
 | P1 | Profile the ~1.9 s first-decode warm-up after a handoff; fix only if the profile confirms the cause | 24-token decode rate within 5% of the 160-token rate, greedy output unchanged, or a written reason it cannot be hidden |
 | P1b | Housekeeping first (ChatGPT review round 4, 2026-10-31, asked for it): `LtxVaeNoiseIsolationTest` writes to a temp directory; the flaky SimdKernels timing test is made deterministic or quarantined from correctness CI; the Qwen3-Coder-30B `-g 4` slots-16 handoff row (step 18 cosine 0.980) is diagnosed (old build vs new, same row) | `git status` clean after a full sweep; the row passes, or is a recorded MoE-specific finding with its measured cause |
+| P1c | Find the NaN in hybrid MoE decode (Qwen3-Coder `-g 4`): find which side returns non-finite logits in the control, log the first one with the slot cache state, test the two candidates in the P1b write-up | the cause measured, or the NaN reproduced under a fixed setting; then a fix or a recorded decision about the 0.99 bar for MoE rows |
 | P2 | Receipts for Qwen2.5, Phi-3, gemma-2, Granite on the Vulkan hybrid, one passing row each | permanent rows pass with no override; a family that fails stays Unverified with the measured cosine recorded |
 | P3 | Close the llama receipt gaps: ctx above 1024, a 32-token prompt, the `startPos > 0` cost | each measured; receipt text updated |
 | P4 | Measure the fair gate (two resident models, interleaved, 3 runs) | numbers in plan 032 slice 5 |
@@ -22,7 +23,7 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 | P9 | Reproducibility helper: a small shared PowerShell function used by the benchmark scripts, printing commit and dirty state, model file name and identity, binary/build configuration, backend and device, context and generation settings, input and run count, date. Identify the model by size and modified time plus a hash cached per experiment; never rehash a 12 GB file per run | the Performance League scripts print it; one worked example |
 | P10 | `stingray config --show`, narrow: recognised `STINGRAY_*` settings that are set, with value (redacted where sensitive), source (default, environment, CLI) and class from the inventory; says so where the effective value cannot yet be resolved. Not a configuration framework | prints for a real command line; a test over redaction |
 
-Order: P1, P1b (split: hygiene first, the Qwen3-Coder row as its own correctness result), P6, P2, P3, P7, P8, P4, P5, P9, P10. P9 and P10 may move up only if they prove genuinely small; they do not displace correctness work.
+Order: P1, P1b (done except P1c), P6 (done), P1c, P2, P3, P7, P8, P4, P5, P9, P10. P9 and P10 may move up only if they prove genuinely small; they do not displace correctness work.
 
 Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
 next one started.
@@ -70,8 +71,32 @@ run was green.
   fails when contention hits every trial of an attempt. It now allows three independent attempts and fails only if all three miss.
   Mutation-checked: with the bar at 100x it ran three attempts and failed; at 1.0x it passes. The Q8_0 sibling already only prints.
 - Heavy `HybridCpuPrefillHandoffTests` with the warm-up: 24 tests, 1 failed, 1 skipped, 80 minutes. The one failure is the
-  Qwen3-Coder-30B `-g 4` slots-16 row; diagnosis follows.
-## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
+  Qwen3-Coder-30B `-g 4` slots-16 row.
+
+### P1b - the Qwen3-Coder row: diagnosed as far as measured (2026-10-31)
+
+The row is flaky on the build before the warm-up too, so the warm-up did not cause it (and cannot: it returns early whenever an expert
+slot manager exists). Counts of runs with at least one decode step at or below the 0.99 bar, standalone, 51 s each:
+
+| Build / setting | Runs failing |
+|---|---|
+| Before the warm-up (commit of PR 72), interleaved with the next row | 4 of 8 |
+| With the warm-up (current main) | 1 of 8 here, and 3 of 8 in an earlier batch |
+| Current main, `STINGRAY_MOE_PREDICT_PREFETCH=0` | 7 of 10 |
+
+Minimum step cosine in failing runs: 0.978 to 0.990; in passing runs 0.991 to 0.997. Every run passes the K/V byte-equality and
+prefill-logit equality checks, so the handoff itself is exact; the variation is in hybrid MoE decode. A control added to the test class
+(`Control_SequentialVsSequential_EnvironmentChosenModel`, skips without `STINGRAY_HANDOFF_TEST_MODEL`) compares two independent
+sequential hybrids on the same forced tokens: 1 of 6 runs had a step at 0.9807 and 1 of 6 returned NaN for every step (one side's
+logits were NaN or all zero; the test does not say which). No NaN appeared in the 34 handoff-vs-sequential runs above.
+
+Refuted: predictive prefetch (the failure rate did not fall without it). Not established: the cause. Candidates not yet tested are a
+GPU-versus-CPU expert choice that depends on the slot cache's contents (a legitimate numerical difference when a top-k choice is near a
+tie, which the dense-calibrated 0.99 bar does not allow for), and a race or uninitialised read in the slot cache's lazy load, which
+would also explain the NaN. The NaN is the part that needs finding; the cosine dips alone may be the bar being too tight for MoE.
+
+Open item P1c: capture which side returns NaN (log the first non-finite logit and the expert cache state), then test the two
+candidates. Until then the row stays as it is (heavy-only, not in CI), and `docs/STATUS.md` row 142 carries the caveat.## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
 
 The follow-up asked for 18 gaps and then, on being asked what is realistic, cut them down. I checked what could be checked against the
 repository and took the same cut. The rule used: adopt what is small, has a demonstrated gap and reuses what exists; defer the rest

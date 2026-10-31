@@ -276,6 +276,43 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         Assert.True(failures.Count == 0, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// Control for the decode comparison in <see cref="RunHandoff"/>: two independent hybrids that BOTH prefill sequentially, decoded
+    /// teacher-forced on the same tokens, compared step by step. If these drift below the 0.99 bar as often as handoff-vs-sequential
+    /// does, the bar is measuring the hybrid MoE path's own run-to-run variation (expert-cache contents, GPU or CPU expert), not the
+    /// handoff. Uses <c>STINGRAY_HANDOFF_TEST_MODEL</c> and <c>STINGRAY_HANDOFF_TEST_GPU_LAYERS</c> like the env-chosen test.
+    /// </summary>
+    [Fact]
+    public void Control_SequentialVsSequential_EnvironmentChosenModel()
+    {
+        string? file = Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MODEL");
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(file), "STINGRAY_HANDOFF_TEST_MODEL is not set");
+        int layers = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_GPU_LAYERS"), out int l) ? l : 4;
+        using var s = Open(file!)!;
+        int n = s.Prompt.Length;
+        var forced = new int[40];
+        var a = new List<float[]>();
+        var b = new List<float[]>();
+        using (var h = NewHybrid(s, layers, 16))
+        {
+            h.CpuPrefillEnabled = false;
+            var logits = h.Prefill(s.Prompt, 0).ToArray();
+            for (int i = 0; i < forced.Length; i++) { forced[i] = Argmax(logits); logits = h.Forward(forced[i], n + i).ToArray(); a.Add(logits); }
+        }
+        using (var h = NewHybrid(s, layers, 16))
+        {
+            h.CpuPrefillEnabled = false;
+            h.Prefill(s.Prompt, 0);
+            for (int i = 0; i < forced.Length; i++) b.Add(h.Forward(forced[i], n + i).ToArray());
+        }
+        // Non-finite logits are a defect whatever the bar for cosines is: say which run and step.
+        for (int i = 0; i < forced.Length; i++)
+        {
+            Assert.True(a[i].All(float.IsFinite), $"first sequential run, decode step {i + 1}: non-finite logits");
+            Assert.True(b[i].All(float.IsFinite), $"second sequential run, decode step {i + 1}: non-finite logits");
+        }
+        Console.WriteLine($"[control] {file} -g {layers}: sequential vs sequential decode cosines {string.Join(",", a.Select((x, i) => Cosine(x, b[i]).ToString("F5")))}");
+    }
     [Fact]
     public void ShortPrompts_StartPosAboveZero_AndDisabledSwitch_UseTheSequentialPath()
     {
