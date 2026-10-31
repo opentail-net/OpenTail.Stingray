@@ -122,6 +122,9 @@ public sealed class SileroVadTests
     [Fact]
     public void WhisperPipeline_TranscribeWithVad_SuccessfullyPrunesSilence()
     {
+        // UseVad loads Silero from models/ (or STINGRAY_SILERO_VAD_PATH) and throws without it; skip visibly like the other tests here.
+        LoadRealVad().Dispose();
+
         using var pipeline = new WhisperPipeline(WhisperConfig.Tiny);
 
         // 2 seconds audio (speech + silence)
