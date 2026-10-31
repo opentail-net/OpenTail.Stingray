@@ -2488,15 +2488,15 @@ Based on the reference benchmarks above, these are concrete targets per phase:
 | 2b | Qwen3 8B Q4_K_M | Full VRAM, RTX 4070 Ti | ~38–52 TG t/s (8B class) | Scale gracefully | **43.5 TG t/s** ✅ | GPU 43.5 (0.52x llama.cpp), CPU 13.5 (1.23x llama.cpp) |
 | 3 | Qwen3 8B Q4_K_M + TQ3 | Full VRAM, RTX 4070 Ti | N/A (doesn't fit with FP16 KV) | ≥ 30 TG t/s | **GPU 24.0 t/s at 40K ctx** ✅ | TQ3 < 0.5% overhead, context 17K→40K (2.4x) |
 | 4a | Llama 3.1 70B Q4_K_M | Hybrid GPU+CPU, RTX 4070 Ti | ~3–5 TG t/s (naive offload) | ≥ 5 TG t/s | **1.8 t/s (18 GPU + 62 CPU)** | Q5_K AVX2+512, matches llama.cpp CPU (1.54). Phase 4b for streaming |
-| 5 | Llama 4 Scout 109B Q2_K | MoE offload, 12GB + 64GB RAM | ~12 TG t/s (llama.cpp est.) | ≥ 15 TG t/s | CPU: **4.6 t/s**, Hybrid 1-layer+prefetch: **3.1 t/s** ✅ — SLRU slot cache + CPU fallback + background prefetcher (dedicated async VkCommandPool). |
+| 5 | Llama 4 Scout 109B Q2_K | MoE offload, 12GB + 64GB RAM | ~12 TG t/s (llama.cpp est.) | ≥ 15 TG t/s | CPU: **4.6 t/s**, Hybrid 1-layer+prefetch: **3.1 t/s** ✅ — SLRU slot cache + CPU fallback + background prefetcher (dedicated async VkCommandPool). |  |
 | 5b | Llama 4 Scout Q4_K_M | CPU only, DDR4-3200 64GB | ~5 TG t/s (estimate) | > 5 TG t/s | **5.3 TG t/s** ✅ (+47% from 3.6 baseline) | SIMD FMA weighted-add, AVX-512 DotQ6K, PrefaultWeights |
-| 5+6 | Llama 4 Scout + speculative | MoE + SmolLM2 draft | ~12 TG t/s (no spec) | ≥ 25 effective TG t/s | ~2x from speculative decoding on top of Phase 5 |
-| 7a | API server (single-user) | CPU/GPU, any model | N/A | Correct wire format | ✅ OpenAI + Anthropic compatible, 8 integration tests |
-| 7b | API server (prefix cache) | CPU, SmolLM2 1.7B | N/A (new feature) | Eliminate repeated prefill | ✅ PagedKvCache + prefix cache; 3.2GB→402MB at 4K ctx |
-| 7c | Multi-user server | PagedAttention + continuous batching | vLLM ~485 tot t/s @10 users | ≥ 300 tot t/s | ✅ `ContinuousBatchingEngine` + `BatchForwardMulti`; STINGRAY_MAX_BATCH controls batch size |
-| 8 | API completeness | Server, all models | N/A | All metrics non-zero; logit_bias accepted | ✅ Fixed metrics recording; `queue_depth`/`active_requests` gauges; `logit_bias` support |
+| 5+6 | Llama 4 Scout + speculative | MoE + SmolLM2 draft | ~12 TG t/s (no spec) | ≥ 25 effective TG t/s | ~2x from speculative decoding on top of Phase 5 |  |
+| 7a | API server (single-user) | CPU/GPU, any model | N/A | Correct wire format | ✅ OpenAI + Anthropic compatible, 8 integration tests |  |
+| 7b | API server (prefix cache) | CPU, SmolLM2 1.7B | N/A (new feature) | Eliminate repeated prefill | ✅ PagedKvCache + prefix cache; 3.2GB→402MB at 4K ctx |  |
+| 7c | Multi-user server | PagedAttention + continuous batching | vLLM ~485 tot t/s @10 users | ≥ 300 tot t/s | ✅ `ContinuousBatchingEngine` + `BatchForwardMulti`; STINGRAY_MAX_BATCH controls batch size |  |
+| 8 | API completeness | Server, all models | N/A | All metrics non-zero; logit_bias accepted | ✅ Fixed metrics recording; `queue_depth`/`active_requests` gauges; `logit_bias` support |  |
 | 11 | Qwen3-Coder 30B-A3B Q4_K_M | CPU only, DDR4-3200 64GB | ~20 TG t/s (llama.cpp est.) | Correct output | **20.8 TG t/s** ✅ | Qwen3-MoE arch: QK norm + 128-expert routing; 4× faster than Scout due to 8/128 expert sparsity |
-| 12 | RRDBNet 4× upscaler | 512×512 → 2048×2048, RTX 4070 Ti | N/A | Fast GPU upscale | **18.5 s total** ✅ (was 46 s; 2.5× via [K,N] im2col + TF32); `--upscale-blend` for softness control |
+| 12 | RRDBNet 4× upscaler | 512×512 → 2048×2048, RTX 4070 Ti | N/A | Fast GPU upscale | **18.5 s total** ✅ (was 46 s; 2.5× via [K,N] im2col + TF32); `--upscale-blend` for softness control |  |
 
 **Stretch targets (if all optimizations compose well):**
 
