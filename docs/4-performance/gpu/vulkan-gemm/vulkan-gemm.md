@@ -561,7 +561,7 @@ Not checked: the Phase 1 and 2(c) numbers, the Qwen Image forward times, and the
 
 ## Research findings (2026-10-31, deep pass)
 
-Excerpts are in [research/2026-10-31-performance-snippets.md](../research/2026-10-31-performance-snippets.md).
+Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/2026-10-31-performance-snippets.md).
 
 - **Phase 3 experiment C (FP16-pair dot products, "only where the device exposes it"):** the relevant extension is `VK_VALVE_shader_mixed_float_dot_product`. It is new (spec dated 2026-02-04), unratified, and requires `VK_KHR_shader_float16_int8` or Vulkan 1.2. The device check is not in `VulkanBackend.cs`, so the experiment cannot be scheduled until the feature query exists ([refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_VALVE_shader_mixed_float_dot_product.html)).
 - **The open question "does Vega 8 expose dot2?" stays open.** The mixed-dot spec is not the same as `VK_KHR_shader_integer_dot_product`, which OpenTail does enable (for DP4A). Log both on this device before deciding.

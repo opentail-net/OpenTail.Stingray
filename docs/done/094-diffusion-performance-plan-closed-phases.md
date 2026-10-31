@@ -1,7 +1,7 @@
 # 094 — Diffusion Stack Performance Plan: closed phases
 
 > **ARCHIVED 2026-09-27.** Phases moved verbatim out of
-> [../094-diffusion-performance-plan.md](../4-performance/diffusion/094-diffusion-performance-plan.md), which keeps Phases 6
+> [../094-diffusion-performance-plan.md](../4-performance/diffusion/diffusion-performance.md), which keeps Phases 6
 > and 9. What closed each one:
 >
 > - **Phase 0** (doc truth pass): `PerformanceLeague.md` now has SD3.5 Vulkan, HunyuanVideo and

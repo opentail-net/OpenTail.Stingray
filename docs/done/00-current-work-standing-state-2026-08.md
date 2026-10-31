@@ -516,7 +516,7 @@ another 18 minutes to redo.
 tag-triggered and CI fails if the tag and `<Version>` disagree. The `CHANGELOG.md` Unreleased
 section (Mistral/Tekken tokenizer, Jinja fixes, prefix-cache fixes) is **not** in the 1.0.3
 packages, which were built from the earlier candidate commit. See
-[../nuget-release-checklist.md](../3-product-and-runtime/nuget-release-checklist.md).
+[../nuget-release-checklist.md](../reference/nuget-release-checklist.md).
 
 **Parked, with working implementations.** Not scheduled; revisit only if the goal changes.
 - DSpark speculative decoding — [07-dspark-plan.md](07-dspark-plan.md). Remaining:

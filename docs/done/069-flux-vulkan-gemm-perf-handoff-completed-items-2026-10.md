@@ -1,6 +1,6 @@
 # Completed items split from 069-flux-vulkan-gemm-perf-handoff.md (2026-10-30)
 
-Finished items moved verbatim out of [../4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md](../4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md). Open items stay there. Each block notes the section it came from.
+Finished items moved verbatim out of [../4-performance/diffusion/069-flux-vulkan-gemm-perf-handoff.md](../4-performance/diffusion/diffusion-performance.md). Open items stay there. Each block notes the section it came from.
 
 > from: ## External analysis (ChatGPT, 2026-09-13, given the table above)
 - [x] 1. **Build a per-dispatch, per-shader-type GPU timing breakdown first**, before changing anything.

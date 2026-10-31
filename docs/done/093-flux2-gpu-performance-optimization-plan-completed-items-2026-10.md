@@ -1,6 +1,6 @@
 # Completed items split from 093-flux2-gpu-performance-optimization-plan.md (2026-10-30)
 
-Finished items moved verbatim out of [../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md). Open items stay there. Each block notes the section it came from.
+Finished items moved verbatim out of [../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/diffusion-performance.md). Open items stay there. Each block notes the section it came from.
 
 > from: ### Phase 0 — diagnostic experiments (very low effort, do first, no shader changes)
 - [x] **Experiment 1+2 DONE 2026-09-19, combined — DEFINITIVE, SURPRISING RESULT: batching gives
