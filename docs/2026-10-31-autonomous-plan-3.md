@@ -11,7 +11,8 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
 - [ ] **Q2** Apply embedding, residual, logit and attention-scale fields in the Vulkan hybrid so Granite and Gemma 3 can partial-offload (then lift the refusal for them, with a parity row each). Needs an owner decision, see below
 - [ ] **Q3** GPU soft-capping for gemma2 (attention and final logits), so the dense GPU path matches the CPU (perplexity 15.38 against 12.58 today). Needs an owner decision
 - [ ] **Q4** Handoff gaps: Llama-3.1 checkpoint, LongRoPE, sliding-window llama, contexts above 4096, Qwen2.5-7B / Coder / VL, `startPos > 0` (a 300-token follow-up costs about 20 s against 2 to 3 s; not built)
-- [ ] **Q5** API follow-ups: request-level tests for the `tool_choice: none` wiring (only a unit test covers it), the parameter audit of the other endpoints, the error envelope on other endpoints, the stale `stop_sequences` snippet in the design doc
+- [ ] **Q5** API follow-ups: request-level tests for the `tool_choice: none` wiring (only a unit test covers it), the parameter audit of the other endpoints, the error envelope on other endpoints, the stale `stop_sequences` snippet in the design doc, a fake engine that emits tool calls so the telemetry canary covers tool-call argument leakage, and tests that each accepted sampling field reaches the engine
+- [ ] **Q6** Release verification: build the release artifacts with `release.yml` and install/run them on a clean machine (CI proves builds and tests, not an installable release)
 - [ ] **P2d** CUDA passes have no scale references (blocked: no NVIDIA hardware)
 - [ ] Memory note updated to the final state
 

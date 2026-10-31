@@ -24,7 +24,7 @@ Each item ends in its own merged PR, `Tests.Core` run before every merge. A stal
 ## Checklist
 
 Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
-or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:10 against `main` at `8ffb7c97`: PRs 72 to 86 are merged except 81, the delegate session's partial P8. Items the delegate session finished (PRs 78 to 82) were ticked after reading each PR description and re-running the P9 self-test; the CPU-safe CI suites run all of their tests on every PR.
+or only partly answered stays unticked, with a note. Last checked 2026-10-31 22:00 against `main` at `7526fbde` (PR 94, CI green): PRs 72 to 94 are merged except 81, the delegate session's partial P8. Items the delegate session finished (PRs 78 to 82) were ticked after reading each PR description and re-running the P9 self-test; the CPU-safe CI suites run all of their tests on every PR.
 
 - [ ] **P1c** Find the NaN in hybrid MoE decode (the bar decision is made; the NaN is open)
   - [ ] Capture the NaN: 1 in 18 control runs, not reproduced in 12 later runs; the control test now asserts finite logits and names the run and step
