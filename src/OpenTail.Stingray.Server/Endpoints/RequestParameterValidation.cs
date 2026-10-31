@@ -26,7 +26,30 @@ internal static class RequestParameterValidation
         ?? Range("temperature", r.Temperature, 0f, 1f)
         ?? Range("top_p", r.TopP, 0f, 1f)
         ?? NonNegativeInt("top_k", r.TopK)
-        ?? StopSequenceList("stop_sequences", r.StopSequences, MaxAnthropicStopSequences);
+        ?? StopSequenceList("stop_sequences", r.StopSequences, MaxAnthropicStopSequences)
+        ?? AnthropicToolChoice(r.ToolChoice);
+
+    /// <summary>Anthropic <c>tool_choice</c>: auto and none are honoured; any and tool would force tool use, which is not supported here.</summary>
+    private static string? AnthropicToolChoice(System.Text.Json.JsonElement? toolChoice)
+    {
+        if (toolChoice is not { } tc || tc.ValueKind is System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined) return null;
+        if (tc.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !tc.TryGetProperty("type", out var type) || type.ValueKind != System.Text.Json.JsonValueKind.String)
+            return "tool_choice must be an object with a string type (auto, none, any or tool)";
+        return type.GetString() switch
+        {
+            "auto" or "none" => null,
+            "any" or "tool" => $"tool_choice type '{type.GetString()}' is not supported on /v1/messages: forced tool use is not implemented here (auto and none are)",
+            var other => $"tool_choice type '{other}' is not one of auto, none, any or tool",
+        };
+    }
+
+    /// <summary>`tool_choice: {type: none}`: the model is not offered the declared tools (nothing in the prompt invites a tool call).</summary>
+    public static AnthropicMessageRequest ApplyAnthropicToolChoice(AnthropicMessageRequest r) =>
+        r.ToolChoice is { ValueKind: System.Text.Json.JsonValueKind.Object } tc
+        && tc.TryGetProperty("type", out var type) && type.ValueKind == System.Text.Json.JsonValueKind.String && type.GetString() == "none"
+            ? r with { Tools = null }
+            : r;
 
     private const int MaxOpenAiStops = 4;
     private const int MaxAnthropicStopSequences = 16;

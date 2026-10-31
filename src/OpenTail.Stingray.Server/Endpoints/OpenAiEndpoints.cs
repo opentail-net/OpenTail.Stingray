@@ -415,7 +415,7 @@ public static class OpenAiEndpoints
         RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops);
+            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true);
         }
         else
         {
@@ -546,7 +546,7 @@ public static class OpenAiEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null)
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -568,6 +568,7 @@ public static class OpenAiEndpoints
         int toolCallIndex = 0;       // monotonic index into delta.tool_calls
         bool hasToolCalls = false;
         long tokenCount = 0;
+        int streamPromptTokens = 0;
 
         async Task WriteContentDelta(string text)
         {
@@ -658,7 +659,7 @@ public static class OpenAiEndpoints
                 // Out-of-band usage chunk (issue #150): not a generated token and carries no
                 // text. The streaming response doesn't emit a usage object (OpenAI gates that
                 // behind stream_options.include_usage, unsupported here), so just skip it.
-                if (c.Kind == GenerateChunkKind.Usage) { timing.MarkAdmitted(); continue; }
+                if (c.Kind == GenerateChunkKind.Usage) { timing.MarkAdmitted(); streamPromptTokens = c.PromptTokens; continue; }
                 if (c.Kind == GenerateChunkKind.Stop)
                 {
                     truncatedByMaxTokens = c.TruncatedByMaxTokens;
@@ -731,6 +732,14 @@ public static class OpenAiEndpoints
             requestId, "chat.completion.chunk", created, engine.ModelId,
             [new ChunkChoice(0, new ChunkDelta(null, null), finishReason)]);
         await WriteEvent(ctx.Response, JsonSerializer.Serialize(finalChunk, OpenTailStingrayJsonContext.Default.ChatCompletionChunk));
+        if (includeUsage)
+        {
+            int completion = (int)Math.Min(tokenCount, int.MaxValue);
+            var usageChunk = new ChatCompletionChunk(
+                requestId, "chat.completion.chunk", created, engine.ModelId, [],
+                new ChatUsage(streamPromptTokens, completion, streamPromptTokens + completion));
+            await WriteEvent(ctx.Response, JsonSerializer.Serialize(usageChunk, OpenTailStingrayJsonContext.Default.ChatCompletionChunk));
+        }
         await ctx.Response.WriteAsync("data: [DONE]\n\n", ctx.RequestAborted);
         await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
 
@@ -1031,7 +1040,11 @@ public sealed record ChatCompletionRequest(
     [property: JsonPropertyName("n")] int? N = null,
     // One stop string or an array of up to 4 (RequestParameterValidation.ParseOpenAiStops). Generation is cut before the first match
     // and cancelled; finish_reason stays "stop".
-    [property: JsonPropertyName("stop")] JsonElement? Stop = null);
+    [property: JsonPropertyName("stop")] JsonElement? Stop = null,
+    // {"include_usage": true} adds a final usage chunk (empty choices) to a streaming response, as OpenAI SDKs expect.
+    [property: JsonPropertyName("stream_options")] StreamOptions? StreamOptions = null);
+
+public sealed record StreamOptions([property: JsonPropertyName("include_usage")] bool? IncludeUsage = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string
@@ -1107,7 +1120,8 @@ public sealed record ChatCompletionChunk(
     string Object,
     long Created,
     string Model,
-    ChunkChoice[] Choices);
+    ChunkChoice[] Choices,
+    ChatUsage? Usage = null);
 
 public sealed record ChunkChoice(int Index, ChunkDelta Delta, string? FinishReason);
 public sealed record ChunkDelta(
@@ -1146,4 +1160,10 @@ public sealed record ResponseFormat(string? Type, JsonSchemaSpec? JsonSchema = n
 /// (matching llama.cpp's own server behavior).</summary>
 public sealed record JsonSchemaSpec(string? Name, JsonElement? Schema, bool? Strict = null, bool? Ordered = null);
 
-public sealed record ErrorResponse(string Type, string Message);
+public sealed record ErrorResponse(string Type, string Message)
+{
+    // The flat Type/Message fields stay (existing consumers read them); this adds the {"error": {...}} object OpenAI clients parse.
+    public ErrorDetail Error => new(Message, Type);
+}
+
+public sealed record ErrorDetail(string Message, string Type);

@@ -60,12 +60,12 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:
   - [ ] A prompt at the 32-token minimum
   - [ ] Measure the `startPos > 0` cost before building anything
   - [ ] Receipt text updated
-- [ ] **P7** Documented request parameters audited (unknown JSON properties stay accepted)
+- [x] **P7** Documented request parameters audited (unknown JSON properties stay accepted); findings F1 to F4 of the audit are resolved (PRs 82, 84, 85 and this PR); F5 (request-level tests for supported fields such as top_p and the Anthropic sampling fields reaching the engine) is only partly covered, since the range tests send them but do not assert they arrive
   - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
   - [x] P7b: `max_completion_tokens`, `seed`, `top_k` implemented; `n` other than 1 and out-of-range sampling values refused with a 400 naming the field; `parallel_tool_calls`, `user` and `metadata` documented as intentionally ignored (30 tests, mutation-checked)
   - [x] P7c: `stop` and `stop_sequences` (one filter around the engine stream in all four handlers; generation is cancelled, not just the text hidden). 35 tests: 19 on the filter including 400 random inputs against a character-level reference, 16 through the endpoints; five production mutations each fail tests (the endpoint stream not filtered 4, no `stop_sequence` reason 2, no cancellation 7, no holdback 3, no validation 6)
-  - [ ] P7d: `stream_options.include_usage` (final usage chunk) and Anthropic `tool_choice`
-  - [ ] P7e: error bodies in the OpenAI nested `error` envelope and the Anthropic `type: error` envelope (this server returns a flat body today)
+  - [x] P7d: `stream_options.include_usage` (final usage chunk) and Anthropic `tool_choice` (auto and none honoured; any and tool refused with a 400). Limit: the `none` wiring has no failing endpoint test
+  - [x] P7e: error bodies now also carry the nested `error` object on both APIs, additively (the flat fields stay; Anthropic's top-level `type` is not changed to `error`)
 - [ ] **P8** HTTP-disconnect cancellation, end to end (PR 81 is open and partial: disconnect, cancellation reaching the engine, slot freed and three mutation checks are covered; releasing the runtime handle is not)
   - [x] Check which existing tests already cover it (done in PR 81)
   - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
