@@ -51,6 +51,11 @@ public static class OpenAiEndpoints
                     OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
+        if (RequestParameterValidation.ValidateOpenAi(req) is { } invalid)
+        {
+            await WriteBadRequestAsync(ctx, invalid);
+            return;
+        }
         req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
@@ -216,12 +221,14 @@ public static class OpenAiEndpoints
         var sp = SamplingParamsBuilder.Build(opts,
             temperature: req.Temperature,
             topP:        req.TopP,
-            maxTokens:   req.MaxTokens,
+            topK:        req.TopK,
+            maxTokens:   req.MaxCompletionTokens ?? req.MaxTokens,
             maxThinking: req.MaxThinkingTokens,
             presencePenalty: req.PresencePenalty,
             frequencyPenalty: req.FrequencyPenalty,
             logitBias:   logitBias,
-            thinkingDisabled: !enableThinking);
+            thinkingDisabled: !enableThinking,
+            seed:        req.Seed);
 
         // Tool-active agentic turn: add the model family's tool-boundary stop (Gemma 4:
         // <|tool_response>) so generation halts the instant the tool calls finish rather than
@@ -1010,7 +1017,15 @@ public sealed record ChatCompletionRequest(
     // request before rendering: each skill's Instructions become a prepended system-message
     // segment, and its Tools merge into the effective declared tools alongside `tools` — see
     // ApplySkills. docs/051.
-    [property: JsonPropertyName("skills")] WireSkill[]? Skills = null);
+    [property: JsonPropertyName("skills")] WireSkill[]? Skills = null,
+    // The newer name for max_tokens; wins when both are sent (OpenAI deprecates max_tokens).
+    [property: JsonPropertyName("max_completion_tokens")] int? MaxCompletionTokens = null,
+    // Seeds the sampler RNG (SamplingParams.Seed): the same seed and prompt give the same text at temperature > 0.
+    [property: JsonPropertyName("seed")] int? Seed = null,
+    // Not an OpenAI field, but common in clients that also talk to llama.cpp; SamplingParams.TopK.
+    [property: JsonPropertyName("top_k")] int? TopK = null,
+    // Number of choices. Only 1 is supported; any other value is a 400 (RequestParameterValidation).
+    [property: JsonPropertyName("n")] int? N = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string

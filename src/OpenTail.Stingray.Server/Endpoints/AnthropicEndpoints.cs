@@ -50,6 +50,15 @@ public static class AnthropicEndpoints
                     OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
             return;
         }
+        if (RequestParameterValidation.ValidateAnthropic(req) is { } invalid)
+        {
+            ctx.Response.StatusCode = 400;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new AErrorResponse("invalid_request_error", invalid),
+                    OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
+            return;
+        }
         req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.

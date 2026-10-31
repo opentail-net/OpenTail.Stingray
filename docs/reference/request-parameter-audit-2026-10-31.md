@@ -116,3 +116,30 @@ Anthropic `temperature`/`top_p` are never sent by name in a test. They are imple
 
 Choose one of the three options for F1 per field, then add the test for each row in this table. That closes P7 for
 the chat and messages endpoints.
+
+## Resolution of F1 and F3 (P7b, 2026-10-31)
+
+Decisions taken under the plan's standing authority; each is reversible. Tests: `RequestParameterTests` (30 cases, mutation-checked:
+without the OpenAI validation 12 fail, without `max_completion_tokens` 2, without `seed` 1, without the Anthropic validation 5).
+
+| Field | Decision | Where |
+|---|---|---|
+| `max_completion_tokens` | implemented: sets the token budget and wins over `max_tokens` when both are sent | `OpenAiEndpoints` |
+| `seed` | implemented: `SamplingParams.Seed` seeds the sampler RNG | `SamplingParamsBuilder` |
+| `top_k` (OpenAI side) | implemented: `SamplingParams.TopK` | `OpenAiEndpoints` |
+| `n` | refused with a 400 unless it is 1: the server returns exactly one choice | `RequestParameterValidation` |
+| `max_tokens` / `max_completion_tokens` below 1 | refused with a 400 | `RequestParameterValidation` |
+| `temperature` | refused outside 0 to 2 (OpenAI) or 0 to 1 (Anthropic) | `RequestParameterValidation` |
+| `top_p` | refused outside 0 to 1 | `RequestParameterValidation` |
+| `top_k` | refused below 0 | `RequestParameterValidation` |
+| `presence_penalty`, `frequency_penalty` | refused outside -2 to 2 | `RequestParameterValidation` |
+| `parallel_tool_calls` | stays ignored on purpose: the server's tool-call behaviour is fixed, and the field is a hint | this table |
+| `user`, `metadata` | stay ignored on purpose (privacy, plan section 7); this row is the record of that (F4) | this table |
+| unknown JSON properties | still accepted and ignored: clients send vendor fields | `RequestParameterTests` |
+| `stop`, `stop_sequences` | **not yet**: needs text-level matching with holdback in four handlers; tracked as P7c in the plan | open |
+| `stream_options` (`include_usage`) | **not yet**: common in OpenAI SDK clients, so refusing it would break them; needs a final usage chunk; tracked as P7d | open |
+| Anthropic `tool_choice` | **not yet**: the OpenAI side honours it, the Anthropic side does not; tracked as P7d | open |
+
+Finding while testing: the error body this server returns is flat, `{"type": "...", "message": "..."}`. The OpenAI API wraps it as
+`{"error": {"message": ..., "type": ...}}` and Anthropic as `{"type": "error", "error": {...}}`, so clients that parse the nested
+envelope get nothing useful from a 400. This predates P7 and is not changed here; it is listed in the plan as P7e.
