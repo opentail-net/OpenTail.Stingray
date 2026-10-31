@@ -322,15 +322,15 @@ dynamically composed names.
 | `STINGRAY_BATCH_DECODE_GEMM` | experimental | |
 | `STINGRAY_BATCH_DECODE_RAGGED` | experimental | |
 | `STINGRAY_BATCH_DECODE_WS` | experimental | |
-| `STINGRAY_BYPASS_ATTN` | experimental | |
-| `STINGRAY_BYPASS_GDN` | experimental | |
-| `STINGRAY_BYPASS_MOE` | experimental | |
+| `STINGRAY_BYPASS_ATTN` | experimental | Bisection only (`=1`): zero the attention block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
+| `STINGRAY_BYPASS_GDN` | experimental | Bisection only (`=1`): zero the Gated-DeltaNet block's contribution in the CPU hybrid forward pass to localise a bug. Default off. Also disables the optimized chunked prefill. |
+| `STINGRAY_BYPASS_MOE` | experimental | Bisection only (`=1`): zero the MoE block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_CPU_GDN` | experimental | |
 | `STINGRAY_CUDA_GRAPH` | experimental | |
 | `STINGRAY_CUDA_MATVEC_BENCH` | bench | |
 | `STINGRAY_CUDA_PROFILE` | diagnostic | |
 | `STINGRAY_DECODE_CUDA_GRAPH` | experimental | |
-| `STINGRAY_DECODE_PROFILE` | diagnostic | |
+| `STINGRAY_DECODE_PROFILE` | diagnostic | Diagnostic (`=1`): per-token GPU-trunk versus CPU-MoE time split in the CUDA hybrid-GDN pass (adds a sync after the trunk; negligible perturbation). The trunk:moe ratio shows the decode pole. |
 | `STINGRAY_DECODE_REGIONS` | experimental | |
 | `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | experimental | |
 | `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | |
@@ -369,14 +369,14 @@ dynamically composed names.
 | `STINGRAY_PREFILL_FLASH_TC` | experimental | |
 | `STINGRAY_PREFILL_FLASH_TC1` | experimental | |
 | `STINGRAY_PREFILL_GEMM` | experimental | |
-| `STINGRAY_PREFILL_PROFILE` | diagnostic | |
+| `STINGRAY_PREFILL_PROFILE` | diagnostic | Diagnostic (`=1`): accumulate synchronous CPU-MoE wall time versus total Forward wall time, to size the batching opportunity (CUDA passes). |
 | `STINGRAY_PREFIX_SCRATCH_TOKENS` | experimental | |
 | `STINGRAY_PREFIX_SLOTS` | experimental | |
-| `STINGRAY_PROBE_IDS` | diagnostic | |
-| `STINGRAY_PROBE_LOGITS` | diagnostic | |
-| `STINGRAY_PROBE_POS` | diagnostic | |
-| `STINGRAY_PROFILE_DECODE` | diagnostic | |
-| `STINGRAY_PROFILE_PREFILL` | diagnostic | |
+| `STINGRAY_PROBE_IDS` | diagnostic | Diagnostic: comma-separated token ids for `STINGRAY_PROBE_LOGITS`. Default `198,248046,248045,271`. |
+| `STINGRAY_PROBE_LOGITS` | diagnostic | Diagnostic (`=1`): per-layer logit probe in the CPU hybrid-GDN pass. Projects each trunk-layer residual through output_norm and lm_head and prints the rank and logit of the ids in `STINGRAY_PROBE_IDS`. |
+| `STINGRAY_PROBE_POS` | diagnostic | Diagnostic: limit the logit probe to token position `<n>` (otherwise every position, which is unmanageable). |
+| `STINGRAY_PROFILE_DECODE` | diagnostic | Diagnostic (`=1`): temporary decode profiler in the CPU hybrid-GDN pass, split by Gdn, Attention, Moe and GdnRecurrence. Reported by the run command. |
+| `STINGRAY_PROFILE_PREFILL` | diagnostic | Diagnostic (`=1`): per-category prefill timers (QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, GdnBlock, MoeFfn, GdnRecurrence) and the routed-expert stage timing. |
 | `STINGRAY_Q3K_DEQUANT_GEMM` | experimental | |
 | `STINGRAY_Q3K_Q8K` | experimental | |
 | `STINGRAY_Q4KX8_CACHE_MB` | experimental | |
@@ -391,12 +391,12 @@ dynamically composed names.
 | `STINGRAY_SPEC_BATCH_VERIFY` | experimental | |
 | `STINGRAY_SPLIT_DECODE_GROUPED` | experimental | |
 | `STINGRAY_TRACE_DSPARK` | diagnostic | |
-| `STINGRAY_TRACE_LAYERS` | diagnostic | |
-| `STINGRAY_TRACE_NORMS` | diagnostic | |
-| `STINGRAY_TRACE_POS` | diagnostic | |
-| `STINGRAY_TRACE_ROUTERS` | diagnostic | |
-| `STINGRAY_TRACE_SNAPSHOT` | diagnostic | |
-| `STINGRAY_TRACE_VRAM` | diagnostic | |
+| `STINGRAY_TRACE_LAYERS` | diagnostic | Diagnostic (`=1`): per-layer activation trace in the CUDA hybrid-GDN forward pass. |
+| `STINGRAY_TRACE_NORMS` | diagnostic | Diagnostic (`=1`): per-layer residual L2-norm trace in the CPU forward pass. |
+| `STINGRAY_TRACE_POS` | diagnostic | Diagnostic: restrict the MoE router trace (`STINGRAY_TRACE_ROUTERS`) to one token position `<n>`. Default -1 (every position). |
+| `STINGRAY_TRACE_ROUTERS` | diagnostic | Diagnostic (`=1`): dump the top-k experts chosen for every MoE layer. Combine with `STINGRAY_TRACE_POS` to limit the output on large MoE models. |
+| `STINGRAY_TRACE_SNAPSHOT` | diagnostic | Diagnostic (`=1`): log to stderr when a session's canonical-history prefix is not a strict token prefix of the generating prompt. |
+| `STINGRAY_TRACE_VRAM` | diagnostic | Diagnostic (`=1`): print free VRAM (MiB) at labelled points while the CUDA forward pass loads. |
 | `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | `=1` swaps the fused byte-exact GDN recurrence scan for the FlashQLA chunk-parallel scan during Vulkan batched prefill. Default off. Argmax-stable, not byte-exact. Needs a device that fits the ~34 KB shared-memory tile; the end-to-end win is small while the batched trunk is capped at 8 tokens (comment in `VulkanHybridGdnForwardPass.cs`). |
 | `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | |
