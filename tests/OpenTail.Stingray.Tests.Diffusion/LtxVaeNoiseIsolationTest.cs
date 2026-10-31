@@ -111,9 +111,9 @@ public sealed class LtxVaeNoiseIsolationTest
                 frameRgb[dstBase + p] = Math.Clamp((video[srcBase + p] + 1.0f) * 0.5f, 0.0f, 1.0f);
         }
 
-        string outPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
-            "docs", "diffusion-samples", "ltx_vae_noise_isolation.png");
-        outPath = Path.GetFullPath(outPath);
+        // A diagnostic, not a curated sample: write outside the repo so a run does not dirty the tracked copy of this image
+        // (docs/diffusion-samples/ltx_vae_noise_isolation.png, kept as the recorded evidence for docs/done/077).
+        string outPath = Path.Combine(Path.GetTempPath(), "ltx_vae_noise_isolation.png");
         PngWriter.Write(outPath, frameRgb, outW, outH);
         Console.WriteLine($"[LTX VAE noise isolation] wrote {outPath}");
     }

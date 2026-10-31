@@ -49,6 +49,24 @@ step 18 cosine 0.97997 (all other steps above 0.9966). That is a MoE model; the 
 exists, so it does not run there. I did not run the old build on that row, so "pre-existing" is an inference from the code path, not a
 measurement; it is carried as an open finding (P2 housekeeping).
 
+### P6 - fast suites in CI: done (PR 74, 2026-10-31)
+
+`Audio.Fast` (floor 70, 94 discovered) and `Vulkan.Fast` (floor 38, 48 discovered) now run in `ci.yml` and `release.yml`. The
+first CI run failed: `WhisperPipeline_TranscribeWithVad_SuccessfullyPrunesSilence` needs `silero_vad.onnx` and threw on the
+model-free runner. It passed here only because the model is on disk. It now skips visibly, and both suites were also run from copies
+outside the repo so no `models/` folder was reachable (Audio.Fast 94 total, 5 skipped, 0 failed; Vulkan.Fast 48 passed). The second CI
+run was green.
+
+### P1b - housekeeping: two of three done (2026-10-31)
+
+- `LtxVaeNoiseIsolationTest` writes to the temp directory. Ran for real (11 s, 1 passed, not skipped) and `git status` stayed clean.
+  The tracked png stays as the evidence for `docs/done/077`. Other Diffusion tests still write curated samples into
+  `docs/diffusion-samples` on purpose (rule 9).
+- `SimdKernelsLegacyQ8_1Tests.FastKernels_AreFasterThanDequantFallback`: idle speedup is 4.9x to 5.5x (3 runs), so the 1.0x bar only
+  fails when contention hits every trial of an attempt. It now allows three independent attempts and fails only if all three miss.
+  Mutation-checked: with the bar at 100x it ran three attempts and failed; at 1.0x it passes. The Q8_0 sibling already only prints.
+- Heavy `HybridCpuPrefillHandoffTests` with the warm-up: 24 tests, 1 failed, 1 skipped, 80 minutes. The one failure is the
+  Qwen3-Coder-30B `-g 4` slots-16 row; diagnosis follows.
 ## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
 
 The follow-up asked for 18 gaps and then, on being asked what is realistic, cut them down. I checked what could be checked against the
