@@ -370,26 +370,26 @@ dynamically composed names.
 | `STINGRAY_PREFILL_FLASH_TC1` | experimental | `=1` forces the single-warp tensor-core flash kernel even where the multi-warp one would apply (A/B). Default off. |
 | `STINGRAY_PREFILL_GEMM` | experimental | `=0` routes Q8_0 trunk matmuls in CUDA batched prefill through the memory-bound matvec GEMM-N instead of the compute-bound cuBLAS GEMM. Default on; non-Q8_0 weights always use the matvec GEMM-N. |
 | `STINGRAY_PREFILL_PROFILE` | diagnostic | Diagnostic (`=1`): accumulate synchronous CPU-MoE wall time versus total Forward wall time, to size the batching opportunity (CUDA passes). |
-| `STINGRAY_PREFIX_SCRATCH_TOKENS` | experimental | |
-| `STINGRAY_PREFIX_SLOTS` | experimental | |
+| `STINGRAY_PREFIX_SCRATCH_TOKENS` | experimental | Positive integer, default 4096: size in tokens of the bounded scratch slot used by the multi-slot prefix cache (`STINGRAY_PREFIX_SLOTS=2`) so short interleaved requests do not evict slot 0's long prefix. Clamped to the model's maximum context. |
+| `STINGRAY_PREFIX_SLOTS` | experimental | `=2` opts into the multi-slot prefix cache (issue 212): dense, rewindable forward passes only. Any other value, or unset, keeps the exact single-slot behaviour. Also suppresses SnapKV auto-enable; an explicit SnapKV budget above 0 still wins and disables multi-slot. |
 | `STINGRAY_PROBE_IDS` | diagnostic | Diagnostic: comma-separated token ids for `STINGRAY_PROBE_LOGITS`. Default `198,248046,248045,271`. |
 | `STINGRAY_PROBE_LOGITS` | diagnostic | Diagnostic (`=1`): per-layer logit probe in the CPU hybrid-GDN pass. Projects each trunk-layer residual through output_norm and lm_head and prints the rank and logit of the ids in `STINGRAY_PROBE_IDS`. |
 | `STINGRAY_PROBE_POS` | diagnostic | Diagnostic: limit the logit probe to token position `<n>` (otherwise every position, which is unmanageable). |
 | `STINGRAY_PROFILE_DECODE` | diagnostic | Diagnostic (`=1`): temporary decode profiler in the CPU hybrid-GDN pass, split by Gdn, Attention, Moe and GdnRecurrence. Reported by the run command. |
 | `STINGRAY_PROFILE_PREFILL` | diagnostic | Diagnostic (`=1`): per-category prefill timers (QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, GdnBlock, MoeFfn, GdnRecurrence) and the routed-expert stage timing. |
-| `STINGRAY_Q3K_DEQUANT_GEMM` | experimental | |
-| `STINGRAY_Q3K_Q8K` | experimental | |
-| `STINGRAY_Q4KX8_CACHE_MB` | experimental | |
-| `STINGRAY_Q4K_Q8K` | experimental | |
-| `STINGRAY_Q4K_SOA` | experimental | |
+| `STINGRAY_Q3K_DEQUANT_GEMM` | experimental | `=0` sends prefill-scale Q3_K routed MoE experts in the CUDA hybrid-GDN pass through the per-token-re-reading GEMM-N instead of the dequant, fp16, cuBLAS GEMM (weights read once, argmax-stable). Default on. |
+| `STINGRAY_Q3K_Q8K` | experimental | `1` or `0` (also `true` or `false`) forces the Q3_K int8 (Q8_K activation) routed-expert kernel on or off in the routed-MoE dot kernels of the hybrid passes (CPU hybrid-GDN and the CPU MoE of the CUDA hybrid passes). Unset: on when the model has Q3_K routed experts. |
+| `STINGRAY_Q4KX8_CACHE_MB` | experimental | Diffusion quantized-weight cache budget in MiB. A positive number sets it; `0` or a negative number disables the cache; unset or unparsable uses one third of the available memory (`GC.GetGCMemoryInfo().TotalAvailableMemoryBytes`). |
+| `STINGRAY_Q4K_Q8K` | experimental | `1` or `0` (also `true` or `false`) forces the Q4_K int8 routed-expert kernel on or off in the routed-MoE dot kernels of the hybrid passes (CPU hybrid-GDN and the CPU MoE of the CUDA hybrid passes). Unset: on only when the model has Q4_K routed experts and AVX-512 is not available (the f32 AVX-512 dot measured about 8% faster on a Q4_K_M model). |
+| `STINGRAY_Q4K_SOA` | experimental | `=0` keeps Q4_K trunk weights in the AoS layout in `CudaForwardPass` instead of the SoA repack (+7% decode, +5% prefill, bit-identical; Qwen3-8B 70.0 to 74.7 t/s). Default on, dense models only (MoE Q4_K is not SoA-converted). |
 | `STINGRAY_HUNYUAN_GPU` | experimental | `0` keeps HunyuanVideo's double/single blocks on the CPU even when a Vulkan backend is passed (default: GPU blocks, `HunyuanVideoModel.Gpu.cs`). |
 | `STINGRAY_Q6K_GEMM` | experimental | `0` sends Q6_K prefill matmuls back to the row-major int8 tier instead of the group-paired `Q6KPrefillGemm` (A/B toggle). |
-| `STINGRAY_Q6K_SOA` | experimental | |
-| `STINGRAY_Q8_0_Q8K` | experimental | |
+| `STINGRAY_Q6K_SOA` | experimental | `=0` keeps Q6_K trunk weights in the AoS layout everywhere and also disables the Q6_K decode-MMQ tile. Default on, dense models only. |
+| `STINGRAY_Q8_0_Q8K` | experimental | `1` or `0` (also `true` or `false`) forces the Q8_0 int8 routed-expert kernel on or off in the routed-MoE dot kernels of the hybrid passes (CPU hybrid-GDN and the CPU MoE of the CUDA hybrid passes). Unset: on when the model has Q8_0 routed experts. |
 | `STINGRAY_SNAPKV_RECENCY` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
 | `STINGRAY_SNAPKV_WINDOW` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
 | `STINGRAY_SPEC_BATCH_VERIFY` | experimental | `=0` forces the sequential verify fallback in `SpeculativeDecoder` (model-draft and prompt-lookup speculation) even when the target supports batch verify (kill-switch, issue #207). Default on. |
-| `STINGRAY_SPLIT_DECODE_GROUPED` | experimental | |
+| `STINGRAY_SPLIT_DECODE_GROUPED` | experimental | GQA head-sharing in CUDA split-KV decode attention: `0` forces per-head, `1` forces grouped whenever eligible (for bisecting), unset auto-selects (fp32 KV at long context, from 24576 tokens, with an eligible head config). The heuristic is tuned to E4B-class shapes. |
 | `STINGRAY_TRACE_DSPARK` | diagnostic | Diagnostic (`=1`): print DSpark accepted/emitted draft counts and the acceptance rate after a run. |
 | `STINGRAY_TRACE_LAYERS` | diagnostic | Diagnostic (`=1`): per-layer activation trace in the CUDA hybrid-GDN forward pass. |
 | `STINGRAY_TRACE_NORMS` | diagnostic | Diagnostic (`=1`): per-layer residual L2-norm trace in the CPU forward pass. |
@@ -397,12 +397,12 @@ dynamically composed names.
 | `STINGRAY_TRACE_ROUTERS` | diagnostic | Diagnostic (`=1`): dump the top-k experts chosen for every MoE layer. Combine with `STINGRAY_TRACE_POS` to limit the output on large MoE models. |
 | `STINGRAY_TRACE_SNAPSHOT` | diagnostic | Diagnostic (`=1`): log to stderr when a session's canonical-history prefix is not a strict token prefix of the generating prompt. |
 | `STINGRAY_TRACE_VRAM` | diagnostic | Diagnostic (`=1`): print free VRAM (MiB) at labelled points while the CUDA forward pass loads. |
-| `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | `=0` forces the byte-identical sequential per-token prefill loop in the Vulkan hybrid-GDN pass. Default on. |
 | `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | `=1` swaps the fused byte-exact GDN recurrence scan for the FlashQLA chunk-parallel scan during Vulkan batched prefill. Default off. Argmax-stable, not byte-exact. Needs a device that fits the ~34 KB shared-memory tile; the end-to-end win is small while the batched trunk is capped at 8 tokens (comment in `VulkanHybridGdnForwardPass.cs`). |
-| `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | |
-| `STINGRAY_VULKAN_NO_FLASH_ATTN` | experimental | |
-| `STINGRAY_VULKAN_PREFILL_CHUNK` | experimental | |
-| `STINGRAY_VULKAN_SPLIT_DECODE_MIN` | experimental | |
+| `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | `=1` is a field kill-switch that disables batched prefill in `GpuForwardPass` (Vulkan) without a rebuild. |
+| `STINGRAY_VULKAN_NO_FLASH_ATTN` | experimental | `=1` falls back from the Vulkan flash attention to the per-(head,query) batched kernel without a rebuild. |
+| `STINGRAY_VULKAN_PREFILL_CHUNK` | experimental | Positive integer: tokens per Vulkan batched-prefill chunk. Default 0 (as many as the active path allows); any value is clamped to that cap. Distinct from the CPU-side `STINGRAY_PREFILL_CHUNK`. |
+| `STINGRAY_VULKAN_SPLIT_DECODE_MIN` | experimental | Positive integer, default 256: the position from which Vulkan split-KV decode attention engages. `STINGRAY_VULKAN_SPLIT_DECODE=0` disables the path outright. |
 
 ## OpenTail.Stingray.Engine, OpenTail.Stingray.Server
 
@@ -421,8 +421,8 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_SPLIT_DECODE` | experimental | |
-| `STINGRAY_VULKAN_SPLIT_DECODE` | experimental | |
+| `STINGRAY_SPLIT_DECODE` | experimental | `=0` reverts CUDA decode attention to a single block per head (the A/B baseline). Default on (split-KV). |
+| `STINGRAY_VULKAN_SPLIT_DECODE` | experimental | `=0` reverts Vulkan decode attention to the VRAM score-spill path (kill switch). Default on (about 2x decode at 10.5K context). |
 
 ## OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host
 
@@ -450,9 +450,9 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_VULKAN_DP4A` | experimental | |
-| `STINGRAY_VULKAN_MM_PATH` | experimental | |
-| `STINGRAY_VULKAN_MM_STATS` | diagnostic | |
+| `STINGRAY_VULKAN_DP4A` | experimental | `=0` forces the hand-written Q4_K int8 matvec; `=1` forces the dp4a intrinsic variant and skips the probe. Unset: the backend runs both variants on a tiny problem and uses the intrinsic only if they agree exactly (some drivers corrupt it). |
+| `STINGRAY_VULKAN_MM_PATH` | experimental | Vulkan quantized batched matmul path. Unset or `3` or `path3`: Path 3 (default). `1` or `path1`: Path 1. `2` or `path2`: Path 2. Any other value falls back to Path 1. |
+| `STINGRAY_VULKAN_MM_STATS` | diagnostic | Diagnostic (`=1`): count what the Vulkan quantized batched matmul does (notably tokens per weight-matrix read). Default off so the default path is unchanged. |
 | `STINGRAY_VULKAN_PATH2` | experimental | Gates the Vulkan Path 2 cooperative-tiled-GEMM kernel (`MatMulTiledQ4K`) in `VulkanPath2Dispatcher.ReadFromEnvironment`. Defaults off. **Consolidated 2026-09-02**: was two aliases for this one flag (`STINGRAY_VULKAN_PATH2_EXPERIMENTAL`) — collapsed to this single canonical name, the other removed from the registry and no longer read. |
-| `STINGRAY_VULKAN_UMA_FRACTION` | experimental | |
-| `STINGRAY_VULKAN_VALIDATION` | diagnostic | |
+| `STINGRAY_VULKAN_UMA_FRACTION` | experimental | Fraction of the reported UMA heap size used for weight and KV placement, accepted in 0.05 to 2.0, default 0.5. Values above 1.0 are experimental: they ask for more than the advertised heap, and a mandatory upload past what the OS can back may crash. |
+| `STINGRAY_VULKAN_VALIDATION` | diagnostic | `=1` or `true` enables the Khronos validation layer and VK_EXT_debug_utils so invalid buffer, descriptor or pipeline use is reported. Default off with no overhead. |
