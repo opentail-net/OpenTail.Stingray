@@ -127,6 +127,69 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     }
 
     /// <summary>
+    /// The same comparison as <see cref="Handoff_EnvironmentChosenModel"/> on a LONG prompt: the first <c>STINGRAY_HANDOFF_TEST_PROMPT_CHARS</c>
+    /// characters (default 8000, about 1,800 tokens) of a text file (<c>STINGRAY_HANDOFF_TEST_PROMPT_FILE</c>, else
+    /// <c>scripts/kvarn-gate/wiki.test.raw</c> found by walking up from the test binary), with the context from
+    /// <c>STINGRAY_HANDOFF_TEST_CTX</c> (default 4096). The sequential-prefill side runs token by token, so expect minutes.
+    /// </summary>
+    [Fact]
+    public void Handoff_EnvironmentChosenModel_LongPrompt()
+    {
+        string? file = Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MODEL");
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(file), "STINGRAY_HANDOFF_TEST_MODEL is not set");
+        int layers = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_GPU_LAYERS"), out int l) ? l : 4;
+        int ctx = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_CTX"), out int c) ? c : 4096;
+        int chars = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_PROMPT_CHARS"), out int n) ? n : 8000;
+        string? textFile = Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_PROMPT_FILE");
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null && string.IsNullOrEmpty(textFile); d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "scripts", "kvarn-gate", "wiki.test.raw"))) textFile = Path.Combine(d.FullName, "scripts", "kvarn-gate", "wiki.test.raw");
+        Assert.SkipWhen(string.IsNullOrEmpty(textFile) || !File.Exists(textFile), "no prompt text file (set STINGRAY_HANDOFF_TEST_PROMPT_FILE)");
+        string text = File.ReadAllText(textFile!);
+        text = text[..Math.Min(chars, text.Length)];
+        if (text.LastIndexOf('\n') > 0) text = text[..text.LastIndexOf('\n')];
+        double floor = double.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MIN_STEP_COSINE"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double fl) ? fl : 0.99;
+        RunHandoff(file!, layers, 16, ctx, floor, text);
+    }
+
+    /// <summary>
+    /// The 32-token gate, exactly: a 31-token prompt is refused with the "shorter than" reason and prefills sequentially, a 32-token prompt
+    /// takes the handoff, and the 32-token handoff agrees with the sequential path (prefill logits and 8 teacher-forced decode steps).
+    /// </summary>
+    [Fact]
+    public void Handoff_PromptOfExactlyTheMinimumLength_TakesTheHandoff_AndOneTokenLessDoesNot()
+    {
+        using var s = Open("Falcon3-3B-Instruct-Q4_K_M.gguf")!;
+        int min = 32;
+        var tokens = s.Prompt.Take(min).ToArray();
+        Assert.Equal(min, tokens.Length);
+
+        using var below = NewHybrid(s, 4, -1);
+        Assert.Equal(min, below.CpuPrefillMinTokens);
+        below.Prefill(tokens.Take(min - 1).ToArray(), 0);
+        Assert.False(below.LastPrefillUsedCpuHandoff);
+        Assert.Contains("shorter than", below.LastCpuPrefillRefusal);
+
+        using var at = NewHybrid(s, 4, -1);
+        var atLogits = at.Prefill(tokens, 0).ToArray();
+        Assert.True(at.LastPrefillUsedCpuHandoff, "the handoff was not taken at exactly the minimum: " + at.LastCpuPrefillRefusal);
+
+        using var seq = NewHybrid(s, 4, -1);
+        seq.CpuPrefillEnabled = false;
+        var seqLogits = seq.Prefill(tokens, 0).ToArray();
+        Assert.False(seq.LastPrefillUsedCpuHandoff);
+        Assert.True(Cosine(atLogits, seqLogits) > 0.99, "prefill logits cosine " + Cosine(atLogits, seqLogits));
+
+        var logits = atLogits;
+        for (int i = 0; i < 8; i++)
+        {
+            int next = Argmax(logits);
+            logits = at.Forward(next, min + i).ToArray();
+            var expected = seq.Forward(next, min + i).ToArray();
+            Assert.True(Cosine(expected, logits) > 0.99, $"decode {i + 1}: cosine {Cosine(expected, logits):F6}");
+        }
+    }
+
+    /// <summary>
     /// Llama 4 past its 8192-token attention chunk: a 9430-token prompt (first 42000 characters of scripts/kvarn-gate/wiki.test.raw, as in
     /// LlamaFourLongContextParityTests) goes through the CPU-prefill handoff into 4 GPU layers + 44 CPU layers, then 6 teacher-forced decode steps
     /// are compared with the all-CPU pass continuing from the same prompt. The sequential GPU prefill is not run (about 1 token/s on this
@@ -196,9 +259,9 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     public void Handoff_LargeFamilies(string file, int gpuLayers, int slots, int ctx = 1024)
         => RunHandoff(file, gpuLayers, slots, ctx);
 
-    private void RunHandoff(string file, int gpuLayers, int slots, int ctx, double minStepCosine = 0.99)
+    private void RunHandoff(string file, int gpuLayers, int slots, int ctx, double minStepCosine = 0.99, string? promptText = null)
     {
-        using var s = Open(file)!;
+        using var s = Open(file, promptText)!;
         Assert.True(s.Prompt.Length >= 100, $"prompt too short for a meaningful test: {s.Prompt.Length}");
         int n = s.Prompt.Length;
         int kvDim = s.Hp.NumKvHeads * s.Hp.HeadDim;
