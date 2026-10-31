@@ -108,8 +108,8 @@ Rule: document, document, document.
 
 ## Code (CPU only; Vulkan/CUDA never had the gate)
 - [ ] Revert the experiment code in `HybridGdnForwardPass.cs`
-- [ ] Remove `!_hasMtp` from the `Prefill` gate
-- [ ] Rewrite the comments on `GdnChunkedPrefillEnabled`, the `Prefill` gate and `PrefillChunked`
+- [x] Remove `!_hasMtp` from the `Prefill` gate (verified 2026-10-31: the gate is `GdnChunkedPrefillEnabled` only)
+- [x] Rewrite the comments on `GdnChunkedPrefillEnabled`, the `Prefill` gate and `PrefillChunked`
       (decision, evidence, rollback switch; drop the stale "byte-identical" / "only the recurrence
       differs" claims)
 - [ ] Build, Fast tests
@@ -121,7 +121,7 @@ Rule: document, document, document.
       one model; point to the margin certificate (m > 2δ) as the principled criterion
 
 ## Docs
-- [ ] `docs/reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md`: context, evidence (matrix +
+- [x] `docs/reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md`: context, evidence (matrix +
       probe + row-check tables), decision, rollback switch `STINGRAY_GDN_CHUNKED_PREFILL=0`
       (strict sequential control), the "really bad turn" criteria, open follow-ups.
       Terminology: retire "exact". Use StrictSequential (A, deterministic control path, not ground
@@ -129,8 +129,8 @@ Rule: document, document, document.
       recurrence only, int8 projections). "Numerical operation reference" = FP64 dot over
       dequantized weights x supplied FP32 activations, per operation only. "A reproducible
       computation is not necessarily a more accurate one."
-- [ ] `docs/reference/env-var-inventory.md`: real entry for `STINGRAY_GDN_CHUNKED_PREFILL`
-- [ ] `docs/4-performance/perf-sweep-plan.md` Phase 2: replace "numerics decision for the user"
+- [x] `docs/reference/env-var-inventory.md`: real entry for `STINGRAY_GDN_CHUNKED_PREFILL`
+- [x] `docs/4-performance/perf-sweep-plan.md` Phase 2: replace "numerics decision for the user"
       with the decision + ADR link
 - [ ] Re-measure Qwen3.8-27B (and Qwen3.6-27B) prefill, uncontended; dated `PerformanceLeague.md` rows
 - [ ] `docs/RUNNING.md` 27B rows (measured speed, dated)
