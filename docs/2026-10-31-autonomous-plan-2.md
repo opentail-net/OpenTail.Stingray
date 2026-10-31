@@ -32,7 +32,7 @@ Each item ends in its own merged PR, `Tests.Core` run before every merge. A stal
 ## Checklist
 
 Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
-or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:15 against `main` at `8d3e591a` plus PRs 78 to 82 (merged by the delegate session; PR 81 open). I read each PR description and ran the P9 self-test; the CPU-safe CI suites exercise the rest on this branch.
+or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:10 against `main` at `8ffb7c97`: PRs 72 to 86 are merged except 81, the delegate session's partial P8. Items the delegate session finished (PRs 78 to 82) were ticked after reading each PR description and re-running the P9 self-test; the CPU-safe CI suites run all of their tests on every PR.
 
 - [x] Owner decisions recorded as taken provisionally (PR 72)
 - [x] Plan 2 written and linked from `docs/00-current-work.md` (PR 72)
@@ -40,11 +40,11 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:
 - [x] **P1b** Housekeeping and the Qwen3-Coder row
   - [x] `LtxVaeNoiseIsolationTest` writes to a temp directory (PR 75)
   - [x] `SimdKernelsLegacyQ8_1Tests` timing test allows three attempts, mutation-checked (PR 75)
-  - [x] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds (PR 76); the run-to-run variation traced to timing-dependent expert placement, and the row's acceptance criterion made explicit (this PR)
+  - [x] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds (PR 76); the run-to-run variation traced to timing-dependent expert placement, and the row's acceptance criterion made explicit (PR 83)
 - [ ] **P1c** Find the NaN in hybrid MoE decode (the bar decision is made; the NaN is open)
   - [ ] Capture the NaN: 1 in 18 control runs, not reproduced in 12 later runs; the control test now asserts finite logits and names the run and step
   - [x] Test the slot-cache candidates: placement timing confirmed (8 of 8 runs bit-identical with prefetcher and warm-up off); expert warm-up alone and predictive prefetch alone are not the cause
-  - [x] Record a decision about the bar: 0.97 per-step floor plus a median above 0.999 for this row only (this PR)
+  - [x] Record a decision about the bar: 0.97 per-step floor plus a median above 0.999 for this row only (PR 83)
 - [x] **P6** `Audio.Fast` and `Vulkan.Fast` in CI
   - [x] `ci.yml` (floors 70 and 38) (PR 74)
   - [x] `release.yml` (PR 74)
@@ -60,7 +60,7 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 19:
   - [ ] A prompt at the 32-token minimum
   - [ ] Measure the `startPos > 0` cost before building anything
   - [ ] Receipt text updated
-- [x] **P7** Documented request parameters audited (unknown JSON properties stay accepted); findings F1 to F4 of the audit are resolved (PRs 82, 84, 85 and this PR); F5 (request-level tests for supported fields such as top_p and the Anthropic sampling fields reaching the engine) is only partly covered, since the range tests send them but do not assert they arrive
+- [x] **P7** Documented request parameters audited (unknown JSON properties stay accepted); findings F1 to F4 of the audit are resolved (PRs 82, 84, 85 and 86); F5 (request-level tests for supported fields such as top_p and the Anthropic sampling fields reaching the engine) is only partly covered, since the range tests send them but do not assert they arrive
   - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
   - [x] P7b: `max_completion_tokens`, `seed`, `top_k` implemented; `n` other than 1 and out-of-range sampling values refused with a 400 naming the field; `parallel_tool_calls`, `user` and `metadata` documented as intentionally ignored (30 tests, mutation-checked)
   - [x] P7c: `stop` and `stop_sequences` (one filter around the engine stream in all four handlers; generation is cancelled, not just the text hidden). 35 tests: 19 on the filter including 400 random inputs against a character-level reference, 16 through the endpoints; five production mutations each fail tests (the endpoint stream not filtered 4, no `stop_sequence` reason 2, no cancellation 7, no holdback 3, no validation 6)

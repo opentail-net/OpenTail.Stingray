@@ -49,6 +49,11 @@ The latest session report and proposed next plan (what was done with evidence, w
 owner decisions) is [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). It is a report, not
 the backlog: move any item from it into 00-current-work.md when someone takes it on.
 
+The plan being worked from it, with a checklist that has a box for every item, is [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md).
+Two reference documents came out of it: the [request parameter audit](reference/request-parameter-audit-2026-10-31.md) (which fields of the OpenAI
+and Anthropic endpoints are honoured, refused or ignored, and why) and the [specs for the client-disconnect test and the server
+telemetry canary](2026-10-31-server-lifecycle-and-canary-specs.md).
+
 | Folder | What is in it |
 |---|---|
 | [1-correctness/](1-correctness) | Bugs in what is already claimed ([bugstofix.md](1-correctness/bugstofix.md)). Most correctness items are short enough to live in 00-current-work.md itself. |
