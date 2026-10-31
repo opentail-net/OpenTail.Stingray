@@ -37,14 +37,14 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 18:
 - [x] Owner decisions recorded as taken provisionally (PR 72)
 - [x] Plan 2 written and linked from `docs/00-current-work.md` (PR 72)
 - [x] **P1** First-decode warm-up after a handoff: profiled, fixed, measured (PR 73)
-- [ ] **P1b** Housekeeping and the Qwen3-Coder row (two of three sub-items done; the third continues as P1c)
+- [x] **P1b** Housekeeping and the Qwen3-Coder row
   - [x] `LtxVaeNoiseIsolationTest` writes to a temp directory (PR 75)
   - [x] `SimdKernelsLegacyQ8_1Tests` timing test allows three attempts, mutation-checked (PR 75)
-  - [ ] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds and prefetch refuted (merged, PR 76); the cause is **not** established, so this stays open and continues as P1c
-- [ ] **P1c** Find the NaN in hybrid MoE decode and decide about the 0.99 bar for MoE rows
-  - [ ] Capture which side returns non-finite logits in the control test
-  - [ ] Test the slot-cache candidates (GPU-or-CPU expert choice; lazy-load race)
-  - [ ] Fix, or record a decision about the bar
+  - [x] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds (PR 76); the run-to-run variation traced to timing-dependent expert placement, and the row's acceptance criterion made explicit (this PR)
+- [ ] **P1c** Find the NaN in hybrid MoE decode (the bar decision is made; the NaN is open)
+  - [ ] Capture the NaN: 1 in 18 control runs, not reproduced in 12 later runs; the control test now asserts finite logits and names the run and step
+  - [x] Test the slot-cache candidates: placement timing confirmed (8 of 8 runs bit-identical with prefetcher and warm-up off); expert warm-up alone and predictive prefetch alone are not the cause
+  - [x] Record a decision about the bar: 0.97 per-step floor plus a median above 0.999 for this row only (this PR)
 - [x] **P6** `Audio.Fast` and `Vulkan.Fast` in CI
   - [x] `ci.yml` (floors 70 and 38) (PR 74)
   - [x] `release.yml` (PR 74)
@@ -141,7 +141,40 @@ tie, which the dense-calibrated 0.99 bar does not allow for), and a race or unin
 would also explain the NaN. The NaN is the part that needs finding; the cosine dips alone may be the bar being too tight for MoE.
 
 Open item P1c: capture which side returns NaN (log the first non-finite logit and the expert cache state), then test the two
-candidates. Until then the row stays as it is (heavy-only, not in CI), and `docs/STATUS.md` row 142 carries the caveat.## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
+candidates. Until then the row stays as it is (heavy-only, not in CI), and `docs/STATUS.md` row 142 carries the caveat.
+
+### P1c - Qwen3-Coder row: cause of the flakiness found (2026-10-31, evening)
+
+All runs: Qwen3-Coder-30B-A3B Q4_K_M, `-g 4`, 16 slots, 150-token prompt, 40 teacher-forced decode steps, standalone (about 50 s each).
+
+| Experiment | Result |
+|---|---|
+| Handoff row, old build (before the warm-up), 8 runs | 4 failed |
+| Handoff row, current build, 22 runs in three batches (3 of 8, 1 of 8, 3 of 6) | 7 failed |
+| `STINGRAY_HYBRID_CPU_PREFILL_WARM=0` (no expert warm-up), 10 runs | 3 failed |
+| `STINGRAY_MOE_PREDICT_PREFETCH=0` (no next-layer prefetch only), 10 runs | 7 failed |
+| Control: two sequential hybrids, 18 runs | 1 step at 0.981, 1 run with NaN logits |
+| Three-way, CPU's greedy tokens, 6 runs | 0 dips in all three pairs (min cosine 0.996) |
+| Three-way, the hybrid's greedy tokens, 8 runs | handoff vs CPU dipped in 4, handoff vs sequential in 3, sequential vs CPU in 0 |
+| Three-way, hybrid tokens, prefetcher and expert warm-up both off, 8 runs | all 8 runs **bit-identical** (handoff vs CPU min 0.98952, sequential vs CPU min 0.99392) |
+
+What this shows. The hybrid's own greedy tokens are the same in every run (same hash over 8 runs), and K/V rows and prefill logits are
+byte-exact every time, so the handoff is exact. The run-to-run variation disappears when the always-on same-layer prefetcher and the
+expert warm-up are both off, so it comes from which experts happen to be resident on the GPU (GPU kernel) versus computed in the CPU
+fallback at each step, which depends on when background uploads land. With that source removed one step still sits at 0.9895 against the
+CPU reference (sequential's worst against the CPU is 0.9939): a small residue I have not explained. Over 2,000 decode steps from 50
+runs the median cosine is 0.99955, 5 percent of steps are below 0.9968, 1 percent below 0.990 and the minimum is 0.978.
+
+Decision (taken here, reversible): the Qwen3-Coder row uses a 0.97 per-step floor plus a median above 0.999; K/V, prefill logits and the
+argmax near-tie rule are unchanged, and every other row keeps 0.99. Verified: 8 of 8 runs pass; with the floor at 0.9999 the row fails;
+with the median bound at 0.99999 it fails on the median message. The env-selected test accepts
+`STINGRAY_HANDOFF_TEST_MIN_STEP_COSINE` (a test-only variable). Two env-selected diagnostics were added and assert little by design:
+`Control_SequentialVsSequential_EnvironmentChosenModel` (asserts finite logits) and `Diagnostic_ThreeWay_EnvironmentChosenModel`.
+
+Not explained: the single NaN. It appeared once, in the first six control runs, and not in 12 further control runs, so it is rare
+(about 1 in 18) and I could not capture which side produced it. The unproven candidate is a read of an expert slot while its upload is
+in flight, which timing-dependent placement makes plausible; it stays open under P1c.
+## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
 
 The follow-up asked for 18 gaps and then, on being asked what is realistic, cut them down. I checked what could be checked against the
 repository and took the same cut. The rule used: adopt what is small, has a demonstrated gap and reuses what exists; defer the rest
