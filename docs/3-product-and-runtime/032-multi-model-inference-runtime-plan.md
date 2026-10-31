@@ -8,7 +8,7 @@
 
 **Workstream:** [multi-model runtime](../workstreams/multi-model-runtime.md). The status below is as last written; the workstream records the 2026-10-30 check.
 
-**Phases 1, 2, and 4 implemented. Phase 3 at 9 slices (host + accelerator admission, eviction,
+**Phases 1, 2, and 4 implemented. Phase 3 at 10 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue
 step of the eviction hierarchy, bounded, observable, fair among queued waiters, and now immune to
 a fresh caller jumping that queue — execution-level service quantum/starvation-protection still
@@ -818,3 +818,24 @@ always pinned regardless.
 The scheduler doesn't own models; the model cache doesn't own sessions; the KV governor doesn't
 own models. Each subsystem keeps exactly one job — same discipline `027` asked for, now applied
 to a requirement that actually exists.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-31-product-runtime-snippets.md](research/2026-10-31-product-runtime-snippets.md).
+
+**Verified in code**
+- `ModelRuntimeManager.cs:146` has `AdmissionWaitTimeout` defaulting to `null`, and `:150` has `MaxQueuedAdmissions = 16`. Both match the doc.
+- `SessionModelRegistry.cs` exists, as described in Phase 7.
+
+**Internal inconsistency in the doc**
+- The status paragraph (line 11) says "Phase 3 at 9 slices". The checklist (line 347) says "Slices 1–10 done", and the body describes Slice 10. The status paragraph is stale. Fix it to match the checklist.
+
+**Verified outside (web)**
+- **llama-server router mode is the closest public comparison.** It loads and unloads models on demand, selects the model per request, evicts the least recently used model when `--models-max` is reached, and can disable autoload (`--no-models-autoload`). It reloads on switch, so it is a switching server, not concurrent residency. Sources are community guides, not official docs: [glukhov.org router-mode guide](https://glukhov.org/llm-hosting/llama-cpp/llama-server-router-mode/) and [aixfunda write-up](https://aixfunda.substack.com/p/the-new-router-mode-in-llama-cpp). The plan should cite router mode and state the difference explicitly, since the doc currently compares only against the design premise.
+- **`VK_EXT_memory_budget` is the right next step for accelerator headroom.** It exposes `heapBudget` and `heapUsage` per memory heap through `VkPhysicalDeviceMemoryBudgetPropertiesEXT`, with values that are estimates and depend on load. This confirms the plan's claim that there is no portable free-VRAM query without it. The code mentions the extension only in a comment (`ResourceBudget.cs:111`), so it is not yet used. Source: [VK_EXT_memory_budget, Khronos registry](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_memory_budget.html).
+
+**Not verified:** the slice test counts, and whether the router's eviction order matches the plan's "never evict an active model" rule (the community guides do not say).
+
+**Next step:** add a Phase 3 slice that reads `heapBudget`/`heapUsage` on the Vulkan device, behind the existing admission flag, and say in the doc that it is an estimate.

@@ -22,7 +22,7 @@ High-performance AI runtimes require documentation that is accurate, well-struct
 1. **Ignoring established documentation:** Stingray already possesses an extensive, differentiated documentation suite ([`docs/README.md`](../README.md), [`docs/WHAT-YOU-CAN-DO.md`](../WHAT-YOU-CAN-DO.md), [`docs/MODELS.md`](../MODELS.md), [`docs/RUNNING.md`](../RUNNING.md), [`docs/STATUS.md`](../STATUS.md), [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md), and automated reference inventories). Creating parallel root documents (`FEATURES.md`, `USAGE.md`, `DEVELOPMENT.md`, `MODEL_DOWNLOADS.md`) without an explicit migration and ownership map creates unmaintainable duplication.
 2. **Technical inaccuracies & ungrounded claims:**
    - *FLUX.3:* As explicitly documented in [`docs/STATUS.md`](../STATUS.md#L191), `Flux3DiT` and `Flux3Pipeline` are speculative scaffolding not corresponding to any released model; FLUX.3 is not a real coverage target and must never be advertised.
-   - *Vulkan Cooperative Matrix:* As recorded in [`GR_performance.md`](../4-performance/GR_performance.md#L121), no cooperative-matrix Vulkan shader path is implemented or enabled in the device chain. Hardware extension detection is not an implemented shader feature.
+   - *Vulkan Cooperative Matrix:* As recorded in [`GR_performance.md`](../4-performance/GR_performance.md#5-cooperative-matrix-support-is-detected-but-effectively-unused), no cooperative-matrix Vulkan shader path is implemented or enabled in the device chain. Hardware extension detection is not an implemented shader feature.
    - *Qwen Image Status:* While DiT and VAE decode are verified against real weights, text conditioning integration remains open; it is not yet an end-to-end supported pipeline.
    - *Hardware Qualification:* Claims regarding hardware backends (e.g. ARM Neon, CUDA) must explicitly distinguish code presence from verified hardware execution.
 3. **Bloat via arbitrary size targets:** Targets like "40–60 KB" encourage encyclopedic repetition. Stingray's documentation must prioritize concise, high-signal entry points that link to single canonical sources of truth.
@@ -121,7 +121,7 @@ To maintain technical integrity, diffusion models are organized into four explic
    - *ARM Neon:* Code paths exist in `OpenTail.Stingray.Cpu`, but must be explicitly qualified as *code implemented; unverified on physical hardware runner* until tested on dedicated ARM64 machines (per `docs/9-external-hardware/`).
 2. **Vulkan Execution:**
    - Verified compute pipeline with SPIR-V shader dispatch, weight-stationary GEMM for supported quants, and shared-memory FlashAttention.
-   - *Cooperative Matrix:* **STRICTLY EXCLUDED.** While `HasCooperativeMatrix` extension detection exists in code, no cooperative-matrix shader pipeline is implemented or enabled (per [`GR_performance.md`](../4-performance/GR_performance.md#L121)). Public documentation must accurately state that Vulkan attention and GEMM utilize standard compute shaders.
+   - *Cooperative Matrix:* **STRICTLY EXCLUDED.** While `HasCooperativeMatrix` extension detection exists in code, no cooperative-matrix shader pipeline is implemented or enabled (per [`GR_performance.md`](../4-performance/GR_performance.md#5-cooperative-matrix-support-is-detected-but-effectively-unused)). Public documentation must accurately state that Vulkan attention and GEMM utilize standard compute shaders.
 3. **CUDA Execution:**
    - Managed CUDA driver interop backend exists in `OpenTail.Stingray.Cuda`, but must be explicitly documented with hardware prerequisites (NVIDIA GPU, CUDA driver) per `docs/9-external-hardware/`.
 
@@ -243,7 +243,7 @@ graph TD
   1. Update root [`README.md`](../../README.md) to showcase the path-free first run (`stingray setup` $\to$ `stingray chat`), NuGet package usage, and clear links into [`docs/`](../README.md).
   2. Align [`src/OpenTail.Stingray.Cli/README.md`](../../src/OpenTail.Stingray.Cli/README.md) and [`src/OpenTail.Stingray/README.md`](../../src/OpenTail.Stingray/README.md) with the verified public API surface.
   3. Author concise `DEVELOPMENT.md` for contributor onboarding (prerequisites, solution structure, test commands).
-- **Verification Gate:** Verified against implemented CLI and packed `OpenTail.Stingray.1.0.7.nupkg`. A new user following the README can build the project, run tests, and execute `stingray --help` with zero broken links.
+- **Verification Gate:** Verified against implemented CLI and packed `OpenTail.Stingray.1.0.9.nupkg` (the gate was written for 1.0.7; the current version is 1.0.9). A new user following the README can build the project, run tests, and execute `stingray --help` with zero broken links.
 
 ### Phase 3: Consolidate Existing User Guides & References
 - **Goal:** Strengthen existing documentation without creating redundant parallel files.
@@ -281,3 +281,23 @@ The documentation initiative is successfully completed when:
 4. **Discoverable Index:** Every guide and architecture card is reachable from [`docs/README.md`](../README.md) or [`docs/models/README.md`](../models/README.md).
 5. **Working Front Door:** The root README and package README provide an immediate, verified path from discovery to first inference, tested against real packages.
 6. **Sustainable CI Checks:** Automated gates prevent link breakage and inventory drift.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31.
+
+**Verified in code**
+- `docs/9-external-hardware` exists, as cited.
+- The cooperative-matrix claim is supported. `VulkanBackend.cs` reads `VK_KHR_cooperative_matrix` but does not enable it, so the "strictly excluded" rule matches the code. See [GR_performance.md](../4-performance/GR_performance.md) for the full check.
+
+**Verified outside (web)**
+- Cooperative matrix on AMD is RDNA3 and newer only (RADV). A Vega-class iGPU does not expose it, so public docs can say "no cooperative-matrix path" for this hardware without qualification. Source: [Phoronix, RADV cooperative matrix](https://www.phoronix.com/news/RADV-VK_KHR_cooperative_matrix).
+
+**Doc issues**
+- The plan cites `GR_performance.md#L121`. A `#L` suffix is a GitHub line link, not a heading anchor, so it breaks in other renderers. Link to the section heading instead.
+- The plan says the package is `1.0.7` or `1.0.8` (fixed 2026-10-31: `Directory.Build.props` sets `1.0.9`; the Phase 2 and Phase 5 text should read that). Other docs in this folder (the public developer surface plan) say `1.0.9`. The packed version should be read from `OpenTail.Stingray.csproj` and used everywhere. Resolved 2026-10-31: `Directory.Build.props` line 61 is the source of truth.
+- The "Qwen Image" and "FLUX.2" tiering claims were not re-checked. They depend on the diffusion docs in `4-performance`.
+
+**Not verified:** the `docs/models/` and `docs/guides/` counts (34 and 14), and the claim that `ProductSurfaceContractTests` checks the classification.

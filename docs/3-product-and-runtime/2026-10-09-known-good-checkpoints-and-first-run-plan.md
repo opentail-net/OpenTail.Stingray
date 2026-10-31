@@ -158,3 +158,23 @@ Order is by value per effort; each phase ships on its own and is useful alone.
 | Scratch arena | Closed at P0, no-go (`PerformanceLeague.md`). |
 | Batch triage | Done: `scout --backlog --triage N`. |
 | R4 documentation sweep | In progress by another session (`docs/models/`); this plan's own sections are current as of this table. |
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-31-product-runtime-snippets.md](research/2026-10-31-product-runtime-snippets.md).
+
+**Verified in code**
+- `piper-lessac` has `LicenceNeedsConsent: true` (`ModelCatalog.cs:162-164`). The consent gate is real.
+- `Favourites.cs` exists in `src/OpenTail.Stingray.Cli/`, as the P3 item says.
+
+**Licence findings (web, the most important result of this pass)**
+- **The `piper-lessac` licence summary understates the restriction.** The summary text starts "MIT (code)". The linked CSTR licence for the Lessac Blizzard 2013 data (fetched 2026-10-31) says commercial use is **not permitted**, redistribution is **not permitted**, the terms cover research only, and audiobook use is excluded. The MIT label applies to the repo, not to the voice data. Source: [CSTR Lessac Blizzard 2013 licence](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html), and the [rhasspy/piper-voices lessac model card](https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/en/en_US/lessac/high/MODEL_CARD).
+  - **Done 2026-10-31:** the `Licence` text in `ModelCatalog.cs` (`piper-lessac`) now leads with "RESEARCH USE ONLY for the voice: the Lessac Blizzard 2013 data it was trained on forbids commercial use and redistribution. The Piper code is MIT." `Core` builds with 0 warnings and `ModelCatalogTests` passes (7/7). The consent prompt reuses this text, so it shows the same wording; the interactive prompt itself was not re-run.
+- **The Qwen2.5 chat entries are correctly Apache-2.0 for the sizes shipped.** The model pages for `Qwen2.5-0.5B-Instruct`, `1.5B-Instruct` and `7B-Instruct` each declare `apache-2.0` (fetched 2026-10-31). Sources: [0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct), [1.5B](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), [7B](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct).
+- **The family is not uniformly Apache-2.0.** The Qwen2.5-3B card is under the Qwen Research License (search result, an official Hub commit page). An "Apache 2.0 switch" appears only in an unmerged PR ref. This matters for the plan's **`FamilyId` fallback**: a same-family fallback could pick a non-Apache member. Licence must be recorded per entry, not inherited from the family. Source: [Qwen2.5-3B LICENSE at a Hub commit](https://huggingface.co/Qwen/Qwen2.5-3B/commits/31cceb54af9ae48a9c7a29d91c559be424cf8c3a/LICENSE).
+
+**Doc issues:** §5.2 says a `Qualifications` list is what code reads. The licence should be a field on `CatalogEntry`, not a free-text string, if the consent gate is to be checked by code.
+
+**Not verified:** the Speed and Evidence strings for the Qwen rows (they are the doc's own single-run figures).

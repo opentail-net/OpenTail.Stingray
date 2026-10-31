@@ -125,3 +125,25 @@ needs a decision before implementation starts, not during it.
 - Not attempting to unify `ForwardPass`'s internal `PagedKvCache` with
   `InferenceSession.IKvSequence` as part of this plan — flagged as an open question for
   whoever picks this up, not decided here.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-31-product-runtime-snippets.md](research/2026-10-31-product-runtime-snippets.md).
+
+**Verified in code**
+- `IForwardPass.cs:14` is `IForwardPass CreateContext() => this;`. No `CreateContext()` override exists under `src/OpenTail.Stingray.Engine`, so the doc's claim that none of the engine passes override it holds. Cuda and Vulkan projects were not searched.
+- `ThrowIfForwardPassNotIsolated` is absent from `src/`. The "stale reference" note is correct.
+- `SupportsPartialRewind` defaults to `false` (`IForwardPass.cs:139`). The GDN passes do not override it, so they inherit `false`. This supports the tier-4 concern.
+
+**Verified outside (web)**
+- llama.cpp's recurrent memory module (used for Mamba/RWKV-style state) implements `seq_cp` by adding the destination sequence to the source cell and copying the tail pointer. Its source comments say a recurrent state cannot be partially erased at the end of a sequence, because earlier-token state is not kept. That matches the doc's "not arbitrarily rewindable" premise. Source: [llama-memory-recurrent.cpp (searchfox mirror)](https://searchfox.org/firefox-main/source/third_party/llama.cpp/src/llama-memory-recurrent.cpp). The mirror's version is not pinned, so treat the detail as provisional.
+- A newer llama.cpp variant keeps per-sequence recurrent snapshots for rollback, controlled by an `n_rs_seq` parameter (same mirror, provisional). This is a concrete third option for tier 4: snapshot the GDN state at chosen positions, rather than duplicating it mid-sequence or sharing it. The doc does not list it.
+
+**Gaps in the doc**
+- The open question (a third KV copy versus unifying with `IKvSequence`) is still unresolved. The llama.cpp finding shows that a shared-cell model is the established pattern for recurrent state, but I did not verify how llama.cpp handles attention KV on fork. Do not treat that as settled.
+
+**Not verified:** whether the CUDA and Vulkan passes can implement `CreateContext()` without changing their device-memory pooling; the test list was not checked against the existing golden tests.
+
+**Next step:** read `GdnStateCache` and decide between snapshot (`n_rs_seq`-style) and copy for tier 4, before any tier-1 implementation.

@@ -159,7 +159,8 @@ public static class ModelCatalog
                 new("rhasspy/piper-voices", "c10ece1aade47bb51c153c893d14e5bf8e5b7117", "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
                     "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0", 4_885),
             ],
-            Licence: "MIT (code); the voice was trained on the Lessac Blizzard 2013 data, whose own licence applies: "
+            Licence: "RESEARCH USE ONLY for the voice: the Lessac Blizzard 2013 data it was trained on forbids commercial use "
+                + "and redistribution. The Piper code is MIT. Full terms: "
                 + "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",
             LicenceNeedsConsent: true,
             Hardware: "about 200 MB RAM, CPU only",
