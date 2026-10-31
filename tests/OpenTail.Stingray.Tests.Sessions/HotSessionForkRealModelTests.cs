@@ -38,7 +38,17 @@ public sealed class HotSessionForkRealModelTests : HeavyTestBase
     }
 
     [Fact]
-    public async Task Fork_TwoBranches_GenuinelyShareParentPagesAndDivergeCorrectlyOnCopyOnWrite()
+    public Task Fork_TwoBranches_GenuinelyShareParentPagesAndDivergeCorrectlyOnCopyOnWrite() => RunForkScenario(concurrent: false);
+
+    /// <summary>
+    /// The same scenario with both branches generating at the same time in one two-slot batch. Sequential turns
+    /// (above) never put two copy-on-write branches in a batch together, so a write by one branch leaking into a
+    /// page its sibling still shares would not show there. Plan 010's concurrency test, against the real fork path.
+    /// </summary>
+    [Fact]
+    public Task Fork_TwoBranchesGeneratingConcurrently_DoNotDisturbEachOtherOrTheParent() => RunForkScenario(concurrent: true);
+
+    private static async Task RunForkScenario(bool concurrent)
     {
         var path = FindModelPath();
         Assert.SkipWhen(path is null, "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this replay test.");
@@ -65,7 +75,7 @@ public sealed class HotSessionForkRealModelTests : HeavyTestBase
         using (var backend = new CpuBackend())
         {
             var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
-            using var engine = new ContinuousBatchingEngine(fwd, tokenizer, "fork-test", maxBatchSize: 1);
+            using var engine = new ContinuousBatchingEngine(fwd, tokenizer, "fork-test", maxBatchSize: concurrent ? 2 : 1);
             var runtime = new HotSessionRuntime(engine, tokenizer);
 
             using var parent = runtime.Create();
@@ -95,14 +105,26 @@ public sealed class HotSessionForkRealModelTests : HeavyTestBase
                 // Branches diverge onto genuinely different continuations -- exactly the CoW
                 // trigger: each branch's own generation writes to what was, until this point, a
                 // page shared with its sibling and the parent.
-                var tA = await branchA.RunTurnAsync(" and the capital of Italy is",
-                    new SamplingParams { Temperature = 0f, MaxNewTokens = 4 },
+                var runA = branchA.RunTurnAsync(" and the capital of Italy is",
+                    new SamplingParams { Temperature = 0f, MaxNewTokens = 16 },
                     SessionRevision.Initial, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("a"));
-                var tB = await branchB.RunTurnAsync(" and the capital of Germany is",
-                    new SamplingParams { Temperature = 0f, MaxNewTokens = 4 },
+                if (!concurrent) await runA;   // sequential: A finishes before B starts; concurrent: both are in flight together
+                var runB = branchB.RunTurnAsync(" and the capital of Germany is",
+                    new SamplingParams { Temperature = 0f, MaxNewTokens = 16 },
                     SessionRevision.Initial, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("b"));
+                var tA = await runA;
+                var tB = await runB;
                 Assert.Equal(SessionOperationState.Completed, tA.Operation.State);
                 Assert.Equal(SessionOperationState.Completed, tB.Operation.State);
+                if (concurrent)
+                {
+                    // Proof the two copy-on-write branches really shared decode batches: more sequences were served than
+                    // steps run, so at least one step carried both. Without this a silently serialised run would pass.
+                    long steps = engine.BatchedArgmaxSteps + engine.BatchedFullLogitsSteps;
+                    long sequences = engine.BatchedArgmaxSequences + engine.BatchedFullLogitsSequences;
+                    Assert.True(sequences > steps,
+                        $"the branches never decoded in one batch ({sequences} sequence-steps over {steps} steps), so this did not exercise concurrency");
+                }
                 branchAGenerated = ((TokenSegment)tA.Cursor.ExecutionLog[^1]).TokenIds;
                 branchBGenerated = ((TokenSegment)tB.Cursor.ExecutionLog[^1]).TokenIds;
 

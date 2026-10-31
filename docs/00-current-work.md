@@ -171,8 +171,8 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
    durable session restore across a restart in multi-model mode.
    [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
 - [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
-   per-session LoRA in the batched engine, and forward-pass context isolation for forks
-   (`IForwardPass.CreateContext` still returns `this`).
+   per-session LoRA in the batched engine, and the fate of the unused `IForwardPass.CreateContext` (owner decision, plan 010)
+   (2026-10-31: nothing in `src/` calls it; session forking goes through `HotSessionRuntime.Fork` and the shared KV cache, and now has a concurrent real-model test).
    [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
 - [ ] 5. **Releases**: follow [reference/nuget-release-checklist.md](reference/nuget-release-checklist.md).
