@@ -25,9 +25,54 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 
 Order: P1, P1b (done except P1c), P6 (done), P1c, P2, P3, P7, P8, P4, P5, P9, P10. P9 and P10 may move up only if they prove genuinely small; they do not displace correctness work.
 
-Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
-next one started.
+Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet.
 
+Each item ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the next one started.
+
+## Checklist
+
+Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
+or only partly answered stays unticked, with a note. Last checked 2026-10-31 17:30 against `main` at `b9b00e1b` plus PR 76 (open).
+
+- [x] Owner decisions recorded as taken provisionally (PR 72)
+- [x] Plan 2 written and linked from `docs/00-current-work.md` (PR 72)
+- [x] **P1** First-decode warm-up after a handoff: profiled, fixed, measured (PR 73)
+- [ ] **P1b** Housekeeping and the Qwen3-Coder row (two of three sub-items done; the third continues as P1c)
+  - [x] `LtxVaeNoiseIsolationTest` writes to a temp directory (PR 75)
+  - [x] `SimdKernelsLegacyQ8_1Tests` timing test allows three attempts, mutation-checked (PR 75)
+  - [ ] Qwen3-Coder `-g 4` row diagnosed: failure rate measured on old and new builds and prefetch refuted (in PR 76, not merged); the cause is **not** established, so this stays open and continues as P1c
+- [ ] **P1c** Find the NaN in hybrid MoE decode and decide about the 0.99 bar for MoE rows
+  - [ ] Capture which side returns non-finite logits in the control test
+  - [ ] Test the slot-cache candidates (GPU-or-CPU expert choice; lazy-load race)
+  - [ ] Fix, or record a decision about the bar
+- [x] **P6** `Audio.Fast` and `Vulkan.Fast` in CI
+  - [x] `ci.yml` (floors 70 and 38) (PR 74)
+  - [x] `release.yml` (PR 74)
+  - [x] Whisper+VAD test skips visibly without `silero_vad.onnx` (PR 74)
+- [ ] **P2** Handoff receipts on the Vulkan hybrid (one passing permanent row each; a failing family stays Unverified with its cosine recorded)
+  - [ ] Qwen2.5
+  - [ ] Phi-3
+  - [ ] gemma-2
+  - [ ] Granite
+  - Note: SmolLM2 and Mistral-7B were no longer in `models/` at 17:27 and are on no `_models` drive; re-pull before A/B work that needs them
+- [ ] **P3** Close the llama receipt gaps
+  - [ ] Context above 1024 (`STINGRAY_HANDOFF_TEST_CTX`)
+  - [ ] A prompt at the 32-token minimum
+  - [ ] Measure the `startPos > 0` cost before building anything
+  - [ ] Receipt text updated
+- [ ] **P7** Documented request parameters audited (unknown JSON properties stay accepted)
+- [ ] **P8** HTTP-disconnect cancellation, end to end
+  - [ ] Check which existing tests already cover it
+  - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
+  - [ ] Mutation-checked
+- [ ] **P4** Fair gate measured (two resident models, interleaved, 3 runs; idle machine, so not while another agent is running)
+- [ ] **P5** OpenTelemetry acceptance
+  - [ ] Allow-list test over every instrument and span
+  - [ ] Server-side prompt canary through the HTTP endpoints
+- [ ] **P9** Reproducibility helper used by the benchmark scripts
+- [ ] **P10** `stingray config --show` (narrow), with a redaction test
+- [ ] Plan 3 written and a final report listing only owner decisions and blocked items
+- [ ] Memory note `project_session_2026_10_31_loop_state.md` updated to the final state
 ## Progress
 
 ### P1 - first-decode warm-up after a handoff: done (2026-10-31)
