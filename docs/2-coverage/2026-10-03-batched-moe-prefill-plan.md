@@ -248,7 +248,7 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 - **Not built:** Phase 2 (batched hybrid trunk with host MoE, gated on the Phase 0/1 measurements), Phase 3 (GPU grouped-expert prefill), Phase 4 (streamed experts for oversized models), Phase 6 (discrete-GPU decode miss split).
 - **Phase 1 CUDA variant:** written and compiles, never run (no NVIDIA GPU here).
 - **Chooser not wired:** the engine does not read the calibration profile yet, because the Phase 3/4 paths it would choose between do not exist.
-- **Correction to the backlog:** [../00-current-work.md](../00-current-work.md) item 5 says "`VulkanLayerSplitForwardPass` prefills per token". That is accurate for the layer-split and MoE paths only. `GpuForwardPass` already batches (see [vulkan-gemm-llm-prefill.md](../4-performance/gpu/vulkan-gemm/vulkan-gemm.md)).
+- **Correction to the backlog (rechecked 2026-10-31, replacing an earlier correction that was itself wrong):** [../00-current-work.md](../00-current-work.md) item 5 used to say "`VulkanLayerSplitForwardPass` prefills per token". It does not for long fresh prompts: it hands them to the CPU batched pass and imports the KV (`LayerSplitCpuPrefillHandoffTests`, glm4moe and afmoe receipts). `GpuForwardPass` batches dense Q4_K/Q6_K. The gap that was real was **dense `llama` models on the Vulkan hybrid (`-g N`)**, which had no receipt; it now has one (`PrefillHandoffFamilies`, 2026-10-31; SmolLM2-1.7B `-g 12` 18 -> 180 tok/s, Mistral-7B `-g 4` 7.7 -> 44-49 tok/s, evidence in the STATUS row). Other architectures on the hybrid have no receipt of their own (not classified one by one here), so they stay refused unless `STINGRAY_HYBRID_CPU_PREFILL=all` or a structural rule applies.
 
 ### Open items
 

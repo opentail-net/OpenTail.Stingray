@@ -614,7 +614,8 @@ background/speculative model preloading. All out of scope here.
    **Verified:** 7 gate tests and 2 engine tests (in-memory, exact: strict round-robin driven single-threaded, arrival order,
    cancellation, double-dispose, forward work only inside a granted turn, at most one decode step per turn, dispose while queued);
    mutation-checked (gate handing out turns last-in-first-out, engine skipping the acquire, engine never releasing the turn: each
-   makes a test fail); one real-model test (`ExecutionTurnGateRealModelTests`, SmolLM2-135M through the loader: two gated engines
+   makes a test fail); two real-model tests (`ExecutionTurnGateRealModelTests`: engines built through the loader with an explicit gate, and the server-facing `FairModelScheduling` option resolved through DI with two named models, which shows both models taking turns on the one shared gate and, with the option off, the same gate never used; the DI test fails when `LoadNamedModel` stops assigning the gate)
+   (the first, SmolLM2-135M through the loader: two gated engines
    generating at once produce text identical to an ungated engine and the gate granted every turn). Regression: ForwardPass.Fast
    1140, Sessions.Fast 129, Server.Fast 492, 0 failed. Strict-order assertions over real threads were tried first and were flaky
    (a participant preempted between releasing and re-asking legitimately queues behind the others), so the order tests are driven

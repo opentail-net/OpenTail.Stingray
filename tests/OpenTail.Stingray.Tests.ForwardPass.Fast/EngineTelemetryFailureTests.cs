@@ -135,6 +135,18 @@ public sealed class EngineTelemetryFailureTests
     }
 
     [Fact]
+    public void SelfTestSpan_ThrowingActivityListener_DoesNotThrow()
+    {
+        var fired = new FiredCounter();
+        using var activities = ThrowingActivityListener(fired);
+
+        var ex = Record.Exception(EngineTelemetry.RunSelfTestSpan);
+
+        Assert.Null(ex);
+        Assert.True(fired.Activities > 0, "the failing listener never fired, so this proves nothing");
+    }
+
+    [Fact]
     public void ModelLoadRecording_ThrowingListeners_DoNotThrow()
     {
         var fired = new FiredCounter();

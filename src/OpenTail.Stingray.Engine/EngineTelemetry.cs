@@ -307,8 +307,12 @@ public static class EngineTelemetry
     /// <summary>Starts and ends one synthetic span so a self-test can prove spans reach a listener. Public surface: the CLI self-test command.</summary>
     public static void RunSelfTestSpan()
     {
-        using var activity = Source.StartActivity("opentail.engine.selftest");
-        activity?.SetTag("outcome", OutcomeSuccess);
+        // Same rule as the request path: a faulty listener attached to this source must not throw out of the command that reports on it.
+        var activity = TryStartActivity("opentail.engine.selftest", ActivityKind.Internal, default);
+        try { activity?.SetTag("outcome", OutcomeSuccess); }
+        catch { }
+        try { activity?.Dispose(); }
+        catch { }
     }
 
     /// <summary>

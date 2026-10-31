@@ -42,7 +42,11 @@ public sealed class PrefillHandoffFamiliesTests
         Assert.Equal("llama+experts", moe.Family);
         Assert.Equal(HandoffStatus.Admitted, moe.Status);   // Mixtral-8x7B receipt on the Vulkan hybrid
         Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("llama", ("llama.expert_count", 8u)), HandoffPath.VulkanFullGpu).Status);
-        Assert.Equal(HandoffStatus.Unverified, dense.Status);    // dense llama has no receipt of its own
+        Assert.Equal(HandoffStatus.Admitted, dense.Status);      // dense llama has its own receipt on the Vulkan hybrid (2026-10-31)
+        // ... and only on that path: the receipt says nothing about the other code paths.
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("llama"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("llama"), HandoffPath.VulkanLayerSplit).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("llama"), HandoffPath.CudaHybrid).Status);
     }
 
     [Theory]

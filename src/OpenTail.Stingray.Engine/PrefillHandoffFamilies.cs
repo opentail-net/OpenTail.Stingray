@@ -62,6 +62,16 @@ public static class PrefillHandoffFamilies
             [("qwen3", HandoffPath.VulkanHybrid)] = new(
                 "HybridCpuPrefillHandoffTests (Qwen3-0.6B Q8_0 dense, 8 GPU layers)",
                 "qwen3|attention.head_count_kv=8|attention.key_length=128"),
+            [("llama", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests, plain dense llama-architecture checkpoints (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
+                "SmolLM2-1.7B Q4_K_M (32 KV heads, rope base 130000; -g 12 and -g 4: decode cosines >= 0.998 over 40 steps), " +
+                "Mistral-7B-Instruct-v0.3 Q4_K_M (8 KV heads, rope base 1e6; -g 4: >= 0.9998), " +
+                "orpheus-3b-0.1-ft Q4_K_M (Llama-3.2 3B; -g 8: >= 0.9997), " +
+                "Falcon3-3B-Instruct Q4_K_M (-g 4: >= 0.9987, -g 16: >= 0.9992). " +
+                "KNOWN DEVIATION: Falcon3-3B at -g 8 has one decode step (38 of 40) at cosine 0.9874, below the 0.99 bar, deterministic and specific to that split, argmax agreeing; " +
+                "the other splits of the same checkpoint pass. Not exercised: Llama-3.1-style rope_freqs scaling, LongRoPE, sliding-window llama variants, contexts above 1024. " +
+                "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
+                "llama|attention.head_count_kv=32"),
             [("qwen2moe", HandoffPath.VulkanHybrid)] = new(
                 "Goldens/qwen2moe.golden.json (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
                 "qwen2moe|attention.head_count_kv=16|expert_count=60|expert_used_count=4"),

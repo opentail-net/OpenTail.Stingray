@@ -21,6 +21,7 @@ Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / referen
   Qwen3-4B 108 vs 88 tok/s, Qwen3-8B 60 vs 50, Mistral-7B 57 vs 48. The gain is the Path 3 tiled quantised GEMM, which
   has been the **default since 2026-10-11** (`STINGRAY_VULKAN_MM_PATH=1` rolls back; `VulkanMatMulPath.cs`). Qwen3-4B
   prefill on a 493-token prompt went from 38.4 to 71.3 tok/s (the Vulkan leads log has the detail).
+- **Partially offloaded dense `llama` models (`-g N`) now prefill through the CPU handoff (2026-10-31).** Before, the hybrid refused the handoff for them and prefilled token by token: SmolLM2-1.7B `-g 12` 18 tok/s, Mistral-7B `-g 4` 7.7. With the `llama` receipt: 180 and 44-49 tok/s (3 interleaved pairs each, STATUS row 142 has the parity evidence, the Falcon3 `-g 8` deviation and the one-time 1.9 s first-decode warm-up). This is the largest single prefill gain found in the session; other dense architectures on the hybrid have no receipt yet.
 - **The big remaining gaps are image diffusion on the iGPU and Voxtral ASR**, each about 2x slower than the C++ reference.
 - **Gemma 3 and Gemma 4 prefill is far behind on default F32** (see gap 10 below). Int8 closes most of it.
 
