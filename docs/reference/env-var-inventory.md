@@ -271,9 +271,9 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BATCHED_MATVEC_TIER` | experimental | |
-| `STINGRAY_GEMM_PATH` | experimental | |
-| `STINGRAY_MATVEC_WIDE8` | experimental | |
+| `STINGRAY_BATCHED_MATVEC_TIER` | experimental | `=0` disables the CPU non-BLAS batched path that consumes a batch in quads and pairs (`MatVec4In`/`MatVec2In`) instead of N single `MatVec` calls. Bit-identical either way; a weight-reuse switch. Default on (4-way concurrent decode 28.90 to 30.28 tok/s aggregate, per the session runtime plan section 3.4.9). |
+| `STINGRAY_GEMM_PATH` | experimental | CPU GEMM path selector. Default Path 2 (Q8_K activations, repacked weights); `1` or `path1` selects Path 1 (Q8_KS activations). Path 2 measured 1.83x faster on the isolated matmul, 1.11x end to end, and no worse on wikitext-2 PPL (16.0484 vs 16.0870), per the comment in `GemmPath.cs`. |
+| `STINGRAY_MATVEC_WIDE8` | experimental | `=1` selects the experimental 8-wide Q4_K dot (`DotQ4K_Wide8`) for an A/B on the real CLI. Default off. Marked in the source as temporary: to be removed once the A/B is settled. |
 | `STINGRAY_TRACE_GDN_INTERNAL` | diagnostic | |
 | `STINGRAY_TRACE_GDN_LAYERS` | diagnostic | |
 | `STINGRAY_TRACE_GDN_POS` | diagnostic | |
@@ -313,19 +313,19 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BATCHED_ATTN` | experimental | |
-| `STINGRAY_BATCHED_CPU_FFN` | experimental | |
-| `STINGRAY_BATCHED_FFN` | experimental | |
-| `STINGRAY_BATCHED_GDN_SCAN` | experimental | |
-| `STINGRAY_BATCHED_PREFILL` | experimental | |
-| `STINGRAY_BATCHED_TRUNK` | experimental | |
+| `STINGRAY_BATCHED_ATTN` | experimental | `=0` forces the per-position attention path in the CUDA hybrid-GDN batched trunk. Default on. |
+| `STINGRAY_BATCHED_CPU_FFN` | experimental | `=0` is the kill-switch for the batched CPU dense FFN in CUDA hybrid-GDN prefill. Default on. Decode is untouched. |
+| `STINGRAY_BATCHED_FFN` | experimental | `=0` forces the per-token FFN path (the bit-exact reference) in the CUDA hybrid-GDN batched trunk. Default on. |
+| `STINGRAY_BATCHED_GDN_SCAN` | experimental | `=0` falls back to the per-position loop inside `GdnBlockBatched` of the CUDA hybrid-GDN pass. Default on. |
+| `STINGRAY_BATCHED_PREFILL` | experimental | `=0` forces the bit-exact per-token prefill loop in `CudaForwardPass` (A/B and parity debugging). Default on (batched-trunk prefill). |
+| `STINGRAY_BATCHED_TRUNK` | experimental | `=0` falls back to the per-token trunk loop in CUDA hybrid-GDN prefill. Default on. |
 | `STINGRAY_BATCH_DECODE_GEMM` | experimental | |
 | `STINGRAY_BATCH_DECODE_RAGGED` | experimental | |
 | `STINGRAY_BATCH_DECODE_WS` | experimental | |
 | `STINGRAY_BYPASS_ATTN` | experimental | Bisection only (`=1`): zero the attention block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_BYPASS_GDN` | experimental | Bisection only (`=1`): zero the Gated-DeltaNet block's contribution in the CPU hybrid forward pass to localise a bug. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_BYPASS_MOE` | experimental | Bisection only (`=1`): zero the MoE block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
-| `STINGRAY_CPU_GDN` | experimental | |
+| `STINGRAY_CPU_GDN` | experimental | `=1` runs the GDN block on the CPU in the CUDA hybrid-GDN pass instead of the full-GPU block (default). For bisecting parity bugs. |
 | `STINGRAY_CUDA_GRAPH` | experimental | |
 | `STINGRAY_CUDA_MATVEC_BENCH` | bench | |
 | `STINGRAY_CUDA_PROFILE` | diagnostic | |
@@ -336,8 +336,8 @@ dynamically composed names.
 | `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | `=1` clears the `BatchVerify` speculation setting (default on). |
 | `STINGRAY_DISABLE_DUAL_Q8` | experimental | |
 | `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | |
-| `STINGRAY_FORCE_CPU_EMBED` | experimental | |
-| `STINGRAY_FORCE_NO_BLAS` | experimental | |
+| `STINGRAY_FORCE_CPU_EMBED` | experimental | `=1` forces the CPU-resident embedding path in the CUDA hybrid pass so it can be exercised and benchmarked on a model whose embedding fits in VRAM (issue 218). Default off. |
+| `STINGRAY_FORCE_NO_BLAS` | experimental | Diagnostic (`=1`): treat the BLAS library as absent regardless of what is on disk (perf investigation). |
 | `STINGRAY_GDN_CHUNKED_PREFILL` | expert | Hybrid-GDN optimized prefill (chunked recurrence + batched projections/FFN). Default **on** for every hybrid model, including MTP models since 2026-10-02 ([ADR-0002](adr-0002-hybrid-gdn-mtp-chunked-prefill.md)). `=0` forces the StrictSequential per-token path (bit-identical to decode, reproducible but not more accurate): the diagnostic control and the rollback switch. |
 | `STINGRAY_GDN_DECODE_FAST` | experimental | |
 | `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
@@ -349,19 +349,19 @@ dynamically composed names.
 | `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
 | `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |
-| `STINGRAY_KV_BF16_MIN_TOKENS` | expert | |
-| `STINGRAY_KV_STORE` | expert | |
+| `STINGRAY_KV_BF16_MIN_TOKENS` | expert | Positive integer, default 1024: the context length at which `STINGRAY_KV_STORE=auto` uses BF16 storage. |
+| `STINGRAY_KV_STORE` | expert | KV-cache store layout: `bf16` stores BF16, `auto` switches by length (see `STINGRAY_KV_BF16_MIN_TOKENS`), any other non-empty value means FP32. Unset leaves the backend default (FP32). |
 | `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/1-correctness/bugstofix.md`'s deepseek2 investigation). |
 | `STINGRAY_MMQ_SOA` | experimental | |
 | `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_MOE_GPU_ROUTER` | experimental | |
-| `STINGRAY_MOE_THREADS` | experimental | |
+| `STINGRAY_MOE_THREADS` | experimental | Positive integer: worker threads for the CUDA hybrid-GDN pass's CPU MoE. Default `Environment.ProcessorCount`. |
 | `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | `=0` disables the batched MoE verify for MTP in the CUDA hybrid-GDN pass. Default on. |
 | `STINGRAY_MTP_MIN_ACCEPT` | experimental | Break-even acceptance for adaptive MTP, a value in [0, 1], default 0.55. The first `STINGRAY_MTP_PROBE_STEPS` steps probe with MTP; if the measured acceptance is below this, the rest of the call uses plain per-token decode (output is unchanged for greedy). `0` means always MTP. |
 | `STINGRAY_MTP_PROBE_STEPS` | diagnostic | Number of probe steps for adaptive MTP (integer of at least 1, default 8). See `STINGRAY_MTP_MIN_ACCEPT`. |
 | `STINGRAY_PER_LAYER_HD_PREFILL` | experimental | |
 | `STINGRAY_PLE_GPU_DEQUANT` | experimental | |
-| `STINGRAY_PREFAULT` | experimental | |
+| `STINGRAY_PREFAULT` | experimental | Weight pre-fault of memory-mapped checkpoints. `0` disables; `1` forces; unset runs automatically unless the mapped size exceeds 80% of RAM (or of free RAM for the free-RAM gate), in which case it is skipped and the reason is logged to stderr. |
 | `STINGRAY_PREFILL_ATTN_FLASH64` | experimental | |
 | `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` | experimental | |
 | `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` | experimental | |
