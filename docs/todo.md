@@ -52,7 +52,7 @@ preflight -> load only if it passes. If the default does not fit, offer another 
 ## Now
 - **OpenBLAS DLL**: moved to `C:\Git-Public\libopenblas.dll` (user decides when to delete); 6 build-
   output copies removed; never ships again. User: keep the OpenBLAS code (harmless without the DLL).
-- **Muse-Glimmer**: CPU wiring committed `8a096e36` (not admitted). Next: level-2 synthetic spec test.
+- **Muse-Glimmer**: done. CPU wiring `8a096e36`; the level-2 synthetic test (`MuseGlimmerSyntheticTests`) exists; ADMITTED 2026-10-03 (text, CPU only), see the Muse-Glimmer row in `docs/2-coverage/ported-families-todo.md`.
 
 ## Next: batch-invariant quantized GEMM (TensorSharp ManagedQuantGemm), user agreed 2026-10-03
 Idea: single-token decode goes through the SAME GEMM as prefill (`QGemmMinRows = 1`,
@@ -66,7 +66,7 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
 - [ ] Measure: decode t/s, prefill t/s, PPL vs llama.cpp (SmolLM2: F32 0.03%, int8 0.69% today),
       decode-vs-prefill logit identity. Docs: ADR, League rows, perf-sweep-plan 10.2.
 
-## Commits (newest first; none pushed)
+## Commits (newest first; all on origin/main, checked 2026-10-31 with `git merge-base --is-ancestor`)
 - `b31d5f3a` perf(cpu): gate+up dual repacked GEMM, per-thread quant scratch (prefill +5.7%)
 - `fb1f07e6` test: decode-via-GEMM model-level invariance (committed by the user's other AI)
 - `a5af0272` feat: STINGRAY_CPU_DECODE_VIA_GEMM experiment (other AI; also committed root dumps + todo.md)
@@ -82,8 +82,8 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
 - `d7fcf135` engine: CPU int8 prefill default on (ADR-0003)
 
 ## Then
-1. Family ports in plan order (`docs/2-coverage/ported-families-todo.md`): Muse-Glimmer spec test,
-   then Qwen 3.8 Flash Next, GLM-5.x, DiffusionGemma, MiniMax-H3, DeepSeek review. NOT admitted,
+1. Family ports in plan order (`docs/2-coverage/ported-families-todo.md`; Muse-Glimmer is done):
+   Qwen 3.8 Flash Next, GLM-5.x, DiffusionGemma, MiniMax-H3, DeepSeek review. NOT admitted,
    NOT advertised.
 2. Later: uncontended int8 speed re-measure (Gemma rows), 27B MTP validation + draft acceptance.
 - Not mine, leave alone: `stage_diagnostics_report.txt`, `higgs-tts-*.json/txt` stay uncommitted.
