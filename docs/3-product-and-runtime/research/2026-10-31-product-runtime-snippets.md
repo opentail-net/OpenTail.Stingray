@@ -45,7 +45,7 @@ throw new InvalidDataException($"Unsupported GGUF version: {version}");
 ## 4. Catalogue licence for the speech voice (known-good plan, P5 and the licence rule)
 
 `src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs`, lines 162-164 (`piper-lessac`):
-
+`src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs`, lines 162-164 (`piper-lessac`). **This excerpt is a pre-fix snapshot** (as of the P5 finding); on 2026-10-31 the catalogue text was changed to lead with "RESEARCH USE ONLY for the voice ... forbids commercial use and redistribution. The Piper code is MIT." Text as it was then:
 ```csharp
 Licence: "MIT (code); the voice was trained on the Lessac Blizzard 2013 data, whose own licence applies: "
     + "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",

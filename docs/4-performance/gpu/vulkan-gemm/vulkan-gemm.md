@@ -2,7 +2,7 @@
 
 **Owner:** this file (2026-10-30). It replaces two separate docs, kept below verbatim as parts:
 
-1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see [../../../workstreams/vulkan-gemm-llm-prefill.md](vulkan-gemm.md), which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
+1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see the "Thread state" section of this document, which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
 2. **Part 2, FP16-tile project** (was `2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md`). It is the diffusion-side GEMM project, and it carries the numerics decision.
 
 Not included: the CPU expert-GEMM plan ([../../2026-10-04-q4k-expert-gemm-plan.md](../../2026-10-04-q4k-expert-gemm-plan.md)). It is about CPU MoE prefill, not Vulkan, so it keeps its own file.
@@ -21,8 +21,8 @@ The same shape as `docs/repack-gemm/` on the CPU side: an incumbent (Path 1), a 
 faster future kernel (Path 2), a runtime switch between them, and counters so the choice is decided
 by measurement rather than argument.
 
-**Path 2 does not exist.** This document exists so the decision to write it — or to delete the
-scaffold and walk away — can be made from numbers that are available today.
+**Path 2 did not exist when Part 1 was written (original experimental state; it now serves Q4_K and Q6_K, see "Research findings (2026-10-30)" below).** This document exists so the decision to write it — or to delete the
+scaffold and walk away — can be made from numbers that were available then.
 
 ### Why
 
@@ -580,7 +580,7 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 
 | Qwen3-4B-Q4_K_M, 493-token prefill, Vulkan iGPU | Prefill |
 |---|---|
-| Path 1 (default) | 38.4 t/s (12.8 s) |
+| Path 1 (the default when this was measured, 2026-10-11; since replaced by Path 3, still selectable with `STINGRAY_VULKAN_MM_PATH=1`) | 38.4 t/s (12.8 s) |
 | Path 3, 128-token chunks, tiled quantised GEMM, sliced flash attention | 71.3 t/s (6.9 s), +86% |
 | CPU, same prompt (2026-10-10) | 102.8 t/s |
 

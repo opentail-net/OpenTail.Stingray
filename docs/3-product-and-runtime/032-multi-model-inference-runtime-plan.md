@@ -6,7 +6,7 @@
 
 ## Status
 
-**Thread:** [multi-model runtime](032-multi-model-inference-runtime-plan.md). The status below is as last written; the workstream records the 2026-10-30 check.
+**Thread:** [multi-model runtime](032-multi-model-inference-runtime-plan.md). The status below is as last written; the thread-state section at the end of this document records the 2026-10-30 check.
 
 **Phases 1, 2, and 4 implemented. Phase 3 at 10 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue

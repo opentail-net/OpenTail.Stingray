@@ -12,13 +12,13 @@
 - [ ] Decision for the user: approve Phase 0 + 1 as the first implementation (Phase 1 is done; Phases 2-5 gated on its measurements)
 - [ ] Decision for the user: a discrete-GPU machine for Phase 3/4 speed measurement
 
-Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status: plan only, nothing implemented.**
+Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status (updated 2026-10-31): Phase 0, Phase 1, Phase 1b and the Phase 5 measured chooser (`ExpertCalibration`, `stingray calibrate`) are implemented, but the engine does not yet read the chooser's profile; Phases 2-4 are not started. The original status, "plan only, nothing implemented", was true on 2026-10-03 and is superseded. See the thread state below.**
 
 **Revision 2026-10-03 (after an external review; each point was checked against the code before adopting).** Corrected: the hybrid's CPU KV is `KvCache` (FP32, `[maxSeqLen, kvDim]` per layer), not the `PagedKvCache` that `ForwardPass` uses; the hybrid's GPU KV is FP32 (`gpu.Allocate` default dtype), the fp16 KV I cited belongs to `GpuForwardPass`, so Phase 1 has no precision conversion; Phase 1 is fresh sequences only (`startPos == 0`); `PagedKvCache` can narrow itself to BF16 (explicitly via `STINGRAY_KV_DTYPE` / `STINGRAY_KV_STORE`, or automatically at 1,024 tokens in `auto` mode), so the CPU prefill pass must be pinned to F32 KV or the handoff would silently put BF16-rounded K/V into the hybrid.
 
 ## Implementation status (2026-10-04)
 
-Phase 0 and Phase 1 are implemented for the Vulkan hybrid; Phase 1b (full-offload `GpuForwardPass`) is implemented; the CUDA variant is written, compiles, and has **never run** (no NVIDIA GPU here; opt-in, default off). Phases 2-5 are not started. What exists:
+Phase 0 and Phase 1 are implemented for the Vulkan hybrid; Phase 1b (full-offload `GpuForwardPass`) is implemented; the CUDA variant is written, compiles, and has **never run** (no NVIDIA GPU here; opt-in, default off). Phases 2-4 are not started. Phase 5 is half done: the measured chooser (`ExpertCalibration`, `stingray calibrate`) is built, the engine wiring is not. What exists:
 
 - `HybridPrefillHandoff.cs` (Vulkan hybrid), `GpuPrefillHandoff.cs` (full-offload Vulkan, MoE only, F32 or packed-fp16 KV), `CudaHybridPrefillHandoff.cs` (opt-in, F32 KV only), shared `KvHandoff.cs`; `PagedKvCache.Bf16RoundingRequested`, `ForwardPass.MoeRoutingObserver`, `ExpertSlotManager.PromoteOnPreload/Capacity`.
 - Tests: `HybridCpuPrefillHandoffTests` (byte-exact K/V and logits, decode parity, boundary lengths, `startPos > 0`, budget refusal, expert warm-up), `GpuCpuPrefillHandoffTests` (same for full GPU, both KV dtypes, fp16 packing), `CudaHybridCpuPrefillHandoffTests` (not run).
@@ -217,7 +217,6 @@ Phase 0 (hours) -> Phase 1 (about a day or two, biggest win here, lowest risk) -
 
 ## Open items from the batched-prefill workstream (ported 2026-10-31)
 
-- [ ] Gemma 4 on Vulkan with a prompt under the CPU-prefill handoff threshold runs at 9.3 tok/s (PerformanceLeague, 2026-10-11 recheck). The minimum is `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32 (`src/OpenTail.Stingray.Engine/Planning/EngineEnvironment.cs`), so the 19-token prompt skips the handoff. Gemma 4 has its own batched trunk (`ForwardGemma4`, `GpuForwardPass.cs`): check which path a short Gemma 4 prompt takes before changing the threshold.
 
 ## Decisions for you
 1. Approve Phase 0 + Phase 1 as the first implementation (CPU prefill with KV handoff), with Phases 2-5 gated on its measurements.
@@ -260,7 +259,7 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 - [ ] CUDA variant: run on an NVIDIA machine
 - [ ] Phase 6 (discrete GPU only)
 
-- [ ] Gemma 4 on Vulkan with a prompt below the CPU-prefill handoff threshold runs at 9.3 tok/s (PerformanceLeague, 2026-10-11 recheck, finding 5). The minimum is `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32 (`Planning/EngineEnvironment.cs`), the same gate as llama.cpp's op offload (`HybridPrefillHandoff.cs`). The 19-token prompt skips the handoff. Gemma 4 has its own batched trunk (`ForwardGemma4`, `GpuForwardPass.cs`): check which path a short Gemma 4 prompt takes before changing the threshold.
+- [ ] Gemma 4 on Vulkan with a prompt below the CPU-prefill handoff threshold runs at 9.3 tok/s (PerformanceLeague, 2026-10-11 recheck, finding 5; the "19 tokens" in older notes was the prompt length, not the threshold, as corrected in the performance pickup guide on 2026-10-31). The minimum is `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32 (`Planning/EngineEnvironment.cs`), the same gate as llama.cpp's op offload (`HybridPrefillHandoff.cs`). The 19-token prompt skips the handoff. Gemma 4 has its own batched trunk (`ForwardGemma4`, `GpuForwardPass.cs`): check which path a short Gemma 4 prompt takes before changing the threshold.
 
 ### Decisions for the owner
 

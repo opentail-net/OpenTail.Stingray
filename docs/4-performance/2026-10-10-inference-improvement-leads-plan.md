@@ -37,7 +37,7 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **D3** FP16-tile GEMM project (the only large-upside item left; carries the numerics decision). Plan: [the quantized GEMM plan](gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion).
 
 ### E. Other leads and deferred work
-- [ ] **E2** Lead 4: MoE decode gap (OLMoE 0.50x).
+- [ ] **E2** Lead 4: MoE decode gap (OLMoE; the 0.50x figure is stale, re-measured 2026-10-30 at decode 0.81x and prefill about 0.8x of llama.cpp per the [pickup guide](2026-10-30-performance-pickup.md) row 9, not re-measured again here).
 - [ ] **E3** Lead 5: FLUX.2 GPU (3,260 s for one 512x512 image).
 - [ ] **E4** Lead 6: diffusion-side `MatVecDq*` kernels (parked, would double the effort).
 - [ ] **E5** Reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2: explicitly deferred until the leads above are done or parked.
@@ -107,7 +107,7 @@ stage timings, as was done for Qwen Image. Notes already gathered for that day:
   picture; the league number may be stale.
 - **Upside:** several times faster prefill on those models. **Gate:** teacher-forced logit parity against `llama-server`.
 
-### Lead 4: MoE decode gap (OLMoE 0.50x)
+### Lead 4: MoE decode gap (OLMoE: was 0.50x on 2026-09-10; 0.81x decode / about 0.8x prefill on 2026-10-30)
 - **Evidence:** already investigated in [2026-10-04-moe-decode-gap-investigation.md](../done/2026-10-04-moe-decode-gap-investigation.md);
   that document lists what was tried.
 - **First step:** read it, re-measure, and only reopen if a not-yet-tried idea remains (for example the per-expert Q4_K GEMM
@@ -270,12 +270,12 @@ Implemented (all opt-in, `STINGRAY_VULKAN_MM_PATH=3`; the default stays Path 1):
 
 | Qwen3-4B-Q4_K_M, 493-token prefill, Vulkan | Prefill |
 |---|---|
-| Path 1 (default) | 38.4 t/s (12.8 s) |
+| Path 1 (the default when measured, 2026-10-11; Path 3 became the default later that day) | 38.4 t/s (12.8 s) |
 | Path 3 (128-token chunks, tiled quantized GEMM, sliced flash attention) | **71.3 t/s (6.9 s), +86%** |
 | CPU, same prompt (2026-10-10) | 102.8 t/s |
 
 Greedy generation is identical to Path 1. Matmuls are now about 0.8 TFLOP/s effective (4 TFLOP in 5.1 s). Weight traffic fell from 64.2 GB to 8.3 GB (16.8 MiB/token).
-Next: larger chunks (256), a second dense model, decode-regression check, then decide whether Path 3 earns the default.
+Next: larger chunks (256), a second dense model, decode-regression check, then decide whether Path 3 earns the default. **Decided 2026-10-11 (same day): it did, and Path 3 is the default.**
 
 ### Lead 2b (new): Vulkan decode, where the time goes, 2026-10-11 (Qwen3-4B-Q4_K_M, greedy, GPU)
 Decode is a separate cost from prefill, so Path 3 does not touch it. Elimination experiment (single-vector matmuls skipped temporarily, so the elapsed time shows everything else; hook removed again):

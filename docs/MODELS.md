@@ -46,7 +46,7 @@ These need two files: the model and its image projector (`mmproj`). Pass both: `
 
 | Model | Pick it when | Download | Size | Licence | Tested |
 |---|---|---|---|---|---|
-| [Piper, lessac (US English)](models/piper.md) | Fast, natural English; faster than real time on a CPU | [en_US-lessac-medium.onnx](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx) + [.onnx.json](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json) | 63 MB | MIT | file (README) |
+| [Piper, lessac (US English)](models/piper.md) | Fast, natural English; faster than real time on a CPU | [en_US-lessac-medium.onnx](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx) + [.onnx.json](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json) | 63 MB | **Research use only** for the voice (Lessac Blizzard 2013 data forbids commercial use and redistribution); the Piper code is MIT. Setup asks for consent | file (README) |
 | [MMS-TTS](models/audio-pipelines.md) | Speech in one of 1,100+ languages (`facebook/mms-tts-<language>`) | [facebook/mms-tts-eng](https://huggingface.co/facebook/mms-tts-eng/tree/main) (whole folder) | 145 MB | **Non-commercial** (CC-BY-NC-4.0) | family |
 
 Other Piper voices and languages are in the same
