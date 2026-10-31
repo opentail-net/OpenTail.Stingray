@@ -398,7 +398,7 @@ dynamically composed names.
 | `STINGRAY_TRACE_SNAPSHOT` | diagnostic | |
 | `STINGRAY_TRACE_VRAM` | diagnostic | |
 | `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | |
-| `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | |
+| `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | `=1` swaps the fused byte-exact GDN recurrence scan for the FlashQLA chunk-parallel scan during Vulkan batched prefill. Default off. Argmax-stable, not byte-exact. Needs a device that fits the ~34 KB shared-memory tile; the end-to-end win is small while the batched trunk is capped at 8 tokens (comment in `VulkanHybridGdnForwardPass.cs`). |
 | `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_VULKAN_NO_FLASH_ATTN` | experimental | |
 | `STINGRAY_VULKAN_PREFILL_CHUNK` | experimental | |
