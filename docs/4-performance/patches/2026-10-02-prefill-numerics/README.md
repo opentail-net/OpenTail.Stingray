@@ -61,7 +61,7 @@ Not checked in this pass. The patch and harnesses were not applied or built. The
 
 The patch and harnesses were still not applied or built in this pass. Two external facts bear on the numerics harnesses:
 
-- **Int8 pair-sum saturation.** Intel's `vpmaddubsw` saturates each adjacent pair sum to int16 ([Intel](https://www.intel.com/content/www/us/en/docs/cpp-compiler/developer-guide-reference/2021-10/multiplication-intrinsics.html)). The `ggmlx` and `q8chk` harnesses should include the activation `-128` case; see [the excerpts file](../research/2026-10-31-performance-snippets.md#5-int8-pair-sums-the-saturation-bound).
+- **Int8 pair-sum saturation.** Intel's `vpmaddubsw` saturates each adjacent pair sum to int16 ([Intel](https://www.intel.com/content/www/us/en/docs/cpp-compiler/developer-guide-reference/2021-10/multiplication-intrinsics.html)). The `ggmlx` and `q8chk` harnesses should include the activation `-128` case; see [the excerpts file](../../research/2026-10-31-performance-snippets.md#5-int8-pair-sums-the-saturation-bound).
 - **The reference revision** the harnesses load (`tools/llama.cpp`, b10306 per the pickup doc) is only a binary on this machine, with no `ggml` source. The `ggmlx` harness calls the vendored ggml directly, so the source revision it was built against must be recorded for the numerics record to be reproducible.
 
 **Next step:** apply the patch with `git apply --check` against the current tree, then decide whether the harness outputs still reproduce the ADR numbers.

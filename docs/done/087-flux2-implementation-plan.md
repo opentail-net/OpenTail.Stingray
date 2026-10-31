@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-09-27.** Closed: FLUX.2 is implemented and numerically matches `sd-cli` as of 2026-09-27 (e497ed8; STATUS row "FLUX.2"). GPU performance work continues in [../093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
+> **ARCHIVED 2026-09-27.** Closed: FLUX.2 is implemented and numerically matches `sd-cli` as of 2026-09-27 (e497ed8; STATUS row "FLUX.2"). GPU performance work continues in [../093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/diffusion-performance.md).
 
 # 087 — FLUX.2 real implementation plan (tensor inventory, ready to implement)
 

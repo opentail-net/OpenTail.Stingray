@@ -537,7 +537,7 @@ At minimum:
   ```
   within one page.
 
-- [x] Include a "Coming from LLamaSharp" document ([docs/3-product-and-runtime/coming-from-llamasharp.md](../3-product-and-runtime/coming-from-llamasharp.md)):
+- [x] Include a "Coming from LLamaSharp" document ([docs/3-product-and-runtime/coming-from-llamasharp.md](../guides/coming-from-llamasharp.md)):
   ```text
   LLamaSharp concept
   → Stingray concept

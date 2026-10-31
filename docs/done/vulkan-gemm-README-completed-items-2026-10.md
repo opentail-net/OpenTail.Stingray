@@ -1,6 +1,6 @@
 # Completed items split from README.md (2026-10-30)
 
-Finished items moved verbatim out of [../4-performance/gpu/vulkan-gemm/README.md](../4-performance/gpu/vulkan-gemm/README.md). Open items stay there. Each block notes the section it came from.
+Finished items moved verbatim out of [../4-performance/gpu/vulkan-gemm/README.md](../4-performance/gpu/vulkan-gemm/vulkan-gemm.md). Open items stay there. Each block notes the section it came from.
 
 > from: ## Actionable items checklist
 - [x] **Path 1 / Path 2 scaffold and diagnostic counters**: `STINGRAY_VULKAN_MM_PATH`, `STINGRAY_VULKAN_MM_STATS`, and 27 unit tests (`VulkanMatMulPathTests.cs`).

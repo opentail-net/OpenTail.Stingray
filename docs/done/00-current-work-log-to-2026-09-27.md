@@ -1094,7 +1094,7 @@ names what closed; these items are what did not.
   no corresponding entry anywhere in `PerformanceLeague.md` — genuinely never run. See items 1-2 of
   §4 in
   [done/2026-09-24-diffusion-perf-session-handoff.md](2026-09-24-diffusion-perf-session-handoff.md),
-  next to [093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/093-flux2-gpu-performance-optimization-plan.md).
+  next to [093-flux2-gpu-performance-optimization-plan.md](../4-performance/diffusion/diffusion-performance.md).
 - **Per-pipeline diffusion end-to-end smoke tests** with real weights, small resolution and a
   stored reference, failing loudly when checkpoints are missing. See item 4 of §4 in the same handoff.
 - **MusicGen / AudioGen performance and DRY passes** (CFG as a batch-2 GEMM; a shared T5 kernel
