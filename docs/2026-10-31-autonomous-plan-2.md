@@ -68,10 +68,11 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:
   - [x] P7c: `stop` and `stop_sequences` (one filter around the engine stream in all four handlers; generation is cancelled, not just the text hidden). 35 tests: 19 on the filter including 400 random inputs against a character-level reference, 16 through the endpoints; five production mutations each fail tests (the endpoint stream not filtered 4, no `stop_sequence` reason 2, no cancellation 7, no holdback 3, no validation 6)
   - [x] P7d: `stream_options.include_usage` (final usage chunk) and Anthropic `tool_choice` (auto and none honoured; any and tool refused with a 400). Limit: the `none` wiring has no failing endpoint test
   - [x] P7e: error bodies now also carry the nested `error` object on both APIs, additively (the flat fields stay; Anthropic's top-level `type` is not changed to `error`)
-- [ ] **P8** HTTP-disconnect cancellation, end to end (PR 81 is open and partial: disconnect, cancellation reaching the engine, slot freed and three mutation checks are covered; releasing the runtime handle is not)
+- [x] **P8** HTTP-disconnect cancellation, end to end: single-model half by the delegate session (PR 81, taken over unchanged), multi-model half with the runtime handle added here
   - [x] Check which existing tests already cover it (done in PR 81)
-  - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
-  - [ ] Mutation-checked
+  - [x] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes (single-model host, delegate's test)
+  - [x] Test: the same in a multi-model host with a fake loader (`NamedModelOptions.EngineFactory`): positive control that the runtime holds one handle while generating, then the handle is back to zero after the disconnect and the model serves the next request
+  - [x] Mutation-checked: never disposing the runtime handle fails only the multi-model test; ignoring the client disconnect token fails both; the delegate's three mutations are in PR 81's description
 - [x] **P4** Fair gate measured (two resident models, interleaved, 3 runs). Machine 10 to 16 percent busy, not idle; stated with the numbers. Result: off by default stays right, and the single-request engine is not worth mediating (plan 032, Slice 5)
   - [x] P4b `STINGRAY_PREFILL_CHUNK` and the server option `PrefillChunkTokens` never reached the batching engine; wired, 4 real-model tests, three production mutations each fail tests
 - [x] **P5** OpenTelemetry acceptance (PR 80; limit: the fake engine emits no tool calls, so tool-call arguments are not covered)
