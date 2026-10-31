@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cli.Terminal;
 /// <summary>
 /// Minimal console renderer covering the surface this CLI actually uses, replacing
 /// Spectre.Console. Colour is emitted only for an interactive stdout, so redirected or
-/// piped output stays clean (<c>opentail-llm-cli -p "..." &gt; out.txt</c>).
+/// piped output stays clean (<c>stingray -p "..." &gt; out.txt</c>).
 /// </summary>
 public static class AnsiConsole
 {

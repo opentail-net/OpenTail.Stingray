@@ -65,7 +65,7 @@ foreach (string unknown in KnownEnvironmentVariables.FindUnknown())
 var app = new CommandApp<RunCommand>();
 app.Configure(config =>
 {
-    config.SetApplicationName("opentail-llm-cli");
+    config.SetApplicationName("stingray");
     // Report the MinVer-derived version rather than a literal. The hardcoded "0.1.0" that was
     // here never changed with the build, so `--version` was actively misleading â and build
     // identity is the first thing any bug report or support bundle needs to be right.
@@ -103,7 +103,7 @@ app.Configure(config =>
     config.AddCommand<PerplexityCommand>("perplexity")
         .WithDescription("Teacher-forced perplexity over a text file (llama.cpp llama-perplexity analogue; CPU only). Reports mean NLL, perplexity, and position-bucket NLLs â the TurboQuant/KVarN accuracy gate (issue #180).");
     config.AddCommand<ImageCommand>("image")
-        .WithDescription("Generate an image from a text prompt using a native FLUX or Z-Image-Turbo diffusion pipeline (VAE + CLIP-L + T5-XXL + DiT GGUF). See 'opentail-llm-cli image --help' for required model paths.");
+        .WithDescription("Generate an image from a text prompt using a native FLUX or Z-Image-Turbo diffusion pipeline (VAE + CLIP-L + T5-XXL + DiT GGUF). See 'stingray image --help' for required model paths.");
     config.AddCommand<TtsCommand>("tts")
         .WithDescription("Synthesize speech audio from text with a native TTS engine (Kokoro by default; see --engine for the full list).");
     config.AddCommand<SttCommand>("stt")

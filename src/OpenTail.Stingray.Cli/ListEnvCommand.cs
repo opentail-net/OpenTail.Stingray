@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Prints the <c>STINGRAY_*</c> settings currently active in this process's environment.
-/// Usage: <c>opentail-llm-cli list-env</c>
+/// Usage: <c>stingray list-env</c>
 ///
 /// <para>Answers "what configuration is this run actually using?", which today requires knowing
 /// which of ~141 variables exist and checking each by hand. This is the environment slice of the

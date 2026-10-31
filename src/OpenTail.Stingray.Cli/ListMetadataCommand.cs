@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Dumps all raw GGUF metadata key/value pairs from a model file.
-/// Usage: opentail-llm-cli list-metadata -m model.gguf
+/// Usage: stingray list-metadata -m model.gguf
 /// </summary>
 public sealed class ListMetadataCommand : Command<ListMetadataCommand.Settings>
 {

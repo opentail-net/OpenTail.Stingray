@@ -2,7 +2,7 @@
 namespace OpenTail.Stingray.Cli;
 
 /// <summary>
-/// Lists GGUF models found on disk: <c>opentail-llm-cli list-models</c>
+/// Lists GGUF models found on disk: <c>stingray list-models</c>
 ///
 /// <para>The read-only slice of §6 Phase 3's model lifecycle. It deliberately does NOT implement a
 /// model store, aliases, downloads, or verification — those need a manifest and network handling.

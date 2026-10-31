@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Cli;
 /// same-named tensors from a DONOR checkpoint (typically a higher-precision quantization of the same model).
 /// Used where <c>llama-quantize</c> cannot be (it rejects architectures it does not know, e.g. fish-speech).
 /// Usage:
-///   opentail-llm-cli gguf-transplant --base s2-pro-q4_k_m.gguf --donor s2-pro-q8_0.gguf
+///   stingray gguf-transplant --base s2-pro-q4_k_m.gguf --donor s2-pro-q8_0.gguf
 ///       --tensors "^fast_layers\.\d+\.(attention\.wo|feed_forward\.w3)\.weight$" -o s2-pro-q4_k_m-fastar-q8.gguf
 ///
 /// Byte-level strategy (never re-encodes the KV metadata): the header and KV section of the base file are copied

@@ -21,7 +21,7 @@ namespace OpenTail.Stingray.Cli;
 /// so degradation in the compressed region is visible separately from the
 /// always-FP32 recent window.
 ///
-/// Usage: opentail-llm-cli perplexity -m model.gguf -f corpus.txt -c 2048 [--tq [--tq-mode kvarn]]
+/// Usage: stingray perplexity -m model.gguf -f corpus.txt -c 2048 [--tq [--tq-mode kvarn]]
 /// </summary>
 public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
 {
