@@ -47,7 +47,7 @@ public static class VulkanMatMulPathConfig
 {
     private static VulkanMatMulPath _current = ReadFromEnvironment();
 
-    /// <summary>The active path. Defaults to <see cref="VulkanMatMulPath.Path1"/>.</summary>
+    /// <summary>The active path. Defaults to <see cref="VulkanMatMulPath.Path3"/> since 2026-10-11 (see <see cref="ReadFromEnvironment"/>); set <c>STINGRAY_VULKAN_MM_PATH=1</c> to roll back.</summary>
     public static VulkanMatMulPath Current
     {
         get => _current;
