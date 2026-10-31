@@ -229,9 +229,9 @@ dynamically composed names.
 | `STINGRAY_EXPERIMENTAL_PRISM` | experimental | `1` lets Bonsai2 PRISM GGUFs (PQ2_0/PTQ1_0 weights + `prism.hadamard.*` transforms) load on the CPU hybrid-GDN pass. **Ported, not verified** (CLAUDE.md rule 14): without it such files are refused. Not verified against the publisher reference (PrismML-Eng/llama.cpp). `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md` §3b. |
 | `STINGRAY_EXPERT_STATS` | diagnostic | Mirrors `OpenTailStingrayServerOptions.ExpertStatsPath` (writes SLRU hit-rate stats to a file on exit — troubleshooting only). |
 | `STINGRAY_MOE_GPU_PREFILL` | experimental | Mirrors `OpenTailStingrayServerOptions.GpuMoePrefill`. |
-| `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS` | experimental | |
+| `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS` | experimental | Integer, default 64: minimum prompt length for the CUDA hybrid-GDN pass to run MoE prefill on the GPU when op-offload is on. Below it, and for all single-token decode and MTP-verify steps, the byte-exact CPU MoE runs. `0` always engages. Measured in register mode: the CPU wins below about 50 tokens, the GPU wins 28-67% from about 120 up. |
 | `STINGRAY_MOE_PHASE_TIMING` | diagnostic | `1`: CPU MoE FFN decode only. Accumulates wall time of each phase of one `ForwardPass.MoeFfn` call (router, shared expert, activation quantization, the two expert sweeps, SiLU-mul, sequential experts) plus two empty-sweep fork/join probes, and prints them per call at exit. Measurement only; no kernel changes. |
-| `STINGRAY_MOE_PIN_MODE` | experimental | |
+| `STINGRAY_MOE_PIN_MODE` | experimental | `register` (default) pins the expert mmap pages in place with cudaHostRegister (no RAM copy, no page-cache eviction, no decode regression, DMA about 13 GB/s). `copy` makes the original cudaMallocHost duplicate (DMA about 26 GB/s but evicts the page cache the CPU decode streams experts from, about -25% decode). |
 | `STINGRAY_MOE_PREDICT_PREFETCH` | expert | Mirrors `OpenTailStingrayServerOptions.MoePredictPrefetch`. |
 | `STINGRAY_MOE_WARMPIN` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPin`. |
 | `STINGRAY_GPU_CPU_PREFILL` | experimental | Full-offload Vulkan pass (`-g -1`), MoE models only: a fresh prompt of at least `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS` tokens is prefilled by the CPU batched pass and its K/V (F32, or packed fp16 when the GPU KV is narrowed) handed to the GPU caches. On by default for MoE; `0` turns it off, `all` admits families without a parity test. |
@@ -326,29 +326,29 @@ dynamically composed names.
 | `STINGRAY_BYPASS_GDN` | experimental | Bisection only (`=1`): zero the Gated-DeltaNet block's contribution in the CPU hybrid forward pass to localise a bug. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_BYPASS_MOE` | experimental | Bisection only (`=1`): zero the MoE block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_CPU_GDN` | experimental | `=1` runs the GDN block on the CPU in the CUDA hybrid-GDN pass instead of the full-GPU block (default). For bisecting parity bugs. |
-| `STINGRAY_CUDA_GRAPH` | experimental | |
-| `STINGRAY_CUDA_MATVEC_BENCH` | bench | |
-| `STINGRAY_CUDA_PROFILE` | diagnostic | |
-| `STINGRAY_DECODE_CUDA_GRAPH` | experimental | |
+| `STINGRAY_CUDA_GRAPH` | experimental | `=0` reverts `CudaForwardPass` decode from CUDA graphs to direct launches. Default on (measured +9-10% on the all-GPU Gemma 4 path at low and about 1K context). |
+| `STINGRAY_CUDA_MATVEC_BENCH` | bench | Benchmark (`=1`): after CUDA warm-up, time the Q4_K matvec kernel in isolation at the three FFN shapes (`BenchMatVec` in `CudaForwardPass`). |
+| `STINGRAY_CUDA_PROFILE` | diagnostic | Diagnostic (`=1`): use the profiled CUDA forward path (graphs off, which inflates launch-bound phases) and disable GPU argmax. |
+| `STINGRAY_DECODE_CUDA_GRAPH` | experimental | `=1` captures the GPU trunk of CUDA hybrid-GDN plain decode into a per-layer graph and replays it; the CPU MoE stays outside the graph. Default off. Falls back to direct launches on any capture failure. |
 | `STINGRAY_DECODE_PROFILE` | diagnostic | Diagnostic (`=1`): per-token GPU-trunk versus CPU-MoE time split in the CUDA hybrid-GDN pass (adds a sync after the trunk; negligible perturbation). The trunk:moe ratio shows the decode pole. |
-| `STINGRAY_DECODE_REGIONS` | experimental | |
-| `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | experimental | |
+| `STINGRAY_DECODE_REGIONS` | experimental | Diagnostic (`=1`): bracket the CUDA decode regions with synchronisations so the wall-clock is attributable per region; prints every 64 tokens. Adds a few microseconds of overhead. |
+| `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | experimental | Integer MiB, default 64: VRAM safety margin kept free when uploading dense FFN weights to the GPU in the CUDA hybrid-GDN pass. `0` pushes to the limit. |
 | `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | `=1` clears the `BatchVerify` speculation setting (default on). |
-| `STINGRAY_DISABLE_DUAL_Q8` | experimental | |
-| `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | |
+| `STINGRAY_DISABLE_DUAL_Q8` | experimental | `=1` disables the dual (gate and up) int8 prefill GEMM in the CPU forward pass, leaving the separate path. |
+| `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | `=0` turns off the strided GEMM calls in the CPU flash64 prefill attention path (`ForwardPass.Attention.cs`; only used when the head dimension equals the 64 tile). Default on. |
 | `STINGRAY_FORCE_CPU_EMBED` | experimental | `=1` forces the CPU-resident embedding path in the CUDA hybrid pass so it can be exercised and benchmarked on a model whose embedding fits in VRAM (issue 218). Default off. |
 | `STINGRAY_FORCE_NO_BLAS` | experimental | Diagnostic (`=1`): treat the BLAS library as absent regardless of what is on disk (perf investigation). |
 | `STINGRAY_GDN_CHUNKED_PREFILL` | expert | Hybrid-GDN optimized prefill (chunked recurrence + batched projections/FFN). Default **on** for every hybrid model, including MTP models since 2026-10-02 ([ADR-0002](adr-0002-hybrid-gdn-mtp-chunked-prefill.md)). `=0` forces the StrictSequential per-token path (bit-identical to decode, reproducible but not more accurate): the diagnostic control and the rollback switch. |
-| `STINGRAY_GDN_DECODE_FAST` | experimental | |
-| `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
-| `STINGRAY_GDN_RAW_Q8_0` | experimental | |
-| `STINGRAY_GEMMA4_PROBE` | diagnostic | |
+| `STINGRAY_GDN_DECODE_FAST` | experimental | `=1` enables the faster GDN recurrence kernel for CUDA hybrid-GDN plain decode. Default off; the MTP draft sub-decode and the bit-parity oracle keep the original byte-exact kernel. |
+| `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | `=0` reverts CUDA hybrid-GDN prefill to the byte-exact per-token matvec instead of the MMQ/GEMM kernels. Default on (argmax-stable, not byte-exact). |
+| `STINGRAY_GDN_RAW_Q8_0` | experimental | `=0` reverts to the F32-dequant weight upload (the byte-exact reference) instead of raw Q8_0 weights with MMQ/dp4a kernels in the CUDA hybrid-GDN pass. Default on (argmax-stable, not byte-exact). |
+| `STINGRAY_GEMMA4_PROBE` | diagnostic | Diagnostic: bisect probe for the Gemma 4 Vulkan defect in `GpuForwardPass`. Unset in normal use. |
 | `STINGRAY_GRANITE4_DIAG` | diagnostic | `=1` prints a `[GRANITE4-DIAG]` first-token logit summary (top-10, EOG margin) after Granite 4 Vision prefill in the CLI. |
 | `STINGRAY_GRANITE4_PREFILL` | diagnostic | Only echoed in the `[GRANITE4-DIAG]` line; the engine-side prefill selector it once drove was removed with the item-04 fix. |
 | `STINGRAY_GGML_F16_DOT` | experimental | Opt-in: rounds F16-weight matmul activations to fp16 before dotting, matching ggml's `vec_dot_type=F16` pairing, for bit-parity comparisons against llama.cpp (see `docs/1-correctness/bugstofix.md`). Default off — full-F32-precision activation is more accurate. |
-| `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
-| `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |
-| `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_HYBRID_BATCHED_MOE` | experimental | `=0` is the kill-switch for batched CPU MoE prefill in the CUDA hybrid pass. Default on; byte-exact on AVX-512, argmax-stable where the int8 tier auto-enables. |
+| `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | `=0` reverts CUDA hybrid prefill to the byte-exact per-token matvec for the q/k/v/o matmuls. Default on (argmax-stable, not byte-exact). |
+| `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | `=0` reverts KVarN prompts in `CudaForwardPass` to the per-token prefill loop instead of chunked batched prefill. Default on. |
 | `STINGRAY_KV_BF16_MIN_TOKENS` | expert | Positive integer, default 1024: the context length at which `STINGRAY_KV_STORE=auto` uses BF16 storage. |
 | `STINGRAY_KV_STORE` | expert | KV-cache store layout: `bf16` stores BF16, `auto` switches by length (see `STINGRAY_KV_BF16_MIN_TOKENS`), any other non-empty value means FP32. Unset leaves the backend default (FP32). |
 | `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/1-correctness/bugstofix.md`'s deepseek2 investigation). |
