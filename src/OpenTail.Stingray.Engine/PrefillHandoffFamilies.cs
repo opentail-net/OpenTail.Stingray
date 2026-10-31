@@ -69,7 +69,8 @@ public static class PrefillHandoffFamilies
                 "orpheus-3b-0.1-ft Q4_K_M (Llama-3.2 3B; -g 8: >= 0.9997), " +
                 "Falcon3-3B-Instruct Q4_K_M (-g 4: >= 0.9987, -g 16: >= 0.9992). " +
                 "KNOWN DEVIATION: Falcon3-3B at -g 8 has one decode step (38 of 40) at cosine 0.9874, below the 0.99 bar, deterministic and specific to that split, argmax agreeing; " +
-                "the other splits of the same checkpoint pass. Not exercised: Llama-3.1-style rope_freqs scaling, LongRoPE, sliding-window llama variants, contexts above 1024. " +
+                "the other splits of the same checkpoint pass. Long prompts and rope_freqs: orpheus-3b (Llama-3.2, carries rope_freqs.weight, applied on the GPU and CPU layers) with a 1,774-token prompt at context 4096, -g 8: prefill cosine 0.9973, 40 decode steps >= 0.9992; Falcon3-3B with a 2,110-token prompt at context 4096, -g 4: prefill cosine 0.9998, decode >= 0.9998. A prompt of exactly 32 tokens takes the handoff and one token fewer does not. " +
+                "Not exercised: LongRoPE, sliding-window llama variants, contexts above 4096, a Llama-3.1 checkpoint itself (only 3.2), startPos > 0 (refused: a later chat turn prefills token by token). " +
                 "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
                 $"{LlamaArchitecture.Descriptor.Id}|attention.head_count_kv=32"),
             [(QwenArchitectures.Qwen2.Id, HandoffPath.VulkanHybrid)] = new(

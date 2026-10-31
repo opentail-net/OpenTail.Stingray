@@ -56,11 +56,12 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:
   - [ ] Granite: the only dense checkpoint on the drives is the Granite Vision 3.2 LM, which fails like gemma-2 and has a CPU perplexity of 1,135 on plain text (itself suspicious); needs a dense Granite text checkpoint (`stingray pull`) before this can be answered
   - [x] **P2b** Silent GPU degradation for CPU-only architectures. Found: real runs were already safe (the gemma2 descriptor declares `SupportedBackends = Cpu` and the planner falls back to the CPU for `-g 8` and `-g -1`), but the override was silent, `stingray plan` reported 26 GPU layers (it did not consult the descriptor), and `perplexity -g -1` built the GPU pass directly and measured a 22 percent worse gemma-2 without saying so. Fixed: the planner raises a `cpu_only_architecture` warning when explicit GPU layers are overridden, `run` prints it as one note, `plan` consults the descriptor (and shows the reason), and `perplexity -g -1` refuses a CPU-only architecture. Tests: 3 planner and 3 plan tests, four production mutations each fail tests; the `run` note and the perplexity refusal were checked by hand only. Not changed: code that constructs the GPU passes directly (tests, library users) still accepts gemma2, and the dense GPU path still lacks soft-capping
   - Note: SmolLM2 and Mistral-7B were no longer in `models/` at 17:27 and are on no `_models` drive; re-pull before A/B work that needs them
-- [ ] **P3** Close the llama receipt gaps
-  - [ ] Context above 1024 (`STINGRAY_HANDOFF_TEST_CTX`)
-  - [ ] A prompt at the 32-token minimum
-  - [ ] Measure the `startPos > 0` cost before building anything
-  - [ ] Receipt text updated
+- [x] **P3** Close the llama receipt gaps
+  - [x] Context above 1024: Falcon3-3B 2,110 tokens and orpheus 1,774 tokens at context 4096 (new env-selected test `Handoff_EnvironmentChosenModel_LongPrompt`)
+  - [x] A prompt at the 32-token minimum: permanent test `Handoff_PromptOfExactlyTheMinimumLength_TakesTheHandoff_AndOneTokenLessDoesNot`
+  - [x] Llama-3.x `rope_freqs`: orpheus (Llama-3.2) carries the tensor and was already a passing row; the receipt wrongly listed it as not exercised
+  - [x] Measure the `startPos > 0` cost before building anything: recorded from today's measured rates (see the P3 progress note); not built
+  - [x] Receipt text updated
 - [x] **P7** Documented request parameters audited (unknown JSON properties stay accepted); findings F1 to F4 of the audit are resolved (PRs 82, 84, 85 and 86); F5 (request-level tests for supported fields such as top_p and the Anthropic sampling fields reaching the engine) is only partly covered, since the range tests send them but do not assert they arrive
   - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
   - [x] P7b: `max_completion_tokens`, `seed`, `top_k` implemented; `n` other than 1 and out-of-range sampling values refused with a 400 naming the field; `parallel_tool_calls`, `user` and `metadata` documented as intentionally ignored (30 tests, mutation-checked)
@@ -178,6 +179,15 @@ full GPU, so the degradation is in the numbers, not visible in a short answer. G
 
 Verified without the override: Qwen2.5 takes the handoff by default (16 s and 24 s, real runs), and gemma-2 is refused with the receipt message. Mutation check: moving the
 receipt to another path fails `ReceiptedFamilies_AreAdmitted` and `DenseQwen2_IsAdmittedOnTheVulkanHybridOnly`.
+
+### P3 - the gaps the llama receipt named (2026-10-31)
+
+| Gap | Result |
+|---|---|
+| `rope_freqs` (Llama-3.x scaling) | **not a gap.** The orpheus-3b checkpoint (Llama-3.2) carries `rope_freqs.weight`; `HybridForwardPass` applies it on the GPU layers and in the CPU table, and orpheus was already a passing row (the receipt listed the feature as unexercised by mistake). No Llama-3.1 checkpoint is on the drives, so 3.1 itself is untested. |
+| Context above 1024 | passes. Falcon3-3B `-g 4`: 2,110-token prompt, context 4096, prefill cosine 0.999835, 40 decode steps >= 0.99979 (199 s, mostly the token-by-token reference). orpheus `-g 8`: 1,774-token prompt, context 4096, prefill cosine 0.997314, decode >= 0.99921 (220 s). |
+| 32-token minimum | passes exactly at the gate: a 31-token prompt is refused with the "shorter than" reason, a 32-token prompt takes the handoff, and its prefill logits and 8 teacher-forced decode steps agree with the sequential path (Falcon3-3B `-g 4`, 20 s). Permanent test. |
+| `startPos > 0` (later chat turns) | measured, not built. The hybrid refuses the handoff there, so the new tokens prefill one at a time at the sequential rate: SmolLM2-1.7B `-g 12` 14.0 to 14.6 tok/s at 69 tokens (18.1 to 18.3 at 503), Mistral-7B `-g 4` 7.7, against 93 to 108 (178 to 182 at 503) and 44 to 49 with the handoff. A 300-token follow-up is about 20 s against 2 to 3 s. Short follow-ups (a few dozen tokens) cost 1 to 4 s. These rates come from the earlier measurements this day; SmolLM2 and Mistral are no longer on disk, so they were not re-measured. Building it means the CPU pass must hold the earlier turns' K/V; revisit if long pasted follow-ups matter. |
 
 ### P1c - Qwen3-Coder row: cause of the flakiness found (2026-10-31, evening)
 
