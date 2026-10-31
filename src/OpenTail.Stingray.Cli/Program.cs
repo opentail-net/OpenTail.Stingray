@@ -76,6 +76,8 @@ app.Configure(config =>
         .WithDescription("Print all GGUF metadata key/value pairs from a model file");
     config.AddCommand<ListEnvCommand>("list-env")
         .WithDescription("Print the STINGRAY_* environment settings active in this process, flagging any the engine does not read");
+    config.AddCommand<ConfigCommand>("config")
+        .WithDescription("Print the recognised STINGRAY_* settings that are set, with value (redacted where sensitive), source and class (--show)");
     config.AddCommand<ShowTemplateCommand>("show-template")
         .WithDescription("Render a model's chat template against a sample conversation (or --raw for the source)");
     config.AddCommand<ListModelsCommand>("list-models")
