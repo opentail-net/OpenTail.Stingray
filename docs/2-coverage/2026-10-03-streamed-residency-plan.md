@@ -84,11 +84,7 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
 
 ## 5. Not done, in the order I would do it
 
-1. **Batched MoE prefill on the hybrid/GPU paths.** `HybridForwardPass.Prefill` is a loop of single-token `Forward`
-   calls, and `GpuForwardPass` has no batched trunk for MoE. Measured on OLMoE, 631-token prompt: CPU 141.6 tok/s, hybrid
-   25.1, full-GPU 26.6. This is the larger remaining cost (plan: [batched MoE prefill](2026-10-03-batched-moe-prefill-plan.md)) and the place TensorSharp gets its 4.5-10x prefill advantage
-   (stream the used experts of a chunk once, run batched). On this integrated GPU the CPU path may stay faster; the design
-   should pick per chunk size. Needs its own plan and numbers.
+1. **Batched MoE prefill on the hybrid/GPU paths.** Moved to the [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md) (2026-10-31: the OLMoE measurements and phases were duplicated here and now live only there).
 2. **Longer leak check** (1,000+ tokens) and a CUDA equivalent; the 440-token Vulkan check is done.
 3. **CUDA mirror.** `CudaExpertSlotManager.Preload` also holds its lock across `UploadExpertAsync` and the CUDA hybrid has
    its own lookup-then-record window, so defects 2 and 3 very likely exist there. CUDA pinned memory is not
@@ -110,3 +106,13 @@ From **SharpMind** (`TransformerWeightsStreaming`, `StreamingLayerLoadRaceTests`
 - [ ] Residency abstraction (TensorResidency, planner, IResidencyManager), only after the prefill design exists
 - [ ] Automatic split planning that accounts for page cache, and per-chunk parallel prefault of experts
 - [ ] Larger-than-RAM run (GLM-5.3 Q2_K_XL, 236 GiB, paged, correctness only)
+
+---
+
+## Research findings (2026-10-31)
+
+- **Consolidation:** §5 item 1 (batched MoE prefill, with the OLMoE measurements) duplicated the batched-prefill plan. It now points there, so the measurements live in one place.
+- **External sources:** none new. The streaming design points come from TensorSharp and SharpMind, whose licences and sources are covered in the TensorSharp plan. The TensorSharp licence is not confirmed (see that plan).
+- **Open item unchanged:** the expert warm-up and decode numbers are the plan's own measurements, not re-run here.
+
+**Next check:** none for this plan beyond the batched-prefill plan's next check.

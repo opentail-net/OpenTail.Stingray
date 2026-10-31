@@ -611,7 +611,7 @@ For the default 48-step schedule this gives:
 
 ```text
 step 0 ≈ 0.8
-final step ≈ 0.408333
+final step ≈ 0.408333 (2026-10-31: the model card says "Linear decay from 0.8 → 0.4", so the formula here ends at 0.408; reconcile the endpoint before the sampler test)
 ```
 
 Do not invent a separate schedule.
@@ -1237,4 +1237,20 @@ This is the architectural work worth retaining after DiffusionGemma itself is co
 
 - [ ] Download the real Q4_K_M GGUF (16.8 GB) and run the Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler)
 - [ ] Level 4 paged real-weight run (00-current-work item 14)
-- [ ] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass), from the HF or vLLM source
+- [ ] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass), from the HF or vLLM source. 2026-10-31: the HF `config.json` has no such keys, so they are GGUF tensors and their semantics are still undocumented in the config. Open.
+- [ ] Confirm the self-conditioning MLP width. The plan's test name says 2112, but the config's `intermediate_size` 2112 is the dense FFN width (2026-10-31), so the self-conditioning width is not established.
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Config matches the plan:** 30 layers, sliding window 1024, hidden 2816, MoE width 704 per expert (1408 fused), 128 experts with top-8, head dims 256 and 512, final logit softcap 30. These were read from the HF `config.json` (2026-10-31).
+- **Canvas and sampler match the card:** canvas length 256; entropy bound 0.1; stop threshold 0.005. The card's licence is `apache-2.0`.
+- **Temperature endpoint conflicts:** the card says "Linear decay from 0.8 → 0.4"; the plan's formula ends at 0.408 (step 1 of 48). Pick one before the sampler test, and record which one the reference uses.
+- **Open item answered in part:** the HF config has no `layer_output_scale` or `enc_layer_output_scale` keys, so those are GGUF tensors and their meaning (prefill or canvas) is still open.
+- **Self-conditioning width not established:** the 2112 in the plan's test name is the config's dense FFN width; the self-conditioning MLP width is not in the config.
+- **GGUF size:** Q4_K_M 16.8 GB (listing), so the RAM plan (64 GB host, fits in memory) holds.
+
+**Next checks:** read the `enc_layer_output_scale` tensors from the Q4_K_M GGUF (their values and shapes settle the semantics better than the config); confirm the self-conditioning width from the tensor shapes.

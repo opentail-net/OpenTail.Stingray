@@ -140,3 +140,11 @@ resolution path; admission stays fail-closed; real-weight receipts intact; no re
 
 - [ ] 0.3 (deferred: low value, table is private). Test that every key in `PrefillHandoffFamilies` names a registered architecture. Checked 2026-10-30: `PrefillHandoffFamiliesTests` covers receipted families (`ReceiptedFamilies_AreAdmitted`), not every key.
 - [x] 3.1 Decide D1 (done, confirmed 2026-10-30): may Core accept a traits input from Engine (recommended yes, via `ModelArchitectureSemanticsContext`). Checked 2026-10-30: the context type lives in Core and is used from `ModelGraph.cs`, which suggests D1 is already implemented. Confirm and tick, or record the alternative.
+
+---
+
+## Research findings (2026-10-31)
+
+Web research was not the right tool for this plan: it is about this repository's descriptor and resolver code, and every claim in it is checked by the equivalence gate (`HyperparamsSnapshotDump`), not by an external source. The only external facts it touches are model configs (Llama 4 chunk size, Qwen and other `config.json` key names), which were checked in the other 2-coverage research sections.
+
+**Next check:** none outside the repo. The open items are code work (the Phase 9 real-checkpoint verification and the `DefaultForwardPassFactories.cs` deletion, which CLAUDE.md reserves for a manual step).

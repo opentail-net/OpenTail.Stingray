@@ -222,3 +222,15 @@ Phase 0 (hours) -> Phase 1 (about a day or two, biggest win here, lowest risk) -
 
 ## Verification of the plan itself
 Read-only checks to run first: the two Phase 0 questions; confirm `SimdKernels` batched kernels are callable from the hybrid's CPU layers; confirm no other AI is editing `HybridForwardPass.cs` or `ForwardPass.*.cs` before starting (git status).
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **llama.cpp CPU MoE path:** the plan's comparison relies on the reference survey, not on the CPU source. The CPU `mul_mat_id` function was not reached by web fetch (the file is too long for the tool), and the local checkout has no `ggml` source. The "how the reference groups tokens per expert" claim is therefore still unchecked, as the 2026-10-31 4-performance pass also recorded.
+- **Migration:** the streamed-residency plan's item 1 duplicated this plan and now points here (2026-10-31).
+- **Licence of the models used:** the Qwen1.5-MoE and Hunyuan-A13B licences affect which checkpoints can be named as permanent fixtures (see the moe-handoff closure plan).
+
+**Next check:** read `ggml_compute_forward_mul_mat_id` from a llama.cpp checkout at a recorded revision, and write the grouping rule into the reference survey.

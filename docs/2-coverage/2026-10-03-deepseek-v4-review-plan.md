@@ -49,7 +49,7 @@ This plan governs the review of existing V4 alpha code and the architectural def
 
 ## Checkpoint Sizes & Hardware Reality
 
-- **V4 Flash**: Q2_K base is ~98.6 GB (XL quants ~60–73 GiB; full ~117 GB).
+- **V4 Flash**: Q2_K base is ~98.6 GB (XL quants ~60–73 GiB; full ~117 GB). 2026-10-31: web sources give 102 GB (a July blog) and 103 GB for 3-bit (Unsloth); the figure is unverified against the repo.
 - **V4.1 Flash**: Q2_K+Q5 Engram variant is **335.4 GB** (other variants 371–508 GB) due to the two ~196B Engram tables.
 - **Neither fits a 64 GB machine**: Review, synthetic specification tests, and reference trace comparison are the only local goals.
 
@@ -148,3 +148,15 @@ Moved here because this is the live DeepSeek plan. The "Hadamard note above" in 
    `k_rot`; independent of the rest, so worth resolving first since it's a small, self-contained
    unknown.
 
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Checkpoint sizes (conflicting):** V4-Flash Q2_K is 98.6 GB in this plan; web sources give 102 GB (July blog) and 103 GB for 3-bit (Unsloth). The V4.1-Flash UD-Q2_K_XL size, 334.8 GB (Unsloth), matches the plan's 335.4 GB. The V4-Flash figure needs the repo's file list.
+- **Licence:** the MIT claim in the earlier notes is unconfirmed. No licence was found in the sources searched; read the model card before any redistribution question arises.
+- **No official V4-Flash GGUF was confirmed.** One source says no official GGUF is published, so the community conversions named here carry their own provenance risk. Pin the conversion's hash in any golden.
+
+**Next check:** fetch the `unsloth/DeepSeek-V4-Flash-GGUF` file list for the exact Q2_K size and licence.
