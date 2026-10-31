@@ -16,8 +16,11 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 | P3 | Close the llama receipt gaps: ctx above 1024, a 32-token prompt, the `startPos > 0` cost | each measured; receipt text updated |
 | P4 | Measure the fair gate (two resident models, interleaved, 3 runs) | numbers in plan 032 slice 5 |
 | P5 | OpenTelemetry: allow-list test over every instrument and span, server canary | both tests mutation-checked |
+| P6 | CI: add `Audio.Fast` and `Vulkan.Fast` to the CPU-safe job and the release job (floors 70 and 38) | both suites run in CI; merged only if the workflow change is green |
+| P7 | Audit the server for request parameters that are accepted but ignored (read first: the request DTOs and where each field is used) | a list; every accepted-but-ignored field either gets an explicit error / reported-as-ignored response or a recorded reason |
+| P8 | Cancellation reaches the engine: a test that an HTTP disconnect or a cancelled token during decode stops generation and frees the slot (read first: whether such a test already exists) | test mutation-checked, or the existing one cited |
 
-Order: P1, P1b, P2, P3, P4, P5. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
+Order: P1, P1b, P6, P2, P3, P7, P8, P4, P5. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
 next one started.
 
 ## Progress
@@ -45,3 +48,25 @@ load. Handoff exactness class (`HybridCpuPrefillHandoffTests`, heavy): every den
 step 18 cosine 0.97997 (all other steps above 0.9966). That is a MoE model; the warm-up returns early when an expert slot manager
 exists, so it does not run there. I did not run the old build on that row, so "pre-existing" is an inference from the code path, not a
 measurement; it is carried as an open finding (P2 housekeeping).
+
+## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
+
+The follow-up asked for 18 gaps and then, on being asked what is realistic, cut them down. I checked what could be checked against the
+repository and took the same cut. The rule used: adopt what is small, has a demonstrated gap and reuses what exists; defer the rest
+without discarding it.
+
+**Adopted.** (a) Add the CPU-safe fast suites to CI. Verified: `ci.yml` and `release.yml` run Core, Pipeline, TurboQuant, Cli,
+Vision, Server.Fast, Sessions.Fast and ForwardPass.Fast; `Audio.Fast` (94 tests, 6 s) and `Vulkan.Fast` (48 tests, 0.5 s) were not
+in either, and `Vulkan.Fast` had three failing tests from 2026-10-11 until PR 70 that CI could not see (P6). `Embeddings` was left
+out on purpose: 205 s and 8 skips without models. (b) The handoff boundaries and the Qwen3-Coder row (already P1b and P3). (c) Two
+small checks the review raised that I have not yet looked at in the code: silently accepted request parameters (P7) and end-to-end
+cancellation (P8). Both start by reading what exists; either may turn out to be already covered.
+
+**Deferred, with the reason.** A unified qualification framework: receipts, goldens and the status matrix already do most of it, and
+a second system would duplicate them. A generation-conformance suite, a scheduler, a resource-failure programme, a fuzzing programme,
+a `doctor` command, an SBOM and a backend qualification matrix: each is real but large, and none has a failure behind it today.
+Take one up when a specific defect or a release requirement appears, and fix a concrete security or lifecycle defect at once if
+one is found; the deferral covers programmes, not defects. Not testable on this machine at all: CUDA, discrete GPU, ARM64.
+
+**One point of agreement worth keeping.** The review's closing rule is to close more items than are opened. This plan therefore adds
+only P6 to P8, each small, and removes nothing from the earlier list.
