@@ -40,6 +40,56 @@ public sealed class ExecutionTurnGateRealModelTests
     }
 
 
+    /// <summary>
+    /// The server-facing switch: <c>FairModelScheduling</c> on a multi-model configuration, resolved through DI exactly as the host does
+    /// (two named models, the manager loads each on first use). The shared <see cref="FairExecutionGate"/> is a DI singleton, so its
+    /// counters show whether the engines of BOTH models took turns on it; with the option off the same gate exists but nobody uses it.
+    /// </summary>
+    [Fact]
+    public async Task FairModelScheduling_GivesBothConfiguredModelsTheSameGate_AndTheyTakeTurns()
+    {
+        string? small = FindModel("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        string? medium = FindModel("SmolLM2-360M-Instruct-Q4_K_M.gguf");
+        Assert.SkipUnless(small is not null && medium is not null, "SmolLM2-135M and SmolLM2-360M Q4_K_M are required for this test.");
+
+        long fair = await GateGrantsForTwoNamedModels(small!, medium!, fairModelScheduling: true);
+        long off = await GateGrantsForTwoNamedModels(small!, medium!, fairModelScheduling: false);
+
+        // Two 24-token generations are well over 40 engine iterations between them; both engines had to use the one gate for that.
+        Assert.True(fair >= 40, $"only {fair} turns were granted for two 24-token generations");
+        Assert.Equal(0, off);
+    }
+
+    private static async Task<long> GateGrantsForTwoNamedModels(string a, string b, bool fairModelScheduling)
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddOpenTailStingray(opts =>
+        {
+            opts.Backend = ServerBackend.Cpu;
+            opts.NGpuLayers = 0;
+            opts.ContextSize = 512;
+            opts.MaxBatchSize = 2;   // continuous batching, the only engine that takes turns
+            opts.FairModelScheduling = fairModelScheduling;
+            opts.Models = [new NamedModelOptions { Alias = "small", ModelPath = a }, new NamedModelOptions { Alias = "medium", ModelPath = b }];
+        });
+        await using var provider = services.BuildServiceProvider();
+        var manager = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IModelRuntimeManager>(provider);
+
+        using var first = await manager.AcquireAsync(ModelId.Canonicalize(a));
+        using var second = await manager.AcquireAsync(ModelId.Canonicalize(b));
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 24 };
+        await Task.WhenAll(GenerateOn(first, sp), GenerateOn(second, sp)).WaitAsync(TimeSpan.FromMinutes(2));
+
+        return Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<FairExecutionGate>(provider).GetStats().Grants;
+    }
+
+    private static async Task GenerateOn(ModelRuntimeHandle handle, SamplingParams sp)
+    {
+        var instance = Assert.IsType<OpenTail.Stingray.Engine.Runtime.RuntimeInstance>(handle.Runtime.Loaded.Instance);
+        var engine = Assert.IsType<ContinuousBatchingEngine>(instance.Engine);
+        await foreach (var _ in engine.GenerateChunksAsync("The capital of France is", sp)) { }
+    }
+
     private static Owned Load(string modelPath, IExecutionTurnGate? gate) => new(
         InferenceEngineLoader.Load(new OpenTailStingrayServerOptions
         {

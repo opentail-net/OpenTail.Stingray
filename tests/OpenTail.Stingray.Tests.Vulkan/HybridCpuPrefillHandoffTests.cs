@@ -81,6 +81,14 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", 4, -1)]
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", 8, 16)]
     [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1)]
+    // Plain dense llama (the ('llama', VulkanHybrid) receipt): MHA and GQA, three sizes, Llama-3.2 RoPE base. Falcon3 at -g 8 has one decode step
+    // at cosine 0.9874 (documented in the receipt), so its rows use the splits that pass.
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf", 12, -1)]
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf", 4, -1)]
+    [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 8, -1)]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 16, -1)]
     [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", 4, 16)]
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 4, 16)]   // qwen2moe: shared expert with sigmoid gate, 60 experts top-4
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 1, 8)]
