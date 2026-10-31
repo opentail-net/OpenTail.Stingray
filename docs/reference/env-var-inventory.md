@@ -281,7 +281,7 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_PREFILL_CHUNK` | expert | Mirrors `OpenTailStingrayServerOptions.PrefillChunkTokens`. |
+| `STINGRAY_PREFILL_CHUNK` | expert | Prompt tokens prefilled per continuous-batching iteration (only with `MaxBatchSize` > 1; a positive value sets the chunk, 0 or unset is automatic, currently 256). Mirrors `OpenTailStingrayServerOptions.PrefillChunkTokens`. It never reached the batching engine until 2026-10-31. |
 | `STINGRAY_PREFILL_DEQUANT_MB` | expert | Legacy setting mirroring `OpenTailStingrayServerOptions.PrefillDequantCacheMb`; currently dormant with the CPU prefill kernels. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host, OpenTail.Stingray.Vulkan

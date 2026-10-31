@@ -72,7 +72,8 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:
   - [x] Check which existing tests already cover it (done in PR 81)
   - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
   - [ ] Mutation-checked
-- [ ] **P4** Fair gate measured (two resident models, interleaved, 3 runs; idle machine, so not while another agent is running)
+- [x] **P4** Fair gate measured (two resident models, interleaved, 3 runs). Machine 10 to 16 percent busy, not idle; stated with the numbers. Result: off by default stays right, and the single-request engine is not worth mediating (plan 032, Slice 5)
+  - [x] P4b `STINGRAY_PREFILL_CHUNK` and the server option `PrefillChunkTokens` never reached the batching engine; wired, 4 real-model tests, three production mutations each fail tests
 - [x] **P5** OpenTelemetry acceptance (PR 80; limit: the fake engine emits no tool calls, so tool-call arguments are not covered)
   - [x] Allow-list test over every instrument and span
   - [x] Server-side prompt canary through the HTTP endpoints
@@ -188,6 +189,25 @@ receipt to another path fails `ReceiptedFamilies_AreAdmitted` and `DenseQwen2_Is
 | Context above 1024 | passes. Falcon3-3B `-g 4`: 2,110-token prompt, context 4096, prefill cosine 0.999835, 40 decode steps >= 0.99979 (199 s, mostly the token-by-token reference). orpheus `-g 8`: 1,774-token prompt, context 4096, prefill cosine 0.997314, decode >= 0.99921 (220 s). |
 | 32-token minimum | passes exactly at the gate: a 31-token prompt is refused with the "shorter than" reason, a 32-token prompt takes the handoff, and its prefill logits and 8 teacher-forced decode steps agree with the sequential path (Falcon3-3B `-g 4`, 20 s). Permanent test. |
 | `startPos > 0` (later chat turns) | measured, not built. The hybrid refuses the handoff there, so the new tokens prefill one at a time at the sequential rate: SmolLM2-1.7B `-g 12` 14.0 to 14.6 tok/s at 69 tokens (18.1 to 18.3 at 503), Mistral-7B `-g 4` 7.7, against 93 to 108 (178 to 182 at 503) and 44 to 49 with the handoff. A 300-token follow-up is about 20 s against 2 to 3 s. Short follow-ups (a few dozen tokens) cost 1 to 4 s. These rates come from the earlier measurements this day; SmolLM2 and Mistral are no longer on disk, so they were not re-measured. Building it means the CPU pass must hold the earlier turns' K/V; revisit if long pasted follow-ups matter. |
+
+### P4 - the fair gate, measured (2026-10-31)
+
+Full write-up in `docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md`, Slice 5. Means over three interleaved pairs, both models on the CPU backend, a decode-heavy
+Qwen2.5-0.5B (200 tokens) beside a prefill-heavy Qwen2.5-1.5B (three 1,245-token prompts):
+
+| Gate | Decode model: median / p95 / worst gap | Decode model total | Prefill model total | Both done |
+|---|---|---|---|---|
+| off | 27 / 37 / 81 ms | 5.6 s | 7.9 s | 7.9 s |
+| on, chunk 256 (default) | 12 / 44 / 1,183 ms | 8.8 s | 6.7 s | 8.8 s |
+| on, chunk 128 | p95 507, worst 634 ms | 9.1 s | 7.0 s | 9.1 s |
+| on, chunk 64 | p95 304, worst 356 ms | 9.4 s | 7.4 s | 9.4 s |
+| on, chunk 32 | p95 181, worst 220 ms | 9.7 s | 8.0 s | 9.7 s |
+| on, chunk 16 | p95 107, worst 143 ms | 10.1 s | 8.9 s | 10.1 s |
+
+Without the gate the OS shares the cores and the decode model never waits more than 82 ms at any chunk size; with it, the decode model waits one prefill iteration per turn. Smaller
+chunks shrink the wait and cost throughput. So on the CPU the gate is a net loss and stays off; mediating the single-request engine is not worth building. A shared GPU is the case it
+could still help, and this machine (an iGPU, with both models on the CPU in this test) cannot show that. While running it I found that the chunk size setting had no effect at all
+(P4b): the first sweep gave identical results for chunks of 256, 64, 32 and 0, which is how the dead wiring showed up.
 
 ### P1c - Qwen3-Coder row: cause of the flakiness found (2026-10-31, evening)
 

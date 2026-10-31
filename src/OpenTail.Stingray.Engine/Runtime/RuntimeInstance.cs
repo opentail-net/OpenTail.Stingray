@@ -239,7 +239,10 @@ public sealed class RuntimeInstance : IDisposable
                         $"Continuous batching planned but forward pass '{forwardPass.GetType().Name}' does not implement IBatchedForwardPass.", plan);
                 }
                 int batchSize = plan.Batching.MaxBatchSize > 0 ? plan.Batching.MaxBatchSize : 8;
-                engine = new ContinuousBatchingEngine(batchedPass, tokenizer, model.Architecture, batchSize, thinkTokenId, endThinkTokenId, turnGate: turnGate);
+                // The plan's chunk size (STINGRAY_PREFILL_CHUNK or the server option) was never handed to this engine, so the setting was dead;
+                // 0 means "not specified" in the plan and must stay the engine's automatic size (-1), not "chunking off".
+                int prefillChunk = settings.Prefill.ChunkTokens > 0 ? settings.Prefill.ChunkTokens : -1;
+                engine = new ContinuousBatchingEngine(batchedPass, tokenizer, model.Architecture, batchSize, thinkTokenId, endThinkTokenId, prefillChunkTokens: prefillChunk, turnGate: turnGate);
             }
             else
             {
