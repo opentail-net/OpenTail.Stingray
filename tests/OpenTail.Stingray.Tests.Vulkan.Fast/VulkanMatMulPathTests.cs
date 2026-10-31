@@ -45,16 +45,16 @@ public sealed class VulkanMatMulPathTests
     // ── Path selection ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Path 1 is the default, unlike the CPU's GemmPath which defaults to Path 2. Path 2 there
-    /// earned the default by measuring faster end-to-end and no worse on perplexity; here it does
-    /// not exist yet, so flipping this would silently route every dispatch through a decline.
+    /// Path 3 (the tiled quantized GEMM) has been the default since 2026-10-11, when it earned it by measuring +86-100% prefill on
+    /// dense Q4_K models with identical greedy text. This test used to pin Path 1 and went stale the day the default changed.
+    /// <c>STINGRAY_VULKAN_MM_PATH=1</c> rolls back.
     /// </summary>
     [Fact]
-    public void Default_IsPath1()
+    public void Default_IsPath3()
     {
         using var _ = Scoped();
         Environment.SetEnvironmentVariable("STINGRAY_VULKAN_MM_PATH", null);
-        Assert.Equal(VulkanMatMulPath.Path1, VulkanMatMulPathConfig.ReadFromEnvironment());
+        Assert.Equal(VulkanMatMulPath.Path3, VulkanMatMulPathConfig.ReadFromEnvironment());
     }
 
     [Theory]
@@ -64,8 +64,10 @@ public sealed class VulkanMatMulPathTests
     [InlineData(" 2 ", VulkanMatMulPath.Path2)]
     [InlineData("1", VulkanMatMulPath.Path1)]
     [InlineData("path1", VulkanMatMulPath.Path1)]
-    [InlineData("", VulkanMatMulPath.Path1)]
-    [InlineData("   ", VulkanMatMulPath.Path1)]
+    [InlineData("3", VulkanMatMulPath.Path3)]
+    [InlineData("path3", VulkanMatMulPath.Path3)]
+    [InlineData("", VulkanMatMulPath.Path3)]       // unset or blank means the default, which is Path 3
+    [InlineData("   ", VulkanMatMulPath.Path3)]
     [InlineData("banana", VulkanMatMulPath.Path1)]   // unparseable must NOT silently enable Path 2
     public void EnvVar_Parses(string value, VulkanMatMulPath expected)
     {
