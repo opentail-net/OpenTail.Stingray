@@ -134,3 +134,15 @@ float arrays), VAE encode, and the I2V/FL2V/Ref2VA conditioning modes.
 - [ ] **Conditioning Extensions:** I2V, FL2V, Ref2VA.
 
 **Target (revised 2026-10-03):** the foundation exists. A real CPU T2V run still needs the text-encoder path, the DiT loader and a real-checkpoint parity ladder (level 3 above), none started. No time estimate: the text encoder is a 32B model, so the plan needs sequential loading. I2V/FL2V/Ref2VA and Vulkan follow.
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Licence:** confirmed that the weights are under the **MiniMax H3 Community License**, which defines an Applicable Territory that excludes some jurisdictions. The licence text was not retrieved, so the plan's "territorial restrictions" line is correct but the exclusions are unknown. Read the LICENSE file in `unsloth/MiniMax-H3-GGUF` before any distribution.
+- **Quant files:** the Unsloth repo exists. A ComfyUI article reports Q2_K 6.3 GB up to Q8_0 20 GB for the denoiser; the plan's Q4_K ~10.6 GiB figure is inside that range. The VAEs are not in that repo (taken from `Comfy-Org/MiniMax-H3`).
+- **Provenance:** the Unsloth card says it is not an official MiniMax product, so the GGUF conversion must be hash-pinned like any other conversion.
+
+**Next check:** read the LICENSE file and the exact Q4_K file size in the repo.

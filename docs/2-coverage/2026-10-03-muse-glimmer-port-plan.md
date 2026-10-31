@@ -3,7 +3,7 @@
 > Completed items moved to [done/2026-10-03-muse-glimmer-port-plan-completed-items-2026-10.md](../done/2026-10-03-muse-glimmer-port-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
 **Status (revised 2026-10-03): ADMITTED, text only, CPU only.** Real-weight verified against llama.cpp (`admit-arch` 8/8, a 3,748-token prompt past the real window, patched-window runs); prefill is about 10x slower than llama.cpp. Vision tower, DFlash and batched prefill for gated models are not done. **Policy was:** port now, prove later. Not admitted, not
-advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)); the checkpoint check has now been done.
+advertised until checkpoint-verified (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)); the checkpoint check has now been done. Licence: Apache 2.0 per secondary sources (2026-10-31; the Hub card was not fetched).
 
 ## Architecture (text tower)
 
@@ -92,3 +92,15 @@ The vision tower (50-layer ViT, 1536 hidden width, merge size 2, erf-GELU, Lancz
 
 **Effort:** port + specification test ~2-4 hours; level-4 text check done 2026-10-03. Remaining:
 closeout performance + DRY pass, batched prefill, and admission are separate.
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Licence:** secondary sources say Apache 2.0. The Hub card was not fetched, so the licence is recorded here as "per secondary sources". Confirm it on `meta-models/Muse-Glimmer-30B` before any distribution.
+- **Size and footprint:** one summary says the BF16 base weights are 59.6 GB, while others say more than 55 GB; quantised footprints are reported as under 20 GB. These conflict, so the disk and RAM numbers in this plan should come from the actual GGUF files.
+- **Architecture:** the card describes a ~29.6B dense transformer with a ~1.8B ViT-G/14 perception encoder, which matches the plan's vision-tower deferral.
+
+**Next check:** fetch the model card and the GGUF file list for the licence and the exact sizes.

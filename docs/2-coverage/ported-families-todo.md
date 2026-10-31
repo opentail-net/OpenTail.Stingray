@@ -179,3 +179,15 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - [ ] Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
   existing working vision branch. Not a rebuild.
 
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Sizes checked:** Qwen3.8-Flash-Next UD-IQ1_S 72.5 GB (confirmed). GLM-5.3 full UD-Q2_K_XL 236.4 GiB (not confirmed; Unsloth lists 239 GB for UD-IQ2_M). DeepSeek-V4-Flash Q2_K 98.6 GB (sources say 102 to 103 GB). DeepSeek-V4.1-Flash UD-Q2_K_XL 334.8 GB (matches 335.4).
+- **Licences checked:** Qwen1.5-MoE is `tongyi-qianwen-research`; Hunyuan-A13B is under the Tencent Hunyuan Community License (territory terms not confirmed); MiniMax-H3 is under the MiniMax H3 Community License with territorial exclusions; Muse-Glimmer is Apache 2.0 per secondary sources; Trinity-Mini is Apache 2.0; Phi-3.5-MoE is MIT.
+- **Consolidation:** the ported-not-verified table in the TensorSharp plan had a stale Muse-Glimmer row (admitted); it is moved out. This file stays the working todo, because about a dozen plans link to it.
+
+**Next checks:** the file lists of `unsloth/GLM-5.3-GGUF`, `unsloth/DeepSeek-V4-Flash-GGUF` and `unsloth/Qwen3.8-Flash-Next-GGUF`, recorded with their licence files.

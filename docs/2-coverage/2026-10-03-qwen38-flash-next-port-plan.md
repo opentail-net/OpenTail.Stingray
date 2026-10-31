@@ -157,3 +157,15 @@ The initial structural port, semantic implementations, and synthetic fixtures ar
 - **Vision Tower**: Qwen3.5-VL mmproj, (T,H,W) IMRoPE, video decoding.
 - **MTP (Multi-Token Prediction)**: Speculative decoding head (`nextn`).
 - **Batched GPU Kernels**: CUDA/Vulkan graph paths.
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Checkpoint size: confirmed.** UD-IQ1_S is 72.5 GB, in Unsloth's quant table and in two third-party blogs; the UD-IQ1_M build is 74.5 GB. That matches the plan. Source: [unsloth Qwen3.8 docs](https://unsloth.ai/docs/de/modelle/qwen3.8-next.md).
+- **Runtime memory:** one blog says the 1-bit build runs in about 75 GB of RAM or unified memory. That is above this machine's 64 GB, which matches the plan's paged-only policy.
+- **Licence:** not checked in this pass. Read the model card before any fixture decision.
+
+**Next check:** the Hub file list for `unsloth/Qwen3.8-Flash-Next-GGUF`.

@@ -46,7 +46,7 @@
 ## Hardware Constraint & Policy
 
 **Real checkpoints do not fit this machine** (64 GB RAM):
-- Smallest published quant for GLM-5.3: **UD-Q2_K_XL ≈ 236.4 GiB in 7 shards** (Q4 is ~432 GB).
+- Smallest published quant for GLM-5.3: **UD-Q2_K_XL ≈ 236.4 GiB in 7 shards** (Q4 is ~432 GB). 2026-10-31: no UD-Q2_K_XL size for the full model was found. Unsloth lists 239 GB for UD-IQ2_M, a different quant, and the 109 GB figure is for GLM-5.3-Flash. Confirm against the repo file list before relying on 236.4.
 - GLM-5.3-Flash (320B) is similarly far beyond 64 GB RAM.
 - **Policy**: Port now, prove later. Implementation is verified via isolated synthetic specification tests and independent execution against vendored `llama.cpp` b10306 (`glm-dsa`). Code remains unadmitted and unadvertised.
 
@@ -121,3 +121,15 @@ pass that checks the logits are finite. **No numeric oracle has been run for eit
 ---
 
 **Effort:** the original estimate covered port + smoke tests only. Remaining: K-pool selection, the numeric oracles above, and a paged real-weight run (hours of wall-clock, dominated by disk paging).
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Size of the full model's UD-Q2_K_XL:** not confirmed. The plan's 236.4 GiB could not be matched to a source. Unsloth lists 239 GB for UD-IQ2_M of the full model, which is a different quant. The 109 GB figure belongs to GLM-5.3-Flash. Use the repo file list for the number.
+- **Quant choice:** if the real run uses UD-IQ2_M instead, the disk need is about 239 GB, which is above the 236.4 GiB figure. Check the scratch disk budget against the size actually downloaded.
+- **Licence:** not checked for GLM-5.x (GLM-4.5 family is MIT per secondary sources; one source says GLM-5.3 is not MIT). Check before any permanent fixture.
+
+**Next check:** list the files of `unsloth/GLM-5.3-GGUF` and record the exact sizes and licence.

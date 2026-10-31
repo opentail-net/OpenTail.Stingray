@@ -136,7 +136,7 @@ Built: `Engine/Verification/{GoldenFile, GoldenParityRunner, GoldenForwardPassSo
 
 **Two corrections that real models forced (both are in the code and tested):**
 1. **The stepwise-vs-prefill argmax equality is not a useful gate.** On SmolLM2-135M decode and batched prefill differ by at most 0.96 logits (inside the existing bound) yet flip the argmax at a near-tie (gap 0.08). If two paths differ by at most D everywhere and their argmax differs, the two tokens were within 2D of each other, so a flip is *always* explained by the measured difference and adds nothing beyond the bound on D. The self-check therefore gates on the difference bound; argmax agreement is reported ("informational") and enforceable via `ParityOptions.RequireStepwiseArgmaxAgreement` for anyone who wants the legacy strictness.
-2. **Near-tie classification uses the reference's own confidence, not only ours.** The legacy teacher-forced classes already did this by hand (`ConfidentMargin = 1.5` nats against llama-server's recorded per-position margins). Goldens now carry `margins` (top-1 minus top-2 log-probability from `n_probs`, verified to be real log-probs in build 10306); a mismatch where the reference margin is below `ConfidentMargin` is a near-tie, as is one within our own logit-gap tolerance.
+2. **Near-tie classification uses the reference's own confidence, not only ours.** The legacy teacher-forced classes already did this by hand (`ConfidentMargin = 1.5` nats against llama-server's recorded per-position margins). Goldens now carry `margins` (top-1 minus top-2 log-probability from `n_probs`, verified to be real log-probs in build 10306; capture must keep `post_sampling_probs` false, because with it on the fields are probabilities, per llama.cpp PR #10783 (2026-10-31)); a mismatch where the reference margin is below `ConfidentMargin` is a near-tie, as is one within our own logit-gap tolerance.
 
 **Validation against real checkpoints:**
 - Capture is deterministic: two captures of SmolLM2-135M gave identical tokens (`-t 4`). No orphan `llama-server` after a capture. Our tokenizer agreed with `llama-tokenize` on the prompt.
@@ -219,3 +219,15 @@ Audit of existing invariants across the codebase confirmed that the desired batc
    - Invariant guards for turn mutual exclusion, rollback on cancellation, and clean recovery upon failure.
    - Over 160 fast unit tests in `Tests.Sessions.Fast` verifying boundary conditions, rolling reservations, and eviction budgets.
 
+
+---
+
+## Research findings (2026-10-31)
+
+Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+
+- **Margins and `post_sampling_probs`:** the golden margins come from `n_probs`. Per llama.cpp PR #10783, the default fields are `logprob` and `top_logprobs`, but with `post_sampling_probs` true they are `prob` and `top_probs`, which are probabilities. The capture must keep the flag off, and the golden should record that setting. (Corrected in place above, 2026-10-31.)
+- **Licence of golden fixtures:** goldens hold token ids and text, not weights, so the licence question in the moe-handoff plan does not change golden files.
+- **Consolidation:** no duplicate content found with other plans; the golden tooling is referenced by the moe-handoff plan and kept as is.
+
+**Next check:** confirm the `post_sampling_probs` default in the vendored build (b10306) against the server README, since the PR is from a mirror.
