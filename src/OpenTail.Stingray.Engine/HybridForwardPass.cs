@@ -176,7 +176,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _settings = settings ?? EngineSettings.FromEnvironment();
         InitCpuPrefillHandoff();
         _predictPrefetch = _settings.Moe.PredictPrefetch ?? true;
-        if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
+        if (GpuForwardPass.VulkanHybridUnsupportedReason(model, hp) is { } gpuGap)
             throw new NotSupportedException($"HybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         // Gemma 4 has no Vulkan implementation (no SWA / PLE / per-layer head_dim / softcap);
         // a hybrid Vulkan split would silently produce garbage. hp.LayerHeadDim is the gemma4

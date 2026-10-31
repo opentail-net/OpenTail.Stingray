@@ -190,6 +190,48 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     }
 
     /// <summary>
+    /// The Vulkan hybrid applies none of the model scale hyperparameters, so it must refuse a model that sets one instead of running it with wrong
+    /// numbers. Measured 2026-10-31 with -g 8, before the guard: Granite 3.3-2B answered with garbage (sequential hybrid against the CPU pass:
+    /// minimum cosine -0.36) and gemma-3-4b disagreed with the CPU (0.47).
+    /// </summary>
+    [Theory]
+    [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf")]
+    [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
+    public void Hybrid_RefusesModelsWhoseScalingItDoesNotApply(string file)
+    {
+        using var s = Open(file)!;
+
+        var ex = Assert.Throws<NotSupportedException>(() => NewHybrid(s, 8, -1));
+
+        Assert.Contains("scaling", ex.Message);
+        Assert.Contains("-g 0", ex.Message);
+    }
+
+    /// <summary>The guard must never catch a checkpoint that has a handoff row or receipt (it reads the header only).</summary>
+    [Theory]
+    [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf")]
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")]
+    [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf")]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf")]
+    [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf")]
+    [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf")]
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf")]
+    [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf")]
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf")]
+    [InlineData("ERNIE-4.5-0.3B-Q8_0.gguf")]
+    public void Hybrid_ScaleGuard_DoesNotRefuseTheCheckpointsThatPassTheHandoffRuns(string file)
+    {
+        string? path = Find(file);
+        Assert.SkipWhen(path is null, $"{file} not present");
+        using var model = GgufModel.Open(path!);
+
+        Assert.Null(GpuForwardPass.UnappliedScaleReason(ArchitectureModelResolver.ResolveHyperparams(model)));
+    }
+
+    /// <summary>
     /// Llama 4 past its 8192-token attention chunk: a 9430-token prompt (first 42000 characters of scripts/kvarn-gate/wiki.test.raw, as in
     /// LlamaFourLongContextParityTests) goes through the CPU-prefill handoff into 4 GPU layers + 44 CPU layers, then 6 teacher-forced decode steps
     /// are compared with the all-CPU pass continuing from the same prompt. The sequential GPU prefill is not run (about 1 token/s on this

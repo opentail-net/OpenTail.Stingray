@@ -361,7 +361,14 @@ public sealed partial class RunCommand : Command<RunCommand.Settings>
                 GpuLayerCount = resolvedPlan.GpuLayers
             };
             var modelObj = Model.Load(modelParams);
-            runtimeInstance = RuntimeInstance.Create(resolvedPlan, modelObj);
+            try { runtimeInstance = RuntimeInstance.Create(resolvedPlan, modelObj); }
+            catch (NotSupportedException ex)
+            {
+                // e.g. a partial GPU offload (-g N) for a model whose scaling the Vulkan hybrid does not apply: a clear error, not a stack trace.
+                (modelObj as IDisposable)?.Dispose();
+                AnsiConsole.ErrorLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+                return ExitCodes.Failure;
+            }
 
             hp = modelObj.Hyperparams;
             s_arch = resolvedPlan.Provenance?.TargetArchitecture ?? modelObj.Architecture;
