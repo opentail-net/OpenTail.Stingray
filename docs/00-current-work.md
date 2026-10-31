@@ -5,9 +5,9 @@ when an item closes, delete its line here, record the evidence in the model's
 [STATUS.md](STATUS.md) row (or the detail doc), and move any finished detail doc to [done](done).
 Working notes, measurements and histories go in the item's detail doc or in `done/`, never here.
 
-Latest session report and proposed next plan: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md) 
-(the three owner decisions, taken provisionally, are at the end of the session report).
-(three owner decisions are listed at its end).
+Latest session report: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). The plan being worked
+from it, with a checklist that has a box for every item: [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md). The three
+owner decisions were taken provisionally; they are recorded at the end of the session report.
 
 The previous version of this file (a working log up to 2026-09-27, including every fixed bug and
 its history) is kept verbatim at
@@ -211,7 +211,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
    in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
-- [ ] 5. Batched prefill for partially offloaded dense models and the remaining per-token paths. **Rechecked 2026-10-31; the earlier wording ("`VulkanLayerSplitForwardPass` and the MoE path prefill per token") was wrong in both directions.** `GpuForwardPass` batches dense Q4_K/Q6_K models; `VulkanLayerSplitForwardPass` already hands long fresh prompts to the CPU batched pass and imports the KV (glm4moe and afmoe have receipts); the gap that was real was a **dense `llama`-architecture model with a partial offload (`-g N`, `HybridForwardPass`)**, which had no handoff receipt and prefilled token by token (SmolLM2-1.7B `-g 12`: 18 tok/s against 227 CPU-only). Closed 2026-10-31 by a `llama` receipt on the Vulkan hybrid: 18 -> 180 tok/s there and 7.7 -> 44-49 tok/s for Mistral-7B `-g 4` (see the STATUS row for the evidence, the Falcon3 `-g 8` deviation and the one-time 1.9 s warm-up of the first decode). Still per token: prompts under 32 tokens, `startPos > 0` (later chat turns), families without a receipt (dense llama on the full-GPU and layer-split paths, Llama-3.1 `rope_freqs` models, other dense architectures such as Gemma, Phi, Qwen2), and the MoE paths without a handoff receipt ([batched MoE plan](2-coverage/2026-10-03-batched-moe-prefill-plan.md), [Vulkan GEMM doc](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)).
+- [ ] 5. Batched prefill for partially offloaded dense models and the remaining per-token paths. **Rechecked 2026-10-31; the earlier wording ("`VulkanLayerSplitForwardPass` and the MoE path prefill per token") was wrong in both directions.** `GpuForwardPass` batches dense Q4_K/Q6_K models; `VulkanLayerSplitForwardPass` already hands long fresh prompts to the CPU batched pass and imports the KV (glm4moe and afmoe have receipts); the gap that was real was a **dense `llama`-architecture model with a partial offload (`-g N`, `HybridForwardPass`)**, which had no handoff receipt and prefilled token by token (SmolLM2-1.7B `-g 12`: 18 tok/s against 227 CPU-only). Closed 2026-10-31 by a `llama` receipt on the Vulkan hybrid: 18 -> 180 tok/s there and 7.7 -> 44-49 tok/s for Mistral-7B `-g 4` (see the STATUS row for the evidence, the Falcon3 `-g 8` deviation; the one-time 1.9 s warm-up of the first decode was moved to model load the same day, PR 73). Still per token: prompts under 32 tokens, `startPos > 0` (later chat turns), families without a receipt (dense llama on the full-GPU and layer-split paths, Llama-3.1 `rope_freqs` models, other dense architectures such as Gemma, Phi, Qwen2), and the MoE paths without a handoff receipt ([batched MoE plan](2-coverage/2026-10-03-batched-moe-prefill-plan.md), [Vulkan GEMM doc](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)).
 - [ ] 6. Raw-quant matvec bandwidth on Vulkan (gpt-oss decode is MXFP4 matvec-bound, ~18 GB/s here).
 - [ ] 7. General multi-`VkBuffer` sharding for tensors beyond `maxStorageBufferRange`: undesigned, not
    needed by any current checkpoint ([done/084](done/084-vulkan-large-tensor-sharding-plan.md)).
