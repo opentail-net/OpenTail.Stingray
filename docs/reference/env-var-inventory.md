@@ -274,9 +274,9 @@ dynamically composed names.
 | `STINGRAY_BATCHED_MATVEC_TIER` | experimental | `=0` disables the CPU non-BLAS batched path that consumes a batch in quads and pairs (`MatVec4In`/`MatVec2In`) instead of N single `MatVec` calls. Bit-identical either way; a weight-reuse switch. Default on (4-way concurrent decode 28.90 to 30.28 tok/s aggregate, per the session runtime plan section 3.4.9). |
 | `STINGRAY_GEMM_PATH` | experimental | CPU GEMM path selector. Default Path 2 (Q8_K activations, repacked weights); `1` or `path1` selects Path 1 (Q8_KS activations). Path 2 measured 1.83x faster on the isolated matmul, 1.11x end to end, and no worse on wikitext-2 PPL (16.0484 vs 16.0870), per the comment in `GemmPath.cs`. |
 | `STINGRAY_MATVEC_WIDE8` | experimental | `=1` selects the experimental 8-wide Q4_K dot (`DotQ4K_Wide8`) for an A/B on the real CLI. Default off. Marked in the source as temporary: to be removed once the A/B is settled. |
-| `STINGRAY_TRACE_GDN_INTERNAL` | diagnostic | |
-| `STINGRAY_TRACE_GDN_LAYERS` | diagnostic | |
-| `STINGRAY_TRACE_GDN_POS` | diagnostic | |
+| `STINGRAY_TRACE_GDN_INTERNAL` | diagnostic | Diagnostic (`=1`): dump head-0 GDN internals (decay scalar, state L2 after decay and after the rank-1 update, p-readout) in the CPU GDN kernels, written for the qwen3.6-27B-MTP position-12 parity bug. Layers from `STINGRAY_TRACE_GDN_LAYERS`, position from `STINGRAY_TRACE_GDN_POS`. Fires only where the caller passes layer and position. |
+| `STINGRAY_TRACE_GDN_LAYERS` | diagnostic | Diagnostic: comma-separated layer indices for `STINGRAY_TRACE_GDN_INTERNAL`. Default `0,20,40,60`. |
+| `STINGRAY_TRACE_GDN_POS` | diagnostic | Diagnostic: token position for `STINGRAY_TRACE_GDN_INTERNAL`. Default 12. |
 
 ## OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
 
@@ -352,23 +352,23 @@ dynamically composed names.
 | `STINGRAY_KV_BF16_MIN_TOKENS` | expert | Positive integer, default 1024: the context length at which `STINGRAY_KV_STORE=auto` uses BF16 storage. |
 | `STINGRAY_KV_STORE` | expert | KV-cache store layout: `bf16` stores BF16, `auto` switches by length (see `STINGRAY_KV_BF16_MIN_TOKENS`), any other non-empty value means FP32. Unset leaves the backend default (FP32). |
 | `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/1-correctness/bugstofix.md`'s deepseek2 investigation). |
-| `STINGRAY_MMQ_SOA` | experimental | |
-| `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
-| `STINGRAY_MOE_GPU_ROUTER` | experimental | |
+| `STINGRAY_MMQ_SOA` | experimental | `=0` reverts the CUDA forward pass to the interleaved (AoS) weight layout instead of the SoA-repacked Q8_0 weights, which use aligned loads (+10-12% prefill, bit-identical). Default on; the backend routes per repacked handle. |
+| `STINGRAY_MOE_BATCHED_PREFILL` | experimental | `=0` is the master switch that forces MoE prompts back onto the per-token sequential trunk instead of the batched MoE prefill FFN (the sequential arm is the parity oracle). Default on. |
+| `STINGRAY_MOE_GPU_ROUTER` | experimental | `=0` runs the CUDA hybrid-GDN CPU-MoE prefill router matvec on the CPU instead of as a batched GPU GEMM (raw logits downloaded; softmax and top-k stay on the host; argmax-stable). Default on. |
 | `STINGRAY_MOE_THREADS` | experimental | Positive integer: worker threads for the CUDA hybrid-GDN pass's CPU MoE. Default `Environment.ProcessorCount`. |
 | `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | `=0` disables the batched MoE verify for MTP in the CUDA hybrid-GDN pass. Default on. |
 | `STINGRAY_MTP_MIN_ACCEPT` | experimental | Break-even acceptance for adaptive MTP, a value in [0, 1], default 0.55. The first `STINGRAY_MTP_PROBE_STEPS` steps probe with MTP; if the measured acceptance is below this, the rest of the call uses plain per-token decode (output is unchanged for greedy). `0` means always MTP. |
 | `STINGRAY_MTP_PROBE_STEPS` | diagnostic | Number of probe steps for adaptive MTP (integer of at least 1, default 8). See `STINGRAY_MTP_MIN_ACCEPT`. |
-| `STINGRAY_PER_LAYER_HD_PREFILL` | experimental | |
-| `STINGRAY_PLE_GPU_DEQUANT` | experimental | |
+| `STINGRAY_PER_LAYER_HD_PREFILL` | experimental | `=1` forces batched prefill for per-layer-head-dim models (Gemma 4). Default off and must stay off until the batched core supports sliding-window attention, per-layer KV head counts and KV-layer sharing. For exercising and measuring only, not a supported configuration. |
+| `STINGRAY_PLE_GPU_DEQUANT` | experimental | `=0` keeps the per-layer-embedding (PLE) batched pre-pass dequant on the CPU in `CudaForwardPass`. Default on, and used only for Q8_0 or Q6_K PLE tensors whose stacked row is a multiple of 256; other types always use the CPU dequant. |
 | `STINGRAY_PREFAULT` | experimental | Weight pre-fault of memory-mapped checkpoints. `0` disables; `1` forces; unset runs automatically unless the mapped size exceeds 80% of RAM (or of free RAM for the free-RAM gate), in which case it is skipped and the reason is logged to stderr. |
-| `STINGRAY_PREFILL_ATTN_FLASH64` | experimental | |
-| `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` | experimental | |
-| `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` | experimental | |
-| `STINGRAY_PREFILL_FLASH` | experimental | |
-| `STINGRAY_PREFILL_FLASH_TC` | experimental | |
-| `STINGRAY_PREFILL_FLASH_TC1` | experimental | |
-| `STINGRAY_PREFILL_GEMM` | experimental | |
+| `STINGRAY_PREFILL_ATTN_FLASH64` | experimental | `=0` disables the CPU flash64 prefill attention. Default on. It engages only when startPos plus the token count is at least 256, with no per-layer head dim, no sliding window, no ALiBi and no logit softcap. |
+| `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` | experimental | `=1` parallelises the CPU flash64 prefill attention (when the KV-outer path is not used) over per-head tile jobs instead of one job per head that walks the tiles in order. Default off. |
+| `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` | experimental | `=0` disables the register-values variant of the CPU prefill attention. Default on; it also needs FMA support, a head dimension that is a multiple of 8, and no sliding window. |
+| `STINGRAY_PREFILL_FLASH` | experimental | `=0` reverts CUDA batched-prefill attention from the flash kernel to the scalar kernels. Default on (attention 929 to 411 ms at N=1848; Gemma 4 prefill about 1389 to 2180 t/s). |
+| `STINGRAY_PREFILL_FLASH_TC` | experimental | `=0` reverts CUDA flash prefill from the tensor-core kernel to the half2 kernel. Default on, and only when the head dimension is a multiple of 16 (the multi-warp kernel is +27-40% over half2 on Gemma 4 at d=512). |
+| `STINGRAY_PREFILL_FLASH_TC1` | experimental | `=1` forces the single-warp tensor-core flash kernel even where the multi-warp one would apply (A/B). Default off. |
+| `STINGRAY_PREFILL_GEMM` | experimental | `=0` routes Q8_0 trunk matmuls in CUDA batched prefill through the memory-bound matvec GEMM-N instead of the compute-bound cuBLAS GEMM. Default on; non-Q8_0 weights always use the matvec GEMM-N. |
 | `STINGRAY_PREFILL_PROFILE` | diagnostic | Diagnostic (`=1`): accumulate synchronous CPU-MoE wall time versus total Forward wall time, to size the batching opportunity (CUDA passes). |
 | `STINGRAY_PREFIX_SCRATCH_TOKENS` | experimental | |
 | `STINGRAY_PREFIX_SLOTS` | experimental | |
