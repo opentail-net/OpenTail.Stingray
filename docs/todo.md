@@ -156,7 +156,7 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
       `ForwardPass.IsSingleDistinctTokenPrompt`. The hybrid path has no such guard but measured no
       collapse. RWKV is unverified (no checkpoint on disk), noted in ADR-0003
 - [x] Heavy suite with int8 on: 166/1/58, the only failure being known item 24. Committed `d7fcf135`
-- [ ] `docs/done/13-granite4-h-small-moe-ppl-parity-plan.md`: note
+- [x] `docs/done/13-granite4-h-small-moe-ppl-parity-plan.md`: note
       dense on, MoE still off
 - [ ] Re-measure prefill with the new default **uncontended, one run at a time**: SmolLM2-1.7B,
       Qwen2.5-0.5B, Gemma-3-4B, Gemma-4-12B; dated League rows; fill ADR-0003's speed table
@@ -170,7 +170,7 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
 
 Plan: `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md`; backlog lines added to
 `docs/00-current-work.md` (§4 CPU 4a/4b, §2 item 14); CLAUDE.md rule 14 ("ported, not verified"
-stays internal). Uncommitted.
+stays internal). Committed.
 - [~] 4. IN PROGRESS (Muse-Glimmer wired `8a096e36`). Port families (Qwen 3.8 Flash Next, GLM-5.x, Muse-Glimmer, DiffusionGemma, MiniMax-H3;
       DeepSeek V4 review): NOT admitted, NOT advertised, logged in the plan's table
 - Each port adds its file to the TensorSharp section of `THIRD_PARTY_NOTICES.md`

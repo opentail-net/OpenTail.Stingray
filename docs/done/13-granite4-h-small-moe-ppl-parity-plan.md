@@ -112,6 +112,8 @@ MoE batched experts already have their own opt-in gate (`STINGRAY_MOE_PREFILL_Q8
 narrower default (Q8 prefill on for dense, off for MoE/hybrid architectures) would keep the Granite fix while
 restoring dense speed. **Decision needed from the owner**; not changed here.
 
+**Resolved 2026-10-02 (user decision, [ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md)):** the dense default was flipped back on (`SimdKernels.Q8PrefillEnabled` is on unless `STINGRAY_CPU_PREFILL_Q8=0`), while the routed-MoE batched experts stay on their own opt-in gate `STINGRAY_MOE_PREFILL_Q8` (default off). The measurements above describe the intermediate default-off state. Checked against the code 2026-10-31.
+
 ## Goals
 
 1. Establish an apples-to-apples PPL comparison.
