@@ -1,9 +1,9 @@
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
-/// The Vulkan hybrid (<c>-g N</c>) applies none of the model scale hyperparameters, so a model that sets one runs with wrong numbers and no error
-/// (measured 2026-10-31: Granite 3.3-2B answers with garbage, gemma-3-4b disagrees with the CPU pass). The guard refuses them with a reason.
-/// Pure function of the hyperparameters, so no model file is needed.
+/// The Vulkan hybrid (<c>-g N</c>) applies the embedding, residual, logit and attention scale fields (Granite, Gemma 3) but no logit soft-capping
+/// (Gemma 2), so a model that sets a cap is refused with a reason instead of running with wrong numbers. Pure function of the hyperparameters, so
+/// no model file is needed; the scale fields are proved against the CPU pass on real weights in <c>HybridScaleParityTests</c>.
 /// </summary>
 public sealed class HybridScaleGuardTests
 {
@@ -11,33 +11,25 @@ public sealed class HybridScaleGuardTests
 
     [Fact]
     public void PlainHyperparameters_AreNotRefused()
-        => Assert.Null(GpuForwardPass.UnappliedScaleReason(Plain()));
-
-    [Theory]
-    [InlineData("embedding")]
-    [InlineData("residual")]
-    [InlineData("logit")]
-    [InlineData("attention")]
-    public void AnyUnappliedScale_IsRefused_WithAReasonThatNamesScaling(string which)
-    {
-        var hp = which switch
-        {
-            "embedding" => Plain() with { EmbeddingScale = 12f },
-            "residual" => Plain() with { ResidualScale = 0.22f },
-            "logit" => Plain() with { LogitScale = 0.125f },
-            _ => Plain() with { AttentionScaleOverride = 0.015625f },
-        };
-
-        string? reason = GpuForwardPass.UnappliedScaleReason(hp);
-
-        Assert.NotNull(reason);
-        Assert.Contains("scaling", reason);
-    }
+        => Assert.Null(GpuForwardPass.UnappliedSoftcapReason(Plain()));
 
     [Fact]
-    public void GraniteStyleScales_AllTogether_AreRefused()
-        => Assert.NotNull(GpuForwardPass.UnappliedScaleReason(Plain() with
+    public void ScaleFieldsAlone_AreNotRefused_TheHybridAppliesThem()
+        => Assert.Null(GpuForwardPass.UnappliedSoftcapReason(Plain() with
         {
             EmbeddingScale = 12f, ResidualScale = 0.22f, LogitScale = 0.125f, AttentionScaleOverride = 0.015625f,
         }));
+
+    [Theory]
+    [InlineData("final")]
+    [InlineData("attention")]
+    public void AnySoftcap_IsRefused_WithAReasonThatNamesIt(string which)
+    {
+        var hp = which == "final" ? Plain() with { FinalLogitSoftcap = 30f } : Plain() with { AttnLogitSoftcap = 50f };
+
+        string? reason = GpuForwardPass.UnappliedSoftcapReason(hp);
+
+        Assert.NotNull(reason);
+        Assert.Contains("soft-capping", reason);
+    }
 }

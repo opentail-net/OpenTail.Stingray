@@ -190,24 +190,23 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     }
 
     /// <summary>
-    /// The Vulkan hybrid applies none of the model scale hyperparameters, so it must refuse a model that sets one instead of running it with wrong
-    /// numbers. Measured 2026-10-31 with -g 8, before the guard: Granite 3.3-2B answered with garbage (sequential hybrid against the CPU pass:
-    /// minimum cosine -0.36) and gemma-3-4b disagreed with the CPU (0.47).
+    /// The Vulkan hybrid has no logit soft-capping, so it must refuse Gemma 2 instead of running it with wrong numbers (the planner keeps Gemma 2 on the
+    /// CPU, but code that builds the pass directly would otherwise get a silently wrong model). The scale fields (Granite, Gemma 3) are applied now;
+    /// see <c>HybridScaleParityTests</c>.
     /// </summary>
-    [Theory]
-    [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf")]
-    [InlineData("gemma-3-4b-it-Q4_K_M.gguf")]
-    public void Hybrid_RefusesModelsWhoseScalingItDoesNotApply(string file)
+    [Fact]
+    public void Hybrid_RefusesGemma2_WhichNeedsSoftCapping()
     {
+        const string file = @"gemma-2-2b-it\gemma-2-2b-it-Q4_K_M.gguf";
         using var s = Open(file)!;
 
         var ex = Assert.Throws<NotSupportedException>(() => NewHybrid(s, 8, -1));
 
-        Assert.Contains("scaling", ex.Message);
+        Assert.Contains("soft-capping", ex.Message);
         Assert.Contains("-g 0", ex.Message);
     }
 
-    /// <summary>The guard must never catch a checkpoint that has a handoff row or receipt (it reads the header only).</summary>
+    /// <summary>The soft-cap guard must never catch a checkpoint that has a handoff row or receipt (it reads the header only).</summary>
     [Theory]
     [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]
     [InlineData("Qwen3-0.6B-Q8_0.gguf")]
@@ -222,13 +221,13 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf")]
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf")]
     [InlineData("ERNIE-4.5-0.3B-Q8_0.gguf")]
-    public void Hybrid_ScaleGuard_DoesNotRefuseTheCheckpointsThatPassTheHandoffRuns(string file)
+    public void Hybrid_SoftCapGuard_DoesNotRefuseTheCheckpointsThatPassTheHandoffRuns(string file)
     {
         string? path = Find(file);
         Assert.SkipWhen(path is null, $"{file} not present");
         using var model = GgufModel.Open(path!);
 
-        Assert.Null(GpuForwardPass.UnappliedScaleReason(ArchitectureModelResolver.ResolveHyperparams(model)));
+        Assert.Null(GpuForwardPass.UnappliedSoftcapReason(ArchitectureModelResolver.ResolveHyperparams(model)));
     }
 
     /// <summary>

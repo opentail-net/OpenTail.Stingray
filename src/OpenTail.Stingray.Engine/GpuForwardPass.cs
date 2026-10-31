@@ -549,22 +549,19 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
     }
 
     /// <summary>
-    /// The model scale hyperparameters (embedding, residual, logit and attention-scale override: Gemma 2 and 3, Granite) are applied by the
-    /// full Vulkan pass only. <see cref="HybridForwardPass"/> applies none of them, so a model that sets one runs with the wrong numbers
-    /// without any error: measured 2026-10-31 with <c>-g 8</c>, Granite 3.3-2B answers with garbage and gemma-3-4b disagrees with the CPU
-    /// pass (sequential hybrid against CPU, minimum cosine -0.36 and 0.47), while the full pass gives Granite a perplexity of 7.77 against
-    /// 7.81 on the CPU. Gemma 4 is excluded: its own trunk applies the embedding scale (<c>LayerHeadDim</c> is set only for it).
+    /// Logit soft-capping (Gemma 2) is applied nowhere on the Vulkan hybrid: the final cap exists only in the full Vulkan pass and the attention cap in no GPU
+    /// pass (the planner keeps Gemma 2 on the CPU, <c>SupportedBackends = Cpu</c>; the full pass measured perplexity 15.38 against 12.58 on the CPU). The
+    /// embedding, residual, logit and attention scale fields (Granite, Gemma 3) and the sliding-window RoPE base are applied by <see cref="HybridForwardPass"/>:
+    /// measured 2026-10-31 against the CPU pass, minimum per-step cosine 0.996 (Granite 3.3-2B) and 0.990 (gemma-3-4b) at <c>-g 8</c> and <c>-g 20</c>.
     /// </summary>
-    internal static string? UnappliedScaleReason(ModelHyperparams hp) =>
-        hp.LayerHeadDim is null
-        && (hp.EmbeddingScale != 1f || hp.ResidualScale != 1f || hp.LogitScale != 1f || hp.AttentionScaleOverride != 0f)
-            ? "embedding / residual / logit / attention scaling (Gemma 2 and 3, Granite; full Vulkan offload only)"
+    internal static string? UnappliedSoftcapReason(ModelHyperparams hp) =>
+        hp.FinalLogitSoftcap > 0f || hp.AttnLogitSoftcap > 0f
+            ? "logit soft-capping (Gemma 2; the planner runs it on the CPU)"
             : null;
 
-    /// <summary><see cref="PartialOffloadUnsupportedReason"/> plus <see cref="UnappliedScaleReason"/>: what the Vulkan hybrid (<c>-g N</c>) cannot run.</summary>
+    /// <summary><see cref="PartialOffloadUnsupportedReason"/> plus <see cref="UnappliedSoftcapReason"/>: what the Vulkan hybrid (<c>-g N</c>) cannot run.</summary>
     public static string? VulkanHybridUnsupportedReason(GgufModel model, ModelHyperparams hp) =>
-        PartialOffloadUnsupportedReason(model, hp) ?? UnappliedScaleReason(hp);
-
+        PartialOffloadUnsupportedReason(model, hp) ?? UnappliedSoftcapReason(hp);
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         DType? kvDtype = null, int layerLimit = int.MaxValue,
