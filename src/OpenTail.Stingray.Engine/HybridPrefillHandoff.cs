@@ -58,6 +58,31 @@ public sealed unsafe partial class HybridForwardPass
         CpuPrefillWarmExperts = p.HybridCpuPrefillWarmExperts;
     }
 
+    /// <summary>
+    /// The first single-token <see cref="Forward"/> creates the GPU decode pipelines and descriptor state (measured on SmolLM2-1.7B
+    /// <c>-g 12</c>, 2026-10-31: 1784 ms in the GPU half of the first decode step against 20 ms for every later step). A sequential
+    /// prefill pays that during the prompt; a CPU handoff never runs the GPU decode path, so the first generated token paid it. Run one
+    /// throwaway step here instead, at load, when a handoff is possible. It writes K/V position 0 and nothing else the handoff keeps:
+    /// the handoff overwrites every GPU row it uses and truncates the CPU cache, and <see cref="ResetCache"/> clears the rest.
+    /// Dense, non-TurboQuant placements only (a MoE step would also load experts into the slot cache).
+    /// </summary>
+    private void WarmDecodePathForHandoff()
+    {
+        if (!CpuPrefillEnabled || _nGpuLayers == 0 || _expertSlotManager is not null || _tqEnabled || _hp.LayerHeadDim is not null) return;
+        if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.HybridCpuPrefill, HandoffPath.VulkanHybrid) is not null) return;
+        try
+        {
+            Forward(0, 0);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // Warm-up is an optimisation: a failure here reappears on the first real step, where it is reported properly.
+        }
+        finally
+        {
+            ResetCache();
+        }
+    }
     /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV over.</summary>
     internal bool LastPrefillUsedCpuHandoff { get; private set; }
 
