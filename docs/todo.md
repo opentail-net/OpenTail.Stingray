@@ -1,6 +1,6 @@
 > Finished items moved to [done/todo-done-2026-10.md](done/todo-done-2026-10.md) on 2026-10-30. This file keeps only the open work.
 
-# SCOUT / HUGGING FACE: IDEAS AND TODO (written 2026-10-09)
+## SCOUT / HUGGING FACE: IDEAS AND TODO (written 2026-10-09)
 
 Built and committed so far (details: `docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md`, `docs/reference/061-coverage-tooling.md`):
 `stingray scout` (local + `-r owner/repo`), features, structural-parent ranking against 12 shipped signatures, host working-set estimator + budget gate, `scripts/scout-pretest.ps1`,
@@ -47,7 +47,7 @@ preflight -> load only if it passes. If the default does not fit, offer another 
 - Open questions for the user: where do favourites live (env/profile JSON/`~/.stingray`)? Does `ask before downloading` stay the default for `chat`? Which uses/backends get a qualification column first (CPU chat only is honest)?
 
 ---
-# RESUME HERE (updated 2026-10-03)
+## RESUME HERE (updated 2026-10-03)
 
 ## Now
 - **OpenBLAS DLL**: moved to `C:\Git-Public\libopenblas.dll` (user decides when to delete); 6 build-
@@ -90,7 +90,7 @@ by construction. Its M=1 speed claim (1.0-2.1x per-row on K-quants) was measured
 
 ---
 
-# TODO: allow chunked prefill for hybrid-GDN models with an MTP head
+## TODO: allow chunked prefill for hybrid-GDN models with an MTP head
 
 User decision 2026-10-02: allow the fast (chunked/batched) CPU prefill path for MTP models
 (Qwen3.6/3.8-27B). Roll back only if the remaining results take a really bad turn.
@@ -137,7 +137,7 @@ Rule: document, document, document.
 - [ ] `docs/STATUS.md` if a hybrid-GDN row is affected
 - [ ] Commit only these hunks (other agents may have work in the tree)
 
-# TODO: int8 prompt processing on by default (Option A)
+## TODO: int8 prompt processing on by default (Option A)
 
 User decision 2026-10-02: `STINGRAY_CPU_PREFILL_Q8` defaults ON for dense models; routed MoE
 experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollback:
@@ -166,7 +166,7 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
 ## Follow-ups: closing the remaining gaps
 - [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
 
-# TODO: TensorSharp takeaways (user order 2026-10-02: 1, 2, 3, then 4)
+## TODO: TensorSharp takeaways (user order 2026-10-02: 1, 2, 3, then 4)
 
 Plan: `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md`; backlog lines added to
 `docs/00-current-work.md` (§4 CPU 4a/4b, §2 item 14); CLAUDE.md rule 14 ("ported, not verified"

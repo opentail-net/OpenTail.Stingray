@@ -1,4 +1,4 @@
-﻿# Checkpoints we do not support yet (2026-10-11)
+# Checkpoints we do not support yet (2026-10-11)
 
 Source: `scripts/bench-league-recheck.ps1 -Set all` over every text-generation GGUF found on every drive (inventory: `scripts/list-checkpoints.ps1`). Each checkpoint was run once on the CPU path (`-g 0`) and once on the Vulkan full-offload path (`-g -1`) with a ~500-token prompt. A row below means the engine **could not produce a result**, which is different from "slow": slow checkpoints are in `PerformanceLeague.md`.
 

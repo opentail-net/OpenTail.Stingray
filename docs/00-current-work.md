@@ -214,8 +214,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **Diffusion** ([4-performance/diffusion/](4-performance/diffusion))
 - [ ] 8. FLUX.2 GPU: Experiment 3 (production-shape GEMM ladder) and the `DoubleBlockGpu` row-offset
-   audit; a true quantized GEMM (the `VulkanMatMulPath` "Path 2" seam is not implemented; it would
-   help FLUX.1 too). [Part 3 (FLUX.2)](4-performance/diffusion/diffusion-performance.md#part-3-flux2-double-block-plan).
+   audit; the quantized-GEMM lever (corrected 2026-10-31: `VulkanMatMulPath` Path 2 is live for Q4_K and Q6_K LLM weights, and diffusion has quantized GEMMs in `SgemmQ*`; the open work is the FP16-tile project in the [GEMM plan](4-performance/gpu/vulkan-gemm/vulkan-gemm.md#part-2-fp16-tile-project-diffusion), which would help FLUX.1 too). [Part 3 (FLUX.2)](4-performance/diffusion/diffusion-performance.md#part-3-flux2-double-block-plan).
 - [ ] 9. FLUX.1 DiT gap to sd.cpp: 132.0 s vs the 99.8 s target (~1.32x) since the 2026-09-25 flash
    attention:
    [Part 2 (FLUX.1 handoff)](4-performance/diffusion/diffusion-performance.md#part-2-flux1-vulkan-gemm-handoff), Phase 6 of
