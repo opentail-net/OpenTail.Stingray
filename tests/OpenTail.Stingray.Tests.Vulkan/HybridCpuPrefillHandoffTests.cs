@@ -89,7 +89,12 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 8, -1)]
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1)]
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 16, -1)]
-    [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", 4, 16)]
+    // Qwen3-Coder (128 experts, top-8, 16 slots): which experts run on the GPU and which in the CPU fallback depends on when the background
+    // prefetcher's uploads land, so the same 40 tokens give slightly different logits run to run (with the prefetcher and warm-up off,
+    // 8 of 8 runs were bit-identical). Over 2,000 decode steps from 50 runs the median cosine was 0.99955, 1% of steps fell below 0.990 and the
+    // worst was 0.978, so a 0.99 floor on every one of 40 steps fails about a third of runs. This row uses a 0.97 floor per step plus a median
+    // floor (see RunHandoff); K/V bytes and prefill logits are still compared exactly.
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", 4, 16, 1024, 0.97)]
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 4, 16)]   // qwen2moe: shared expert with sigmoid gate, 60 experts top-4
     [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf", 1, 8)]
     [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf", 4, 16)]   // llama + experts (Mixtral-8x7B): 8 experts top-2, renormalised
@@ -98,12 +103,12 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 1024)]
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 1, 8, 1024)]
     [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf", 4, 16, 8192)]
-    public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots, int ctx = 1024)
-        => RunHandoff(file, gpuLayers, slots, ctx);
+    public void Handoff_IsByteExact_AndDecodeAgreesWithSequentialPrefill(string file, int gpuLayers, int slots, int ctx = 1024, double minStepCosine = 0.99)
+        => RunHandoff(file, gpuLayers, slots, ctx, minStepCosine);
 
     /// <summary>
     /// One extra checkpoint chosen at run time: <c>STINGRAY_HANDOFF_TEST_MODEL=&lt;file name&gt;</c> (looked up like the InlineData rows), optionally
-    /// <c>STINGRAY_HANDOFF_TEST_GPU_LAYERS</c> (default 4) and <c>STINGRAY_HANDOFF_TEST_CTX</c> (default 1024). Skips without the variable.
+    /// <c>STINGRAY_HANDOFF_TEST_GPU_LAYERS</c> (default 4), <c>STINGRAY_HANDOFF_TEST_CTX</c> (default 1024) and <c>STINGRAY_HANDOFF_TEST_MIN_STEP_COSINE</c> (default 0.99; a lower value also requires a median above 0.999). Skips without the variable.
     /// A new family is tried here first; its permanent InlineData row is added only together with its receipt.
     /// </summary>
     [Fact]
@@ -113,7 +118,8 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         Assert.SkipWhen(string.IsNullOrWhiteSpace(file), "STINGRAY_HANDOFF_TEST_MODEL is not set");
         int layers = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_GPU_LAYERS"), out int l) ? l : 4;
         int ctx = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_CTX"), out int c) ? c : 1024;
-        RunHandoff(file!, layers, 16, ctx);
+        double floor = double.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MIN_STEP_COSINE"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double fl) ? fl : 0.99;
+        RunHandoff(file!, layers, 16, ctx, floor);
     }
 
     /// <summary>
@@ -186,7 +192,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     public void Handoff_LargeFamilies(string file, int gpuLayers, int slots, int ctx = 1024)
         => RunHandoff(file, gpuLayers, slots, ctx);
 
-    private void RunHandoff(string file, int gpuLayers, int slots, int ctx)
+    private void RunHandoff(string file, int gpuLayers, int slots, int ctx, double minStepCosine = 0.99)
     {
         using var s = Open(file)!;
         Assert.True(s.Prompt.Length >= 100, $"prompt too short for a meaningful test: {s.Prompt.Length}");
@@ -258,7 +264,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         }
 
         var failures = new List<string>();
-        void Compare(string stage, float[] reference, float[] actual)
+        void Compare(string stage, float[] reference, float[] actual, double floor = 0.99)
         {
             double cos = Cosine(reference, actual);
             int ra = Argmax(reference), aa = Argmax(actual);
@@ -267,10 +273,17 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
                 float range = reference.Max() - reference.Min(), gap = reference[ra] - reference[aa];
                 if (gap / range >= 0.02) failures.Add($"{stage}: argmax {ra} vs {aa}, gap {gap:F3} of range {range:F3}");
             }
-            if (cos <= 0.99) failures.Add($"{stage}: cosine {cos:F6}");
+            if (cos <= floor) failures.Add($"{stage}: cosine {cos:F6}");
         }
         Compare("prefill logits", seqLogits, fastLogits);
-        for (int i = 0; i < forced.Length; i++) Compare($"decode {i + 1}", decodeSeq[i], decodeFast[i]);
+        for (int i = 0; i < forced.Length; i++) Compare($"decode {i + 1}", decodeSeq[i], decodeFast[i], minStepCosine);
+        if (minStepCosine < 0.99)
+        {
+            // A relaxed per-step floor must not hide a systematic error: the typical step has to stay very close.
+            var sorted = decodeSeq.Select((x, i) => Cosine(x, decodeFast[i])).OrderBy(c => c).ToArray();
+            double median = sorted[sorted.Length / 2];
+            if (median <= 0.999) failures.Add($"median decode cosine {median:F6} is not above 0.999");
+        }
         Console.WriteLine($"[handoff] {file} -g {gpuLayers}: n={n}; prefill cosine {Cosine(seqLogits, fastLogits):F6}; " +
                           $"decode cosines {string.Join(",", decodeSeq.Select((x, i) => Cosine(x, decodeFast[i]).ToString("F5")))}");
         Assert.True(failures.Count == 0, string.Join("; ", failures));
@@ -312,6 +325,68 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
             Assert.True(b[i].All(float.IsFinite), $"second sequential run, decode step {i + 1}: non-finite logits");
         }
         Console.WriteLine($"[control] {file} -g {layers}: sequential vs sequential decode cosines {string.Join(",", a.Select((x, i) => Cosine(x, b[i]).ToString("F5")))}");
+    }
+    /// <summary>
+    /// Three-way diagnostic for the MoE decode comparison: an all-CPU pass continuing from its own prefill (reference), the hybrid after a
+    /// handoff, and the hybrid after a sequential prefill, all teacher-forced on the CPU pass's greedy tokens. Prints, per pair, the minimum
+    /// step cosine and the number of steps at or below 0.99. It asserts nothing: it exists to show WHICH pair drifts. Uses
+    /// <c>STINGRAY_HANDOFF_TEST_MODEL</c> and <c>STINGRAY_HANDOFF_TEST_GPU_LAYERS</c>.
+    /// </summary>
+    [Fact]
+    public void Diagnostic_ThreeWay_EnvironmentChosenModel()
+    {
+        string? file = Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_MODEL");
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(file), "STINGRAY_HANDOFF_TEST_MODEL is not set");
+        int layers = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_HANDOFF_TEST_GPU_LAYERS"), out int l) ? l : 4;
+        using var s = Open(file!)!;
+        int n = s.Prompt.Length;
+        const int steps = 40;
+        var forced = new int[steps];
+        var cpuGreedy = new int[steps];
+        bool fromHybrid = Environment.GetEnvironmentVariable("STINGRAY_DIAG_FORCED_FROM") == "hybrid";
+        if (fromHybrid)
+        {
+            // the real test's token source: the handoff hybrid's own greedy tokens (can differ run to run if hybrid decode does)
+            using var h0 = NewHybrid(s, layers, 16);
+            var lg0 = h0.Prefill(s.Prompt, 0).ToArray();
+            for (int i = 0; i < steps; i++) { forced[i] = Argmax(lg0); lg0 = h0.Forward(forced[i], n + i).ToArray(); }
+        }
+        var cpuL = new List<float[]>();
+        using (var backend = new CpuBackend())
+        using (var cpu = new Engine.ForwardPass(s.Model, backend, s.Hp, maxContextLength: 1024))
+        {
+            var lg = cpu.Prefill(s.Prompt).ToArray();
+            for (int i = 0; i < steps; i++)
+            {
+                cpuGreedy[i] = Argmax(lg);
+                int tok = fromHybrid ? forced[i] : cpuGreedy[i];
+                forced[i] = tok;
+                lg = cpu.Forward(tok, n + i).ToArray();
+                cpuL.Add(lg);
+            }
+        }
+        var hf = new List<float[]>();
+        using (var h = NewHybrid(s, layers, 16))
+        {
+            h.Prefill(s.Prompt, 0);
+            Assert.True(h.LastPrefillUsedCpuHandoff, "the handoff was not taken: " + h.LastCpuPrefillRefusal);
+            for (int i = 0; i < steps; i++) hf.Add(h.Forward(forced[i], n + i).ToArray());
+        }
+        var sq = new List<float[]>();
+        using (var h = NewHybrid(s, layers, 16))
+        {
+            h.CpuPrefillEnabled = false;
+            h.Prefill(s.Prompt, 0);
+            for (int i = 0; i < steps; i++) sq.Add(h.Forward(forced[i], n + i).ToArray());
+        }
+        static string Summary(List<float[]> x, List<float[]> y)
+        {
+            var c = x.Select((v, i) => Cosine(v, y[i])).ToArray();
+            return $"min {c.Min():F5}, {c.Count(v => !(v > 0.99))} step(s) at or below 0.99";
+        }
+        int firstDiv = Array.FindIndex(Enumerable.Range(0, steps).ToArray(), i => forced[i] != cpuGreedy[i]);
+        Console.WriteLine($"[threeway-tokens] forcedFrom={(fromHybrid ? "hybrid" : "cpu")} firstDivergenceFromCpuGreedy={firstDiv} forced={string.Join(" ", forced)}");
+        Console.WriteLine($"[threeway] {file} -g {layers}: handoff-vs-cpu: {Summary(hf, cpuL)}; sequential-vs-cpu: {Summary(sq, cpuL)}; handoff-vs-sequential: {Summary(hf, sq)}");
     }
     [Fact]
     public void ShortPrompts_StartPosAboveZero_AndDisabledSwitch_UseTheSequentialPath()
