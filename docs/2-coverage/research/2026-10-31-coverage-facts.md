@@ -4,7 +4,7 @@ Companion to the research sections appended to the plans in [docs/2-coverage](..
 
 ## 1. DiffusionGemma (`google/diffusiongemma-26B-A4B-it`)
 
-Config values, fetched 2026-10-31 from [config.json](https://huggingface.co/google/diffusiongemma-26B-A4B-it/blob/main/config.json):
+Config values, fetched 2026-10-31 from [config.json] (pinned to repo revision f7f5b7f5, unchanged since 2026-07-15)(https://huggingface.co/google/diffusiongemma-26B-A4B-it/blob/f7f5b7f5fa82ffc52addd066915886d497f5517b/config.json):
 
 | Key (text_config) | Value | Plan says | Match |
 |---|---|---|---|
