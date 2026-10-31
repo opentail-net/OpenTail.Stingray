@@ -1,7 +1,7 @@
 # `STINGRAY_*` environment-variable inventory — classified (name-complete as of 2026-08-07; see the status note)
 
-> **Status, 2026-10-31: not name-complete.** The table below has a row for **216** of the **287** names in
-> `KnownEnvironmentVariables.All`; **71** registered names have no row yet (found by an external review and confirmed by comparing the
+> **Status, 2026-10-31: not name-complete.** The table below has a row for **240** of the **287** names in
+> `KnownEnvironmentVariables.All`; **47** registered names have no row yet (found by an external review and confirmed by comparing the
 > registry with the table). `KnownEnvironmentVariablesInventoryTests.InventoryTable_CoversTheRegistry_ExceptTheListedGap` pins that
 > exact set: it fails if a new variable is registered without a row, and fails again when a gap is filled but its name is still on the
 > list, so the gap can only shrink. The "name-complete" claims in the history below were true on the dates given.
@@ -176,6 +176,8 @@ dynamically composed names.
 | `STINGRAY_FA_DUMP_DIR` | diagnostic | Directory. The Qwen ASR audio encoder and forced aligner write intermediate tensors there (mel, conv-position and transformer outputs) for parity debugging. |
 | `STINGRAY_FA_READ_SHIFT` | diagnostic | Integer (default 0). Shifts the position from which the forced aligner reads its timestamp class logits; an experiment handle for alignment-offset debugging. |
 | `STINGRAY_FA_TRACE` | diagnostic | `=1` enables per-layer hidden-state taps and logit statistics tracing in the Qwen forced aligner (needs a forward pass that supports hidden taps). |
+| `STINGRAY_FORCEDALIGNER_PERF` | diagnostic | `=1` prints timing stages of the Qwen audio encoder used by the forced aligner (convolution stages and others) to stdout. |
+| `STINGRAY_FORCEDALIGNER_TRACE` | diagnostic | `=1` prints forced-aligner trace output; the audio encoder also treats it, like `STINGRAY_FORCEDALIGNER_PERF`, as a reason to print its stage trace. |
 
 ## OpenTail.Stingray.Cli
 
@@ -227,6 +229,7 @@ dynamically composed names.
 | `STINGRAY_DSPARK_MIN_CONFIDENCE` | experimental | DSpark confidence floor in [0, 1]. Resolution order: `--dspark-min-confidence` flag, then this variable, then 0 (disabled: verify the whole block). |
 | `STINGRAY_DSPARK_VERIFY_LEN` | experimental | DSpark per-step verify-length cap (positive integer). Resolution order: `--dspark-verify-len` flag, then this variable, then 0 (uncapped; the confidence trim decides). |
 | `STINGRAY_MTP_DRAFT_N` | expert | MTP draft length (positive integer). Default 3; the CPU hybrid-GDN pass defaults to 1 when neither this variable nor an explicit maximum is set. |
+| `STINGRAY_PROFILE_GPU_SPLIT` | diagnostic | `=1` enables the Vulkan GPU-phase profile counters (`opentail.profile.phase.duration`) and marks the run-stats JSON `perturbed: true`, because profiling changes the timing. Never use such a run for benchmark comparisons. |
 | `STINGRAY_TRACE_MTP` | diagnostic | Diagnostic (`=1`): print the MTP phase times (draft, verify, commit, in ms) after a speculative run, when drafts were emitted. |
 | `STINGRAY_GC_STATS` | diagnostic | CLI: print GC collections, bytes allocated and total pause at process exit (2026-10-08) |
 | `STINGRAY_EVENTS` | diagnostic | CLI: stream EngineEvents (model loaded, prefill/decode completed, MTP step, GC stats) to stderr as JSON lines (2026-10-08) |
@@ -291,6 +294,7 @@ dynamically composed names.
 | `STINGRAY_BATCHED_MATVEC_TIER` | experimental | `=0` disables the CPU non-BLAS batched path that consumes a batch in quads and pairs (`MatVec4In`/`MatVec2In`) instead of N single `MatVec` calls. Bit-identical either way; a weight-reuse switch. Default on (4-way concurrent decode 28.90 to 30.28 tok/s aggregate, per the session runtime plan section 3.4.9). |
 | `STINGRAY_CPU_DECODE_VIA_GEMM` | experimental | `=1` runs single-token CPU decode through the batched Q8 GEMM path (ggml Q8_K activations instead of Q8_KS), which changes decode numerics. Opt-in until measured and decided; needs the Q8 prefill path to be enabled (`SimdKernels.DecodeViaGemm`, also settable by tests). |
 | `STINGRAY_GEMM_PATH` | experimental | CPU GEMM path selector. Default Path 2 (Q8_K activations, repacked weights); `1` or `path1` selects Path 1 (Q8_KS activations). Path 2 measured 1.83x faster on the isolated matmul, 1.11x end to end, and no worse on wikitext-2 PPL (16.0484 vs 16.0870), per the comment in `GemmPath.cs`. |
+| `STINGRAY_LEGACY_DOTQ4K` | expert | `=1` forces the fully-F32 legacy Q4_K dot product instead of the default int8-quantized-activation kernel, for the Q4_K matvec paths. Needed for diffusion models with wide-dynamic-range activations; the default was validated for LLM decode perplexity only. |
 | `STINGRAY_MATVEC_WIDE8` | experimental | `=1` selects the experimental 8-wide Q4_K dot (`DotQ4K_Wide8`) for an A/B on the real CLI. Default off. Marked in the source as temporary: to be removed once the A/B is settled. |
 | `STINGRAY_TRACE_GDN_INTERNAL` | diagnostic | Diagnostic (`=1`): dump head-0 GDN internals (decay scalar, state L2 after decay and after the rank-1 update, p-readout) in the CPU GDN kernels, written for the qwen3.6-27B-MTP position-12 parity bug. Layers from `STINGRAY_TRACE_GDN_LAYERS`, position from `STINGRAY_TRACE_GDN_POS`. Fires only where the caller passes layer and position. |
 | `STINGRAY_TRACE_GDN_LAYERS` | diagnostic | Diagnostic: comma-separated layer indices for `STINGRAY_TRACE_GDN_INTERNAL`. Default `0,20,40,60`. |
@@ -370,10 +374,12 @@ dynamically composed names.
 | `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | `=0` reverts KVarN prompts in `CudaForwardPass` to the per-token prefill loop instead of chunked batched prefill. Default on. |
 | `STINGRAY_KV_BF16_MIN_TOKENS` | expert | Positive integer, default 1024: the context length at which `STINGRAY_KV_STORE=auto` uses BF16 storage. |
 | `STINGRAY_KV_STORE` | expert | KV-cache store layout: `bf16` stores BF16, `auto` switches by length (see `STINGRAY_KV_BF16_MIN_TOKENS`), any other non-empty value means FP32. Unset leaves the backend default (FP32). |
+| `STINGRAY_LFM2_MOE_BATCHED_PREFILL` | expert | `=0` makes LFM2-MoE use the exact per-token trunk for prefill instead of the batched one. On by default (about 2.3x faster prefill; with `STINGRAY_PREFILL_ATTN_FLASH64=0` the batched trunk matches token-by-token bit for bit). |
 | `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/1-correctness/bugstofix.md`'s deepseek2 investigation). |
 | `STINGRAY_MMQ_SOA` | experimental | `=0` reverts the CUDA forward pass to the interleaved (AoS) weight layout instead of the SoA-repacked Q8_0 weights, which use aligned loads (+10-12% prefill, bit-identical). Default on; the backend routes per repacked handle. |
 | `STINGRAY_MOE_BATCHED_PREFILL` | experimental | `=0` is the master switch that forces MoE prompts back onto the per-token sequential trunk instead of the batched MoE prefill FFN (the sequential arm is the parity oracle). Default on. |
 | `STINGRAY_MOE_GPU_ROUTER` | experimental | `=0` runs the CUDA hybrid-GDN CPU-MoE prefill router matvec on the CPU instead of as a batched GPU GEMM (raw logits downloaded; softmax and top-k stay on the host; argmax-stable). Default on. |
+| `STINGRAY_MOE_PREFILL_Q8` | experimental | `=1` re-enables the approximate Q8-activation path in batched MoE expert matmuls (only effective when the general Q8 prefill path is also on). Off by default because exact batched/per-token parity is the default; for explicit MoE-Q8 investigations. |
 | `STINGRAY_MOE_THREADS` | experimental | Positive integer: worker threads for the CUDA hybrid-GDN pass's CPU MoE. Default `Environment.ProcessorCount`. |
 | `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | `=0` disables the batched MoE verify for MTP in the CUDA hybrid-GDN pass. Default on. |
 | `STINGRAY_MTP_MIN_ACCEPT` | experimental | Break-even acceptance for adaptive MTP, a value in [0, 1], default 0.55. The first `STINGRAY_MTP_PROBE_STEPS` steps probe with MTP; if the measured acceptance is below this, the rest of the call uses plain per-token decode (output is unchanged for greedy). `0` means always MTP. |
@@ -470,6 +476,7 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_ATTN128_LEGACY` | expert | `=1` routes head dimension 128 back to the older `MultiHeadAttentionTiled128` kernel instead of the newer one (A/B comparison and fallback). |
+| `STINGRAY_FORCE_MHA64_F32` | expert | `=1` forces the head-dimension-64 attention kernel to the FP32 variant even when the device has shader float16/int8 and 16-bit storage (A/B comparison and fallback). |
 | `STINGRAY_VULKAN_DP4A` | experimental | `=0` forces the hand-written Q4_K int8 matvec; `=1` forces the dp4a intrinsic variant and skips the probe. Unset: the backend runs both variants on a tiny problem and uses the intrinsic only if they agree exactly (some drivers corrupt it). |
 | `STINGRAY_VULKAN_MM_PATH` | experimental | Vulkan quantized batched matmul path. Unset or `3` or `path3`: Path 3 (default). `1` or `path1`: Path 1. `2` or `path2`: Path 2. Any other value falls back to Path 1. |
 | `STINGRAY_VULKAN_MM_STATS` | diagnostic | Diagnostic (`=1`): count what the Vulkan quantized batched matmul does (notably tokens per weight-matrix read). Default off so the default path is unchanged. |
@@ -486,8 +493,21 @@ dynamically composed names.
 | `STINGRAY_FLUX2_DUMP_COND_PATH` | diagnostic | Path. The FLUX.2 pipeline writes its text-conditioning embeddings there as raw float32 (parity debugging). |
 | `STINGRAY_FLUX2_DUMP_LATENT_PATH` | diagnostic | Path. The FLUX.2 pipeline writes the final latent there as raw float32 (parity debugging). |
 | `STINGRAY_FLUX2_GPU_BATCH_SIZE` | experimental | Positive integer (default 1). How many FLUX.2 double blocks the GPU path processes per batch; kept at 1 until measured for this workload. |
+| `STINGRAY_FLUX2_GPU_FP16` | expert | `=1` stops the FLUX.2 Q4_K weights from being kept as raw quantized blocks on the GPU: they are uploaded in the normal FP16 or FP32 form instead (A/B comparison and fallback). Unset keeps them quantized when the backend can multiply them directly and the column count is a multiple of 256. |
+| `STINGRAY_FLUX2_GPU_SINGLE_BLOCKS` | experimental | `=1` also runs the FLUX.2 single blocks on the GPU (the double blocks already run there when the backend supports it). Off by default. |
+| `STINGRAY_FLUX2_INJECT_NOISE_PATH` | diagnostic | Path to a raw float32 file that replaces the FLUX.2 initial noise (parity hook, `DiffusionParityHooks.TryLoadNoise`); a size mismatch throws. |
+| `STINGRAY_FLUX2_PERF_TRACE` | diagnostic | `=1` accumulates and prints FLUX.2 DiT timing counters (dequantization and matmul time, among others). |
 | `STINGRAY_FLUX_GPU_FP16` | expert | `=1` stops FLUX weights from being kept as raw Q3_K, Q4_K or Q5_K blocks on the GPU: they are uploaded in the normal FP16, BF16 or FP32 form instead (A/B comparison and fallback). Unset keeps them quantized when the backend can multiply them directly. |
 | `STINGRAY_FLUX_T5_DEVICE` | expert | `cpu` or `gpu`. Forces where the FLUX T5 text encoder runs. By default it runs on the GPU only on a discrete GPU; on an integrated GPU it runs on the CPU, which shares the same RAM. |
+| `STINGRAY_HUNYUAN_DUMP_COND_PATH` | diagnostic | Path. HunyuanVideo writes its text-conditioning context there as raw float32 (parity debugging). |
+| `STINGRAY_HUNYUAN_DUMP_LATENT` | diagnostic | `=1` prints HunyuanVideo diagnostics to stderr, such as the count of non-finite values in the initial noise, plus further diagnostics from the HunyuanVideo model. |
+| `STINGRAY_HUNYUAN_DUMP_LATENT_PATH` | diagnostic | Path. HunyuanVideo writes the final latent there as raw float32 before the VAE decode (parity debugging). |
+| `STINGRAY_HUNYUAN_DUMP_VEC_PATH` | diagnostic | Path. HunyuanVideo writes the pooled CLIP-L conditioning vector there as raw float32 when a CLIP-L is loaded (parity debugging). |
+| `STINGRAY_HUNYUAN_INJECT_NOISE_PATH` | diagnostic | Path to a raw float32 file that replaces the HunyuanVideo initial noise (parity hook, `DiffusionParityHooks.TryLoadNoise`); a size mismatch throws. |
+| `STINGRAY_LTX_DEBUG_STEPFRAMES` | diagnostic | `=1` decodes and saves a PNG after every LTX-Video denoising step (`ltx_stepframe_NN.png`), which makes a run much slower. Directory from `STINGRAY_LTX_DEBUG_STEPFRAMES_DIR`. |
+| `STINGRAY_LTX_DEBUG_STEPFRAMES_DIR` | diagnostic | Directory for the per-step PNGs written when `STINGRAY_LTX_DEBUG_STEPFRAMES=1`. Default `docs/diffusion-samples`, relative to the working directory. |
+| `STINGRAY_LTX_DEBUG_STEPSTATS` | diagnostic | `=1` prints per-step statistics of the LTX-Video latents and predicted velocity (sums, maximum absolute values). |
+| `STINGRAY_PROFILE_VAE` | diagnostic | `=1` prints per-stage timing of the VAE decoder. |
 
 ## OpenTail.Stingray.Server
 
@@ -496,3 +516,17 @@ dynamically composed names.
 | `STINGRAY_EMBEDDING_MODEL` | stable | Model path served by `/v1/embeddings`. Unset means nothing real is configured and the endpoint answers 404 rather than returning synthetic vectors. A request's `model` field is only a name unless `STINGRAY_ENCODER_REQUEST_PATHS` is on. |
 | `STINGRAY_ENABLE_RESOURCE_ADMISSION` | expert | `1` or `true` (case-insensitive) turns on resource-based admission in the multi-model runtime manager when the `EnableResourceAdmission` option is not set. Anything else, or unset, leaves it off. |
 | `STINGRAY_ENCODER_REQUEST_PATHS` | expert | `1` or `true` lets a request to `/v1/embeddings` or `/v1/rerank` name a model file path in its `model` field. Off by default because a request path is loaded and kept resident, so any client could otherwise make the server load any GGUF on its disk and probe which paths exist. |
+| `STINGRAY_MODEL_RESIDENCY_MODE` | expert | `single` (also `singleslot`, `single-slot`) or `multi` (also `multislot`, `multi-slot`), case-insensitive: whether the multi-model manager keeps one model resident at a time or lets several be resident. Used when the `ModelResidencyMode` option is unset; empty means multi-slot, and any other value throws at startup. |
+
+## OpenTail.Stingray.Vision
+
+| Variable | Class | Notes |
+|---|---|---|
+| `STINGRAY_GEMMA3_DEBUG` | diagnostic | `=1` prints `[GEMMA3-DBG]` progress lines (patch counts, stage markers) from the Gemma 3 vision encoder to stderr. |
+| `STINGRAY_LLAMA4_DEBUG` | diagnostic | `=1` prints `[LLAMA4-DBG]` progress lines (patch counts, stage markers) from the Llama 4 vision encoder to stderr. |
+
+## OpenTail.Stingray.Core
+
+| Variable | Class | Notes |
+|---|---|---|
+| `STINGRAY_PROFILE_TOKENIZE` | diagnostic | `=1` prints a `[TokenizeProfile]` line to stderr for every tokenizer `Encode` call: characters in, tokens out and elapsed milliseconds. |
