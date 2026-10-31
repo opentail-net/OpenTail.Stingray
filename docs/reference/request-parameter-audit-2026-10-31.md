@@ -136,7 +136,7 @@ without the OpenAI validation 12 fail, without `max_completion_tokens` 2, withou
 | `parallel_tool_calls` | stays ignored on purpose: the server's tool-call behaviour is fixed, and the field is a hint | this table |
 | `user`, `metadata` | stay ignored on purpose (privacy, plan section 7); this row is the record of that (F4) | this table |
 | unknown JSON properties | still accepted and ignored: clients send vendor fields | `RequestParameterTests` |
-| `stop`, `stop_sequences` | **not yet**: needs text-level matching with holdback in four handlers; tracked as P7c in the plan | open |
+| `stop` (OpenAI), `stop_sequences` (Anthropic) | implemented (P7c): one filter, `StopSequences.Apply`, around the engine's chunk stream in all four handlers. Text that could still become a stop string is held back; the earliest match wins (longest when several end together); the engine is cancelled, not just hidden. OpenAI: a string or up to 4 strings, `finish_reason` stays `stop`. Anthropic: up to 16 strings, `stop_reason` becomes `stop_sequence` and `stop_sequence` carries the match. Empty strings and wrong types are a 400. Completion-token counts for a response cut by a stop string are approximate (held-back text is re-emitted in different pieces). Only answer text is searched, not thinking or tool-call content | `StopSequences`, `RequestParameterValidation` |
 | `stream_options` (`include_usage`) | **not yet**: common in OpenAI SDK clients, so refusing it would break them; needs a final usage chunk; tracked as P7d | open |
 | Anthropic `tool_choice` | **not yet**: the OpenAI side honours it, the Anthropic side does not; tracked as P7d | open |
 

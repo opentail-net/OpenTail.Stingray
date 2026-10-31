@@ -412,22 +412,24 @@ public static class OpenAiEndpoints
         var requestId = $"chatcmpl-{Guid.NewGuid():N}";
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+        RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created);
+            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops);
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true, stops);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
-        bool includeTiming = false)
+        bool includeTiming = false, string[]? stops = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         var textSb = new StringBuilder();
         var reasoningSb = new StringBuilder();
         int textTokens = 0;
@@ -437,7 +439,7 @@ public static class OpenAiEndpoints
 
         try
         {
-            await foreach (var c in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 if (c.Kind == GenerateChunkKind.Usage)
                 {
@@ -544,9 +546,10 @@ public static class OpenAiEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created)
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -650,7 +653,7 @@ public static class OpenAiEndpoints
         bool truncatedByMaxTokens = false;
         try
         {
-            await foreach (var c in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 // Out-of-band usage chunk (issue #150): not a generated token and carries no
                 // text. The streaming response doesn't emit a usage object (OpenAI gates that
@@ -1025,7 +1028,10 @@ public sealed record ChatCompletionRequest(
     // Not an OpenAI field, but common in clients that also talk to llama.cpp; SamplingParams.TopK.
     [property: JsonPropertyName("top_k")] int? TopK = null,
     // Number of choices. Only 1 is supported; any other value is a 400 (RequestParameterValidation).
-    [property: JsonPropertyName("n")] int? N = null);
+    [property: JsonPropertyName("n")] int? N = null,
+    // One stop string or an array of up to 4 (RequestParameterValidation.ParseOpenAiStops). Generation is cut before the first match
+    // and cancelled; finish_reason stays "stop".
+    [property: JsonPropertyName("stop")] JsonElement? Stop = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string
