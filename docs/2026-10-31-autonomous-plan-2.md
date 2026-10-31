@@ -17,10 +17,14 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 | P4 | Measure the fair gate (two resident models, interleaved, 3 runs) | numbers in plan 032 slice 5 |
 | P5 | OpenTelemetry: allow-list test over every instrument and span, server canary | both tests mutation-checked |
 | P6 | CI: add `Audio.Fast` and `Vulkan.Fast` to the CPU-safe job and the release job (floors 70 and 38) | both suites run in CI; merged only if the workflow change is green |
-| P7 | Audit the server for request parameters that are accepted but ignored (read first: the request DTOs and where each field is used) | a list; every accepted-but-ignored field either gets an explicit error / reported-as-ignored response or a recorded reason |
-| P8 | Cancellation reaches the engine: a test that an HTTP disconnect or a cancelled token during decode stops generation and frees the slot (read first: whether such a test already exists) | test mutation-checked, or the existing one cited |
+| P7 | Audit the parameters Stingray documents as supported on the OpenAI and Anthropic endpoints (read first: the request DTOs and where each field is used). Do **not** reject unknown JSON properties: clients send vendor fields and that must keep working | a list of documented parameters; each is implemented, or rejected / reported as ignored, or has a recorded reason |
+| P8 | Cancellation, end to end through real HTTP: start a generation, wait until it has begun, disconnect the client, check cancellation reaches the engine's active operation, the concurrency slot is released, the next request completes, and no session or runtime handle leaks. A GPU kernel already running need not stop at once (read first: `ConcurrencyLimitTests`, `ModelRuntimeManagerTests`, `ServerTests`, which mention cancellation) | the test, mutation-checked, or the existing one cited |
+| P9 | Reproducibility helper: a small shared PowerShell function used by the benchmark scripts, printing commit and dirty state, model file name and identity, binary/build configuration, backend and device, context and generation settings, input and run count, date. Identify the model by size and modified time plus a hash cached per experiment; never rehash a 12 GB file per run | the Performance League scripts print it; one worked example |
+| P10 | `stingray config --show`, narrow: recognised `STINGRAY_*` settings that are set, with value (redacted where sensitive), source (default, environment, CLI) and class from the inventory; says so where the effective value cannot yet be resolved. Not a configuration framework | prints for a real command line; a test over redaction |
 
-Order: P1, P1b, P6, P2, P3, P7, P8, P4, P5. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
+Order: P1, P1b (split: hygiene first, the Qwen3-Coder row as its own correctness result), P6, P2, P3, P7, P8, P4, P5, P9, P10. P9 and P10 may move up only if they prove genuinely small; they do not displace correctness work.
+
+Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
 next one started.
 
 ## Progress
