@@ -1,5 +1,7 @@
 # OpenBLAS Performance Troubleshooting & Resolution Guide
 
+> **Status 2026-10-31: the numbers below are historical.** `CpuBackend.MatMul` now uses the in-tree `CpuSgemm` (pure C#, no native library; commit `c9b47c69`), and `libopenblas.dll` no longer ships. Measured on this machine with no OpenBLAS on `PATH` or in `tools/openblas` (Release CLI, Qwen3-4B Q4_K_M, 799-token prompt, `-g 0 --temp 0`, 3 runs): prefill 102.8, 89.4 and 98.3 t/s, decode 12.7, 12.0 and 12.3 t/s. That is nowhere near the ~4 t/s decode quoted in section 1, which was measured on a different model before `CpuSgemm`. `BlasInterop` still probes for the library and uses it only for F32 batched products; the `OpenBLAS: not found (fallback to sequential)` line is only printed from `SimdKernels.MatMulBatched` and no longer signals a large slowdown. Section 3 (the setup script) is optional.
+
 ## 1. Symptom
 
 During CPU inference execution, the CLI or runtime server logs:

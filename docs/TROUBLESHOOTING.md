@@ -6,10 +6,11 @@ at the bottom.
 
 ## It runs, but slowly
 
-**The log says `OpenBLAS: not found (fallback to sequential)`.** CPU decoding is about 6x slower and
-prefill about 8x slower without it (26 tok/s fell to 4 tok/s on the test model). Install the
-library as described in [reference/openblas-troubleshooting-guide.md](reference/openblas-troubleshooting-guide.md).
-A healthy start prints `OpenBLAS: LOADED`.
+**The log says `OpenBLAS: not found (fallback to sequential)`.** This is no longer a sign of a large
+slowdown: the main CPU matmul is the in-tree `CpuSgemm`, and a measurement on 2026-10-31 without the
+library (Qwen3-4B Q4_K_M, CPU) gave about 90-103 tok/s prefill and 12 tok/s decode. The old figures
+(26 tok/s fell to 4 tok/s) predate that change. Installing OpenBLAS is optional; see
+[reference/openblas-troubleshooting-guide.md](reference/openblas-troubleshooting-guide.md) for the history.
 
 **A small model is slower with `-g -1` (GPU) than without.** Small models lose to the CPU on an
 integrated GPU, because each GPU call has a fixed cost. On the reference machine Qwen2.5 0.5B
