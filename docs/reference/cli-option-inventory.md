@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording
-**302 option declarations** across 30 command files — the same count the
+**303 option declarations** across 31 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source. (Reconciled 12 rows of drift, caught
 by CI failing `CliOptionInventory_DeclaredCountMatchesSource` on `main`: three new commands —
 `AdmitArchCommand`, `GenVisionScaffoldCommand` and `PullCommand`, see `docs/reference/061-coverage-tooling.md` —
@@ -128,6 +128,12 @@ hoc at each read site rather than in one place.
 | `--system <TEXT>` |  | System message instructions for the conversation. |
 | `--temperature <FLOAT>` |  | Sampling temperature. Default: 0.7. |
 | `--thinking` |  | Display model thinking/reasoning output chunks. |
+
+## ConfigCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--show` | stable | Print the recognised settings that are set, with value (redacted where sensitive), source and class |
 
 ## DoctorCommand
 
