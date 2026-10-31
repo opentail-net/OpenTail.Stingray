@@ -1,10 +1,11 @@
-# `STINGRAY_*` environment-variable inventory — classified (name-complete as of 2026-08-07; see the status note)
+# `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-10-31)
 
-> **Status, 2026-10-31: not name-complete.** The table below has a row for **264** of the **287** names in
-> `KnownEnvironmentVariables.All`; **23** registered names have no row yet (found by an external review and confirmed by comparing the
-> registry with the table). `KnownEnvironmentVariablesInventoryTests.InventoryTable_CoversTheRegistry_ExceptTheListedGap` pins that
-> exact set: it fails if a new variable is registered without a row, and fails again when a gap is filled but its name is still on the
-> list, so the gap can only shrink. The "name-complete" claims in the history below were true on the dates given.
+> **Status, 2026-10-31: name-complete again.** The table below has a row for all **287** names in
+> `KnownEnvironmentVariables.All`. It had fallen behind (192 rows at the 2026-10-31 external review, 95 names missing); the gap was
+> pinned by a test and closed the same day in four batches (PRs 65 to 68), each row written from the variable's actual read-site
+> rather than its name. `KnownEnvironmentVariablesInventoryTests.InventoryTable_CoversTheRegistry_ExceptTheListedGap` now fails if a
+> variable is registered without a row, or a row names something the registry does not contain. The "name-complete" claims in the
+> history below were true on the dates given.
 
 **Snapshot originally generated:** 2026-07-26 by scanning `src/**/*.cs`, recording **141 unique
 variables**.
@@ -182,6 +183,10 @@ dynamically composed names.
 | `STINGRAY_RVC_PROFILE` | diagnostic | `=1` prints stage timings of the RVC voice-conversion pipeline and its RMVPE pitch encoder. |
 | `STINGRAY_RVC_TRACE` | diagnostic | `=1` enables trace output from the RVC RMVPE pitch encoder. |
 | `STINGRAY_SILERO_VAD_PATH` | stable | Path to the Silero VAD ONNX model. If the file exists it is loaded first; otherwise the default search runs (the working directory and the application directory, walking up their parents). |
+| `STINGRAY_TTS_PROFILE` | diagnostic | `=1` collects and prints per-stage timing of the VibeVoice TTS generation loop. |
+| `STINGRAY_TTS_TRACE` | diagnostic | Set to any value (even empty) to print the VibeVoice TTS control logits (speech start, end and diffusion, and the end-of-sequence logit) at every generation step to stdout. |
+| `STINGRAY_XTTS_LAYER_TRACE` | diagnostic | `=1` prints a per-layer trace of the XTTS GPT trunk. |
+| `STINGRAY_XTTS_TRACE` | diagnostic | `=1` prints XTTS pipeline trace output, including the latent-length to output-sample-count arithmetic. |
 
 ## OpenTail.Stingray.Cli
 
@@ -429,7 +434,11 @@ dynamically composed names.
 | `STINGRAY_TRACE_SNAPSHOT` | diagnostic | Diagnostic (`=1`): log to stderr when a session's canonical-history prefix is not a strict token prefix of the generating prompt. |
 | `STINGRAY_TRACE_VRAM` | diagnostic | Diagnostic (`=1`): print free VRAM (MiB) at labelled points while the CUDA forward pass loads. |
 | `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | `=0` forces the byte-identical sequential per-token prefill loop in the Vulkan hybrid-GDN pass. Default on. |
+| `STINGRAY_VULKAN_DECODE_ATTN_GQA` | expert | `=0` keeps the original one-key-per-thread split-KV decode attention kernel instead of the default GQA-aware one, on the full-GPU pass and the gpt-oss GPU pass (rollback switch). |
+| `STINGRAY_VULKAN_DECODE_PROFILE` | diagnostic | `=1` prints a `[DecodeProfile]` line to stderr for the full-GPU Vulkan pass: dispatches and barriers per token, plus stage timing. |
 | `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | `=1` swaps the fused byte-exact GDN recurrence scan for the FlashQLA chunk-parallel scan during Vulkan batched prefill. Default off. Argmax-stable, not byte-exact. Needs a device that fits the ~34 KB shared-memory tile; the end-to-end win is small while the batched trunk is capped at 8 tokens (comment in `VulkanHybridGdnForwardPass.cs`). |
+| `STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK` | expert | Positive integer (default 128). Prefill chunk size, in tokens, of the Vulkan hybrid Gated-DeltaNet pass, clamped between the pass's minimum batch chunk and the Vulkan matmul path's per-dispatch maximum. |
+| `STINGRAY_VULKAN_MIN_FREE_RAM_MB` | expert | Non-negative integer in MiB (default 2048). Before a mandatory GPU-resident upload the Vulkan hybrid Gated-DeltaNet pass checks that this much memory is still available and aborts with an error otherwise; setting a smaller value lowers the safety margin. |
 | `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | `=1` is a field kill-switch that disables batched prefill in `GpuForwardPass` (Vulkan) without a rebuild. |
 | `STINGRAY_VULKAN_NO_FLASH_ATTN` | experimental | `=1` falls back from the Vulkan flash attention to the per-(head,query) batched kernel without a rebuild. |
 | `STINGRAY_VULKAN_PREFILL_CHUNK` | experimental | Positive integer: tokens per Vulkan batched-prefill chunk. Default 0 (as many as the active path allows); any value is clamped to that cap. Distinct from the CPU-side `STINGRAY_PREFILL_CHUNK`. |
@@ -483,7 +492,12 @@ dynamically composed names.
 |---|---|---|
 | `STINGRAY_ATTN128_LEGACY` | expert | `=1` routes head dimension 128 back to the older `MultiHeadAttentionTiled128` kernel instead of the newer one (A/B comparison and fallback). |
 | `STINGRAY_FORCE_MHA64_F32` | expert | `=1` forces the head-dimension-64 attention kernel to the FP32 variant even when the device has shader float16/int8 and 16-bit storage (A/B comparison and fallback). |
+| `STINGRAY_VK_MATVEC_V2` | expert | `=0` restores the original one-byte-per-lane Q8_0 and Q4_0 mat-vec kernels instead of the default newer ones (rollback switch). |
+| `STINGRAY_VK_MXFP4_V2` | expert | `=0` selects the original MXFP4 mat-vec shader instead of the default V2 shader (rollback switch). |
+| `STINGRAY_VK_PATH3_CHUNK` | expert | Integer from 16 to 1024 (default 256). The prefill chunk, in tokens, that Path 3 of the tiled quantized GEMM handles per dispatch; bounded by scratch memory. Out-of-range or unparseable values fall back to 256. |
+| `STINGRAY_VK_QGEMM_SMALLM` | expert | Integer (default 32). The largest number of tokens routed to the small-M quantized GEMM (16-row by 64-weight-row tiles); `0` disables that kernel. |
 | `STINGRAY_VULKAN_DP4A` | experimental | `=0` forces the hand-written Q4_K int8 matvec; `=1` forces the dp4a intrinsic variant and skips the probe. Unset: the backend runs both variants on a tiny problem and uses the intrinsic only if they agree exactly (some drivers corrupt it). |
+| `STINGRAY_VULKAN_FLASH_PREFILL` | expert | `=0` disables the grouped-query flash-attention prefill kernel (`AttentionFlashPrefillGqa`) so batched prefill uses the older attention kernel (rollback switch). |
 | `STINGRAY_VULKAN_MM_PATH` | experimental | Vulkan quantized batched matmul path. Unset or `3` or `path3`: Path 3 (default). `1` or `path1`: Path 1. `2` or `path2`: Path 2. Any other value falls back to Path 1. |
 | `STINGRAY_VULKAN_MM_STATS` | diagnostic | Diagnostic (`=1`): count what the Vulkan quantized batched matmul does (notably tokens per weight-matrix read). Default off so the default path is unchanged. |
 | `STINGRAY_VULKAN_PATH2` | experimental | Gates the Vulkan Path 2 cooperative-tiled-GEMM kernel (`MatMulTiledQ4K`) in `VulkanPath2Dispatcher.ReadFromEnvironment`. Defaults off. **Consolidated 2026-09-02**: was two aliases for this one flag (`STINGRAY_VULKAN_PATH2_EXPERIMENTAL`) — collapsed to this single canonical name, the other removed from the registry and no longer read. |
@@ -530,6 +544,15 @@ dynamically composed names.
 | `STINGRAY_SD3_POSEMBED_LEFT` | diagnostic | Integer. Overrides the left origin of the SD3 positional-embedding crop, used to investigate a left-shift in generated images. No effect unless set. |
 | `STINGRAY_SD3_POSEMBED_TOP` | diagnostic | Integer. Overrides the top origin of the SD3 positional-embedding crop, used to investigate a left-shift in generated images. No effect unless set. |
 | `STINGRAY_T5_DUMP_PREFIX` | diagnostic | File-name prefix. The T5 text encoder writes diagnostic checkpoint tensors to `<prefix>_<checkpoint>_<call number>.bin`, with a call counter that separates the conditional and unconditional passes (parity debugging). |
+| `STINGRAY_WAN_DEBUG_ATTNMAP` | diagnostic | `=1` runs the Wan self-attention map inspection (`InspectSelfAttentionMap`) in each self-attention layer and forces the CPU path (the GPU path is not used while it is set). |
+| `STINGRAY_WAN_DEBUG_CROSSREF` | diagnostic | `=1` loads reference dumps produced by the stable-diffusion.cpp Wan implementation and compares the Wan model's intermediate tensors with them. The dump directory comes from `STINGRAY_WAN_DEBUG_CROSSREF_DIR`. |
+| `STINGRAY_WAN_DEBUG_CROSSREF_DIR` | diagnostic | Directory holding the reference dumps read when `STINGRAY_WAN_DEBUG_CROSSREF=1`. Default `examples/stable-diffusion.cpp`, relative to the working directory. |
+| `STINGRAY_WAN_DEBUG_EXACT_GELU` | diagnostic | `=1` uses the exact erf-based GELU in the Wan text-embedding projection instead of the default variant, to test empirically which one the reference model uses. |
+| `STINGRAY_WAN_DEBUG_PERBLOCK` | diagnostic | `=1` prints per-block debug output while the Wan transformer blocks run. |
+| `STINGRAY_WAN_DEBUG_VELOCITY` | diagnostic | `=1` prints statistics (mean, mean square, maximum absolute value) of the predicted velocity at each Wan denoising step. |
+| `STINGRAY_WAN_PROFILE` | diagnostic | `=1` prints Wan DiT stage timings (latent packing, uploads and the rest of the forward pass). |
+| `STINGRAY_WAN_SIGN` | experimental | Integer (default -1). The sign applied to the predicted velocity in the Wan latent update (`latent += sign * dt * velocity`). A debugging handle for the sampler direction; leave unset. |
+| `STINGRAY_ZIMAGE_DUMP_LATENT` | diagnostic | `=1` prints statistics (minimum, maximum, sum, sum of squares) of the Z-Image latent. |
 
 ## OpenTail.Stingray.Server
 
@@ -547,6 +570,7 @@ dynamically composed names.
 |---|---|---|
 | `STINGRAY_GEMMA3_DEBUG` | diagnostic | `=1` prints `[GEMMA3-DBG]` progress lines (patch counts, stage markers) from the Gemma 3 vision encoder to stderr. |
 | `STINGRAY_LLAMA4_DEBUG` | diagnostic | `=1` prints `[LLAMA4-DBG]` progress lines (patch counts, stage markers) from the Llama 4 vision encoder to stderr. |
+| `STINGRAY_VISION_GEMM` | expert | Selects the batched GEMM paths of the vision ops. `0` disables both the batched matmuls and the batched attention (per-token fallback), `nomm` or `noattn-nomm` disables the batched matmuls, `noattn` or `noattn-nomm` disables the batched attention. Unset keeps both on. For A/B checks. |
 
 ## OpenTail.Stingray.Core
 
