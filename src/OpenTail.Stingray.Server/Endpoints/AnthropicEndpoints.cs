@@ -59,6 +59,7 @@ public static class AnthropicEndpoints
                     OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
             return;
         }
+        req = RequestParameterValidation.ApplyAnthropicToolChoice(req);   // tool_choice none: the model is not offered the tools
         req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
@@ -1078,7 +1079,10 @@ public sealed record AnthropicMessageRequest(
     WireSkill[]? Skills = null,
     // Custom stop strings (wire name stop_sequences). Generation is cut before the first match and cancelled; stop_reason becomes
     // "stop_sequence" and stop_sequence carries the string that matched.
-    string[]? StopSequences = null);
+    string[]? StopSequences = null,
+    // auto (default) and none are honoured (none drops the tools); any and tool need forced tool use, which this endpoint does not
+    // support, so they are refused with a 400 (RequestParameterValidation) instead of being ignored.
+    JsonElement? ToolChoice = null);
 
 public sealed record AnthropicThinking(string? Type, int? BudgetTokens);
 
@@ -1168,4 +1172,10 @@ public sealed record AContentBlockStopEvent(string Type, int Index);
 public sealed record AMessageDeltaEvent(string Type, AMessageDelta Delta, AUsage Usage);
 public sealed record AMessageDelta(string StopReason, string? StopSequence);
 public sealed record ATypeOnly(string Type);
-public sealed record AErrorResponse(string Type, string Message);
+public sealed record AErrorResponse(string Type, string Message)
+{
+    // The flat Type/Message fields stay (existing consumers read them); this adds the nested error object Anthropic clients parse.
+    public AErrorDetail Error => new(Type, Message);
+}
+
+public sealed record AErrorDetail(string Type, string Message);
