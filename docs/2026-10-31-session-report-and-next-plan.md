@@ -7,7 +7,7 @@ documents, what was measured, and what to do next. It is a report plus a propose
 when someone takes it on.
 
 > **Status after this report was written (same day).** Several steps of section 7 have since been done, so read this page as the
-> record of the first half of the day, and use the checklist in [plan 2](2026-10-31-autonomous-plan-2.md) for current state. Done since:
+> record of the first half of the day, and use [plan 2](2026-10-31-autonomous-plan-2.md) for current state (its open items; the finished ones are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md)). Done since:
 > the first-decode warm-up (step 2, PR 73); the OpenTelemetry allow-list test and server canary (step 6, PR 80; the NativeAOT-with-listener,
 > overhead and OTLP items are still open); the flaky timing test, the test that dirtied a tracked image and the missing CI suites (step 8,
 > PRs 74 and 75). Step 3 is partly done (Qwen2.5 admitted; Gemma 2 and Phi-3 recorded as not admissible; Granite open) and step 4 is done (`rope_freqs` and long contexts exercised, the 32-token boundary tested, the `startPos > 0` cost measured). Not done: steps 5 and 7.

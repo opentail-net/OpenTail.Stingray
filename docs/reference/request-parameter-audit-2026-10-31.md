@@ -1,4 +1,4 @@
-# Request parameter audit, 2026-10-31 (plan 2, P7)
+# Request parameter audit, 2026-10-31 ([plan 2, P7](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md))
 
 **Scope.** The request fields that the OpenAI chat endpoint (`POST /v1/chat/completions`) and the Anthropic messages
 endpoint (`POST /v1/messages`) deserialise: the `ChatCompletionRequest` record in
@@ -8,7 +8,7 @@ it reads, so they are the surface this audit covers. Responses, embeddings, imag
 and need their own audit.
 
 **Method.** Read each record, grep every use of each field in its endpoint, and count the test files that send the JSON
-name (`grep` over `tests/OpenTail.Stingray.Tests.Server.Fast` and `tests/OpenTail.Stingray.Tests.Server`). Classification uses the three outcomes from plan 2 P7:
+name (`grep` over `tests/OpenTail.Stingray.Tests.Server.Fast` and `tests/OpenTail.Stingray.Tests.Server`). Classification uses the three outcomes from [plan 2 P7](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md):
 **implemented** (read and applied, with a test that sends it), **rejected** (refused with a stable error), or **ignored**
 (read and dropped, or never declared, with a stated reason). A field that is never declared is dropped by
 System.Text.Json without an error, so it is classed as **silently ignored**. That is the outcome the plan most wants to

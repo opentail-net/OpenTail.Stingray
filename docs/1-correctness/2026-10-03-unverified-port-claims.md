@@ -1,11 +1,9 @@
 # Unverified claims in the 2026-10-02/03 coverage wave
 
+> Completed items moved to [../done/2026-10-03-unverified-port-claims-completed-items-2026-10.md](../done/2026-10-03-unverified-port-claims-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist
 
-- [x] Muse-Glimmer admitted, text only, CPU only (code: `Architectures/MuseGlimmerArchitecture.cs`; admission logged 2026-10-03)
-- [x] DiffusionGemma temperature contract aligned to the reference schedule (table row resolved)
-- [x] DiffusionGemma EntropyBound token acceptance (resolved, see table)
-- [x] Provenance: DeepSeek-V4.1 attribution in `THIRD_PARTY_NOTICES.md` (checked 2026-10-30, line 149; the claim below that it is missing is out of date)
 - [ ] Qwen 3.8 Flash Next: Level 4 paged real-weight run
 - [ ] GLM-5.x: real-weight run and K-pool selection check
 - [ ] DiffusionGemma: real Q4_K_M parity ladder against llama.cpp (backbone) and TensorSharp (canvas/sampler)

@@ -1,18 +1,8 @@
 # Prefill numerics investigation, 2026-10-02
 
-## Checklist
+> Completed items moved to [../done/2026-10-02-prefill-numerics-investigation-completed-items-2026-10.md](../done/2026-10-02-prefill-numerics-investigation-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
 
-- [x] 1. Evidence gathering (code and history)
-- [x] 2. llama.cpp's own recurrence (reviewer)
-- [x] 3. Attribution matrix design
-- [x] 4. First result: short prompts
-- [x] 5. Higher-precision recurrence reference D
-- [x] 6. Full matrix, prompt as the statistical unit
-- [x] 7. GDN probe: born in the recurrence or amplified downstream
-- [x] 8. Prefill -> decode continuity
-- [x] 9. The two KL outliers and the row check
-- [x] 10. int8 default interaction
-- [x] 11. ggml cross-check on identical rows (done 2026-10-02)
+## Checklist
 
 **Question:** are the fast (chunked/batched) prompt-processing paths less accurate than the
 per-token path, enough to justify slower defaults?
@@ -193,4 +183,3 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
 - [ ] MoE: small prompts (N <= 32) through the folded decode-style dispatch (bit-identical to
       decode, fewer tiny GEMMs); measure
 - [ ] Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`
-

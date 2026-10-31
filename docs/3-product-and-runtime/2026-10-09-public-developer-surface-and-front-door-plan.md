@@ -1,22 +1,14 @@
 # OpenTail.Stingray: Public Developer Surface and Front Door — Implementation Plan
 
+> Completed items moved to [../done/2026-10-09-public-developer-surface-and-front-door-plan-completed-items-2026-10.md](../done/2026-10-09-public-developer-surface-and-front-door-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; code checked)
 
-- [x] A1. Prove the public API with a compiling consumer: `scripts/verify-package-consumers.ps1`, 1.0.9 re-run on 2026-10-30: 17 checks, 0 failed (exit 0). Earlier 1.0.8 run: 2026-10-11.
 - [ ] A2. Audit ownership, disposal and lock-order protocol
 - [ ] A3. Audit misleading parameter options
 - [ ] A4. Interface conformance, incomplete-turn semantics, behaviour tests
-- [x] B1. Shared catalogue resolution (`src/OpenTail.Stingray.Cli/CatalogTaskResolver.cs`)
-- [x] B2. `stingray chat` (`ChatCommand.cs`)
-- [x] B3. `stingray speak` (`SpeakCommand.cs`)
-- [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
 - [ ] Recipes: run `stingray speak` and `stingray transcribe` as README recipes and record the result (not run as of 2026-10-30; ported from the retired workstream, 2026-10-31)
-- [x] B5. Register commands (`Program.cs:115-119`) and update catalogue run templates (`ModelCatalog.cs` now uses `stingray chat`, `speak`, `transcribe`; checked 2026-10-30)
-- [x] B5 item 3, application name: `SetApplicationName("stingray")` and every user-facing `opentail-llm-cli` mention in `src/` renamed, 2026-10-31 (`CliBrandingTests`: root `--help` prints `stingray <OPTIONS> [COMMAND]`; a source scan keeps the old name out)
-- [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs` exists; tests not run on 2026-10-30)
-- [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
-- [x] D1. Compile the public C# samples and README snippets against the package: 13 of 13 on 2026-10-11 (1.0.8); 1.0.9 re-run on 2026-10-30 passed (17 checks, 0 failed).
 - [ ] D2. Verify the actual NuGet package
 - [ ] D3. Model-backed task qualification
 - [ ] E. Close-out and release-quality review
@@ -705,7 +697,6 @@ two-minute demo and the tool for non-developers.
 
 **Historical (2026-10-30).** This order predates the implementation. Current status: `chat`, `speak` and `transcribe` are implemented and registered; the separate library facade is superseded (§3.2); `describe` and `image` are not part of the current plan. Items below are not current work unless re-adopted.
 
-- [x] 3. (Historical.) Task commands: done (registered; see B2 to B4). The library facade is superseded by §3.2. Rewriting the README recipes around them is C2.
 - [ ] 4. Docs-as-tests.
 
 Steps 2–4 are the substance. Step 1 makes the front page truthful now.
