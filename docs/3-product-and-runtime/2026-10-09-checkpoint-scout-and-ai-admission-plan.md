@@ -6,7 +6,7 @@
 - [x] Phase 1: read-only local GGUF scout (`src/OpenTail.Stingray.Cli/Scout/ScoutCommand.cs`)
 - [x] Phase 2: feature evidence and architecture relatives (status 2026-10-09; `Engine/Scout/ArchSignature.cs`)
 - [x] Phase 3: memory-gated pretests, as a script (`scripts/scout-pretest.ps1`)
-- [ ] Phase 4: Hugging Face repository discovery (deferred)
+- [~] Phase 4: Hugging Face repository discovery — list-only `scout -r` and `pull --revision` built (2026-10-09); demand-ranked backlog, batch triage and the metadata-key comparison still open (`scout --backlog` exists in `Cli/Scout/Backlog.cs`)
 - [x] Phase 5a: agent playbook (`docs/reference/architecture-admission-agent-playbook.md`)
 - [ ] Phase 5b: calibration (deferred)
 
@@ -328,3 +328,25 @@ checkpoint / HF repository
 ```
 
 The value is not “AI guesses the architecture.” The value is that an AI coding model receives a structured, evidence-citing dossier and a repeatable next action, allowing it to spend less time rediscovering file facts and more time implementing and proving the actual semantic delta.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-31-product-runtime-snippets.md](research/2026-10-31-product-runtime-snippets.md).
+
+**Verified in code**
+- The Hub listing query (`src/OpenTail.Stingray.Cli/Scout/Backlog.cs:72`) asks for `expand[]=gguf`, `downloads` and `gated`. The doc says one call returns architecture, 30-day downloads, gated status and total size. Whether `gguf` carries architecture and total size was not checked in the response parser.
+- `GgufModel.cs:287` rejects unsupported GGUF versions. The accepted range was not read.
+- `PullCommand.cs:195` reads `siblings` from the repository JSON.
+
+**Internal inconsistency in the doc**
+- The checklist says "Phase 4: Hugging Face repository discovery (deferred)", but §8.1 and the status text say `scout -r` and `Backlog.cs` are built. Only the demand-ranked backlog, batch triage and the metadata-key comparison are unbuilt, so the checklist should be split.
+
+**Verified outside (web)**
+- The Hub `api/models` expand list includes `gated` and `downloads`. The official JavaScript client's list omits `siblings`, so file listings probably come from a separate call. Source: [huggingface_hub hf_api reference](https://huggingface.co/docs/huggingface_hub/package_reference/hf_api.md) and the `@huggingface/hub` list-models source. I could not confirm that `total size` or `architecture` come back in one list call. Mark that claim unverified until a real response is captured.
+- GGUF v2 and v3 headers are a 4-byte magic `GGUF`, a 4-byte version, then 64-bit tensor and metadata counts. This matches the identity fields the scout reports. Source: [GGUF, Wikipedia summary](https://en.wikipedia.org/wiki/GGUF). The authoritative `docs/gguf.md` was not fetched, so pin the exact field widths against it before any writer test.
+
+**Not verified:** that scout reads no tensor values in the default pass; the rule-based feature findings; the calibration numbers quoted in the doc.
+
+**Next step:** capture one real `expand[]=gguf` response and check it against the doc's claim, then split the checklist item.

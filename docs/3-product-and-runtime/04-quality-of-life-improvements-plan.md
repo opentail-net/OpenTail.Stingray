@@ -1,8 +1,6 @@
-> **Reprioritized 2026-08-08 — now runway position 4.** Item 1 is now DONE (2026-08-15): both
-
+> **Reprioritized 2026-08-08 — now runway position 4.** Item 1 is now DONE (2026-08-15): both inventories are name-complete against source AND fully classified row-by-row, not just via a partial summary register. See [00-current-work.md](../00-current-work.md) Priority 3.
+>
 > Completed items moved to [done/04-quality-of-life-improvements-plan-completed-items-2026-10.md](../done/04-quality-of-life-improvements-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
-> inventories are name-complete against source AND fully classified row-by-row, not just via a
-> partial summary register. See [00-current-work.md](../00-current-work.md) Priority 3.
 
 # Quality-of-life improvements — current work
 
@@ -39,3 +37,13 @@ Inputs: [env-var-inventory.md](../reference/env-var-inventory.md), [reference/ho
 and [reference/eligibility-check-inventory.md](../reference/eligibility-check-inventory.md).
 
 Historical implementation record: [done/quality-of-life-improvements-plan-2026-07.md](../done/quality-of-life-improvements-plan-2026-07.md).
+
+---
+
+## Research findings (2026-10-31)
+
+- **Formatting defect (fix this first).** Lines 1 to 5 are a broken blockquote. The sentence "Item 1 is now DONE (2026-08-15): both" stops on line 1 and resumes on line 4 after a second blockquote, so the status is hard to read. Merge it into one status line.
+- **Items 2 to 6** were not re-verified in code in this pass. The `configuration.bound` and `configuration.resolved` snapshot names are the doc's own claims.
+- **Web research:** not applicable. These items are internal configuration and observability work, and the external telemetry references are in [2026-10-12-opentelemetry-observability-plan.md](2026-10-12-opentelemetry-observability-plan.md).
+
+**Next check:** grep the server for `configuration.bound` and `configuration.resolved` before the item-2 claim is repeated anywhere else.

@@ -708,3 +708,19 @@ two-minute demo and the tool for non-developers.
 - [ ] 4. Docs-as-tests.
 
 Steps 2–4 are the substance. Step 1 makes the front page truthful now.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. This plan is about the repository's own surfaces, so external research was limited to licences.
+
+**Verified in code**
+- `scripts/verify-package-consumers.ps1` and `samples/README.md` exist, as the checklist says.
+- The `piper-lessac` licence wording is the one that matters for the "speak" front door. It understates the voice's restriction. See [2026-10-09-known-good-checkpoints-and-first-run-plan.md](2026-10-09-known-good-checkpoints-and-first-run-plan.md#research-findings-2026-10-31), which has the CSTR source and the recommended wording change.
+
+**Doc issues**
+- B3 (speak) says consent is recorded "truthfully" at install time. The consent text led with "MIT" until 2026-10-31; it now leads with research-use-only (`ModelCatalog.cs`, `piper-lessac`). The text requirement is met; the interactive prompt was not re-run.
+- The version (1.0.9 here, 1.0.7 or 1.0.8 in other plans) should be read from the csproj once and used everywhere.
+
+**Not verified:** B5 item 3 (application name `opentail-llm-cli` in `Program.cs:68`) and the D3 model-backed qualification.

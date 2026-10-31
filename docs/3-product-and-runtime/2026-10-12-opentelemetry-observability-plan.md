@@ -414,3 +414,26 @@ The Ollama server source is not in that folder; what is there is Ollama client a
 - The MoE phase counters (code path shared with the Vulkan one that was exercised; no MoE model run).
 
 **Not mine, noticed:** `Tests.Vulkan.Fast` `VulkanMatMulPathTests` (3 tests) fail because commit `547801fa` made Path 3 the default and the tests still expect Path 1. `stage_diagnostics_report.txt` is rewritten by a Diffusion test (I reverted my run's change). The repo's `opentail-llm_` identifiers in CUDA kernel source strings look like a rename artifact; not investigated.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-31-product-runtime-snippets.md](research/2026-10-31-product-runtime-snippets.md).
+
+**Verified in code**
+- The engine instrument names in §5 exist in `src/OpenTail.Stingray.Engine/EngineTelemetry.cs`, including `opentail.engine.prefill.duration`, `.prefill.tokens`, `.placement.gpu_layer_share` and `.backend.fallbacks`, with the units the doc gives.
+- The host pins `OpenTelemetry.Extensions.Hosting`, `...Exporter.OpenTelemetryProtocol` and `...Exporter.Console` at **1.19.1** (`OpenTail.Stingray.Server.Host.csproj`, lines 36-38).
+- The libraries reference no OpenTelemetry package, as §4 requires.
+
+**Verified outside (web)**
+- **The pinned SDK is one minor version behind.** NuGet shows `OpenTelemetry.Extensions.Hosting` latest stable **1.20.1**, updated 10/20/2026 (fetched 2026-10-31). Source: [NuGet, OpenTelemetry.Extensions.Hosting](https://www.nuget.org/packages/OpenTelemetry.Extensions.Hosting). Not a security issue, but the pin should be updated and the trimming and NativeAOT check re-run after the update (the D10 spike covered 1.19.1 only).
+- **GenAI metric names (partly verified, and the sources disagree).** `gen_ai.server.time_per_output_token` is a histogram in seconds that measures time per output token after the first, for successful responses. Its status is Development. One secondhand source says the GenAI definitions moved to a separate semantic-conventions-genai repository in v1.42.0 (August 2026). Other sources name the server TTFT metric differently (`time_to_first_chunk` in some). The doc's D1 decision to pin a commit is still right, and the mapping table is the place to record it. Sources: [OpenTelemetry.SemConv.Incubating GenAiMetrics (hexdocs)](https://opentelemetry-semantic-conventions.hexdocs.pm/OpenTelemetry.SemConv.Incubating.Metrics.GenAiMetrics.html) and [TrueFoundry, OpenTelemetry GenAI conventions](https://www.truefoundry.com/blog/opentelemetry-genai-semantic-conventions). I did not fetch the primary repository.
+- **Prometheus names.** The OpenTelemetry compatibility spec says name translation keeps names unchanged by default, and that the Prometheus unit suffix can be added or stripped by configuration. An OTel counter with unit `s` becomes `<name>_seconds_total` in Prometheus. Source: [OpenTelemetry, Prometheus and OpenMetrics compatibility](https://opentelemetry.io/docs/specs/otel/compatibility/openmetrics). Not checked here: how an annotation unit such as `{token}` is translated. The doc's Prometheus expectations for token histograms should be tested, not assumed.
+
+**Doc issues**
+- §5 says Phase 1 instruments include `opentail.tokens.input`/`.output`. The server instruments named in §5 use `gen_ai.server.*` names plus `opentail.tokens.*`. The engine uses `prefill/decode` names. These match the code, but the doc's "Phase 1 only" list should say which names it means.
+
+**Not verified:** `InstrumentAdvice<T>` availability from .NET 9 (a known API, not re-checked); the real OTLP collector run (the doc says it is unverified, and I did not run one).
+
+**Done 2026-10-31:** the three SDK packages in `OpenTail.Stingray.Server.Host.csproj` are bumped to 1.20.1 (`OpenTelemetry.Instrumentation.AspNetCore` stays at 1.19.0; not checked). `Server.Host` builds with 0 warnings. The CLI does not reference the SDK, so `scripts/check-aot-telemetry.ps1` does not cover this change, and `Server.Host` is exempt from trimming, so no AOT publish was run for it. Still open: export one `{token}` histogram and check its Prometheus name against the translation rules before the dashboard work.

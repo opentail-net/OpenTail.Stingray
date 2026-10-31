@@ -25,6 +25,8 @@ This is a separate pass from the documentation architecture plan. It should link
 
 ## 2. Initial inventory — verify again at execution time
 
+> **Historical (2026-10-31).** This inventory is the pre-Phase-0 snapshot. `samples/README.md` now exists (Phase 0 is done, see the checklist above), so the "there is no samples/README.md" sentence below no longer holds.
+
 The current `main` sample tree contains:
 
 | Existing sample | Current apparent purpose | Initial observation to verify |
@@ -178,3 +180,22 @@ Avoid placing a full architecture tutorial in each README. Link out to the exist
 ## 10. Non-goals
 
 This plan does not require one sample for every model architecture, every backend, every CLI command or every modality variant. It does not replace task guides or model status records. It does not make a large video model the first-run demo. The goal is a small, trustworthy set of examples that demonstrate the breadth of Stingray without pretending all features have the same setup cost or verification strength.
+
+---
+
+## Research findings (2026-10-31)
+
+Code and outside sources, checked 2026-10-31.
+
+**Verified in code**
+- `samples/README.md` exists. The inventory section (§2) says it does not, so that section is historical. Mark it as the pre-Phase-0 inventory.
+
+**Licence findings for the candidate samples (web)**
+These matter for the sample READMEs, which the plan says must state licences.
+- **Stable Diffusion 1.5 (candidate C):** the model card declares `creativeml-openrail-m` ("CreativeML OpenRAIL M license"). Its use restrictions cover harmful content, impersonation without consent, non-consensual sexual content, disinformation, and violent content. The card also says the model is "intended for research purposes only". Source: [stable-diffusion-v1-5 model card](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5). The sample README must carry these terms, not just the licence name.
+- **MusicGen (candidate D):** `facebook/musicgen-small` declares `cc-by-nc-4.0`, and its page says the weights are released under CC-BY-NC 4.0 while the code is MIT. A MusicGen sample is therefore **non-commercial** for the weights, and the README must say so. Source: [musicgen-small model card](https://huggingface.co/facebook/musicgen-small).
+- **Piper lessac (candidate B):** the voice data is restricted to research use (see the known-good plan). Any speech sample using it inherits that restriction.
+
+**Not verified:** Stable Audio, Whisper and Qwen-VL licences; the sample READMEs themselves.
+
+**Next step:** add a licence line to the sample catalogue (section 5) for each candidate, using the exact model-card text, before any candidate is selected.
