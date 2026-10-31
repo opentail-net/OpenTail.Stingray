@@ -12,7 +12,7 @@
 - [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
 - [ ] Recipes: run `stingray speak` and `stingray transcribe` as README recipes and record the result (not run as of 2026-10-30; ported from the retired workstream, 2026-10-31)
 - [x] B5. Register commands (`Program.cs:115-119`) and update catalogue run templates (`ModelCatalog.cs` now uses `stingray chat`, `speak`, `transcribe`; checked 2026-10-30)
-- [ ] B5 item 3, application name: align `SetApplicationName` (`Program.cs:68` still says `opentail-llm-cli`)
+- [x] B5 item 3, application name: `SetApplicationName("stingray")` and every user-facing `opentail-llm-cli` mention in `src/` renamed, 2026-10-31 (`CliBrandingTests`: root `--help` prints `stingray <OPTIONS> [COMMAND]`; a source scan keeps the old name out)
 - [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs` exists; tests not run on 2026-10-30)
 - [x] C1. Repository-root README (2026-10-11 evidence in `00-current-work.md` item 3.1)
 - [ ] C2. Front-door and API documents
@@ -643,7 +643,7 @@ two-minute demo and the tool for non-developers.
    (docs/STATUS.md for the per-model verification record, benchmarks, design docs).
 6. Stay honest: say which recipes are verified and link the evidence. The old README becomes
    `docs/STATUS.md` (git mv, history kept); the new one links to it.
-7. Use one name (`stingray`) everywhere. The CLI help currently says `opentail-llm-cli`.
+7. Use one name (`stingray`) everywhere. The CLI help said `opentail-llm-cli` until 2026-10-31; it now says `stingray` (`CliBrandingTests`).
 
 ### The front door (tooling)
 
@@ -724,4 +724,4 @@ Code and outside sources, checked 2026-10-31. This plan is about the repository'
 - B3 (speak) says consent is recorded "truthfully" at install time. The consent text led with "MIT" until 2026-10-31; it now leads with research-use-only (`ModelCatalog.cs`, `piper-lessac`). The text requirement is met; the interactive prompt was not re-run.
 - The version (1.0.9 here, 1.0.7 or 1.0.8 in other plans) should be read from the csproj once and used everywhere.
 
-**Not verified:** B5 item 3 (application name `opentail-llm-cli` in `Program.cs:68`) and the D3 model-backed qualification.
+**Not verified:** the D3 model-backed qualification. (B5 item 3, the application name, was done 2026-10-31.)

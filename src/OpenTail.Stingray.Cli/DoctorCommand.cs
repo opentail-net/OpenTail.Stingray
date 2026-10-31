@@ -65,7 +65,7 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
                     ? $"{name} is set but is not read by this build; it will have no effect."
                     : $"{name} is set but is not read by this build; did you mean {suggestion}?",
                     suggestion is null
-                    ? $"Unset {name}, or check `opentail-llm-cli list-env --all` for the supported names."
+                    ? $"Unset {name}, or check `stingray list-env --all` for the supported names."
                     : $"Rename {name} to {suggestion}, or unset it."));
             }
 
@@ -88,7 +88,7 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
             catch (Exception ex) when (ex is IOException or NotSupportedException or ArgumentException)
             {
                 checks.Add(new("model", "error", ex.Message,
-                    "Confirm the path points at a readable GGUF file. `opentail-llm-cli list-metadata "
+                    "Confirm the path points at a readable GGUF file. `stingray list-metadata "
                     + "-m <path>` shows whether the file parses; re-download it if the index is truncated."));
             }
         }

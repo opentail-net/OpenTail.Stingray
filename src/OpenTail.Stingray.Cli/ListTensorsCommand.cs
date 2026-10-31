@@ -4,10 +4,10 @@ namespace OpenTail.Stingray.Cli;
 /// <summary>
 /// Dumps the tensor index of a GGUF model file (name, dtype, shape, byte size).
 /// Usage:
-///   opentail-llm-cli list-tensors -m model.gguf                       (all tensors)
-///   opentail-llm-cli list-tensors -m model.gguf --layer 0             (only blk.0.*)
-///   opentail-llm-cli list-tensors -m model.gguf --filter ssm          (substring match)
-///   opentail-llm-cli list-tensors -m model.gguf --summary              (group by suffix, count + total size)
+///   stingray list-tensors -m model.gguf                       (all tensors)
+///   stingray list-tensors -m model.gguf --layer 0             (only blk.0.*)
+///   stingray list-tensors -m model.gguf --filter ssm          (substring match)
+///   stingray list-tensors -m model.gguf --summary              (group by suffix, count + total size)
 /// </summary>
 public sealed class ListTensorsCommand : Command<ListTensorsCommand.Settings>
 {

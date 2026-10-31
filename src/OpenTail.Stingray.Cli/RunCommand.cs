@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Main inference command. Parameter names match llama-cli where applicable.
-/// Usage: opentail-llm-cli -m model.gguf -p "Hello" -n 128 --temp 0.7
+/// Usage: stingray -m model.gguf -p "Hello" -n 128 --temp 0.7
 /// </summary>
 public sealed partial class RunCommand : Command<RunCommand.Settings>
 {

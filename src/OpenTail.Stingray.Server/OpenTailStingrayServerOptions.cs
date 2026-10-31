@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Server;
 
 /// <summary>
 /// Configuration for <see cref="ServiceCollectionExtensions.AddOpenTailStingray"/>. Mirrors the
-/// OpenTail.Stingray CLI surface (<c>opentail-llm-cli run</c>) so an operator can express any tuning
+/// OpenTail.Stingray CLI surface (<c>stingray run</c>) so an operator can express any tuning
 /// the CLI exposes in <c>appsettings.json</c> / <c>appsettings.Local.json</c> instead of
 /// editing <c>Program.cs</c>. Fields are grouped by concern; defaults are the CLI's defaults.
 ///

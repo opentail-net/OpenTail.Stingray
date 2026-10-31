@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Diagnostic status command (§6.5 &amp; §7.4 of QoL plan):
-/// <c>opentail-llm-cli status [--url &lt;URL&gt;] [--watch] [--json]</c>
+/// <c>stingray status [--url &lt;URL&gt;] [--watch] [--json]</c>
 ///
 /// Prefers the server's versioned <c>/status</c> document, which carries placement, serving
 /// latency (TTFT and inter-token), prefix-cache reuse, memory and derived warnings in one

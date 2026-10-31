@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cli;
 
 /// <summary>
 /// Renders a model's chat template against a sample conversation:
-/// <c>opentail-llm-cli show-template -m model.gguf</c>
+/// <c>stingray show-template -m model.gguf</c>
 ///
 /// <para>The read-only slice of §6 Phase 4's compatibility lab. It does NOT run inference, compare
 /// against fixtures, or exercise tool-call envelopes — those need a fixture corpus. It answers the
