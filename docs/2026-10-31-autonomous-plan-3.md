@@ -12,7 +12,9 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
 - [ ] **Q3** GPU soft-capping for gemma2 (attention and final logits), so the dense GPU path matches the CPU (perplexity 15.38 against 12.58 today). Needs an owner decision
 - [ ] **Q4** Handoff gaps: Llama-3.1 checkpoint, LongRoPE, sliding-window llama, contexts above 4096, Qwen2.5-7B / Coder / VL, `startPos > 0` (a 300-token follow-up costs about 20 s against 2 to 3 s; not built)
 - [ ] **Q5** API follow-ups (the `tool_choice: none` endpoint test landed in PR 96): the parameter audit of the other endpoints, the error envelope on other endpoints, the stale `stop_sequences` snippet in the design doc, a fake engine that emits tool calls so the telemetry canary covers tool-call argument leakage, and tests that each accepted sampling field reaches the engine
-- [ ] **Q6** Release verification: build the release artifacts with `release.yml` and install/run them on a clean machine (CI proves builds and tests, not an installable release)
+- [ ] **Q6** Release verification (the release workflow already runs `scripts/verify-nuget-package.ps1`, so the claim that nothing proves installation was too strong; what is missing is a machine that is not this one)
+  - [x] 2026-10-31 on `main` at `f7f981eb`: the script packed all three packages at 1.0.9 and passed: a library consumer restored from the local feed and ran, a server consumer built, and the CLI installed as a dotnet tool and printed `1.0.9+f7f981eb`. Then the installed tool (a temp `--tool-path`, outside the repo) answered a prompt on Qwen3-0.6B Q8_0: CPU `-g 0` 41.6 tok/s decode, Vulkan hybrid `-g 4` 26.7 tok/s decode, same text
+  - [ ] Run the installed package on a machine with no repo, no SDK from this checkout and no GPU driver tweaks, and install the package that nuget.org serves rather than the locally packed one (blocked: there is no second machine; the NativeAOT self-test in CI covers the AOT binary only)
 - [ ] **P2d** CUDA passes have no scale references (blocked: no NVIDIA hardware)
 - [ ] Memory note updated to the final state
 
