@@ -625,7 +625,7 @@ background/speculative model preloading. All out of scope here.
    `FairModelScheduling` is a fairness guarantee, not a speed claim; (3) a gate covers one compute domain and nothing picks the
    domain automatically, so models on different devices must not share one; (4) there is no starvation guarantee across the
    admission queue and the gate together beyond each being fair on its own. (5) Fairness is per iteration, not per unit of compute time: one long prefill iteration costs far more than a short decode iteration, so a model with long prompts still takes more wall-clock than its turn count suggests. Review fix 2026-10-31: the turn gate's cancellation callback is now registered before a waiter becomes visible to a release (previously a waiter granted in that gap kept an undisposed registration); the two late-race branches are covered by deterministic tests through an internal test seam.
-   **Measured 2026-10-31 (plan 2, P4): on the CPU the gate costs more than it gives.** Scenario: a decode-heavy model (Qwen2.5-0.5B Q4_K_M,
+   **Measured 2026-10-31 ([plan 2, P4](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md)): on the CPU the gate costs more than it gives.** Scenario: a decode-heavy model (Qwen2.5-0.5B Q4_K_M,
    200 tokens) beside a prefill-heavy one (Qwen2.5-1.5B Q4_K_M, three prompts of 1,245 tokens), both on the CPU backend of one process,
    `MaxBatchSize` 2, gate off versus on, three interleaved pairs per setting, greedy. The machine was 10 to 16 percent busy with an IDE and
    a browser, so these are not idle-machine figures (the pairs are interleaved so drift hits both alike). With no gate the OS shares the

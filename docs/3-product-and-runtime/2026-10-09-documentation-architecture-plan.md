@@ -1,11 +1,12 @@
 # Documentation Architecture Plan: Grounded Consolidation & Authoritative References
 
+> Completed items moved to [../done/2026-10-09-documentation-architecture-plan-completed-items-2026-10.md](../done/2026-10-09-documentation-architecture-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; checked against the repo)
 
 - [ ] Phase 1: audit and assign ownership (the ownership map is in the plan; no audit record found)
 - [ ] Phase 2: correct the public front door (README recipes landed 2026-10-11; see `00-current-work.md` item 3.1; the rest is not re-checked)
 - [ ] Phase 3: consolidate existing user guides and references
-- [x] Phase 4: architecture cards and technical guides (34 files in `docs/models/`, 14 in `docs/guides/`)
 - [ ] Phase 5: documentation index and automated verification (no doc-consistency test found for the status matrix)
 
 > **Status (updated 2026-10-30):** Phase 4 done; Phase 2 partly done; Phases 1, 3 and 5 open (see the checklist above). Originally: Implementation-Ready Plan (Incorporating Review Corrections)  

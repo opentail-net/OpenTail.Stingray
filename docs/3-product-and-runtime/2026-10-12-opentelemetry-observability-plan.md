@@ -1,5 +1,7 @@
 # OpenTelemetry Observability for Stingray
 
+> Completed items moved to [../done/2026-10-12-opentelemetry-observability-plan-completed-items-2026-10.md](../done/2026-10-12-opentelemetry-observability-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 **Status:** Draft plan (2026-10-12), revised after review by three independent reviewers and a fresh read of the code. Partly implemented (checked 2026-10-30): Phases 2 to 6 (first cut) and the CLI bridge landed on 2026-10-13 per the progress log; the acceptance criteria at the end are not yet verified. Phase 1 is deliberately small (one vertical slice); everything else follows it. Every open question in §11 now carries a proposed answer, and none is decided until the owner confirms.  
 **Target:** .NET 10 / C# 14, NativeAOT-safe, local-first.  
 **Scope:** metrics and traces for the generation serving path (Server) and the inference engine, with an optional, off-by-default way to capture content. Audio, diffusion and vision pipelines are a later phase (§6, Phase 7).
@@ -290,7 +292,6 @@ Each question carries a **proposed** answer from the independent reviews. None i
 - [ ] The measurements correspond to the documented timing boundaries, including streaming, cancellation and cold model acquisition (tests).
 - [ ] No instrument or span carries an attribute outside the §7 allow-list, and no content appears anywhere in telemetry (tests). **Half done 2026-10-31:** no content: `EngineTelemetryPrivacyTests` pushes a unique canary prompt through `InferenceEngine` and `ContinuousBatchingEngine` and searches every captured metric name, unit, tag, span name, event, link and baggage value for it and for any path (none found). The allow-list half is still per instrument (`EngineTelemetryTests`, `ServerTelemetryContractTests`); there is no single test that enumerates every key on every instrument and span against the §7 list, and the server-side canary (prompt text through the HTTP endpoints) is not written.
 - [ ] Concurrent requests do not cross-contaminate trace context or measurements (tests).
-- [x] A telemetry or listener failure cannot break inference (test). **Done 2026-10-31:** `EngineTelemetryFailureTests` (5) and `ServerTelemetryFailureTests` (2) install a `MeterListener` and an `ActivityListener` that throw on every event and require the output to equal an unobserved run (both engines, concurrent requests, two requests in a row on the batcher, model load, server request timing, operation, audio and load-wait recording). They found real defects, now fixed: a throwing `ActivityListener` failed `InferenceEngine` generation and model load (`Activity.Start`/`Dispose` run listener callbacks inline) and the server request path (`ServingRequestTiming`, and every raw metric record in `ServerMetrics`). Each test failed before its fix. The telemetry self-test span (`RunSelfTestSpan`) was found unguarded in the next review and is guarded too (`SelfTestSpan_ThrowingActivityListener_DoesNotThrow`). Not covered: observable-gauge callbacks and the OTLP exporter path.
 - [ ] Time per output token is a true per-token figure; the old `itl_ms` meaning is documented as changed (Phase 2).
 - [ ] One chat request yields one connected trace with the expected child spans, and a shared model load is a separate operation with linked waits (Phase 3).
 - [ ] The library emits data with no OpenTelemetry package referenced.
@@ -451,12 +452,10 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 ### Open items
 
-- [x] Plan header corrected on 2026-10-30 to match its progress log
 - [ ] Acceptance: every instrument's name, unit and attributes asserted by tests (plan line 289)
 - [ ] Acceptance: measurement boundaries (streaming, cancellation, cold model load) covered by tests (line 290)
 - [ ] Acceptance: no attribute outside the §7 allow-list, and no content in telemetry (test, line 291): content half done 2026-10-31 for the engines, allow-list half and server canary open
 - [ ] Acceptance: concurrent requests do not cross-contaminate trace context or measurements (line 292)
-- [x] Acceptance: a telemetry or listener failure cannot break inference (line 293): done 2026-10-31, see that line
 - [ ] Time per output token is a true per-token figure; the old `itl_ms` meaning documented as changed (line 294)
 - [ ] One chat request yields one connected trace; a shared model load is a separate operation with linked waits (line 295)
 - [ ] The library emits data with no OpenTelemetry package referenced (line 296)

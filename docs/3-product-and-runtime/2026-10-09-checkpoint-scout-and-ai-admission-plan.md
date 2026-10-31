@@ -1,13 +1,10 @@
 # Checkpoint Scout and AI-Assisted Architecture Admission
 
+> Completed items moved to [../done/2026-10-09-checkpoint-scout-and-ai-admission-plan-completed-items-2026-10.md](../done/2026-10-09-checkpoint-scout-and-ai-admission-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; code checked)
 
-- [x] Phase 0: repository audit and contracts (per the status line)
-- [x] Phase 1: read-only local GGUF scout (`src/OpenTail.Stingray.Cli/Scout/ScoutCommand.cs`)
-- [x] Phase 2: feature evidence and architecture relatives (status 2026-10-09; `Engine/Scout/ArchSignature.cs`)
-- [x] Phase 3: memory-gated pretests, as a script (`scripts/scout-pretest.ps1`)
 - [~] Phase 4: Hugging Face repository discovery — list-only `scout -r` and `pull --revision` built (2026-10-09); demand-ranked backlog, batch triage and the metadata-key comparison still open (`scout --backlog` exists in `Cli/Scout/Backlog.cs`)
-- [x] Phase 5a: agent playbook (`docs/reference/architecture-admission-agent-playbook.md`)
 - [ ] Phase 5b: calibration (deferred)
 
 **Status (updated 2026-10-30):** Phases 0 to 2 and the playbook done; Phase 3 implemented as a script; Phases 4 and 5b deferred. Originally: proposed implementation plan (2026-10-09). Drafted by another AI; reviewed against HEAD (all named files/commands exist). **Committed scope: Phases 1–2 plus a short playbook and the optional pretest script (§8.1). Phases 4–5 are deferred, see §8.1.**  
