@@ -686,7 +686,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 bool faulted = false;
                 long startTicks = Stopwatch.GetTimestamp(), prefillStartTicks = 0, prefillEndTicks = 0, firstTokenTicks = 0;
                 // Null (and free) unless an ActivityListener is attached. Parented by the context captured above.
-                var telemetryActivity = EngineTelemetry.Source.StartActivity(
+                var telemetryActivity = EngineTelemetry.TryStartActivity(
                     "opentail.engine.generate", ActivityKind.Internal, parentContext);
                 // One small allocation per request, referenced only from the final Stop chunk.
                 GenerationStats Snapshot() => new(
