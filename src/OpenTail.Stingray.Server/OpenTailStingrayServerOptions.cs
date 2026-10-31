@@ -297,11 +297,11 @@ public sealed class OpenTailStingrayServerOptions
     /// <summary>
     /// Prompt tokens prefilled per batcher iteration under continuous batching
     /// (issue #183 Gap 1). Active sequences advance one decode step between chunks, so
-    /// a long inbound prompt no longer freezes every in-flight generation. <c>0</c>
-    /// disables chunking (each prompt prefills in one blocking call). <c>-1</c> = auto
-    /// (currently <c>256</c>; the legacy dequant cache is dormant). Only consulted when
-    /// <see cref="MaxBatchSize"/> &gt; 1. Mirrors
-    /// <c>STINGRAY_PREFILL_CHUNK</c>.
+    /// a long inbound prompt no longer freezes every in-flight generation. A positive value
+    /// sets the chunk; <c>0</c> and <c>-1</c> both mean automatic (currently <c>256</c>; the legacy
+    /// dequant cache is dormant). The plan cannot express "chunking off" (0 is "not specified"); a very large
+    /// value has that effect. Only consulted when <see cref="MaxBatchSize"/> &gt; 1. Mirrors
+    /// <c>STINGRAY_PREFILL_CHUNK</c>. Until 2026-10-31 this option, and the variable, never reached the batching engine.
     /// </summary>
     public int PrefillChunkTokens { get; set; } = -1;
 

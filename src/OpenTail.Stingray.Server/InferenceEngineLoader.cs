@@ -188,6 +188,7 @@ public static class InferenceEngineLoader
             MoeWarmPin = opts.MoeWarmPin,
             MoeWarmPinAfter = opts.MoeWarmPinAfter > 0 ? (int)opts.MoeWarmPinAfter : null,
             MoePredictPrefetch = opts.MoePredictPrefetch ? null : false,
+            PrefillChunkTokens = opts.PrefillChunkTokens > 0 ? opts.PrefillChunkTokens : null,   // 0 and -1 leave the engine's automatic size
             ExpertStatsPath = string.IsNullOrEmpty(opts.ExpertStatsPath) ? null : opts.ExpertStatsPath,
         };
 
