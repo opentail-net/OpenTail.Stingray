@@ -105,7 +105,7 @@ The existing command implementations are:
 
 The command app currently registers the existing commands as the default/path-oriented run command, `tts`, and `stt`. It also registers `setup` and `models`.
 
-The `chat`, `speak` and `transcribe` task commands are registered (`Program.cs:115-119`; checked 2026-10-30). Their remaining gap is the catalogue run templates (B5), not registration.
+The `chat`, `speak` and `transcribe` task commands are registered (`Program.cs:115-119`; checked 2026-10-30). Nothing remains open here: the catalogue run templates (B5) and the application name (B5 item 3, done 2026-10-31) are both finished.
 
 The correct approach is to reuse the existing inference and speech implementations, not create alternate implementations of token generation, TTS, or ASR.
 
@@ -113,7 +113,7 @@ The correct approach is to reuse the existing inference and speech implementatio
 
 The packable library project is `src/OpenTail.Stingray/OpenTail.Stingray.csproj`. It bundles the Stingray assemblies into the `OpenTail.Stingray` package and explicitly includes `src/OpenTail.Stingray/README.md` as its NuGet README.
 
-**That package README is currently stale.** Its chat example constructs an `InferenceEngine` with a constructor that does not exist and calls `StreamChatAsync`, which is not the current API. It also pins `--version 1.0.6` while the source is at 1.0.7 (see the merged front-door design section). This is a concrete defect, not a cosmetic documentation issue.
+**Fixed (historical finding, as of the original review):** the package README was stale. Its chat example constructs an `InferenceEngine` with a constructor that does not exist and calls `StreamChatAsync`, which is not the current API. It also pins `--version 1.0.6` while the source is at 1.0.7 (see the merged front-door design section). It was a concrete defect, not a cosmetic one. Checked 2026-10-31: `src/OpenTail.Stingray/README.md` now uses the current `Model`/`ChatSession` API, contains none of those names or the old version pin, and `scripts/verify-package-consumers.ps1` passed 17 checks on 1.0.9.
 
 The repository-root `README.md`, the package README, the CLI help and the front-door design document must agree about how a new user gets started.
 

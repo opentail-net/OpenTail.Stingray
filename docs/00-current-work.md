@@ -33,13 +33,13 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 
 - **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
 - **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
-- **Vulkan GEMM for LLM prefill** (owner: [thread owner](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image workstream).
+- **Vulkan GEMM for LLM prefill** (owner: [thread owner](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image section of the [diffusion owner doc](4-performance/diffusion/diffusion-performance.md)).
 - **Qwen Image and diffusion performance** (owner: [thread owner](4-performance/diffusion/diffusion-performance.md)): no backlog item for Qwen Image; items 8 and 9 (section 4, diffusion) are FLUX.
 - **Batched MoE prefill** (owner: [thread owner](2-coverage/2026-10-03-batched-moe-prefill-plan.md)): item 5 (section 4, GPU).
 - **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
 - **First run, catalogue and public surface** (owner: [thread owner](3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md)): item 1 (section 3).
 - **Gemma** (owner: [thread owner](2-coverage/2026-10-31-gemma-family-plan.md)): items 7 and 9 (sections 1 and 2).
-- **Scout and architecture admission** (owner: [thread owner](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md)): no backlog item of its own; the deferred phases are in the workstream.
+- **Scout and architecture admission** (owner: [thread owner](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md)): no backlog item of its own; the deferred phases are in the plan's thread-state section.
 - **OpenTelemetry observability** (owner: [thread owner](3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md)): no backlog item of its own; its header was corrected on 2026-10-30; the acceptance items remain open.
 - **Multi-model runtime** (owner: [thread owner](3-product-and-runtime/032-multi-model-inference-runtime-plan.md)): item 3 (section 3).
 - **Documentation architecture** (owner: [thread owner](3-product-and-runtime/2026-10-09-documentation-architecture-plan.md)): no backlog item of its own.
@@ -207,7 +207,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
    in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
-- [ ] 5. Batched prefill for the Vulkan layer split. `VulkanLayerSplitForwardPass` and the MoE path prefill per token; `GpuForwardPass` already batches dense Q4_K/Q6_K models (checked 2026-10-31; see the batched MoE and Vulkan GEMM workstreams).
+- [ ] 5. Batched prefill for the Vulkan layer split. `VulkanLayerSplitForwardPass` and the MoE path prefill per token; `GpuForwardPass` already batches dense Q4_K/Q6_K models (checked 2026-10-31; see the [batched MoE plan](2-coverage/2026-10-03-batched-moe-prefill-plan.md) and the [Vulkan GEMM doc](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)).
 - [ ] 6. Raw-quant matvec bandwidth on Vulkan (gpt-oss decode is MXFP4 matvec-bound, ~18 GB/s here).
 - [ ] 7. General multi-`VkBuffer` sharding for tensors beyond `maxStorageBufferRange`: undesigned, not
    needed by any current checkpoint ([done/084](done/084-vulkan-large-tensor-sharding-plan.md)).
