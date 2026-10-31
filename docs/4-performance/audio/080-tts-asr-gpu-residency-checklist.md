@@ -80,9 +80,7 @@ big win was a different, already-completed class of fix (naive-scalar-loop → S
 GPU-residency playbook this doc is about. Genuine Vulkan/CUDA GPU residency is still a separate,
 unexplored opportunity for this model, same as everything else marked "Confirmed 100% CPU" above.
 
-## 2026-09-14 major correction: the "0 IComputeBackend hits = 100% CPU" audit criterion has a real,
-## broadly-applicable blind spot — check `IForwardPass` usage before assuming any of these need a
-## from-scratch GPU-residency port
+## 2026-09-14 major correction: the "0 IComputeBackend hits = 100% CPU" audit criterion has a real, broadly-applicable blind spot — check `IForwardPass` usage before assuming any of these need a from-scratch GPU-residency port
 
 The audit above greps for direct `IComputeBackend` usage. That misses any model whose LLM-style
 backbone is built on this project's own shared, backend-agnostic `IForwardPass`/`ForwardPass` engine
