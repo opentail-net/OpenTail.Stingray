@@ -1,7 +1,7 @@
 # `STINGRAY_*` environment-variable inventory — classified (name-complete as of 2026-08-07; see the status note)
 
-> **Status, 2026-10-31: not name-complete.** The table below has a row for **240** of the **287** names in
-> `KnownEnvironmentVariables.All`; **47** registered names have no row yet (found by an external review and confirmed by comparing the
+> **Status, 2026-10-31: not name-complete.** The table below has a row for **264** of the **287** names in
+> `KnownEnvironmentVariables.All`; **23** registered names have no row yet (found by an external review and confirmed by comparing the
 > registry with the table). `KnownEnvironmentVariablesInventoryTests.InventoryTable_CoversTheRegistry_ExceptTheListedGap` pins that
 > exact set: it fails if a new variable is registered without a row, and fails again when a gap is filled but its name is still on the
 > list, so the gap can only shrink. The "name-complete" claims in the history below were true on the dates given.
@@ -178,6 +178,10 @@ dynamically composed names.
 | `STINGRAY_FA_TRACE` | diagnostic | `=1` enables per-layer hidden-state taps and logit statistics tracing in the Qwen forced aligner (needs a forward pass that supports hidden taps). |
 | `STINGRAY_FORCEDALIGNER_PERF` | diagnostic | `=1` prints timing stages of the Qwen audio encoder used by the forced aligner (convolution stages and others) to stdout. |
 | `STINGRAY_FORCEDALIGNER_TRACE` | diagnostic | `=1` prints forced-aligner trace output; the audio encoder also treats it, like `STINGRAY_FORCEDALIGNER_PERF`, as a reason to print its stage trace. |
+| `STINGRAY_QWENASR_DIAG` | diagnostic | `=1` prints statistics of the Qwen ASR audio soft tokens and compares their magnitude with a real text-embedding row (a check for a scale mismatch between the encoder output and the text embeddings). |
+| `STINGRAY_RVC_PROFILE` | diagnostic | `=1` prints stage timings of the RVC voice-conversion pipeline and its RMVPE pitch encoder. |
+| `STINGRAY_RVC_TRACE` | diagnostic | `=1` enables trace output from the RVC RMVPE pitch encoder. |
+| `STINGRAY_SILERO_VAD_PATH` | stable | Path to the Silero VAD ONNX model. If the file exists it is loaded first; otherwise the default search runs (the working directory and the application directory, walking up their parents). |
 
 ## OpenTail.Stingray.Cli
 
@@ -402,6 +406,7 @@ dynamically composed names.
 | `STINGRAY_PROBE_POS` | diagnostic | Diagnostic: limit the logit probe to token position `<n>` (otherwise every position, which is unmanageable). |
 | `STINGRAY_PROFILE_DECODE` | diagnostic | Diagnostic (`=1`): temporary decode profiler in the CPU hybrid-GDN pass, split by Gdn, Attention, Moe and GdnRecurrence. Reported by the run command. |
 | `STINGRAY_PROFILE_PREFILL` | diagnostic | Diagnostic (`=1`): per-category prefill timers (QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, GdnBlock, MoeFfn, GdnRecurrence) and the routed-expert stage timing. |
+| `STINGRAY_PROFILE_VULKAN_UPLOADS` | diagnostic | `=1` times the stages of uploading each weight tensor in the Vulkan hybrid Gated-DeltaNet pass (host conversion and GPU upload). Changes timing slightly; do not use such a run for benchmark comparisons. |
 | `STINGRAY_Q3K_DEQUANT_GEMM` | experimental | `=0` sends prefill-scale Q3_K routed MoE experts in the CUDA hybrid-GDN pass through the per-token-re-reading GEMM-N instead of the dequant, fp16, cuBLAS GEMM (weights read once, argmax-stable). Default on. |
 | `STINGRAY_Q3K_Q8K` | experimental | `1` or `0` (also `true` or `false`) forces the Q3_K int8 (Q8_K activation) routed-expert kernel on or off in the routed-MoE dot kernels of the hybrid passes (CPU hybrid-GDN and the CPU MoE of the CUDA hybrid passes). Unset: on when the model has Q3_K routed experts. |
 | `STINGRAY_Q4KX8_CACHE_MB` | experimental | Diffusion quantized-weight cache budget in MiB. A positive number sets it; `0` or a negative number disables the cache; unset or unparsable uses one third of the available memory (`GC.GetGCMemoryInfo().TotalAvailableMemoryBytes`). |
@@ -411,6 +416,7 @@ dynamically composed names.
 | `STINGRAY_Q6K_GEMM` | experimental | `0` sends Q6_K prefill matmuls back to the row-major int8 tier instead of the group-paired `Q6KPrefillGemm` (A/B toggle). |
 | `STINGRAY_Q6K_SOA` | experimental | `=0` keeps Q6_K trunk weights in the AoS layout everywhere and also disables the Q6_K decode-MMQ tile. Default on, dense models only. |
 | `STINGRAY_Q8_0_Q8K` | experimental | `1` or `0` (also `true` or `false`) forces the Q8_0 int8 routed-expert kernel on or off in the routed-MoE dot kernels of the hybrid passes (CPU hybrid-GDN and the CPU MoE of the CUDA hybrid passes). Unset: on when the model has Q8_0 routed experts. |
+| `STINGRAY_RECURRENT_BATCHED_PREFILL` | expert | `=0` restores per-token prefill for models with Mamba-2 or short-convolution layers (Granite 4.0-H, Nemotron-H, LFM2) instead of the default batched prefill, which batches the projections and keeps the conv and scan in token order. |
 | `STINGRAY_SNAPKV_RECENCY` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
 | `STINGRAY_SNAPKV_WINDOW` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
 | `STINGRAY_SPEC_BATCH_VERIFY` | experimental | `=0` forces the sequential verify fallback in `SpeculativeDecoder` (model-draft and prompt-lookup speculation) even when the target supports batch verify (kill-switch, issue #207). Default on. |
@@ -508,6 +514,22 @@ dynamically composed names.
 | `STINGRAY_LTX_DEBUG_STEPFRAMES_DIR` | diagnostic | Directory for the per-step PNGs written when `STINGRAY_LTX_DEBUG_STEPFRAMES=1`. Default `docs/diffusion-samples`, relative to the working directory. |
 | `STINGRAY_LTX_DEBUG_STEPSTATS` | diagnostic | `=1` prints per-step statistics of the LTX-Video latents and predicted velocity (sums, maximum absolute values). |
 | `STINGRAY_PROFILE_VAE` | diagnostic | `=1` prints per-stage timing of the VAE decoder. |
+| `STINGRAY_QWENIMAGE_DUMP_COND_PATH` | diagnostic | Path. Qwen Image writes its text-conditioning context there as raw float32 (parity debugging). |
+| `STINGRAY_QWENIMAGE_DUMP_LATENT_PATH` | diagnostic | Path. Qwen Image writes the final latent there as raw float32 (parity debugging). |
+| `STINGRAY_QWENIMAGE_INJECT_NOISE_PATH` | diagnostic | Path to a raw float32 file that replaces the Qwen Image initial noise (parity hook, `DiffusionParityHooks.TryLoadNoise`); a size mismatch throws. |
+| `STINGRAY_QWEN_GPU_BLOCKS` | expert | Integer, clamped to 0 up to the number of blocks. Caps how many Qwen Image DiT blocks are uploaded to stay resident on the GPU (upload also stops early if the device refuses a block, and some headroom is left for runtime buffers); the pass prints how many ended up resident. Unset or unparseable means all blocks are tried. |
+| `STINGRAY_QWEN_GPU_FP16` | expert | `=1` stops Qwen Image weights from being kept as raw quantized blocks on the GPU: they are uploaded in the normal FP16, BF16 or FP32 form instead (A/B comparison and fallback). |
+| `STINGRAY_QWEN_MLP_CHUNKS` | expert | `=0` keeps the original single 12288-wide Qwen Image MLP instead of the default four chunks (rollback switch). |
+| `STINGRAY_QWEN_PROFILE` | diagnostic | `1` logs Qwen Image GPU workspace creation and timing to stderr (`[QwenProfile]`); `ops` also splits time by operation group (modulation, QKV, attention, MLP) by ending and restarting the GPU batch between groups, which perturbs total time, so use it for proportions only. |
+| `STINGRAY_SA3_DUMP` | diagnostic | Directory. Stable Audio 3 writes named intermediate tensors there as raw float32 `.f32` files (parity debugging). |
+| `STINGRAY_SA3_NOISE` | diagnostic | Path to a raw float32 file that replaces the Stable Audio 3 initial noise (parity hook, `DiffusionParityHooks.TryLoadNoise`); a size mismatch throws. |
+| `STINGRAY_SD3_DUMP_LATENT_PATH` | diagnostic | Path. SD3 writes the final latent there as raw float32 (parity debugging). |
+| `STINGRAY_SD3_FORCE_GPU_WEIGHTS_F32` | expert | `=1` uploads SD3 weights to the GPU as exact FP32 instead of the backend's preferred FP16 form (precision A/B and fallback; uses more GPU memory). |
+| `STINGRAY_SD3_GPU_FP16` | expert | `=1` stops SD3 weights from being kept as raw quantized blocks on the GPU: they are uploaded in the normal FP16, BF16 or FP32 form instead (A/B comparison and fallback). |
+| `STINGRAY_SD3_INJECT_NOISE_PATH` | diagnostic | Path to a raw float32 file that replaces the SD3 initial noise (parity hook). Used only if the file exists; a byte-length mismatch throws. |
+| `STINGRAY_SD3_POSEMBED_LEFT` | diagnostic | Integer. Overrides the left origin of the SD3 positional-embedding crop, used to investigate a left-shift in generated images. No effect unless set. |
+| `STINGRAY_SD3_POSEMBED_TOP` | diagnostic | Integer. Overrides the top origin of the SD3 positional-embedding crop, used to investigate a left-shift in generated images. No effect unless set. |
+| `STINGRAY_T5_DUMP_PREFIX` | diagnostic | File-name prefix. The T5 text encoder writes diagnostic checkpoint tensors to `<prefix>_<checkpoint>_<call number>.bin`, with a call counter that separates the conditional and unconditional passes (parity debugging). |
 
 ## OpenTail.Stingray.Server
 
@@ -517,6 +539,7 @@ dynamically composed names.
 | `STINGRAY_ENABLE_RESOURCE_ADMISSION` | expert | `1` or `true` (case-insensitive) turns on resource-based admission in the multi-model runtime manager when the `EnableResourceAdmission` option is not set. Anything else, or unset, leaves it off. |
 | `STINGRAY_ENCODER_REQUEST_PATHS` | expert | `1` or `true` lets a request to `/v1/embeddings` or `/v1/rerank` name a model file path in its `model` field. Off by default because a request path is loaded and kept resident, so any client could otherwise make the server load any GGUF on its disk and probe which paths exist. |
 | `STINGRAY_MODEL_RESIDENCY_MODE` | expert | `single` (also `singleslot`, `single-slot`) or `multi` (also `multislot`, `multi-slot`), case-insensitive: whether the multi-model manager keeps one model resident at a time or lets several be resident. Used when the `ModelResidencyMode` option is unset; empty means multi-slot, and any other value throws at startup. |
+| `STINGRAY_RERANK_MODEL` | stable | Model path served by `/v1/rerank`. Unset means nothing real is configured and the endpoint answers 404 rather than returning synthetic scores. A request's `model` field is only a name unless `STINGRAY_ENCODER_REQUEST_PATHS` is on. |
 
 ## OpenTail.Stingray.Vision
 
@@ -530,3 +553,4 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_PROFILE_TOKENIZE` | diagnostic | `=1` prints a `[TokenizeProfile]` line to stderr for every tokenizer `Encode` call: characters in, tokens out and elapsed milliseconds. |
+| `STINGRAY_PROFILE_WEIGHT_READ` | diagnostic | `=1` accumulates and reports where SafeTensors weight reading spends its time (tensor lookup, disk read, conversion) and how many bytes and floats were produced. |
