@@ -69,22 +69,22 @@ public sealed class ServerMetrics
     public void RecordRequest()
     {
         Interlocked.Increment(ref _totalRequests);
-        s_requestsCounter.Add(1);
+        try { s_requestsCounter.Add(1); } catch { }   // a throwing metrics listener must never fail the request it observes
     }
 
     /// <summary>Records one request rejected by the server's bounded admission queue.</summary>
     public void RecordOverloadRejection()
     {
         Interlocked.Increment(ref _overloadRejections);
-        s_rejectionsCounter.Add(1);
-        s_rejected.Add(1, new KeyValuePair<string, object?>("opentail.reason", "overload"));
+        try { s_rejectionsCounter.Add(1); } catch { }
+        try { s_rejected.Add(1, new KeyValuePair<string, object?>("opentail.reason", "overload")); } catch { }
     }
 
     /// <summary>Adds <paramref name="count"/> to <see cref="TotalTokens"/>.</summary>
     public void RecordTokens(long count)
     {
         Interlocked.Add(ref _totalTokens, count);
-        s_tokensCounter.Add(count);
+        try { s_tokensCounter.Add(count); } catch { }
     }
 
     /// <summary>Starts latency accounting at engine-submission time for one generation request.</summary>
@@ -145,8 +145,8 @@ public sealed class ServerMetrics
     {
         if (audioSeconds <= 0) return;
         var tags = new TagList { { "gen_ai.operation.name", operation }, { "opentail.endpoint", endpoint } };
-        if (s_audioDuration.Enabled) s_audioDuration.Record(audioSeconds, tags);
-        if (s_audioRtf.Enabled) s_audioRtf.Record(elapsed.TotalSeconds / audioSeconds, tags);
+        try { if (s_audioDuration.Enabled) s_audioDuration.Record(audioSeconds, tags); } catch { }
+        try { if (s_audioRtf.Enabled) s_audioRtf.Record(elapsed.TotalSeconds / audioSeconds, tags); } catch { }
     }
 
     /// <summary>Records <c>gen_ai.server.request.duration</c> for a non-chat operation. Operation/endpoint are fixed strings; outcome is success, client_error, error or cancelled; <paramref name="errorType"/> is an exception type name (never a message), set only for outcome error.</summary>
@@ -161,7 +161,7 @@ public sealed class ServerMetrics
             { "outcome", outcome },
         };
         if (errorType is not null) tags.Add("error.type", errorType);
-        s_genAiRequestDuration.Record(elapsed.TotalSeconds, tags);
+        try { s_genAiRequestDuration.Record(elapsed.TotalSeconds, tags); } catch { }
     }
 
     private static TagList EndpointTags(ServingTags endpoint) => new()
@@ -174,19 +174,19 @@ public sealed class ServerMetrics
     internal void RecordQueueLatency(TimeSpan elapsed, ServingTags endpoint)
     {
         _queueLatency.Observe(elapsed);
-        if (s_queueWait.Enabled) s_queueWait.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
+        try { if (s_queueWait.Enabled) s_queueWait.Record(elapsed.TotalSeconds, EndpointTags(endpoint)); } catch { }
     }
     internal bool AddActive(long delta, ServingTags endpoint)
     {
         if (!s_active.Enabled) return false;
-        s_active.Add(delta, new KeyValuePair<string, object?>("opentail.endpoint", endpoint.Endpoint));
+        try { s_active.Add(delta, new KeyValuePair<string, object?>("opentail.endpoint", endpoint.Endpoint)); } catch { return false; }
         return true;
     }
     internal void RecordTimeToFirstToken(TimeSpan elapsed, ServingTags endpoint)
     {
         _timeToFirstToken.Observe(elapsed);
-        s_ttftHistogram.Record(elapsed.TotalMilliseconds);
-        if (s_genAiTtft.Enabled) s_genAiTtft.Record(elapsed.TotalSeconds, EndpointTags(endpoint));
+        try { s_ttftHistogram.Record(elapsed.TotalMilliseconds); } catch { }
+        try { if (s_genAiTtft.Enabled) s_genAiTtft.Record(elapsed.TotalSeconds, EndpointTags(endpoint)); } catch { }
     }
     internal void RecordRequestDurationAndRate(TimeSpan total, ServingTags endpoint, TimeSpan decode, long outputTokens, string outcome)
     {
@@ -194,15 +194,15 @@ public sealed class ServerMetrics
         {
             var tags = EndpointTags(endpoint);
             tags.Add("outcome", outcome);
-            s_genAiRequestDuration.Record(total.TotalSeconds, tags);
+            try { s_genAiRequestDuration.Record(total.TotalSeconds, tags); } catch { }
         }
         if (outputTokens > 1 && decode > TimeSpan.Zero && s_genAiTpot.Enabled)
-            s_genAiTpot.Record(decode.TotalSeconds / (outputTokens - 1), EndpointTags(endpoint));
+            try { s_genAiTpot.Record(decode.TotalSeconds / (outputTokens - 1), EndpointTags(endpoint)); } catch { }
     }
     internal void RecordGenerationDuration(TimeSpan elapsed)
     {
         _generationDuration.Observe(elapsed);
-        s_itlHistogram.Record(elapsed.TotalMilliseconds);
+        try { s_itlHistogram.Record(elapsed.TotalMilliseconds); } catch { }
     }
     internal void RecordRequestDuration(TimeSpan elapsed) => _requestDuration.Observe(elapsed);
 
@@ -258,10 +258,21 @@ public sealed class ServingRequestTiming : IDisposable
         _requestAborted = requestAborted;
         if (ServerMetrics.Activities.HasListeners())
         {
-            _activity = ServerMetrics.Activities.StartActivity("chat " + endpoint.Model, ActivityKind.Internal);
-            _activity?.SetTag("gen_ai.operation.name", "chat");
-            _activity?.SetTag("gen_ai.request.model", endpoint.Model);
-            _activity?.SetTag("opentail.endpoint", endpoint.Endpoint);
+            // A listener's ActivityStarted runs inside StartActivity; if it throws, serve the request without a span and put the
+            // caller's Activity.Current back (telemetry must never fail the request it observes).
+            var saved = Activity.Current;
+            try
+            {
+                _activity = ServerMetrics.Activities.StartActivity("chat " + endpoint.Model, ActivityKind.Internal);
+                _activity?.SetTag("gen_ai.operation.name", "chat");
+                _activity?.SetTag("gen_ai.request.model", endpoint.Model);
+                _activity?.SetTag("opentail.endpoint", endpoint.Endpoint);
+            }
+            catch
+            {
+                _activity = null;
+                Activity.Current = saved;
+            }
         }
         _metrics = metrics;
         _endpoint = endpoint;
@@ -363,7 +374,9 @@ public sealed class ServingRequestTiming : IDisposable
             }
             finally
             {
-                _activity.Dispose();
+                // ActivityStopped runs inside Dispose.
+                try { _activity.Dispose(); }
+                catch { }
             }
         }
         // MarkGenerationComplete already recorded the accurate (delivery-excluded) sample on the

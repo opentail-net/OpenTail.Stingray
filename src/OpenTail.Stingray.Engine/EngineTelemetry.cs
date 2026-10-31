@@ -152,6 +152,27 @@ public static class EngineTelemetry
     /// <summary>Ambient holder for the load currently being built on this flow (see <see cref="LoadContextHolder"/>).</summary>
     public static readonly AsyncLocal<LoadContextHolder?> LoadHolder = new();
 
+    /// <summary>
+    /// Starts a span without letting a faulty <see cref="ActivityListener"/> throw into the caller. .NET invokes the listener's
+    /// <c>ActivityStarted</c> inside <c>Start()</c>, so a listener that throws would otherwise fail the request or the model load it
+    /// merely observes (plan acceptance: a telemetry failure cannot break inference). On failure the caller's
+    /// <see cref="Activity.Current"/> is put back and no span is recorded. Null with no listener, and allocation-free.
+    /// </summary>
+    internal static Activity? TryStartActivity(string name, ActivityKind kind, ActivityContext parent)
+    {
+        if (!Source.HasListeners()) return null;
+        var saved = Activity.Current;
+        try
+        {
+            return Source.StartActivity(name, kind, parent);
+        }
+        catch
+        {
+            Activity.Current = saved;
+            return null;
+        }
+    }
+
     /// <summary>Starts the <c>model.load</c> span as a new root (a load is shared, so it is never a child of one request). Null with no listener.</summary>
     internal static ModelLoadScope StartModelLoad()
     {
@@ -160,7 +181,7 @@ public static class EngineTelemetry
         // start and restore the caller's context when the scope ends.
         var saved = Activity.Current;
         Activity.Current = null;
-        var activity = Source.StartActivity("model.load", ActivityKind.Internal);
+        var activity = TryStartActivity("model.load", ActivityKind.Internal, default);
         if (activity is not null && LoadHolder.Value is { } holder) holder.Context = activity.Context;
         return new ModelLoadScope(activity, saved, swapped: true);
     }
@@ -182,8 +203,13 @@ public static class EngineTelemetry
 
         public void Dispose()
         {
-            Activity?.Dispose();
-            if (_swapped) System.Diagnostics.Activity.Current = _saved;
+            // A listener's ActivityStopped runs inside Dispose; it must not throw out of the load it observes.
+            try { Activity?.Dispose(); }
+            catch { }
+            finally
+            {
+                if (_swapped) System.Diagnostics.Activity.Current = _saved;
+            }
         }
     }
 
@@ -335,7 +361,9 @@ public static class EngineTelemetry
         }
         finally
         {
-            activity.Dispose();
+            // ActivityStopped runs inside Dispose; a throwing listener must not escape into the request's own finally block.
+            try { activity.Dispose(); }
+            catch { }
         }
     }
 
