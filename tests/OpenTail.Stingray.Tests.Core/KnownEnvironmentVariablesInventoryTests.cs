@@ -1,0 +1,136 @@
+using System.Text.RegularExpressions;
+
+namespace OpenTail.Stingray.Tests.Core;
+
+public sealed partial class KnownEnvironmentVariablesTests
+{
+    /// <summary>
+    /// Registry names that still have no row in <c>docs/reference/env-var-inventory.md</c> (found 2026-10-31: the table was last
+    /// reconciled at 162 names and the registry has since grown). This list may only shrink: add the row, then delete the name here.
+    /// A new variable must arrive with its row; adding it to this list instead is a visible step backwards in review.
+    /// </summary>
+    private static readonly string[] KnownUndocumented =
+    [
+        "STINGRAY_ACESTEP_DUMP",
+        "STINGRAY_ACESTEP_NOISE",
+        "STINGRAY_ASR_PROFILE",
+        "STINGRAY_ATTN128_LEGACY",
+        "STINGRAY_CFG_TRACE",
+        "STINGRAY_COSYVOICE3_TANH_GELU",
+        "STINGRAY_CPU_DECODE_VIA_GEMM",
+        "STINGRAY_DBG_TOKEN_RANK",
+        "STINGRAY_DEBUG_COSYVOICE3",
+        "STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH",
+        "STINGRAY_DUMP_CONVPOST_PATH",
+        "STINGRAY_DUMP_CONVPRE_PATH",
+        "STINGRAY_DUMP_STAGE0_PATH",
+        "STINGRAY_EMBEDDING_MODEL",
+        "STINGRAY_ENABLE_RESOURCE_ADMISSION",
+        "STINGRAY_ENCODER_REQUEST_PATHS",
+        "STINGRAY_FA_DUMP_DIR",
+        "STINGRAY_FA_READ_SHIFT",
+        "STINGRAY_FA_TRACE",
+        "STINGRAY_FLUX_GPU_FP16",
+        "STINGRAY_FLUX_T5_DEVICE",
+        "STINGRAY_FLUX2_DUMP_COND_PATH",
+        "STINGRAY_FLUX2_DUMP_LATENT_PATH",
+        "STINGRAY_FLUX2_GPU_BATCH_SIZE",
+        "STINGRAY_FLUX2_GPU_FP16",
+        "STINGRAY_FLUX2_GPU_SINGLE_BLOCKS",
+        "STINGRAY_FLUX2_INJECT_NOISE_PATH",
+        "STINGRAY_FLUX2_PERF_TRACE",
+        "STINGRAY_FORCE_MHA64_F32",
+        "STINGRAY_FORCEDALIGNER_PERF",
+        "STINGRAY_FORCEDALIGNER_TRACE",
+        "STINGRAY_GEMMA3_DEBUG",
+        "STINGRAY_HUNYUAN_DUMP_COND_PATH",
+        "STINGRAY_HUNYUAN_DUMP_LATENT",
+        "STINGRAY_HUNYUAN_DUMP_LATENT_PATH",
+        "STINGRAY_HUNYUAN_DUMP_VEC_PATH",
+        "STINGRAY_HUNYUAN_INJECT_NOISE_PATH",
+        "STINGRAY_LEGACY_DOTQ4K",
+        "STINGRAY_LFM2_MOE_BATCHED_PREFILL",
+        "STINGRAY_LLAMA4_DEBUG",
+        "STINGRAY_LTX_DEBUG_STEPFRAMES",
+        "STINGRAY_LTX_DEBUG_STEPFRAMES_DIR",
+        "STINGRAY_LTX_DEBUG_STEPSTATS",
+        "STINGRAY_MODEL_RESIDENCY_MODE",
+        "STINGRAY_MOE_PREFILL_Q8",
+        "STINGRAY_PROFILE_GPU_SPLIT",
+        "STINGRAY_PROFILE_TOKENIZE",
+        "STINGRAY_PROFILE_VAE",
+        "STINGRAY_PROFILE_VULKAN_UPLOADS",
+        "STINGRAY_PROFILE_WEIGHT_READ",
+        "STINGRAY_QWEN_GPU_BLOCKS",
+        "STINGRAY_QWEN_GPU_FP16",
+        "STINGRAY_QWEN_MLP_CHUNKS",
+        "STINGRAY_QWEN_PROFILE",
+        "STINGRAY_QWENASR_DIAG",
+        "STINGRAY_QWENIMAGE_DUMP_COND_PATH",
+        "STINGRAY_QWENIMAGE_DUMP_LATENT_PATH",
+        "STINGRAY_QWENIMAGE_INJECT_NOISE_PATH",
+        "STINGRAY_RECURRENT_BATCHED_PREFILL",
+        "STINGRAY_RERANK_MODEL",
+        "STINGRAY_RVC_PROFILE",
+        "STINGRAY_RVC_TRACE",
+        "STINGRAY_SA3_DUMP",
+        "STINGRAY_SA3_NOISE",
+        "STINGRAY_SD3_DUMP_LATENT_PATH",
+        "STINGRAY_SD3_FORCE_GPU_WEIGHTS_F32",
+        "STINGRAY_SD3_GPU_FP16",
+        "STINGRAY_SD3_INJECT_NOISE_PATH",
+        "STINGRAY_SD3_POSEMBED_LEFT",
+        "STINGRAY_SD3_POSEMBED_TOP",
+        "STINGRAY_SILERO_VAD_PATH",
+        "STINGRAY_T5_DUMP_PREFIX",
+        "STINGRAY_TTS_PROFILE",
+        "STINGRAY_TTS_TRACE",
+        "STINGRAY_VISION_GEMM",
+        "STINGRAY_VK_MATVEC_V2",
+        "STINGRAY_VK_MXFP4_V2",
+        "STINGRAY_VK_PATH3_CHUNK",
+        "STINGRAY_VK_QGEMM_SMALLM",
+        "STINGRAY_VULKAN_DECODE_ATTN_GQA",
+        "STINGRAY_VULKAN_DECODE_PROFILE",
+        "STINGRAY_VULKAN_FLASH_PREFILL",
+        "STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK",
+        "STINGRAY_VULKAN_MIN_FREE_RAM_MB",
+        "STINGRAY_WAN_DEBUG_ATTNMAP",
+        "STINGRAY_WAN_DEBUG_CROSSREF",
+        "STINGRAY_WAN_DEBUG_CROSSREF_DIR",
+        "STINGRAY_WAN_DEBUG_EXACT_GELU",
+        "STINGRAY_WAN_DEBUG_PERBLOCK",
+        "STINGRAY_WAN_DEBUG_VELOCITY",
+        "STINGRAY_WAN_PROFILE",
+        "STINGRAY_WAN_SIGN",
+        "STINGRAY_XTTS_LAYER_TRACE",
+        "STINGRAY_XTTS_TRACE",
+        "STINGRAY_ZIMAGE_DUMP_LATENT",
+    ];
+
+    [GeneratedRegex(@"^\|\s*`(STINGRAY_[A-Z0-9_]+)`", RegexOptions.Multiline)]
+    private static partial Regex InventoryRow();
+
+    [Fact]
+    public void InventoryTable_CoversTheRegistry_ExceptTheListedGap()
+    {
+        string? root = FindRepoRoot();
+        Assert.SkipUnless(root is not null, "repository layout not found (packaged run)");
+        string path = Path.Combine(root!, "docs", "reference", "env-var-inventory.md");
+        Assert.SkipUnless(File.Exists(path), "env-var-inventory.md not present");
+
+        var rows = InventoryRow().Matches(File.ReadAllText(path)).Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        var undocumented = KnownEnvironmentVariables.All.Where(n => !rows.Contains(n)).ToHashSet(StringComparer.Ordinal);
+
+        var newlyUndocumented = undocumented.Except(KnownUndocumented, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        Assert.True(newlyUndocumented.Count == 0,
+            "registered but missing from docs/reference/env-var-inventory.md (add a row): " + string.Join(", ", newlyUndocumented));
+
+        var nowDocumented = KnownUndocumented.Where(n => !undocumented.Contains(n)).ToList();
+        Assert.True(nowDocumented.Count == 0,
+            "now documented (or no longer registered): delete from KnownUndocumented: " + string.Join(", ", nowDocumented));
+
+        var orphanRows = rows.Where(r => !KnownEnvironmentVariables.All.Contains(r)).Order(StringComparer.Ordinal).ToList();
+        Assert.True(orphanRows.Count == 0, "inventory rows for names the registry does not contain: " + string.Join(", ", orphanRows));
+    }
+}

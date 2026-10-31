@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $env:DOTNET_TC_QuickJitForLoops = "0"   # tiered JIT invalidates these numbers (iteration 11)
-$exe = "src/OpenTail.Stingray.Cli/bin/Release/net10.0/opentail-llm-cli.exe"
+$exe = "src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe"
 if (-not (Test-Path $exe)) { throw "Build the CLI in Release first: dotnet build src/OpenTail.Stingray.Cli -c Release" }
 
 Write-Host "=== $Label ===" -ForegroundColor Cyan

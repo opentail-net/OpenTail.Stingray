@@ -4,7 +4,7 @@ Fetches the wikitext-2-raw-v1 TEST split for the KVarN P0 accuracy gate (issue #
 
 .DESCRIPTION
 Corpus choice note (kept here so gate runs are reproducible): the perplexity harness
-(`opentail-llm-cli perplexity`) is evaluated on the standard wikitext-2-raw test split
+(`stingray perplexity`) is evaluated on the standard wikitext-2-raw test split
 (wiki.test.raw, ~1.2 MB, ~280k tokens under a BPE vocab) — the same corpus
 llama.cpp's perplexity tool is conventionally run on, so numbers are comparable
 across tools and stable across gate re-runs. The corpus itself is NOT committed

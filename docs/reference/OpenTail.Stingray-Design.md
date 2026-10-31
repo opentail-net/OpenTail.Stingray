@@ -977,7 +977,7 @@ per `--image`), rendered through the model's own chat template into the `<|image
 `<image|>`(258882). Each soft token occupies one real position in the KV cache.
 
 ```
-opentail-llm-cli -m gemma-4-12b-it-qat-q4_0.gguf \
+stingray -m gemma-4-12b-it-qat-q4_0.gguf \
   --mmproj mmproj-gemma-4-12b-it-qat-q4_0.gguf \
   --image cat.png -p "What is in this image?" -g 0   # or -g -1 for CUDA
 ```
@@ -1534,7 +1534,7 @@ SPIR-V bytecode is embedded as assembly resources and loaded at runtime.
 - [x] Multi-threaded MatVec via `Parallel.For` (24 threads)
 - [x] Batched prefill with layer-by-layer cache-hot weight reuse
 - [x] OpenBLAS GEMM integration for large-batch prefill
-- [x] CLI chat REPL (`opentail-llm-cli`) with llama.cpp-compatible flags
+- [x] CLI chat REPL (`stingray`) with llama.cpp-compatible flags
 - [x] Reference test: output matches llama.cpp greedy decode token-for-token
 - [x] BenchmarkDotNet harness measuring decode and prefill throughput
 

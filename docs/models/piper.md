@@ -29,7 +29,7 @@ Piper is an ultra-fast, local neural text-to-speech engine based on the VITS (Va
 * **Blazing CPU Inference Speed:**
   Generates audio at over 7× faster than real time (0.129× RTF) on an ordinary desktop CPU without dedicated GPU acceleration.
 * **Licensing & Safety:**
-  Voice checkpoints (e.g. `en_US-lessac-medium`) have explicit data licenses; Stingray’s front door prompts the user for license consent upon first setup.
+  Voice checkpoints have explicit data licences. **`en_US-lessac-medium` is research use only: the Lessac Blizzard 2013 data it was trained on forbids commercial use and redistribution** (the Piper code is MIT; [terms](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html)). Stingray's front door prompts the user for licence consent upon first setup; the library and the samples do not check it.
 
 ---
 

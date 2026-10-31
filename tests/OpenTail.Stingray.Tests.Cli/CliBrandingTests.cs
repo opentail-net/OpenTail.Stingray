@@ -51,4 +51,29 @@ public sealed class CliBrandingTests
             .ToList();
         Assert.True(offenders.Count == 0, "still mention " + RetiredName + ": " + string.Join(", ", offenders));
     }
+
+    // The scripts run the built CLI by file name, so a stale name there is a broken script, not a wording slip. A few old A/B scripts
+    // deliberately point at other checkouts under C:\p\ whose builds really are called opentail-llm-cli; those lines are exempt.
+    [Fact]
+    public void NoScript_RunsTheRetiredExecutable()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "OpenTail.Stingray.slnx"))) root = root.Parent;
+        Assert.NotNull(root);
+
+        var offenders = new List<string>();
+        foreach (string file in Directory.EnumerateFiles(Path.Combine(root!.FullName, "scripts"), "*", SearchOption.AllDirectories)
+                     .Where(f => f.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".sh", StringComparison.OrdinalIgnoreCase)
+                                 || f.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)))
+        {
+            int n = 0;
+            foreach (string line in File.ReadLines(file))
+            {
+                n++;
+                if (line.Contains(RetiredName, StringComparison.Ordinal) && !line.Contains(@"C:\p\", StringComparison.Ordinal))
+                    offenders.Add($"{Path.GetRelativePath(root.FullName, file)}:{n}");
+            }
+        }
+        Assert.True(offenders.Count == 0, "scripts still use " + RetiredName + ": " + string.Join(", ", offenders));
+    }
 }

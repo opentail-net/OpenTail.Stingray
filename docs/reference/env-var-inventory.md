@@ -1,4 +1,10 @@
-# `STINGRAY_*` environment-variable inventory — name-complete and classified
+# `STINGRAY_*` environment-variable inventory — classified (name-complete as of 2026-08-07; see the status note)
+
+> **Status, 2026-10-31: not name-complete.** The table below has a row for **192** of the **287** names in
+> `KnownEnvironmentVariables.All`; **95** registered names have no row yet (found by an external review and confirmed by comparing the
+> registry with the table). `KnownEnvironmentVariablesInventoryTests.InventoryTable_CoversTheRegistry_ExceptTheListedGap` pins that
+> exact set: it fails if a new variable is registered without a row, and fails again when a gap is filled but its name is still on the
+> list, so the gap can only shrink. The "name-complete" claims in the history below were true on the dates given.
 
 **Snapshot originally generated:** 2026-07-26 by scanning `src/**/*.cs`, recording **141 unique
 variables**.

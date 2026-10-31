@@ -2,7 +2,20 @@
 
 ## Status
 
-Planning only. No implementation in this document. **Checked 2026-10-30:** still planning only; `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`). The guard this section cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale. **Thread:** [configuration and sessions](04-quality-of-life-improvements-plan.md). Written as the flagged immediate
+**Current position (2026-10-31): superseded in part; nothing here is scheduled for implementation.**
+- Session forking on the **CPU dense** path works and is tested on a real model, sequentially and with both branches generating
+  concurrently (`HotSessionForkRealModelTests`). It goes through `HotSessionRuntime.Fork` and the reference-counted KV cache, not
+  through `IForwardPass.CreateContext()`.
+- `CreateContext()` has no caller in `src/`, so the per-backend work this plan proposes is not needed for forking. Whether to remove
+  the method, keep it unused, or give it a caller is an **owner decision**.
+- Not verified: forking on the **GPU, hybrid and Gated-DeltaNet** passes (GDN cannot rewind, so it needs a state snapshot).
+- Everything after the "Original text follows" line below is the original design (written before the above was known), kept as history.
+
+**Thread:** [configuration and sessions](04-quality-of-life-improvements-plan.md).
+
+### Original status (historical, as of the original write-up and the 2026-10-30 check)
+
+Planning only. No implementation in this document. **Checked 2026-10-30:** still planning only; `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`). The guard this section cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale. Written as the flagged immediate
 follow-up to the bug-fix pass that added a fail-loud guard (`InferenceSession.cs`,
 `ThrowIfForwardPassNotIsolated`) instead of implementing this — see that pass's plan for
 context. This document scopes what implementing the real thing actually requires.

@@ -7,7 +7,7 @@ param(
     [int]$NTokens = 60,
     [int]$TimeoutSec = 900
 )
-$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll"
+$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll"
 $dotnet = (Get-Command dotnet).Source
 $env:STINGRAY_CPU_MOE = "1"
 $models = @(

@@ -9,7 +9,7 @@ param(
     [int]$NTokens = 4,
     [int]$TimeoutSec = 600
 )
-$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll"
+$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll"
 $dotnet = (Get-Command dotnet).Source
 $env:STINGRAY_CPU_MOE = "1"
 $promptList = $Prompts -split ',' | ForEach-Object { $_.Trim() }

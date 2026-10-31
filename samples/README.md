@@ -44,7 +44,7 @@ Verification below is what was **run on 2026-10-11** on an AMD Ryzen 7 5700G (in
 dotnet tool install -g OpenTail.Stingray.Cli
 
 stingray setup chat          # Qwen2.5 0.5B Instruct, 469 MB, Apache-2.0
-stingray setup speak         # Piper en_US-lessac-medium, 60 MB; asks you to accept the voice's data licence
+stingray setup speak         # Piper en_US-lessac-medium, 60 MB; asks you to accept the voice's data licence (research use only: no commercial use or redistribution)
 stingray setup transcribe    # Whisper base, 141 MB
 ```
 

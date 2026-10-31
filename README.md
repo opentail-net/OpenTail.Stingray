@@ -128,6 +128,11 @@ both files of a voice, for example `en_US-lessac-medium.onnx` (63 MB) and
 `en_US-lessac-medium.onnx.json`
 ([here](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium)):
 
+> **Licence: the Lessac voice is for research use only.** It was trained on the Lessac Blizzard 2013 data, whose terms forbid commercial
+> use and redistribution of the voice (the Piper code itself is MIT). Read the
+> [terms](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html) before you use it for anything else, or pick
+> another voice with a licence that suits you. `stingray setup speak` asks you to accept this; the code below does not check it.
+
 <!-- verify:consumer -->
 ```csharp
 using OpenTail.Stingray.Audio;
