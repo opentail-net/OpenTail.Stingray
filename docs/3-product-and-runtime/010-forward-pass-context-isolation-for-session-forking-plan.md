@@ -7,6 +7,32 @@ follow-up to the bug-fix pass that added a fail-loud guard (`InferenceSession.cs
 `ThrowIfForwardPassNotIsolated`) instead of implementing this — see that pass's plan for
 context. This document scopes what implementing the real thing actually requires.
 
+## Correction, 2026-10-31: the premise of this plan no longer holds
+
+Checked in code before any implementation. **Nothing in `src/` calls `IForwardPass.CreateContext()`.** Its only callers are two test
+doubles (`tests/OpenTail.Stingray.Tests.ForwardPass.Fast/ForwardPassTests.cs`, `tests/OpenTail.Stingray.Tests.Sessions.Fast/SpeculativeCascadeTests.cs`);
+`Model.CreateContext` in the public API is an unrelated method. The `InferenceSession` class this plan is written around does not
+exist any more. Session forking is `HotSessionRuntime.Fork`, which forks the engine's reference-counted sequence KV cache:
+`HotSession.TryForkSharedPrefixCache` → `ContinuousBatchingEngine.TryForkSharedPrefix` → `RetainedSequenceState.TryForkSharedPrefix` →
+`PagedKvCache.ForkSharedPrefix`. A fork therefore does **not** hand the child the parent's forward pass state; parent and child run
+through one shared batched forward pass with separate KV sequences.
+
+Evidence on a real model (SmolLM2-1.7B Q4_K_M, CPU dense): `HotSessionForkRealModelTests` showed physical page sharing and
+copy-on-write correctness against a precision-consistent replay oracle, but only with the two branches generating one after the
+other. Two tests now cover it (2026-10-31): the original sequential one, and
+`Fork_TwoBranchesGeneratingConcurrently_DoNotDisturbEachOtherOrTheParent`, which runs both branches in one two-slot batch for 16 tokens
+each, asserts the engine really decoded them in a shared batch, and checks both against the same oracle (10 of 10 runs passed).
+This is the "concurrency test" item below, done against the path that exists.
+
+What that leaves open, and why the per-backend tiers below are **not** to be implemented as written:
+- `CreateContext()` is dead public surface on `IForwardPass`. Implementing it on seven passes would add code nothing calls.
+- The real fork path was checked on the CPU dense pass only. Whether `TryForkSharedPrefix` works for GPU, hybrid and GDN passes
+  (GDN cannot rewind, so a mid-sequence fork needs a state snapshot) is the live question, not `CreateContext`.
+- **Owner decision needed:** remove `CreateContext()` from the public interface (a breaking change for external implementers), keep it
+  as an unused default, or give it a real caller. Until decided, this plan stays unimplemented.
+
+Original text follows, unchanged apart from this correction.
+
 ## Problem
 
 `IForwardPass.CreateContext()` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`) exists

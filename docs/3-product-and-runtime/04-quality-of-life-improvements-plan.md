@@ -58,7 +58,7 @@ Historical implementation record: [done/quality-of-life-improvements-plan-2026-0
 ### Correct state
 
 - **Configuration (plan 04):** item 1 is done (the inventories are name-complete and classified row by row, dated 2026-08-15). Items 2 to 6 are open. The plan's status line says the planning and diagnostics baseline shipped.
-- **Session forking (plan 010):** planning only, as its status section says. Checked 2026-10-30: `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`), so forked sessions still share one forward pass. The guard the plan cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale.
+- **Session forking (plan 010):** planning only, as its status section says. Checked 2026-10-30: `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`), but nothing in `src/` calls it (checked 2026-10-31): sessions fork through `HotSessionRuntime.Fork` and the ref-counted KV cache, not through this method, so plan 010 as written is obsolete and its fate is an owner decision. The guard the plan cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale.
 - **Overlap:** plan 04's item 4 (server observability) is covered by the [observability plan](2026-10-12-opentelemetry-observability-plan.md). Its item 6 (sessions out of the product configuration) depends on plan 010's outcome.
 
 ### Open items
@@ -68,9 +68,9 @@ Historical implementation record: [done/quality-of-life-improvements-plan-2026-0
 - [ ] 04 item 4: server observability (VRAM and RAM breakdown, streaming timing, per-request cache signal). Covered by the observability plan
 - [ ] 04 item 5: model and API compatibility corpus, with protocol smoke coverage
 - [ ] 04 item 6: keep sessions out of the product configuration surface until the proven CPU-dense restart lane is proven
-- [ ] 010: `CreateContext` per backend (CPU dense, Vulkan and CUDA, hybrid, hybrid GDN)
-- [ ] 010: a concurrency test for a fork bound to a real model, with parent and child driven at once
-- [ ] 010: remove the `NotSupportedException` path from the fork guard once isolation exists (the guard itself is not in the repository; confirm before acting)
+- [x] 010: `CreateContext` per backend: **not needed for session forking** (no caller in `src/`; see the correction at the top of plan 010). Whether to remove the method is an owner decision
+- [x] 010: a concurrency test for a fork bound to a real model, with parent and child driven at once: done 2026-10-31, `HotSessionForkRealModelTests.Fork_TwoBranchesGeneratingConcurrently_DoNotDisturbEachOtherOrTheParent` (CPU dense, SmolLM2-1.7B)
+- [x] 010: the fork guard (`ThrowIfForwardPassNotIsolated`) is not in the repository; nothing to remove
 
 ### Cadence
 
