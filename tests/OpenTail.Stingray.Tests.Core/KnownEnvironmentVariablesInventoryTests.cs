@@ -5,35 +5,12 @@ namespace OpenTail.Stingray.Tests.Core;
 public sealed partial class KnownEnvironmentVariablesTests
 {
     /// <summary>
-    /// Registry names that still have no row in <c>docs/reference/env-var-inventory.md</c> (found 2026-10-31: the table was last
-    /// reconciled at 162 names and the registry has since grown). This list may only shrink: add the row, then delete the name here.
-    /// A new variable must arrive with its row; adding it to this list instead is a visible step backwards in review.
+    /// Registry names allowed to lack a row in <c>docs/reference/env-var-inventory.md</c>. Empty since 2026-10-31, when the table became
+    /// name-complete (it had fallen to 192 rows for 287 names). Keep it empty: a new variable must arrive with its row, and adding its
+    /// name here instead would be a visible step backwards in review.
     /// </summary>
     private static readonly string[] KnownUndocumented =
     [
-        "STINGRAY_TTS_PROFILE",
-        "STINGRAY_TTS_TRACE",
-        "STINGRAY_VISION_GEMM",
-        "STINGRAY_VK_MATVEC_V2",
-        "STINGRAY_VK_MXFP4_V2",
-        "STINGRAY_VK_PATH3_CHUNK",
-        "STINGRAY_VK_QGEMM_SMALLM",
-        "STINGRAY_VULKAN_DECODE_ATTN_GQA",
-        "STINGRAY_VULKAN_DECODE_PROFILE",
-        "STINGRAY_VULKAN_FLASH_PREFILL",
-        "STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK",
-        "STINGRAY_VULKAN_MIN_FREE_RAM_MB",
-        "STINGRAY_WAN_DEBUG_ATTNMAP",
-        "STINGRAY_WAN_DEBUG_CROSSREF",
-        "STINGRAY_WAN_DEBUG_CROSSREF_DIR",
-        "STINGRAY_WAN_DEBUG_EXACT_GELU",
-        "STINGRAY_WAN_DEBUG_PERBLOCK",
-        "STINGRAY_WAN_DEBUG_VELOCITY",
-        "STINGRAY_WAN_PROFILE",
-        "STINGRAY_WAN_SIGN",
-        "STINGRAY_XTTS_LAYER_TRACE",
-        "STINGRAY_XTTS_TRACE",
-        "STINGRAY_ZIMAGE_DUMP_LATENT",
     ];
 
     [GeneratedRegex(@"^\|\s*`(STINGRAY_[A-Z0-9_]+)`", RegexOptions.Multiline)]
