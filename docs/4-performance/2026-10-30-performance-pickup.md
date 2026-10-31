@@ -54,6 +54,7 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 | ik_llama.cpp's Q4_K sub-block reduction in our Q8_KS kernels | +3-8% only, and output changed; reverted | this page |
 | ik_llama.cpp as a whole | Slower than llama.cpp for decode on this CPU (3.1 vs 4.7 t/s, 1 thread). The author's pp512 table (Ryzen 7950X) shows it ahead across quants; that table is labelled AVX2 but the author says AVX-512 ran when available, so the ISA is unclear. Prefill is not measured here. | this page; [ik_llama discussion #164](https://github.com/ikawrakow/ik_llama.cpp/discussions/164) |
 | Q8_K decode at all thread counts | 3x per thread, but 5-7% slower at 16 threads, and less accurate (Q8_KS is ~2x more accurate per dot) | PerformanceLeague "Decode activation format"; used at 1 thread only (#30) |
+| One-row Q4_K kernel instead of the two-row kernel in `MatVecQ4K` decode (same pair-of-rows scheduling, two `DotQ4K_Q8KS` calls per work item) | **Loses 3% on both models, in all 6 interleaved pairs, with byte-identical output.** SmolLM2-1.7B Q4_K_M decode 30.7-31.2 t/s vs 31.5-31.9 for the two-row kernel; Qwen2.5-1.5B Q4_K_M 33.4 (all three runs) vs 34.3-34.6. 128 greedy tokens, `-g 0`, idle machine, 2026-10-31. Reverted. Only `MatVecQ4K` was tried; `MatVecDual` interleaves two different matrices and is a separate question. | this page |
 | Weight-stationary loop reorder for prefill | 4x slower | comment in `SimdKernels.MatMulBatched` |
 | OpenBLAS | Never faster than the in-house kernels | docs/done/openblas-elimination-findings-2026-08-20.md |
 | MTP self-speculation on Qwen3.6-27B UD-Q3_K_XL | **Loses**: 0.77-0.81x of plain decode at every draft depth (2026-10-08, "NEGATIVE RESULT" row). The Qwen3.8-27B file wins by +12% on the same engine. Cause not diagnosed. | PerformanceLeague MTP rows; [00-current-work](../00-current-work.md) item 20 |
@@ -61,9 +62,7 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 
 ## Untested leads (cheap first)
 
-- **Two-row Q4_K decode kernel is ~38% slower per row than the one-row kernel** on DRAM-sized matrices
-  (`tools/kernel-bench-cs q4k-dot`). They are bit-identical, so switching `MatVecQ4K` / `MatVecDual` to the one-row kernel
-  cannot change outputs. Measure end to end before keeping it.
+- ~~Two-row Q4_K decode kernel is slower per row than the one-row kernel~~ **Tried 2026-10-31: the one-row kernel loses end to end** (see "Already tried"). The microbenchmark gap (38% per row, `tools/kernel-bench-cs q4k-dot`) does not carry over to full decode.
 - **Single-row Q8_K GEMV for decode** (`RepackedGemm.GemvQ4K8x8Q8K` exists) instead of the N = 1 GEMM. That would remove
   the 5-7% loss that kept Q8_K decode off at high thread counts.
 - **Row-interleaved Q8_0 repack** (ik_llama.cpp `_R4`/`_R8` style), the survey's top-ranked prefill idea after tinyBLAS
