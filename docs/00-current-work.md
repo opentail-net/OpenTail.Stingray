@@ -197,7 +197,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
    [done/101](done/101-work-queue-after-coverage-plan.md).
 - [ ] 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
-- [ ] 3. Image-token prefill in VLMs runs per token (~9 t/s here); a batched embedding prefill.
+- [ ] 3. Image-token prefill in VLMs. **Partly done; the "runs per token (about 9 t/s)" wording was stale** (rechecked in code 2026-10-31, not re-measured). The CPU `ForwardPass.PrefillEmbeddings` batches a whole image through the `PrefillCore` trunk, and the CLI's main image path (`RunCommand.Image.cs`) and two tests (`Granite4VisionE2ETests`, `Qwen3VlVulkanMRopeParityTests`) use it. Still per token: (a) the CLI's segment path (`segs`, the LLaVA-NeXT-style per-view layout); (b) the server's Gemma 4 path (`InferenceEngine`), where batching would change nothing today because the batched trunk excludes models with per-layer head dimensions (`_layerHeadDim is null`) and falls back to per-row `ForwardEmbedding`; (c) the Vulkan and CUDA passes, which have no batched embedding entry point (they loop `ForwardEmbedding`). A batched path is not numerically identical to the per-token one (batched prefill quantises activations differently, see `docs/029`), so any new caller needs a real-checkpoint output comparison, not just a speed number.
 - [ ] 4a. Spin-then-park CPU worker pool (TensorSharp `CpuWorkerPool`) for the tiny-model decode gap
    (SmolLM2-135M ~0.55x, Qwen2.5-0.5B ~0.75x): an experiment the earlier `PersistentThreadPool`
    loss did not cover. §1 of
