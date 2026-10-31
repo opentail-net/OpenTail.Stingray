@@ -21,7 +21,7 @@ The only `__CUDA_ARCH__` guard in that file (line 2912) covers `cp.async`, not t
 
 ## 2. External reference: how llama.cpp gates the same instructions
 
-`ggml/src/ggml-cuda/mma.cuh` (llama.cpp master, fetched 2026-10-31): [raw file](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-cuda/mma.cuh)
+`ggml/src/ggml-cuda/mma.cuh` (llama.cpp commit eb4e244b, the last change to this file, 2026-10-29; fetched 2026-10-31): [raw file](https://raw.githubusercontent.com/ggml-org/llama.cpp/eb4e244be77a906a183cd4a00fd51d9ad3200955/ggml/src/ggml-cuda/mma.cuh)
 
 | Instruction | Native path | Turing fallback in llama.cpp |
 |---|---|---|
@@ -33,7 +33,7 @@ The whole block sits under `TURING_MMA_AVAILABLE`. The shape of the fix is: guar
 
 ## 3. External reference: llama.cpp MMQ type coverage
 
-`ggml/src/ggml-cuda/mmq.cu` (fetched 2026-10-31): [raw file](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-cuda/mmq.cu). `ggml_cuda_mul_mat_q_switch_type` dispatches 22 types to `mul_mat_q_case`, including Q4_K, **Q5_K and Q6_K**. Q5_K and Q6_K use the generic template with no type-specific kernel. Q6_K has an extra limit on RDNA3/RDNA4 WMMA batch size.
+`ggml/src/ggml-cuda/mmq.cu` (llama.cpp commit eb4e244b, the last change to this file, 2026-10-29; fetched 2026-10-31): [raw file](https://raw.githubusercontent.com/ggml-org/llama.cpp/eb4e244be77a906a183cd4a00fd51d9ad3200955/ggml/src/ggml-cuda/mmq.cu). `ggml_cuda_mul_mat_q_switch_type` dispatches 22 types to `mul_mat_q_case`, including Q4_K, **Q5_K and Q6_K**. Q5_K and Q6_K use the generic template with no type-specific kernel. Q6_K has an extra limit on RDNA3/RDNA4 WMMA batch size.
 
 ## 4. Vulkan: subgroup size bounds and the mixed-dot extension
 
