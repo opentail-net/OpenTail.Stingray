@@ -5,7 +5,8 @@ when an item closes, delete its line here, record the evidence in the model's
 [STATUS.md](STATUS.md) row (or the detail doc), and move any finished detail doc to [done](done).
 Working notes, measurements and histories go in the item's detail doc or in `done/`, never here.
 
-Latest session report and proposed next plan: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md)
+Latest session report and proposed next plan: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md) 
+(the three owner decisions, taken provisionally, are at the end of the session report).
 (three owner decisions are listed at its end).
 
 The previous version of this file (a working log up to 2026-09-27, including every fixed bug and

@@ -155,3 +155,15 @@ Not on this list because nothing was learned about it: the rest of the CPU and d
    I admitted it because six configurations on four checkpoints pass, the effect is a 6x to 10x prefill gain, and the deviation is
    disclosed in the receipt. Reverting is one line: delete the `LlamaArchitecture.Descriptor.Id` entry in
    `PrefillHandoffFamilies.Receipts` and its permanent test rows.
+
+### Decisions taken on the owner's behalf (2026-10-31, provisional and reversible)
+
+The owner asked for the work to continue without waiting for answers, so each decision above was taken with the option that is cheapest
+to undo. The owner can overrule any of them; each line says what overruling costs.
+
+1. **`CreateContext()`: keep it as is, unused.** Removing it breaks external implementers of a public interface for no gain, and plan
+   010 has no caller to wire. Revisit only if a real feature needs per-request contexts. Overruling costs one interface edit.
+2. **`FairModelScheduling`: stays off by default.** No throughput number exists. It may only default on after the measurement in the
+   follow-up plan (item P4) shows no loss in total throughput. Overruling costs a default flip.
+3. **Dense-`llama` admission on the Vulkan hybrid: kept.** Six configurations on four checkpoints pass, the gain is 6x to 10x, and the
+   Falcon3 `-g 8` deviation is in the receipt. Reverting is one line.
