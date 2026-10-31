@@ -595,7 +595,7 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 - [x] Path 3 default decided on 2026-10-11 (gate: at least 2x today's Vulkan prefill, and identical greedy output; recorded in the leads plan, Lead 2)
 - [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite
 
-- [x] K-quants other than Q4_K and Q6_K stay off the batched Vulkan trunk. **Closed 2026-10-31:** `GpuForwardPass.ComputeCanBatchedTrunk` accepts Q3_K and Q5_K under Path 3 (`GpuForwardPass.cs` 1352-1357; the earlier "only Q4_K and Q6_K" note was stale). SmolLM2-1.7B Q5_K_M now prefills 66.8-85.5 t/s against 51.8-84.4 for its Q4_K_M file (503 tokens, `-g -1`, 3 runs each, noisy machine). The 2026-10-11 figure (22.3 vs 235 tok/s, PerformanceLeague finding 5) predates Path 3. Remaining K-quants (Q2_K, IQ types) were not checked.
+- [x] K-quants other than Q4_K and Q6_K stay off the batched Vulkan trunk. **Closed 2026-10-31:** `GpuForwardPass.ComputeCanBatchedTrunk` accepts Q3_K and Q5_K under Path 3 (`GpuForwardPass.cs` 1352-1357; the earlier "only Q4_K and Q6_K" note was stale). SmolLM2-1.7B Q5_K_M now prefills 66.8-85.5 t/s against 84.7-86.0 for its Q4_K_M file (503 tokens, `-g -1`, 3 runs each; the Q4_K_M range is from idle re-runs, the lowest Q5_K_M run has no known cause). The 2026-10-11 figure (22.3 vs 235 tok/s, PerformanceLeague finding 5) predates Path 3. Remaining K-quants (Q2_K, IQ types) were not checked.
 
 ### Decisions for the owner
 
