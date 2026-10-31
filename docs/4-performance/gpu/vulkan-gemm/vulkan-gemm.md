@@ -39,7 +39,7 @@ memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 
 ### Actionable items checklist
 
-- [ ] **Tiled Q6_K shader**: Implement tiled Q6_K kernel for `ffn_down` (1418 of 9914 dispatches) to remove fallback to Path 1.
+- [x] **Tiled Q6_K shader**: Implement tiled Q6_K kernel for `ffn_down` (1418 of 9914 dispatches) to remove fallback to Path 1. (Done: `SgemmQ6K` exists and `TryMatMulBatchedPath2` accepts Q6_K; this checkbox was stale, checked 2026-10-31.)
 - [ ] **Widen tile & prefill chunk**: Raise BN > 16 (chunk 32 / chunk 64) once Q6_K is supported, chasing the projected 1.36x ceiling.
 - [ ] **Perplexity gate**: Run Wikitext-2 (8191 scored tokens) validation on Path 2 before considering making it default.
 
@@ -47,7 +47,7 @@ memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 
 | variable | effect |
 |---|---|
-| `STINGRAY_VULKAN_MM_PATH` | `3` (default since 2026-10-11), `1` (old multi-token mat-vec) or `2`. Path 2 declines every shape today and falls through to Path 1. |
+| `STINGRAY_VULKAN_MM_PATH` | `3` (default since 2026-10-11), `1` (old multi-token mat-vec) or `2`. Path 2 serves Q4_K and Q6_K up to `TiledQ4KBn` tokens and declines other shapes, which fall through to Path 1 (corrected 2026-10-31, `VulkanBackend.cs` 3177-3183). |
 | `STINGRAY_VULKAN_MM_STATS` | `1` to count dispatches and weight bytes; off by default so an unmeasured run is byte-identical to before. |
 
 ```
@@ -556,3 +556,15 @@ Checked in code and vendor docs. Session date 2026-10-30 (the run crossed midnig
 Not checked: the Phase 1 and 2(c) numbers, the Qwen Image forward times, and the reference numbers from `sd-cli`.
 
 **Next checks:** update the "Using it" table; close or re-scope the Q6_K checkbox; before any Phase 3 work, run the feature query from the snippets file to see whether the FP16 features are available on this iGPU.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts are in [research/2026-10-31-performance-snippets.md](../research/2026-10-31-performance-snippets.md).
+
+- **Phase 3 experiment C (FP16-pair dot products, "only where the device exposes it"):** the relevant extension is `VK_VALVE_shader_mixed_float_dot_product`. It is new (spec dated 2026-02-04), unratified, and requires `VK_KHR_shader_float16_int8` or Vulkan 1.2. The device check is not in `VulkanBackend.cs`, so the experiment cannot be scheduled until the feature query exists ([refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_VALVE_shader_mixed_float_dot_product.html)).
+- **The open question "does Vega 8 expose dot2?" stays open.** The mixed-dot spec is not the same as `VK_KHR_shader_integer_dot_product`, which OpenTail does enable (for DP4A). Log both on this device before deciding.
+- **Subgroup size:** the Phase 3 kernel design must respect the `requiredSubgroupSize` bound, which must be a power of two between the device min and max ([Khronos refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)).
+- **Cooperative matrix** is RDNA3 and newer on RADV ([Phoronix](https://www.phoronix.com/news/RADV-VK_KHR_cooperative_matrix)). Phase 3's "FP16 shared tiles" route is the only Phase 3 route on this iGPU.
+- **Not verified:** the Mesa RADV range on GCN (the source fetch was blocked), and the ggml shader variant the reference uses on this GPU (Phase 0, still open).

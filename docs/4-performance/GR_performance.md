@@ -19,7 +19,7 @@ That source contains unconditional `mma.sync` instructions, including:
 - int8 `m16n8k32` instructions in `CudaTextKernels.cs`
 - fp16 `m16n8k16` instructions in `CudaTextKernels.cs`
 
-The module is compiled for the exact GPU architecture. These MMA variants are not valid across the entire `sm_53+` range; Pascal is the obvious failure case. Because compilation is monolithic, even an unused tensor-core test kernel can prevent all custom kernels from loading.
+The module is compiled for the exact GPU architecture. These MMA variants are not valid across the entire `sm_53+` range; Pascal and Turing both fail for the unguarded shapes. llama.cpp guards the native Ampere shapes and provides Turing fallbacks (checked 2026-10-31, see the research section). Because compilation is monolithic, even an unused tensor-core test kernel can prevent all custom kernels from loading.
 
 Recommended correction:
 
@@ -54,7 +54,7 @@ Recommended correction:
 
 OpenTail's large-batch direct MMA path currently accepts only Q8_0, Q4_K and Q4_0.
 
-Q5_K and Q6_K prefill instead use `MatMulBatchedGemm`, which:
+Q5_K prefill (route not yet traced) and Q6_K shapes outside the MMQ eligibility rules are the candidates for `MatMulBatchedGemm`, which: (Correction 2026-10-31: for Q6_K the ineligible-shape fallback is `MatMulBatchedWeightStationary` (`CudaBackend.cs` ~2696), and eligible Q6_K shapes take the MMQ path. Whether any caller reaches `MatMulBatchedGemm` for Q6_K was not traced.)
 
 1. Dequantizes the complete static weight matrix to FP16 scratch.
 2. Writes that scratch to VRAM.
@@ -124,7 +124,7 @@ That captures most of the value without copying llama.cpp's full complexity imme
 
 Current Vulkan flash attention is scalar/shared-memory based. llama.cpp chooses scalar, KHR cooperative-matrix, or NV cooperative-matrix-2 implementations.
 
-This is probably the largest long-term Vulkan opportunity, particularly on recent NVIDIA, AMD and Intel hardware. It is not a safe single-kernel replacement. The correct design is:
+This is probably the largest long-term Vulkan opportunity, particularly on recent NVIDIA, AMD and Intel hardware. (Corrected 2026-10-31: on AMD, RADV exposes the extension on RDNA3 and newer only, so it does not apply to this Vega-class iGPU.) It is not a safe single-kernel replacement. The correct design is:
 
 - Preserve the existing scalar implementation as the universal fallback.
 - Query cooperative-matrix shapes and supported operand/accumulator types.
@@ -134,9 +134,9 @@ This is probably the largest long-term Vulkan opportunity, particularly on recen
 
 ### 6. Subgroup-size pinning is overbroad
 
-`ComputePipeline.cs` pins subgroup size 32 for essentially every shader whose `local_size_x` is divisible by 32.
+`ComputePipeline.cs` pins subgroup size 32 for essentially every shader whose `local_size_x` is divisible by 32. (Corrected 2026-10-31: the pin also needs the device's subgroup range to contain 32 and not be exactly 32-32; see the table below.)
 
-However, the current shader source contains shared-memory reductions designed to work across Wave16/32/64/128 and explicitly describes subgroup pinning as irrelevant for scalar kernels. No active subgroup intrinsic was found in the Vulkan shader sources.
+However, the current shader source contains shared-memory reductions designed to work across Wave16/32/64/128 and explicitly describes subgroup pinning as irrelevant for scalar kernels. Correction 2026-10-31: subgroup intrinsics are in use (`subgroupShuffleXor` in `FlashAttention128` and two more attention shaders, `Shaders.cs` ~10580-10622). The reduction shaders use shared memory (`Shaders.cs` ~4621), so the reduction point stands.
 
 Consequently, wave32 can be forced on AMD even for kernels that do not need it, potentially sacrificing native wave64 behavior.
 
@@ -219,3 +219,28 @@ Checked against the working tree on 2026-10-30. Code excerpts are in [research/2
 1. Wire `CudaDeviceCaps.CanCompileMonolithicModule` into `CompileAndLoadKernels`: when false, compile only the baseline sources. Needs a test that checks the baseline module compiles at `sm_75` (a Turing machine or NVRTC with `-arch=sm_75`).
 2. At runtime, log `MinSubgroupSize` and `MaxSubgroupSize` for the iGPU. If the range is 64-64 (as the device comment says), finding 6's pin never fires here, and the question is answered for this device.
 3. Replace extension-name detection with a feature query (sketch in the snippets file). Start with the 1.2 feature struct.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts and external references are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md).
+
+**Finding 1 (CUDA compatibility): settled, and the fix shape is clearer.**
+- The previous section said the Turing failure was "probable". llama.cpp's `mma.cuh` now settles the arch facts: the int8 `m16n8k32` and fp16 `m16n8k16` shapes are the native Ampere-and-later path, guarded by `__CUDA_ARCH__`. Turing uses `m8n8k16` and `m16n8k8` fallbacks ([mma.cuh](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-cuda/mma.cuh)). So OpenTail's unguarded shapes cannot compile on Turing, which matches `CudaDeviceCaps`.
+- The fix is therefore not only a module split. It is what llama.cpp does: guard each native MMA, and keep a Turing fallback. Splitting the module alone would still leave Turing with no working int8 path.
+- `CanCompileMonolithicModule` is still not called (grep, 2026-10-31).
+
+**Finding 3 (Q5_K and Q6_K prefill): direction confirmed.**
+- llama.cpp dispatches Q5_K and Q6_K through its generic MMQ template ([mmq.cu](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-cuda/mmq.cu)). The GR recommendation matches the reference.
+- OpenTail already has a Q6_K MMQ prefill path for eligible shapes (SoA, `rows >= 2048`, `nTok >= 5`). The Q5_K route was still not traced. Correct the "Q6_K uses MatMulBatchedGemm" claim: the Q6_K fallback is weight-stationary, not the full dequant round trip.
+
+**Finding 2 and 5 (Vulkan capability and cooperative matrix): new facts.**
+- `VK_VALVE_shader_mixed_float_dot_product` is a new, unratified mixed-precision dot extension (spec dated 2026-02-04). It is not enabled or checked anywhere in OpenTail. If the FP16-dot experiment in the GEMM plan is pursued, this is the extension to query. Source: [docs.vulkan.org refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_VALVE_shader_mixed_float_dot_product.html).
+- Cooperative matrix on AMD is RDNA3 and newer. A Vega-class iGPU does not expose it ([Phoronix, RADV](https://www.phoronix.com/news/RADV-VK_KHR_cooperative_matrix)).
+
+**Finding 6 (subgroup pin): the bound is confirmed.**
+- `requiredSubgroupSize` must be a power of two between `minSubgroupSize` and `maxSubgroupSize` ([Khronos refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)). The existing check (`ComputePipeline.cs` 67-70) already applies that bound.
+- Unresolved: what RADV reports as the range on GCN/Vega. The Mesa source fetch was blocked (Anubis). Until someone logs `MinSubgroupSize` and `MaxSubgroupSize` on this iGPU, the claim that the pin never fires here is an inference from a code comment.
+
+**Not verified:** the PTX section page for the `mma` target table (the fetch tool could not reach it); RADV's subgroup range on Vega.

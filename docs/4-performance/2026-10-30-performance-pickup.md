@@ -40,7 +40,7 @@ The table is the index. The detail for each row lives in its owner plan: rows 1-
 | 8 | Text, CPU | Long-context decode | 0.67x at 3.2k (SmolLM2) | 2026-09-10 | Attention cost grows faster than llama.cpp's. **Old: re-measure first.** |
 | 9 | Text, CPU | OLMoE-1B-7B | decode 0.81x, prefill ~0.8x | **2026-10-30** | Re-measured: was 0.50x / 0.69x on 2026-09-10, so the old "OLMoE decode 0.50x" weakness is stale. |
 | 10 | Text, CPU | Gemma 3 4B and Gemma 4 prefill, **default F32** | 0.33-0.39x | 2026-10-02 (commit `a6d5583e`) | With int8 the same models run at 0.95-0.97x, so the gap is the F32 default, not the kernels. Decide what the default should be for these models before any kernel work. Decode is 0.84-0.85x. |
-| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | SmolLM2-1.7B Q5_K_M prefill 22.3 tok/s vs 235 for its Q4_K_M file | 2026-10-11 | Only Q4_K and Q6_K take the batched trunk; other K-quants fall back. Backlog B5b. |
+| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | SmolLM2-1.7B Q5_K_M prefill 22.3 tok/s vs 235 for its Q4_K_M file | 2026-10-11 | Before Path 3 (2026-10-11), only Q4_K and Q6_K took the batched trunk; other K-quants fell back. Path 3 now covers Q5_K, so re-measure before treating this as a gap. Backlog B5b. |
 | 12 | Text, Vulkan | Gemma 4 with a prompt under the CPU-prefill handoff threshold (19 tokens) | 9.3 tok/s prefill | 2026-10-11 | Below the handoff threshold the Vulkan path runs per token. Check the threshold before tuning kernels. |
 
 The Vulkan LLM prefill that was behind CPU earlier in the year is no longer behind (see State). Vulkan results on this
@@ -52,7 +52,7 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 |---|---|---|
 | llamafile tinyBLAS register tiles (4x2, 2x4) for Q8_0 prefill | No gain; reverted | survey doc, "Tried" |
 | ik_llama.cpp's Q4_K sub-block reduction in our Q8_KS kernels | +3-8% only, and output changed; reverted | this page |
-| ik_llama.cpp as a whole | Slower than llama.cpp on this AVX2 CPU (decode 3.1 vs 4.7 t/s, 1 thread). Its gains are on Zen 4 / AVX-512. | this page |
+| ik_llama.cpp as a whole | Slower than llama.cpp for decode on this CPU (3.1 vs 4.7 t/s, 1 thread). The author's pp512 table (Ryzen 7950X) shows it ahead across quants; that table is labelled AVX2 but the author says AVX-512 ran when available, so the ISA is unclear. Prefill is not measured here. | this page; [ik_llama discussion #164](https://github.com/ikawrakow/ik_llama.cpp/discussions/164) |
 | Q8_K decode at all thread counts | 3x per thread, but 5-7% slower at 16 threads, and less accurate (Q8_KS is ~2x more accurate per dot) | PerformanceLeague "Decode activation format"; used at 1 thread only (#30) |
 | Weight-stationary loop reorder for prefill | 4x slower | comment in `SimdKernels.MatMulBatched` |
 | OpenBLAS | Never faster than the in-house kernels | docs/done/openblas-elimination-findings-2026-08-20.md |
@@ -94,3 +94,14 @@ Checked in code on 2026-10-30. Nothing was measured in this pass.
 - **Row 12 (threshold 19 tokens)** and **rows 8-9** were not re-checked.
 
 **Next checks, in order:** re-measure row 11 on Path 3; A/B the one-row `MatVecQ4K` against the two-row version with the existing equality test; confirm `GemvQ4K8x8Q8K` is wired and cited correctly.
+
+---
+
+## Research findings (2026-10-31, deep pass)
+
+Excerpts and external references are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md).
+
+- **"ik_llama.cpp as a whole is slower than llama.cpp on this AVX2 CPU" (table row) needs qualifying.** The pickup's evidence is decode (3.1 vs 4.7 t/s, 1 thread). The author's pp512 table is a different workload, and it shows ik_llama faster across quants: Q8_0 1.81x, Q4_K_S 2.49x, Q5_K_S 3.37x ([ik_llama discussion #164](https://github.com/ikawrakow/ik_llama.cpp/discussions/164)). Those numbers are on a Ryzen 7950X, labelled AVX2 but with the author saying AVX-512 was used when available. So the pickup's decode number does not contradict the author's prompt numbers, and the ISA is unclear. Keep the row, but say which workload and which ISA.
+- **Row 11 (Q5_K off the batched Vulkan trunk).** No new external source. The internal finding stands: re-measure on Path 3.
+- **Lead "Q8_K decode", and the "two-row Q4_K kernel 38% slower" lead.** External references do not settle either. The author's table confirms that Q4_K-family kernels have large headroom on the author's machine, but that is a different CPU.
+- **Web research summary:** one external source (ik_llama.cpp) was checked against a row in this doc. The rest of the pickup's numbers are internal measurements.
