@@ -410,6 +410,8 @@ data justifies it)
 
 #### Phase 3 — weight-representation change (high effort, potentially the largest structural win)
 
+The completed Phase 3 items moved to [done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md](../../done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md). The open FP16-tile work is Part 2 of [vulkan-gemm.md](../gpu/vulkan-gemm/vulkan-gemm.md).
+
 
 ### Explicitly deferred / rejected by the review, with reasoning preserved
 
