@@ -73,6 +73,8 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 200
           dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 100
           dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 480
+          dotnet test tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 70
+          dotnet test tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 38
 
   # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
   # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
