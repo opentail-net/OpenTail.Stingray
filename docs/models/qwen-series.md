@@ -67,7 +67,7 @@ stingray -m models/qwen2.5-7b-instruct-q4_k_m.gguf -p "Explain SIMD" --backend v
 
 ### Public C# API
 
-For a complete, runnable console application demonstrating streaming multi-turn chat, see the [Chat Sample (`samples/OpenTail.Stingray.Sample.Chat`)](../../samples/OpenTail.Stingray.Sample.Chat/).
+For a complete, runnable console application demonstrating streaming multi-turn chat, see the [Chat Sample (`samples/OpenTail.Stingray.Sample.Chat`)](../../samples/OpenTail.Stingray.Sample.Chat).
 
 ```csharp
 using OpenTail.Stingray;

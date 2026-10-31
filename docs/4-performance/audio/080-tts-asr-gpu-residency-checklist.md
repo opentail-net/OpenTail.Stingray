@@ -2,7 +2,7 @@
 
 > Completed items moved to [done/080-tts-asr-gpu-residency-checklist-completed-items-2026-10.md](../../done/080-tts-asr-gpu-residency-checklist-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
-> **Status (checked 2026-10-30, file-level only):** 28 open items; the items were not re-run. **Workstream:** [audio GPU residency](../../workstreams/audio-gpu-residency.md).
+> **Status (checked 2026-10-30, file-level only):** 28 open items; the items were not re-run. **Thread:** [audio GPU residency](080-tts-asr-gpu-residency-checklist.md).
 
 ## Context and how to use this doc
 
@@ -234,6 +234,11 @@ first" framing was half wrong.
   when a checkpoint isn't present locally, reporting "passed" in ~0.1-0.4s. Check the real per-test
   timing before trusting any existing test as evidence a model's CPU baseline is solid.
 
+## Closure rule and claim caveat (ported from the retired audio-GPU-residency workstream, 2026-10-31)
+
+- Close the checklist when each engine is either resident and measured, or written off with the reason in this file.
+- Any residency speed claim needs a discrete-GPU run, or an explicit iGPU-only caveat (CLAUDE.md rule 13).
+
 ## Success criterion, per model
 
 Real, measured GPU-vs-CPU timing (win or not, report honestly), a real numeric parity test against
@@ -262,3 +267,26 @@ The Vulkan backend's behaviour on this iGPU is covered in [GR_performance.md](..
 Web research was not applicable to the performance question. The HiggsAudio perf path is internal (the `IForwardPass` and `CpuBackend` facts were checked on 2026-10-30). The Vulkan and CUDA constraints that would govern a GPU run are in the [GR doc](../GR_performance.md): the CUDA module needs per-architecture guards and the Vulkan pin needs the subgroup bound.
 
 **Still open, unchanged:** the Higgs checkpoint is not on disk, so the one-line backend swap cannot be measured yet.
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: audio-gpu-residency.md)
+
+### Correct state
+
+- **The goal:** keep the transformer stacks resident on the GPU, one engine at a time.
+- **Hardware limit:** this machine has an integrated Radeon only. CLAUDE.md rule 13 applies: an iGPU result cannot show whether a discrete GPU would be faster. Residency results here describe this APU.
+- **Measurement:** both plans carry the "one thing at a time" rule, which now lives in [../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md).
+- **079's own status (2026-09-27):** the goal is still open. The 2026-10-30 check did not re-run its items.
+
+### Open items
+
+- [ ] 080: 28 open items, phase by phase (see the file)
+- [ ] 079: 7 open items (see the file)
+- [ ] Any residency speed claim needs a discrete-GPU run or an explicit iGPU-only caveat
+
+### Cadence
+
+- Review when an audio engine's residency path changes, or when a discrete GPU is available.
+- Re-read at least every two weeks while any item is open.
+- Close when each engine in 080 is either resident and measured, or written off with the reason.

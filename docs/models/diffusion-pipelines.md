@@ -90,7 +90,7 @@ stingray image \
 
 ### Public C# API
 
-For a complete, runnable console application demonstrating image generation with step-by-step progress callbacks, see the [Diffusion Sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion/).
+For a complete, runnable console application demonstrating image generation with step-by-step progress callbacks, see the [Diffusion Sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion).
 
 ```csharp
 using OpenTail.Stingray.Diffusion;

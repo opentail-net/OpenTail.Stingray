@@ -1,6 +1,6 @@
 # Code excerpts behind the 3-product-and-runtime research (2026-10-31)
 
-Companion to the research sections appended to the plans in [docs/3-product-and-runtime](../). Excerpts are copied from the working tree on 2026-10-31. Nothing here has been changed or built.
+Companion to the research sections appended to the plans in [docs/3-product-and-runtime](..). Excerpts are copied from the working tree on 2026-10-31. Nothing here has been changed or built.
 
 ## 1. Forward-pass context isolation (plan 010)
 

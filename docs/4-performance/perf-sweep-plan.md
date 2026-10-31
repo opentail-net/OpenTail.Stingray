@@ -4,7 +4,7 @@
 
 > **STATUS 2026-10-02.** Horizontal Pass A, Phase 5, and Phase 16 are also closed and moved verbatim to
 
-**Workstream:** [CPU performance](../workstreams/cpu-performance.md). Checked 2026-10-30: 22 open items; the pickup doc gives the current ranking.
+**Thread:** [CPU performance](perf-sweep-plan.md). Checked 2026-10-30: 22 open items; the pickup doc gives the current ranking.
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md).
 > **STATUS 2026-10-01.** Horizontal Passes B and C and Phases 7 and 15 are also closed and moved to the same file. **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
@@ -470,3 +470,26 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-3
 - **`MinRowsForParallel = 64` is in code** (`SimdKernels.cs` line 10). The row-count-only heuristic the doc calls a failed blanket fix is the one that is still there.
 - **Phase 4 and 13 (dispatch overhead):** no external source contradicts the leads plan's A9 measurement (about 8 us per dependent dispatch plus barrier).
 - **Not checked:** the ratios, the Phase 2 and Phase 6 numbers, and the Gemma prefill default (a policy decision).
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: cpu-performance.md)
+
+### Correct state
+
+- **Text models on the CPU are mixed.** The 2026-10-11 recheck estimates a CPU prefill median of 0.93x and a decode median of 0.69x against stored llama.cpp numbers (see the pickup doc).
+- **The sweep's phases, from its headings:** Phase 1 (Voxtral) declared a plateau on 2026-09-12. Phase 2 (the Qwen3.6 hybrid GDN family) and Phase 3 (small-model decode) are open. Phase 6 (Gemma family prefill) is open.
+- **Expert GEMM for CPU MoE prefill:** the plan says nothing is implemented. The code search on 2026-10-30 found no expert-GEMM kernel.
+- **Tried and not repeated:** the list is in the pickup doc ("Already tried").
+
+### Open items
+
+- [ ] Perf sweep: the 22 open items in [perf-sweep-plan.md](perf-sweep-plan.md), phase by phase
+- [ ] Q4_K expert GEMM: the three open items in its plan (options A or B, the plan's section 5, and the owner's decisions)
+- [ ] Pickup rows 8 and 9 (long-context decode; OLMoE) still have no owning plan
+
+### Cadence
+
+- Review after each dated measurement, recorded in `PerformanceLeague.md`.
+- Re-read at least every two weeks while any item is open.
+- Close when every sweep phase is either closed or moved to `done/`, and the expert-GEMM plan is decided.

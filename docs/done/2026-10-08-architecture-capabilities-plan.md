@@ -1,6 +1,6 @@
 # Architecture descriptors as statically registered model plugins: finish the job (plan)
 
-> Completed items moved to [done/2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md](../done/2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Completed items moved to [done/2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md](2026-10-08-architecture-capabilities-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
 **Date:** 2026-10-08. **Status:** All phases (0-5) done 2026-10-08. **Follows:** [2026-10-08-architecture-semantics-admission-plan.md](../2-coverage/2026-10-08-architecture-semantics-admission-plan.md) (all phases 1-8 done).
 **Origin:** an outside design suggestion (ChatGPT): make each architecture a self-contained "model plugin" that owns what is true of the model, while the planner owns what is true of the machine and the request. This plan checks that suggestion against the code at commit `6a768250` and scopes what is actually worth doing.

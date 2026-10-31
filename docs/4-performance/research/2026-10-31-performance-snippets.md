@@ -1,6 +1,6 @@
 # Code and reference excerpts behind the 4-performance research (2026-10-31)
 
-Companion to the research sections appended to the performance docs in [docs/4-performance](../). Excerpts are from the working tree on 2026-10-31 unless marked as an external reference. Nothing here has been changed or built.
+Companion to the research sections appended to the performance docs in [docs/4-performance](..). Excerpts are from the working tree on 2026-10-31 unless marked as an external reference. Nothing here has been changed or built.
 
 ## 1. CUDA: MMA instructions, guarded only for async copy
 

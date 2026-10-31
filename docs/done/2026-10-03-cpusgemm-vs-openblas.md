@@ -3,7 +3,7 @@
 **Decision:** `CpuBackend.Sgemm` (C[M,N] = A[M,K]·B[N,K]ᵀ, F32) runs on `CpuSgemm`, a pure-C# BLIS-style
 packed GEMM ported from TensorSharp (`src/OpenTail.Stingray.Cpu/CpuSgemm.cs`, BSD-3). It replaces
 OpenBLAS `cblas_sgemm`, whose fallback was a naive scalar triple loop. This was OpenBLAS's last live
-call; the text path stopped using it on 2026-08-20 ([openblas-elimination-findings](../done/openblas-elimination-findings-2026-08-20.md)).
+call; the text path stopped using it on 2026-08-20 ([openblas-elimination-findings](openblas-elimination-findings-2026-08-20.md)).
 
 **Who uses this path on CPU:** every `VaeDecoder` built with a `CpuBackend` (FLUX, Z-Image, SD3,
 SDXL, SD1.5, FLUX.2 image decode): each conv is im2col + `Sgemm`. The DiTs' CPU paths use the

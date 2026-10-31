@@ -10,6 +10,7 @@
 - [x] B2. `stingray chat` (`ChatCommand.cs`)
 - [x] B3. `stingray speak` (`SpeakCommand.cs`)
 - [x] B4. `stingray transcribe` (`TranscribeCommand.cs`)
+- [ ] Recipes: run `stingray speak` and `stingray transcribe` as README recipes and record the result (not run as of 2026-10-30; ported from the retired workstream, 2026-10-31)
 - [x] B5. Register commands (`Program.cs:115-119`) and update catalogue run templates (`ModelCatalog.cs` now uses `stingray chat`, `speak`, `transcribe`; checked 2026-10-30)
 - [ ] B5 item 3, application name: align `SetApplicationName` (`Program.cs:68` still says `opentail-llm-cli`)
 - [x] B6. CLI tests for the task commands (`tests/OpenTail.Stingray.Tests.Cli/FrontDoorTaskCommandsTests.cs` exists; tests not run on 2026-10-30)

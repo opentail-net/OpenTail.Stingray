@@ -2,7 +2,7 @@
 
 **Owner:** this file (2026-10-30). It replaces two separate docs, kept below verbatim as parts:
 
-1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see [../../../workstreams/vulkan-gemm-llm-prefill.md](../../../workstreams/vulkan-gemm-llm-prefill.md), which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
+1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see [../../../workstreams/vulkan-gemm-llm-prefill.md](vulkan-gemm.md), which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
 2. **Part 2, FP16-tile project** (was `2026-10-10-vulkan-quantized-gemm-fp16-tile-plan.md`). It is the diffusion-side GEMM project, and it carries the numerics decision.
 
 Not included: the CPU expert-GEMM plan ([../../2026-10-04-q4k-expert-gemm-plan.md](../../2026-10-04-q4k-expert-gemm-plan.md)). It is about CPU MoE prefill, not Vulkan, so it keeps its own file.
@@ -568,3 +568,41 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 - **Subgroup size:** the Phase 3 kernel design must respect the `requiredSubgroupSize` bound, which must be a power of two between the device min and max ([Khronos refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)).
 - **Cooperative matrix** is RDNA3 and newer on RADV ([Phoronix](https://www.phoronix.com/news/RADV-VK_KHR_cooperative_matrix)). Phase 3's "FP16 shared tiles" route is the only Phase 3 route on this iGPU.
 - **Not verified:** the Mesa RADV range on GCN (the source fetch was blocked), and the ggml shader variant the reference uses on this GPU (Phase 0, still open).
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: vulkan-gemm-llm-prefill.md)
+
+### Correct state
+
+- **Diagnosis (2026-10-10):** the batched prefill already exists. `GpuForwardPass` has a weight-amortising batched trunk for dense Q4_K/Q6_K models. The backlog wording "prefills per token" describes `VulkanLayerSplitForwardPass` and the MoE path, not `GpuForwardPass`. The slow part is the matmul kernel: about 0.3 TFLOP/s on a 493-token prompt.
+- **Path 3 (2026-10-11), default:** `STINGRAY_VULKAN_MM_PATH=3` is the default since 2026-10-11 (`VulkanMatMulPath.cs`; set `=1` to roll back).
+
+| Qwen3-4B-Q4_K_M, 493-token prefill, Vulkan iGPU | Prefill |
+|---|---|
+| Path 1 (default) | 38.4 t/s (12.8 s) |
+| Path 3, 128-token chunks, tiled quantised GEMM, sliced flash attention | 71.3 t/s (6.9 s), +86% |
+| CPU, same prompt (2026-10-10) | 102.8 t/s |
+
+- Greedy generation identical to Path 1. Weight traffic 64.2 GB to 8.3 GB.
+- Sliced flash attention (16-query slices) fixed a fallback that had made Path 3 slower before the fix.
+
+### Open items
+
+- [ ] Larger prefill chunks (256); check scratch buffers and batched attention/KV-append accept them
+- [ ] A second dense model under Path 3 (the first measurement is Qwen3-4B only)
+- [ ] Decode regression check on Vulkan
+- [x] Path 3 default decided on 2026-10-11 (gate: at least 2x today's Vulkan prefill, and identical greedy output; recorded in the leads plan, Lead 2)
+- [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite
+
+- [ ] K-quants other than Q4_K and Q6_K stay off the batched Vulkan trunk. `GpuForwardPass.ComputeCanBatchedTrunk` accepts only Q4_K and Q6_K weights (checked 2026-10-30). SmolLM2-1.7B Q5_K_M prefills at 22.3 tok/s against 235 for its Q4_K_M file (PerformanceLeague, 2026-10-11 recheck, finding 5). Path 3 (`SgemmQuant`) already covers Q3_K, Q4_K, Q5_K and Q6_K, so the work is to extend the trunk gate; measure per the [measurement rules](../../../reference/performance-measurement-rules.md).
+
+### Decisions for the owner
+
+- None open: the Path 3 default was decided on 2026-10-11.
+
+### Cadence
+
+- Review after each Path 3 measurement, and whenever a Vulkan kernel commit lands.
+- Re-read at least every two weeks while any item is open.
+- Close when the default decision is recorded and the STATUS and RUNNING rows match it.

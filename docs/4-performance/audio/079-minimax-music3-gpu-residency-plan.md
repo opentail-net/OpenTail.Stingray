@@ -10,7 +10,7 @@
 
 # MiniMax-Music3 Transformer GPU Residency Plan (2026-09-13)
 
-**Workstream:** [audio GPU residency](../../workstreams/audio-gpu-residency.md).
+**Thread:** [audio GPU residency](080-tts-asr-gpu-residency-checklist.md).
 
 ## Context — read `docs/069` (FLUX) and `docs/072`/`docs/073` (Wan) first
 

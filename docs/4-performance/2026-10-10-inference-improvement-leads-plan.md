@@ -1,6 +1,6 @@
 # Inference improvement leads (plan, 2026-10-10)
 
-**Workstreams:** Lead 2 (Vulkan prefill) is in [Vulkan GEMM for LLM prefill](../workstreams/vulkan-gemm-llm-prefill.md); the Qwen Image thread is in [Qwen Image and diffusion performance](../workstreams/qwen-image-and-diffusion-performance.md).
+**Threads:** Lead 2 (Vulkan prefill) is in [Vulkan GEMM for LLM prefill](gpu/vulkan-gemm/vulkan-gemm.md); the Qwen Image thread is in [Qwen Image and diffusion performance](diffusion/diffusion-performance.md).
 
 > Completed items moved to [done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md](../done/2026-10-10-inference-improvement-leads-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
@@ -255,6 +255,9 @@ prompts to the CPU). The slow part is the matmul kernel.
   then the prefill A/B (target: Vulkan prefill at least 2x today's, i.e. at or above CPU) and a Vulkan decode regression check. Rollback: `STINGRAY_VULKAN_MM_PATH=1`.
 
 ### Lead 2, Path 3 first result, 2026-10-11 (Qwen3-4B-Q4_K_M, 493-token prompt, Vulkan iGPU, greedy)
+
+*Status 2026-10-31 (ported from the retired workstream):* Path 3 has been the default since 2026-10-11 (`VulkanMatMulPath.cs`; STATUS row for Vulkan long-prompt performance). The gate it was taken against was at least 2x today's Vulkan prefill and identical greedy output. Still open: a second dense model under Path 3, a decode regression check, and confirming that `VulkanSgemmQuantEntryTests` runs in the fast suite.
+
 Implemented (all opt-in, `STINGRAY_VULKAN_MM_PATH=3`; the default stays Path 1):
 - `SgemmQ6K` (Q6_K decoder in the shared tiled GEMM; large and small tile) and `VulkanBackend.SgemmQuant` (Q3_K/Q4_K/Q5_K/Q6_K, explicit weight type for the LLM's generic raw tensors);
   CPU-parity tests `VulkanSgemmQuantEntryTests` (6 cases, M from 1 to 130, N not a tile multiple).

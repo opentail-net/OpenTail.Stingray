@@ -1,6 +1,6 @@
 # External facts behind the 2-coverage research (2026-10-31)
 
-Companion to the research sections appended to the plans in [docs/2-coverage](../). Each row is a claim the plans make, the value found on the web, and where it was checked. Nothing here changes code.
+Companion to the research sections appended to the plans in [docs/2-coverage](..). Each row is a claim the plans make, the value found on the web, and where it was checked. Nothing here changes code.
 
 ## 1. DiffusionGemma (`google/diffusiongemma-26B-A4B-it`)
 
