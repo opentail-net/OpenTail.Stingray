@@ -30,6 +30,7 @@ public abstract class HeavyTestBase : IDisposable
         // test instance cannot release a mutex acquired on its constructor thread. Keep a small
         // owner thread alive for the class lifetime and signal it from Dispose instead.
         using var acquired = new ManualResetEventSlim(false);
+        bool gateOwned = false;
         _gateOwnerThread = new Thread(() =>
         {
             bool ownsGate;
@@ -37,6 +38,7 @@ public abstract class HeavyTestBase : IDisposable
             try { ownsGate = Gate.WaitOne(TimeSpan.FromHours(2)); }
             catch (AbandonedMutexException) { ownsGate = true; }
 
+            gateOwned = ownsGate;
             acquired.Set();
             if (!ownsGate)
                 return;
@@ -50,6 +52,15 @@ public abstract class HeavyTestBase : IDisposable
         };
         _gateOwnerThread.Start();
         acquired.Wait();
+
+        // Fail closed: a timed-out wait means ANOTHER heavy-test process still holds the machine-wide gate. Carrying on would run two
+        // real-weight suites at once, which is exactly what the gate exists to prevent.
+        if (!gateOwned)
+        {
+            _gateOwnerThread.Join();
+            _releaseGate.Dispose();
+            throw new TimeoutException("Timed out after 2 hours waiting for the machine-wide heavy-test gate (Global\\OpenTailStingray.HeavyTests); another heavy-test process is still running.");
+        }
     }
 
     public virtual void Dispose()

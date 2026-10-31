@@ -18,7 +18,7 @@ Write-Host "=== Running llama.cpp ===" -ForegroundColor Cyan
 Write-Host "[llama.cpp] exit=$LASTEXITCODE -> $llamaOut"
 
 Write-Host "=== Running OpenTail.Stingray ===" -ForegroundColor Cyan
-& dotnet ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll" `
+& dotnet ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll" `
     -m $Model --temp 0 -n $NTokens --verbose-prompt -p $Prompt 1>$openTailLlmOut 2>$openTailLlmDbg
 Write-Host "[OpenTail.Stingray] exit=$LASTEXITCODE -> $openTailLlmOut / $openTailLlmDbg"
 

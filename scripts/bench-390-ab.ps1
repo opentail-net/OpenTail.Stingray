@@ -17,7 +17,7 @@ $ConfigList = $Configs -split ',' | ForEach-Object { $_.Trim() } | Where-Object 
 if (-not (Test-Path $Model))      { Write-Error "Model not found: $Model"; exit 1 }
 if (-not (Test-Path $PromptFile)) { Write-Error "Prompt file not found: $PromptFile"; exit 1 }
 
-$cliDll  = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll"
+$cliDll  = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll"
 $dotnet  = (Get-Command dotnet).Source
 $prompt  = Get-Content -Raw $PromptFile
 $env:STINGRAY_CPU_MOE = "1"

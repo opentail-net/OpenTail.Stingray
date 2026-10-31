@@ -51,7 +51,7 @@ memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 | `STINGRAY_VULKAN_MM_STATS` | `1` to count dispatches and weight bytes; off by default so an unmeasured run is byte-identical to before. |
 
 ```
-STINGRAY_VULKAN_MM_STATS=1 opentail-llm-cli -m model.gguf --backend vulkan -g -1 -f prompt.txt
+STINGRAY_VULKAN_MM_STATS=1 stingray -m model.gguf --backend vulkan -g -1 -f prompt.txt
 ```
 
 Code: `src/OpenTail.Stingray.Vulkan/VulkanMatMulPath.cs` (switch + counters), the seam and

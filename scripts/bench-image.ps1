@@ -10,7 +10,7 @@ param(
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
 $dotnetExe = (Get-Command dotnet).Source
-$cliDll    = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll"
+$cliDll    = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll"
 
 $model     = "models\z_image_turbo-Q5_K_M.gguf"
 $vae       = "models\z-image-turbo\vae"

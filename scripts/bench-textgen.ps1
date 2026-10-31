@@ -13,7 +13,7 @@ if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out
 $stdoutPath = Join-Path $OutDir "$Tag.out"
 $stderrPath = Join-Path $OutDir "$Tag.err"
 
-$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.dll"
+$cliDll = ".\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.dll"
 # NOTE: --verbose-prompt is deliberately NOT passed. Its per-token debug logging does a
 # full-vocabulary LINQ OrderByDescending (262144 elements for Gemma 4) every decode step,
 # which adds ~1.5-2.5 ms/token of CPU overhead and badly understates the measured decode

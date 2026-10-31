@@ -6,7 +6,7 @@
 ## Prerequisites
 
 - The .NET 10 SDK, a 64-bit x86 CPU with AVX2.
-- Model files (public downloads): a chat GGUF (`stingray setup chat`, or `stingray pull -r Qwen/Qwen2.5-0.5B-Instruct-GGUF`, 469 MB); a Piper voice, both `en_US-lessac-medium.onnx` and its `.onnx.json` (about 63 MB, [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium)); and `ggml-base.bin` (Whisper base, about 148 MB, [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)). The voice's data licence applies to the Piper voice; read it before use.
+- Model files (public downloads): a chat GGUF (`stingray setup chat`, or `stingray pull -r Qwen/Qwen2.5-0.5B-Instruct-GGUF`, 469 MB); a Piper voice, both `en_US-lessac-medium.onnx` and its `.onnx.json` (about 63 MB, **research use only: the voice data forbids commercial use and redistribution**, [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium)); and `ggml-base.bin` (Whisper base, about 148 MB, [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)). The voice's data licence applies to the Piper voice; read it before use.
 
 ## Run
 

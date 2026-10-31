@@ -21,7 +21,7 @@ This sample demonstrates how to run speech synthesis and speech recognition insi
 You can download the verified default models with SHA-256 integrity using the CLI:
 
 ```bash
-# 1. Download Piper Lessac medium voice (.onnx + .onnx.json, ~63 MB)
+63 MB)~63 MB)
 stingray setup speak
 
 # 2. Download Whisper base model (ggml-base.bin, ~141 MB)
@@ -74,7 +74,7 @@ Note what the transcript shows: Whisper base gets the ordinary words right and *
 
 ## 5. Known Limitations
 
-- `stingray setup speak` asks you to accept the data licence of the Piper Lessac voice (it is not plainly permissive); the sample itself does not check this.
+- `stingray setup speak` asks you to accept the data licence of the Piper Lessac voice (**research use only: the Lessac Blizzard 2013 data forbids commercial use and redistribution; the Piper code is MIT**, [terms](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html)); the sample itself does not check this, so the restriction applies to anything you do with its output.
 - Whisper `base` is small and fast, not the most accurate model; proper nouns and brand names are the usual failures.
 - Piper and Whisper are the only engines shown. Other speech engines have different setup needs and verification levels: see [docs/STATUS.md](../../docs/STATUS.md).
 - Backend diagnostic lines may be printed to stderr.

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 KVarN P0 reasoning micro-eval (issue #180): 20 grade-school math word problems,
-run greedily through opentail-llm-cli per KV-cache config (fp32 / lloydmax / kvarn),
+run greedily through stingray per KV-cache config (fp32 / lloydmax / kvarn),
 scored by the LAST integer in the model output.
 
 .DESCRIPTION
@@ -24,7 +24,7 @@ param(
     [string]$Model = 'C:\models\Qwen3-0.6B-Q8_0.gguf',
     [ValidateSet('fp32', 'lloydmax', 'kvarn')]
     [string[]]$Configs = @('fp32', 'lloydmax', 'kvarn'),
-    [string]$CliExe = (Join-Path $PSScriptRoot '..\..\src\OpenTail.Stingray.Cli\bin\Release\net10.0\opentail-llm-cli.exe'),
+    [string]$CliExe = (Join-Path $PSScriptRoot '..\..\src\OpenTail.Stingray.Cli\bin\Release\net10.0\stingray.exe'),
     [int]$NPredict = 256,
     [string]$OutDir = (Join-Path $PSScriptRoot 'results')
 )
