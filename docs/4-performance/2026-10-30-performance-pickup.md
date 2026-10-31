@@ -40,7 +40,7 @@ The table is the index. The detail for each row lives in its owner plan: rows 1-
 | 8 | Text, CPU | Long-context decode | 0.67x at 3.2k (SmolLM2) | 2026-09-10 | Attention cost grows faster than llama.cpp's. **Old: re-measure first.** |
 | 9 | Text, CPU | OLMoE-1B-7B | decode 0.81x, prefill ~0.8x | **2026-10-30** | Re-measured: was 0.50x / 0.69x on 2026-09-10, so the old "OLMoE decode 0.50x" weakness is stale. |
 | 10 | Text, CPU | Gemma 3 4B and Gemma 4 prefill, **default F32** | 0.33-0.39x | 2026-10-02 (commit `a6d5583e`) | With int8 the same models run at 0.95-0.97x, so the gap is the F32 default, not the kernels. Decide what the default should be for these models before any kernel work. Decode is 0.84-0.85x. |
-| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | **Closed 2026-10-31.** SmolLM2-1.7B Q5_K_M prefill 66.8-85.5 t/s vs 51.8-84.4 for its Q4_K_M file (503 tokens, 3 runs each, `-g -1`) | 2026-10-31 (was 22.3 vs 235 tok/s on 2026-10-11) | The 2026-10-11 figure predates Path 3. `GpuForwardPass.ComputeCanBatchedTrunk` now accepts Q3_K and Q5_K when Path 3 is on (`GpuForwardPass.cs` 1352-1357), and Q5_K_M prefills in the same band as Q4_K_M. Run-to-run spread was large (the machine was not idle), so the point is "no 10x gap", not a ratio. Backlog B5b is closed. |
+| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | **Closed 2026-10-31.** SmolLM2-1.7B Q5_K_M prefill 66.8-85.5 t/s vs 84.7-86.0 for its Q4_K_M file (503 tokens, 3 runs each, `-g -1`; the Q4_K_M range is from idle re-runs, the Q5_K_M low run of 66.8 has no known cause) | 2026-10-31 (was 22.3 vs 235 tok/s on 2026-10-11) | The 2026-10-11 figure predates Path 3. `GpuForwardPass.ComputeCanBatchedTrunk` now accepts Q3_K and Q5_K when Path 3 is on (`GpuForwardPass.cs` 1352-1357), and Q5_K_M prefills in the same band as Q4_K_M. The point is "no 10x gap" (about 1.0x), not a precise ratio. Backlog B5b is closed. |
 | 12 | Text, Vulkan | Gemma 4 with a prompt under the CPU-prefill handoff threshold (default 32 tokens; the sweep's prompt was 19 tokens) | 9.3 tok/s prefill | 2026-10-11 | Below the threshold (`STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32, `EngineEnvironment.cs:55`; checked 2026-10-31) the handoff is skipped and the Vulkan path runs per token. The earlier "threshold 19" was the prompt length, not the threshold. Check which path a short Gemma 4 prompt takes before tuning kernels ([batched MoE plan](../2-coverage/2026-10-03-batched-moe-prefill-plan.md), line 220). |
 
 The Vulkan LLM prefill that was behind CPU earlier in the year is no longer behind (see State). Vulkan results on this
@@ -68,9 +68,12 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
   the 5-7% loss that kept Q8_K decode off at high thread counts.
 - **Row-interleaved Q8_0 repack** (ik_llama.cpp `_R4`/`_R8` style), the survey's top-ranked prefill idea after tinyBLAS
   failed.
-- **Confirm four single-run slowdowns from the 2026-10-11 recheck before acting** (each was one run; confirm with 3):
-  rwkv-6 1.6B prefill 78.8 to 49.1 tok/s (0.62x), Phi-3-mini prefill 40.1 to 27.5 (0.69x; this file already has a closed
-  Phi-3 regression note), granite-vision 2B (Q3_K_S) decode 25.9 to 19.5 (0.75x), qwen2.5-1.5b decode 27.5 to 22.8 (0.83x).
+- ~~Confirm four single-run slowdowns from the 2026-10-11 recheck~~ **Closed: none is a regression.** PerformanceLeague
+  (finding 4) already holds a 3-run recheck from 2026-10-11, and a second independent 3-run set on 2026-10-31 (CPU, `-g 0`,
+  ~500-token prompt, idle machine) agrees: rwkv-6 1.6B Q8_0 prefill 38.6 / 135.3 / 145.7 tok/s (the first run reads the file
+  cold from E:, the old 78.8 was not beaten by a regression), Phi-3-mini prefill 33.5 / 37.9 / 36.8 (0.92x of 40.1), granite-vision
+  2B decode 25.2 / 25.0 / 24.3 (0.94-0.97x of 25.9), qwen2.5-1.5b decode 33.3 / 33.2 / 33.1 (above the old 27.5). The
+  low single-run figures were noise or cold-file first runs. Prompt lengths here were 502-673 tokens, so ratios are indicative.
 
 ## How to measure (rules that held up)
 
