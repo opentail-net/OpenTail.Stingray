@@ -50,7 +50,6 @@ public sealed class FairExecutionGate : IExecutionTurnGate
         ArgumentNullException.ThrowIfNull(participant);
         cancellationToken.ThrowIfCancellationRequested();
 
-        Waiter waiter;
         lock (_lock)
         {
             if (!_held)
@@ -59,18 +58,47 @@ public sealed class FairExecutionGate : IExecutionTurnGate
                 _grants++;
                 return new ValueTask<IDisposable>(new Lease(this));
             }
-            waiter = new Waiter(Stopwatch.GetTimestamp());
-            waiter.Node = _waiters.AddLast(waiter);
         }
 
+        // Contended. The cancellation callback is installed BEFORE the waiter can be seen by Release or Cancel. Installing it after
+        // enqueueing left a gap in which Release could grant the turn and dispose a registration that did not exist yet, so the
+        // late registration was never disposed. Now the registration is always in place when the waiter is granted, and a
+        // cancellation that fires before the waiter is queued is recorded on the waiter and honoured below.
+        var waiter = new Waiter(Stopwatch.GetTimestamp());
         if (cancellationToken.CanBeCanceled)
             waiter.Registration = cancellationToken.Register(static state =>
             {
                 var (gate, queued) = ((FairExecutionGate, Waiter))state!;
                 gate.Cancel(queued);
             }, (this, waiter));
-        return new ValueTask<IDisposable>(waiter.Turn.Task);
+
+        AfterRegistrationForTest?.Invoke();   // test seam: lets a test make the turn end or the token fire exactly in this window
+
+        bool cancelledBeforeQueued;
+        lock (_lock)
+        {
+            cancelledBeforeQueued = waiter.CancelledBeforeQueued;
+            if (!cancelledBeforeQueued)
+            {
+                if (_held)
+                {
+                    waiter.Node = _waiters.AddLast(waiter);
+                    return new ValueTask<IDisposable>(waiter.Turn.Task);
+                }
+                // The turn ended while this caller was registering; take it, nobody is queued ahead.
+                _held = true;
+                _grants++;
+            }
+        }
+
+        waiter.Registration.Dispose();
+        return cancelledBeforeQueued
+            ? ValueTask.FromCanceled<IDisposable>(cancellationToken)
+            : new ValueTask<IDisposable>(new Lease(this));
     }
+
+    /// <summary>Runs on the acquiring thread after the cancellation callback is registered and before the waiter is queued. Tests only.</summary>
+    internal Action? AfterRegistrationForTest { get; set; }
 
     public ExecutionGateStats GetStats()
     {
@@ -108,7 +136,13 @@ public sealed class FairExecutionGate : IExecutionTurnGate
         bool removed;
         lock (_lock)
         {
-            removed = waiter.Node!.List is not null;
+            if (waiter.Node is null)
+            {
+                // Not queued yet: the acquiring thread checks this flag under the same lock before it enqueues.
+                waiter.CancelledBeforeQueued = true;
+                return;
+            }
+            removed = waiter.Node.List is not null;   // false when Release already handed this waiter the turn: too late to cancel
             if (removed) _waiters.Remove(waiter.Node);
         }
         if (removed) waiter.Turn.TrySetCanceled();
@@ -117,6 +151,7 @@ public sealed class FairExecutionGate : IExecutionTurnGate
     private sealed class Waiter(long enqueuedAt)
     {
         public long EnqueuedAt { get; } = enqueuedAt;
+        public bool CancelledBeforeQueued { get; set; }
         public LinkedListNode<Waiter>? Node { get; set; }
         public CancellationTokenRegistration Registration { get; set; }
         public TaskCompletionSource<IDisposable> Turn { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
