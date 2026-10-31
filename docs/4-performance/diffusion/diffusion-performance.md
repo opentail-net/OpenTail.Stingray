@@ -524,6 +524,7 @@ placement budget is shared system memory, not VRAM.
 
 ### Status
 - 2026-10-10: plan written. B0 code change built and under test.
+- 2026-10-31 (ported from the retired workstream): Qwen Image has no backlog item in `00-current-work.md`, so this section is its only tracker. A Qwen Image row exists in `docs/STATUS.md` (🟢, 2026-09-27, CPU and Vulkan) and records real Qwen2.5-VL text conditioning as wired. Open here: the Q3_K_S 512x512 GPU sample, the five-run median, and a backlog pointer.
 
 ### Measured results (2026-10-10, Ryzen 5700G iGPU, Vulkan, Qwen Image Q3_K_S, 60/60 blocks resident)
 
@@ -588,3 +589,33 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../research/2026-1
 - **Subgroup and cooperative-matrix limits** (see the Vulkan GEMM doc): the FP16 tile project cannot use cooperative matrix on this iGPU, and the subgroup pin must follow the `requiredSubgroupSize` power-of-two bound ([Khronos](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)).
 - **Long-K throughput drop (Part 4, "stride" finding):** no external source confirmed a TLB or memory-channel cause. The doc's own experiment (contiguous chunks give -31%) is the evidence. It stays a measurement, not a cited mechanism.
 - **Not checked:** the FLUX and Wan timings and the reference numbers. They are the doc's own runs.
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: qwen-image-and-diffusion-performance.md)
+
+### Correct state
+
+- **Backlog:** Qwen Image has no backlog item in [../00-current-work.md](../../00-current-work.md). Items 8 and 9 there are FLUX, not Qwen Image. This file is the only place the thread is tracked.
+- **STATUS:** a Qwen Image row exists in [../STATUS.md](../../STATUS.md) (🟢, 2026-09-27, CPU and Vulkan) and records real Qwen2.5-VL text conditioning as wired. Corrected 2026-10-31: the documentation-architecture plan's 'text conditioning remains open' line was stale and is fixed.
+- **Baseline (2026-10-10, Ryzen 5700G iGPU, Vulkan, Q3_K_S, 60/60 blocks resident):** the measured-results table in the samples plan compares Stingray with `sd-cli --backend vulkan0`.
+- **FP16-tile project, phases (see that plan's checklist):** Phase 1 (small-M kernel) kept. Phase 2(c) (chunked image-stream MLP) kept: about 2.6 s (10.7%) faster, gap to the reference about 6% (was about 18%). Phase 2(a) rejected. Phase 2 follow-ups stopped as cheap changes ran out.
+- The five-run median for the Phase 1 plus 2(c) checkpoint is not recorded yet. The iGPU timings describe this APU, not a discrete GPU (CLAUDE.md rule 13).
+
+### Open items
+
+- [ ] Remaining image samples, in order: Qwen Image Q3_K_S at 512x512 on the GPU (the first attempt hit the 20-minute CPU cap); Wan 2.2 14B one frame; HunyuanVideo 720 fp8 one frame; FLUX.2-dev with Mistral-Small-3.2-24B at 512x512
+- [x] Qwen Image text conditioning integration: wired per the STATUS row (2026-09-27)
+- [ ] Five-run median for the Phase 1 plus 2(c) checkpoint
+- [ ] FP16-tile phases 3 (new tiled kernel family; carries the numerics decision), 4 and 5
+- [x] STATUS row for Qwen Image exists (2026-09-27); re-check it when the Q3_K_S 512x512 GPU sample lands
+
+### Decisions for the owner
+
+- The numerics decision that FP16-tile Phase 3 carries.
+
+### Cadence
+
+- Review after each dated measurement; record the numbers in `PerformanceLeague.md`, not only here.
+- Re-read at least every two weeks while any item is open.
+- Close when the STATUS row exists, the median is recorded, and each FP16-tile phase is kept or rejected in writing.

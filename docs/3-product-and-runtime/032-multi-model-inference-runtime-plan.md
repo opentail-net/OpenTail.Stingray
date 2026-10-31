@@ -6,7 +6,7 @@
 
 ## Status
 
-**Workstream:** [multi-model runtime](../workstreams/multi-model-runtime.md). The status below is as last written; the workstream records the 2026-10-30 check.
+**Thread:** [multi-model runtime](032-multi-model-inference-runtime-plan.md). The status below is as last written; the workstream records the 2026-10-30 check.
 
 **Phases 1, 2, and 4 implemented. Phase 3 at 10 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue
@@ -839,3 +839,30 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 **Not verified:** the slice test counts, and whether the router's eviction order matches the plan's "never evict an active model" rule (the community guides do not say).
 
 **Next step:** add a Phase 3 slice that reads `heapBudget`/`heapUsage` on the Vulkan device, behind the existing admission flag, and say in the doc that it is an estimate.
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: multi-model-runtime.md)
+
+### Correct state (from the plan's status section)
+
+- **Implemented:** Phases 1, 2 and 4. Phase 7 for the stateless request surface (chat completions, messages, responses, model listing).
+- **Phase 3, residency:** 10 slices (checked 2026-10-31 against the plan's checklist): host and accelerator admission, eviction, observability, per-runtime accelerator residency and byte-exact hybrid bytes. Not done: the hybrid-GDN full-offload branches.
+- **Phase 5:** the no-lock half is proven with real models.
+- **Phase 6, fair scheduling:** 4 slices (the queue step of the eviction hierarchy, bounded, observable, fair among queued waiters, and immune to a fresh caller jumping the queue). **Execution-level service quantum and starvation protection are still open.**
+- **Phase 7, durable restore:** deferred. A session does not survive a restart in multi-model mode.
+
+### Open items
+
+- [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches)
+- [ ] Phase 6: service quantum and starvation protection at execution level
+- [ ] Phase 7: durable session restore across a restart in multi-model mode (deferred)
+- [x] Phase 7: model identity is exposed through `IInferenceService` (`ResolveModel`, `AvailableModelAliases`)
+- [x] Phase 6: per-model admission queues and request age are built (slices 1-4); only the execution-level quantum above is open
+- [x] Phase 3: resident tracking, memory estimates and `IResourceBudget` are built (slices 1-3); the hybrid-GDN accounting above is the open part
+
+### Cadence
+
+- Review after each slice lands, and before any change to scheduling or residency defaults.
+- Re-read at least every two weeks while any item is open.
+- Close when Phase 6 has the service quantum, Phase 7 restore is built or written off, and the plan's status matches the code.

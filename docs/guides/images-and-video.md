@@ -61,7 +61,7 @@ the command line covers the models in the table above. For the others use the C#
 
 ## From C#
 
-To integrate text-to-image generation directly into a .NET application, see the [Diffusion sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion/) demonstrating `IDiffusionPipeline` and `StableDiffusionPipeline.Load`.
+To integrate text-to-image generation directly into a .NET application, see the [Diffusion sample (`samples/OpenTail.Stingray.Sample.Diffusion`)](../../samples/OpenTail.Stingray.Sample.Diffusion) demonstrating `IDiffusionPipeline` and `StableDiffusionPipeline.Load`.
 
 ## Over HTTP
 

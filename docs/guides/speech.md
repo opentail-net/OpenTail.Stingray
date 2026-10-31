@@ -60,7 +60,7 @@ is a quick way to check your setup works end to end.
 ## From C#
 
 The [README](../../README.md) has both calls (`PiperPipeline`, `WhisperPipeline`) as short, tested snippets.
-For a complete, runnable console application performing roundtrip speech synthesis and transcription, see the [Speech sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech/).
+For a complete, runnable console application performing roundtrip speech synthesis and transcription, see the [Speech sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech).
 
 ## Not wired to a command yet
 

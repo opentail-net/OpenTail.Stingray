@@ -147,7 +147,7 @@ Stingray strictly distinguishes four separate questions:
 
 ## 5. Work Breakdown Structure (All 10 Chunks Completed)
 
-The implementation across all 10 chunks was completed and verified on 2026-10-07. Detailed deliverable descriptions, acceptance checklist, implementation summary, and closure enforcement contracts have been split verbatim into [../done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md](../done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md).
+The implementation across all 10 chunks was completed and verified on 2026-10-07. Detailed deliverable descriptions, acceptance checklist, implementation summary, and closure enforcement contracts have been split verbatim into [../done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md](2026-10-06-execution-plan-runtime-architecture-completed-chunks.md).
 
 - [x] **Chunk 1: `ModelPackage` Abstraction & Sidecar Metadata** — Established logical component boundary and package representations (`LooseGgufModelPackage`, `SafeTensorsModelPackage`, `OllamaModelPackage`) with advisory `StingraySidecarMetadata`.
 - [x] **Chunk 2: `ModelDescription` with Intrinsic Planning Facts** — Extracted immutable planning facts snapshot in a single pass without disk re-reading.
@@ -160,4 +160,4 @@ The implementation across all 10 chunks was completed and verified on 2026-10-07
 - [x] **Chunk 9: Migrate CLI (`RunCommand` and `StaticPlanCommand`)** — CLI arguments map to `ExecutionRequest` and execute via `RuntimeInstance`.
 - [x] **Chunk 10: Bypass Elimination, Contract Tests & Parity Verification** — Dead policy eliminated; cross-frontend parity verified in `FrontendPlanParityTests.cs`.
 
-Full chunk deliverables, acceptance criteria checklist, and closure enforcement verification are archived in [docs/done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md](../done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md).
+Full chunk deliverables, acceptance criteria checklist, and closure enforcement verification are archived in [docs/done/2026-10-06-execution-plan-runtime-architecture-completed-chunks.md](2026-10-06-execution-plan-runtime-architecture-completed-chunks.md).

@@ -51,7 +51,7 @@ stingray transcribe output.wav
 
 ### Public C# API
 
-For a complete, runnable console application performing roundtrip speech synthesis and transcription, see the [Speech Sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech/).
+For a complete, runnable console application performing roundtrip speech synthesis and transcription, see the [Speech Sample (`samples/OpenTail.Stingray.Sample.Speech`)](../../samples/OpenTail.Stingray.Sample.Speech).
 
 #### Text to Speech (Piper)
 ```csharp

@@ -111,7 +111,7 @@ are three views of it.
   - **Result:** wikitext second-half PPL at -c 2048: ours 8.1757 batched prefill, 8.2100 sequential;
     `llama-perplexity --chunks 1` 8.0997.
   - **Pattern:** same diffuse PPL-gap pattern as the GLM-4.5 investigation (implementation record
-    [archived here](../done/09-glm45-q5k-activation-implementation.md)). The generation is coherent
+    [archived here](09-glm45-q5k-activation-implementation.md)). The generation is coherent
     and the top-k order matches; sequential is worse than batched, so the batched prefill path is
     not the cause.
   - **Statistical context (2026-10-01):** re-running `llama-perplexity -c 2048 --chunks 1` prints `PPL = 8.0997 +/- 0.67346` (the K: copy of the same Q2_K). Our 8.1757 is 0.076 above that, i.e. 0.11 standard errors: **not distinguishable from llama.cpp** with an unpaired single-window PPL. A real >1% claim needs paired per-token NLL (ours via `--dump-nll`, llama.cpp side via a logits/`llama-server` dump), so treat this row as an unproven gap rather than a defect.

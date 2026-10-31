@@ -14,4 +14,4 @@
 - [x] 4. Benchmark only after correctness passes (completed in `103-quickest-first-plan.md` item 15, reaching ~0.96x llama.cpp).
 
 References: [qwen35moe-tensor-layout.md](../reference/qwen35moe-tensor-layout.md) and
-[done/qwen35moe-plan-superseded.md](../done/qwen35moe-plan-superseded.md).
+[done/qwen35moe-plan-superseded.md](qwen35moe-plan-superseded.md).

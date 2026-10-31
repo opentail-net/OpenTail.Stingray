@@ -1,6 +1,6 @@
 # GPU Performance Review
 
-> **Date:** first committed 2026-10-14; describes the GPU state at that time and was not re-checked on 2026-10-30. **Workstream:** [Vulkan GEMM for LLM prefill](../workstreams/vulkan-gemm-llm-prefill.md) (GPU LLM kernels).
+> **Date:** first committed 2026-10-14; describes the GPU state at that time and was not re-checked on 2026-10-30. **Thread:** [Vulkan GEMM for LLM prefill](gpu/vulkan-gemm/vulkan-gemm.md) (GPU LLM kernels).
 
 The remaining GPU gap is not that OpenTail lacks modern kernels. It already has tensor-core flash attention, split-KV decode, grouped GQA reuse, CUDA graphs, and int8 MMA matmul. The larger difference is that llama.cpp has a mature hardware-and-shape-specific kernel planner, while OpenTail generally uses a small number of fixed CUDA/Vulkan implementations.
 

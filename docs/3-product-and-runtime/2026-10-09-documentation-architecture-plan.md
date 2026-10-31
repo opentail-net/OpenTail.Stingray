@@ -23,7 +23,7 @@ High-performance AI runtimes require documentation that is accurate, well-struct
 2. **Technical inaccuracies & ungrounded claims:**
    - *FLUX.3:* As explicitly documented in [`docs/STATUS.md`](../STATUS.md#L191), `Flux3DiT` and `Flux3Pipeline` are speculative scaffolding not corresponding to any released model; FLUX.3 is not a real coverage target and must never be advertised.
    - *Vulkan Cooperative Matrix:* As recorded in [`GR_performance.md`](../4-performance/GR_performance.md#5-cooperative-matrix-support-is-detected-but-effectively-unused), no cooperative-matrix Vulkan shader path is implemented or enabled in the device chain. Hardware extension detection is not an implemented shader feature.
-   - *Qwen Image Status:* While DiT and VAE decode are verified against real weights, text conditioning integration remains open; it is not yet an end-to-end supported pipeline.
+   - *Qwen Image Status:* DiT and VAE decode are verified against real weights, and real text conditioning is wired (STATUS row, 2026-09-27; corrected 2026-10-31: the earlier 'remains open' text was stale).
    - *Hardware Qualification:* Claims regarding hardware backends (e.g. ARM Neon, CUDA) must explicitly distinguish code presence from verified hardware execution.
 3. **Bloat via arbitrary size targets:** Targets like "40–60 KB" encourage encyclopedic repetition. Stingray's documentation must prioritize concise, high-signal entry points that link to single canonical sources of truth.
 
@@ -106,7 +106,7 @@ To maintain technical integrity, diffusion models are organized into four explic
    - *Included:* Stable Diffusion 1.5 (with ControlNet conditioning), SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Wan 2.1/2.2 Video, HunyuanVideo, LTX-Video, Stable Audio 3, MusicGen, AudioGen.
 2. **Components Verified; Integration Incomplete:**
    - Individual subcomponents (e.g. DiT, VAE) have passed forward-pass tests against real weights, but the complete end-to-end user-facing pipeline is not yet finalized.
-   - *Included:* **Qwen Image** (DiT forward pass verified against real weights with 4 real bugs fixed; VAE decode verified reusing WanVaeDecoder3D; real LLM text conditioning remains outstanding as documented in [`docs/STATUS.md`](../STATUS.md#L191)).
+   - *Included:* **Qwen Image** (DiT forward pass verified against real weights with 4 real bugs fixed; VAE decode verified reusing WanVaeDecoder3D; real LLM text conditioning is wired per the STATUS row (corrected 2026-10-31)).
 3. **Active Implementation / Convergence Debugging:**
    - Real weight loaders and full pipeline components exist, but output quality or convergence is under active investigation.
    - *Included:* **FLUX.2** (DiT, text conditioning via Mistral taps, and VAE unshuffle are wired and produce finite output; currently undergoing convergence/patchify debugging to resolve tiling artifacts).
@@ -301,3 +301,28 @@ Code and outside sources, checked 2026-10-31.
 - The "Qwen Image" and "FLUX.2" tiering claims were not re-checked. They depend on the diffusion docs in `4-performance`.
 
 **Not verified:** the `docs/models/` and `docs/guides/` counts (34 and 14), and the claim that `ProductSurfaceContractTests` checks the classification.
+
+---
+
+## Thread state (from the retired workstreams folder, 2026-10-31: documentation-architecture.md)
+
+### Correct state (from the plan's checklist, checked 2026-10-30)
+
+- **Phase 4 (architecture cards and technical guides):** done. 34 model cards in `docs/models/` and 14 guides in `docs/guides/`.
+- **Phase 2 (correct the public front door):** partly done. The README recipes landed on 2026-10-11 (`00-current-work.md` item 3.1). The rest was not re-checked.
+- **Phase 1 (audit and assign ownership):** no audit record was found. The ownership map is in the plan itself.
+- **Phase 3 (consolidate user guides and references)** and **Phase 5 (documentation index and automated verification):** open. No doc-consistency test was found for the status matrix.
+- The thread index in [../00-current-work.md](../00-current-work.md) is a start on Phase 5's index.
+
+### Open items
+
+- [ ] Phase 1: audit and assign ownership, with a record
+- [ ] Phase 2: re-check the front door beyond the README recipes
+- [ ] Phase 3: consolidate existing user guides and references
+- [ ] Phase 5: documentation index and automated verification of the status matrix
+
+### Cadence
+
+- Review whenever a doc is moved, merged or split, and at each release.
+- Re-read at least every two weeks while any phase is open.
+- Close when Phase 5's verification exists and the index covers every plan and guide.

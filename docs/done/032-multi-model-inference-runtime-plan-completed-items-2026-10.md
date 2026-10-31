@@ -15,8 +15,8 @@ Finished items moved verbatim out of [../3-product-and-runtime/032-multi-model-i
 - [x] **Phase 5: Cross-model concurrent execution** (No-lock half proven with real models)
 
 > from: ### Phase Checklist
-- [x] 1. **Production `ModelRuntime` abstraction** and 2. **Shared residency & single-flight loading** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](../done/032-multi-model-runtime-completed-phases.md).
+- [x] 1. **Production `ModelRuntime` abstraction** and 2. **Shared residency & single-flight loading** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](032-multi-model-runtime-completed-phases.md).
 
 > from: ### Phase Checklist
-- [x] 4. **Multi-session model execution** and 5. **Cross-model concurrent execution** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](../done/032-multi-model-runtime-completed-phases.md).
+- [x] 4. **Multi-session model execution** and 5. **Cross-model concurrent execution** — DONE; detail moved to [done/032-multi-model-runtime-completed-phases.md](032-multi-model-runtime-completed-phases.md).
 

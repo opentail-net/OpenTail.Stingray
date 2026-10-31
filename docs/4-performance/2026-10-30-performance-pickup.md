@@ -4,7 +4,7 @@ Performance work was paused on 2026-10-30 at the owner's request. This page is t
 is left, ranked; what was already tried; and how to measure without repeating anything. The numbers are in
 [PerformanceLeague.md](../../PerformanceLeague.md); background reading is the
 [CPU quantised GEMM survey](2026-10-30-cpu-quantized-gemm-survey.md). The Vulkan prefill work is in
-[workstreams/vulkan-gemm-llm-prefill.md](../workstreams/vulkan-gemm-llm-prefill.md).
+[thread owner](gpu/vulkan-gemm/vulkan-gemm.md).
 
 Machine for every figure: Ryzen 7 5700G (Zen 3, 8 cores / 16 threads, AVX2 + FMA, no VNNI, no AVX-512), DDR4, integrated
 Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / reference speed (1.0x = parity, lower is slower).
@@ -26,7 +26,7 @@ Radeon (Vulkan, shares system RAM). "Ratio" below means Stingray speed / referen
 
 ## Remaining gaps, ranked (latest measurement for each)
 
-The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [the diffusion owner file](diffusion/diffusion-performance.md) (Part 1 umbrella; Parts 2 and 3 for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Row 11 is owned by the [Vulkan GEMM workstream](../workstreams/vulkan-gemm-llm-prefill.md) and row 12 by the [batched MoE prefill workstream](../workstreams/batched-moe-prefill.md). Rows 8 and 9 have no owning plan yet; their evidence is in PerformanceLeague.md.
+The table is the index. The detail for each row lives in its owner plan: rows 1-4 in [the diffusion owner file](diffusion/diffusion-performance.md) (Part 1 umbrella; Parts 2 and 3 for FLUX); row 5 in [perf-sweep Phase 1](perf-sweep-plan.md); row 6 in perf-sweep Phase 2; row 7 in perf-sweep Phase 3; row 10 in perf-sweep Phase 6. Row 11 is owned by the [Vulkan GEMM workstream](gpu/vulkan-gemm/vulkan-gemm.md) and row 12 by the [batched MoE prefill workstream](../2-coverage/2026-10-03-batched-moe-prefill-plan.md). Rows 8 and 9 have no owning plan yet; their evidence is in PerformanceLeague.md.
 
 | # | Area | Workload | Ratio | Measured | Where the time goes / first step |
 |---|---|---|---:|---|---|
@@ -40,7 +40,7 @@ The table is the index. The detail for each row lives in its owner plan: rows 1-
 | 8 | Text, CPU | Long-context decode | 0.67x at 3.2k (SmolLM2) | 2026-09-10 | Attention cost grows faster than llama.cpp's. **Old: re-measure first.** |
 | 9 | Text, CPU | OLMoE-1B-7B | decode 0.81x, prefill ~0.8x | **2026-10-30** | Re-measured: was 0.50x / 0.69x on 2026-09-10, so the old "OLMoE decode 0.50x" weakness is stale. |
 | 10 | Text, CPU | Gemma 3 4B and Gemma 4 prefill, **default F32** | 0.33-0.39x | 2026-10-02 (commit `a6d5583e`) | With int8 the same models run at 0.95-0.97x, so the gap is the F32 default, not the kernels. Decide what the default should be for these models before any kernel work. Decode is 0.84-0.85x. |
-| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | SmolLM2-1.7B Q5_K_M prefill 22.3 tok/s vs 235 for its Q4_K_M file | 2026-10-11 | Before Path 3 (2026-10-11), only Q4_K and Q6_K took the batched trunk; other K-quants fell back. Path 3 now covers Q5_K, so re-measure before treating this as a gap. Backlog B5b. |
+| 11 | Text, Vulkan | Q5_K_M models off the batched Vulkan trunk | SmolLM2-1.7B Q5_K_M prefill 22.3 tok/s vs 235 for its Q4_K_M file | 2026-10-11 | Before Path 3 (2026-10-11), only Q4_K and Q6_K took the batched trunk; other K-quants fell back. Path 3 now covers Q5_K, so re-measure before treating this as a gap. The work is to extend `GpuForwardPass.ComputeCanBatchedTrunk`, which accepts only Q4_K and Q6_K weights (checked 2026-10-31). Backlog B5b. |
 | 12 | Text, Vulkan | Gemma 4 with a prompt under the CPU-prefill handoff threshold (19 tokens) | 9.3 tok/s prefill | 2026-10-11 | Below the handoff threshold the Vulkan path runs per token. Check the threshold before tuning kernels. |
 
 The Vulkan LLM prefill that was behind CPU earlier in the year is no longer behind (see State). Vulkan results on this
@@ -57,7 +57,7 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 | Weight-stationary loop reorder for prefill | 4x slower | comment in `SimdKernels.MatMulBatched` |
 | OpenBLAS | Never faster than the in-house kernels | docs/done/openblas-elimination-findings-2026-08-20.md |
 | MTP self-speculation on Qwen3.6-27B UD-Q3_K_XL | **Loses**: 0.77-0.81x of plain decode at every draft depth (2026-10-08, "NEGATIVE RESULT" row). The Qwen3.8-27B file wins by +12% on the same engine. Cause not diagnosed. | PerformanceLeague MTP rows; [00-current-work](../00-current-work.md) item 20 |
-| Path 3 tiled quantised GEMM for Vulkan prefill | **Worked**, now the default (+86% on Qwen3-4B). Listed here so nobody re-proposes it as new. | [workstreams/vulkan-gemm-llm-prefill.md](../workstreams/vulkan-gemm-llm-prefill.md) |
+| Path 3 tiled quantised GEMM for Vulkan prefill | **Worked**, now the default (+86% on Qwen3-4B). Listed here so nobody re-proposes it as new. | [thread owner](gpu/vulkan-gemm/vulkan-gemm.md) |
 
 ## Untested leads (cheap first)
 

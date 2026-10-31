@@ -13,7 +13,8 @@
 ### Completed Deliverables:
 - **src/OpenTail.Stingray.Audio/Chatterbox/**:
   - ChatterboxTokenizer.cs: BPE / Character tokenizer for Chatterbox vocabulary.
-  - ChatterboxVoices.cs: Preset speaker styles (esemble_default, 
+  - ChatterboxVoices.cs: Preset speaker styles (
+esemble_default, 
 arrator, conversational, motive).
   - ChatterboxAcousticLm.cs: 24-layer causal acoustic Transformer LM with past KV-caching, repetition penalty (1.2), and discrete speech token generation (START=6561, STOP=6562).
   - ChatterboxDecoder.cs: Conditional neural vocoder reconstructing 24kHz audio from discrete speech tokens and speaker features.

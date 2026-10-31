@@ -1,13 +1,13 @@
-# Workstream: Gemma
+# Gemma family coverage
 
 > This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
 
-**Owner:** this file. **Last verified:** 2026-10-30.
+**Owner:** this file (moved from docs/workstreams on 2026-10-31). **Last verified:** 2026-10-30.
 **Evidence:** [../done/2026-10-11-llm-reply-sanity-check.md](../done/2026-10-11-llm-reply-sanity-check.md) (the Gemma 2 fix record). **Card:** [../models/gemma.md](../models/gemma.md). **Status row:** [../STATUS.md](../STATUS.md).
 
 ## Correct state
 
-- **Gemma 2 (`gemma2`):** on the admitted list since the first release. Before the 2026-10-11 fix its output was incoherent, and the sanity check (`76def766`) called that "not a recent regression". The descriptor had no model semantics. The fix (`4a6027a6`) added the embedding scale, GeGLU, alternating sliding-window layers, and attention and final logit softcapping. Checked against llama-server on gemma-2-2b-it Q4_K_M: two cases exact (48/48), one near-tie (46/48, both misses inside the reference's own margin). **CPU only.** Vulkan and CUDA attention have no softcap, so the descriptor refuses them.
+- **Gemma 2 (`gemma2`):** on the admitted list since the first release. Before the 2026-10-11 fix its output was incoherent, and the sanity check (`76def766`) called that "not a recent regression". The descriptor had no model semantics. The fix (`4a6027a6`) added the embedding scale, GeGLU, alternating sliding-window layers, and attention and final logit softcapping. Checked against llama-server on gemma-2-2b-it Q4_K_M: two cases exact (48/48), one near-tie (46/48, both misses inside the reference's own margin). **CPU only.** Vulkan and CUDA attention have no softcap, so the descriptor records a `BackendLimitation` for them (checked 2026-10-31; enforcement at load was not confirmed).
 - **Gemma 1 (`gemma`):** has an architecture descriptor (`GemmaArchitectures.cs`). No golden, no local checkpoint, no STATUS row. It was on the admitted list from the registry migration (`71619b9d`). Whether it ever worked is not recorded.
 - **Gemma 3 and Gemma 4 E4B:** STATUS rows exist with dated evidence.
 

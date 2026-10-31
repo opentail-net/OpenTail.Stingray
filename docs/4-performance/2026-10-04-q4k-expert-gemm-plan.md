@@ -1,6 +1,6 @@
 # Q4_K (and Q6_K) GEMM for CPU MoE expert prefill
 
-**Workstream:** [CPU performance](../workstreams/cpu-performance.md).
+**Thread:** [CPU performance](perf-sweep-plan.md).
 
 ## Checklist (2026-10-30; code checked)
 
