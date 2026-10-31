@@ -82,3 +82,9 @@ The MLAS and XNNPACK points come from commit and PR descriptions. The tinyBLAS t
 - [oneDNN: nuances of int8 computations](https://www.intel.com/content/www/us/en/docs/onednn/developer-guide-reference/2025-1/nuances-of-int8-computations.html)
 - [T-MAC paper, arXiv 2407.00088](https://arxiv.org/html/2407.00088v2)
 - [Arm learning path: XNNPACK QD8 kernels](https://learn.arm.com/learning-paths/mobile-graphics-and-gaming/integrate-kleidiai-kernel-xnnpack-qd8-f16-qc4w/)
+
+---
+
+## Research findings (2026-10-30)
+
+Not re-verified in this pass. I did not check the `_4In` dot naming or the Q8_0 routing claims, the tinyBLAS tile shapes, or the ik_llama.cpp and T-MAC numbers. The next research step is to read `examples/llama.cpp` (ggml-cpu `sgemm.cpp`, `tinyBLAS_Q0_AVX`) and check the tile claims line by line, and to re-fetch the listed sources. Nothing in the Vulkan or CUDA findings changes this doc's ranking.

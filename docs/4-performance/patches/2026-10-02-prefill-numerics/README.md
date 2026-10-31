@@ -48,3 +48,9 @@ after applying the patch. Run **one at a time** (memory; see the timing-under-co
 | `ggmlx` | `model.gguf <tools/llama.cpp dir>` | Calls the vendored ggml directly (`ggml_get_type_traits`/`_cpu`: Q8_K quantizer, `vec_dot`, `to_float`): activation-quantization and projection error, ggml Q8_K vs Stingray Q8_KS, against an FP64 dot; plus `Q1_0`/`Q2_0` dequant vs ggml bit for bit. Needs no engine patch. Q8_K has no `to_float` in ggml's traits (an intermediate-only type), so the harness dequantizes it itself |
 
 `prompts.tsv`: `class<TAB>maxTokens<TAB>chat|raw<TAB>text-or-@file`.
+
+---
+
+## Research findings (2026-10-30)
+
+Not checked in this pass. The patch and harnesses were not applied or built. The README's own warning ("expect fuzz later") still applies: the patch targets `HybridGdnForwardPass.cs` as it stood on 2026-10-02, and that file has changed. `git apply --check` against the current tree is the cheapest next step.

@@ -187,3 +187,35 @@ Much of the architecture can be validated without owning the target cards:
 - Keep correctness fixtures separate from performance benchmarks, especially for chunked versus unchunked attention and quantized matmul tolerances.
 
 None of these conclusions establishes whether OpenTail is presently faster than llama.cpp. That comparison requires controlled, interleaved end-to-end measurements once the environment is quiet.
+
+---
+
+## Research findings (2026-10-30)
+
+Checked against the working tree on 2026-10-30. Code excerpts are in [research/2026-10-30-capability-gating-snippets.md](research/2026-10-30-capability-gating-snippets.md). The text above describes the 2026-10-14 state; this section says what has changed and what still holds.
+
+| # | Finding | Status 2026-10-30 | Evidence |
+|---|---|---|---|
+| 1 | CUDA monolithic module breaks sub-Ampere devices | **Still live, and wider than stated.** The gate exists but nothing calls it. The defect also covers Turing (sm_75), not only Pascal. | `CudaBackend.cs` ~7204 (`--gpu-architecture=sm_{_smVersion}`); `CudaTextKernels.cs` 2623 and 7586 (sm_80-class `mma.sync`); `CudaDeviceCaps.cs` has `CanCompileMonolithicModule`, referenced nowhere else |
+| 2 | Vulkan capability is extension-name based; features set to true | **Confirmed.** No feature query before device creation. Core-promoted features (1.1 `16bit_storage`, 1.2 `float16_int8`) are missed if the name is not listed. | `VulkanBackend.cs` ~384-386, ~457-463; no `vkGetPhysicalDeviceFeatures2` in `src/OpenTail.Stingray.Vulkan` |
+| 3 | Q5_K and Q6_K prefill use `MatMulBatchedGemm` (full FP16 dequant round trip) | **Partly stale.** Q6_K has a repacked MMQ prefill path (`llm_mmq_q6k_soa_acts_n16`), used when eligible. The fallback for ineligible shapes is `MatMulBatchedWeightStationary`, not `MatMulBatchedGemm`. Q5_K's route was not traced in this pass. | `CudaBackend.cs` 2684-2697 (eligibility: SoA-registered, `cols & 0xff == 0`, `nTok >= 5`, `rows >= 2048`); `MatMulBatchedGemm` dequant to `_gemmWf16Buf` at ~2820-2830 (confirmed) |
+| 4 | GPU kernel-plan layer needed | Design proposal, nothing to verify. `CudaDeviceCaps` is the first piece of it. | — |
+| 5 | Vulkan cooperative matrix detected but unused | **Confirmed unused** (not in the enabled extension list). **For this machine it does not apply:** RADV exposes the extension only on RDNA3 and newer, and this iGPU is Vega-class (gfx90c). | `VulkanBackend.cs` ~384 (read only); vendor facts from WebSearch (Phoronix RADV coop-matrix articles, AMD Adrenalin 23.7.1 notes) |
+| 6 | Subgroup-size pin is overbroad; no subgroup intrinsics in use | **Partly wrong.** The pin is already conditional: it needs `VK_EXT_subgroup_size_control`, 32 inside the device range, a range that is not exactly 32, and `local_size_x % 32 == 0`. On a device whose range is exactly 64 (the device comment at `Shaders.cs` ~4622) it does not fire. Subgroup intrinsics **are** used: `FlashAttention128` and two more attention shaders use `subgroupShuffleXor`. | `ComputePipeline.cs` 67-70; `Shaders.cs` ~10580-10622, ~10732, ~10883 |
+| 7 | Vulkan batched matmul coverage narrow (Q4_K and Q6_K only) | **Stale.** Path 2 serves Q4_K and Q6_K (cap `TiledQ4KBn`); Path 3 `SgemmQuant` covers Q3_K, Q4_K, Q5_K and Q6_K (see the leads plan, 2026-10-11). | `VulkanBackend.cs` 3177-3183; `leads-plan` Lead 2 entry 2026-10-11 |
+
+### Vendor facts checked (WebSearch, 2026-10-30)
+
+- Vulkan promotion: `VK_KHR_16bit_storage` into core 1.1; `VK_KHR_shader_float16_int8` and `VK_KHR_8bit_storage` into core 1.2 (Vulkan Guide, Khronos registry). Finding 2's concern is real for devices that do not enumerate the extension name.
+- Cooperative matrix on AMD: RADV exposes it on RDNA3 (GFX11) and newer; GCN parts (Vega, Polaris) are not listed. Finding 5's "largest long-term Vulkan opportunity" is an RDNA3+/RDNA4 item, not a Vega one.
+
+### Not verified (and why)
+
+- **PTX arch requirements** (finding 1: `mma.sync m16n8k16 f16` and `m16n8k32 s8` need sm_80; `m16n8k8 f16` and `m8n8k16 s8` are the Turing shapes). The NVIDIA PTX ISA page is too long for the fetch tool to reach the `mma` section (WebFetch returned the table of contents only, and the tool has no offset option). The sm_80 claim comes from `CudaDeviceCaps.cs`, which cites the ISA, and from one community example. **To settle:** read the `mma` section of the PTX ISA PDF, or run NVRTC with `-arch=sm_75` on the module and read the error.
+- Nothing has been built or run. No CUDA device is present on this machine (CLAUDE.md rule 13 applies to any timing claim).
+
+### Concrete next steps (smallest first)
+
+1. Wire `CudaDeviceCaps.CanCompileMonolithicModule` into `CompileAndLoadKernels`: when false, compile only the baseline sources. Needs a test that checks the baseline module compiles at `sm_75` (a Turing machine or NVRTC with `-arch=sm_75`).
+2. At runtime, log `MinSubgroupSize` and `MaxSubgroupSize` for the iGPU. If the range is 64-64 (as the device comment says), finding 6's pin never fires here, and the question is answered for this device.
+3. Replace extension-name detection with a feature query (sketch in the snippets file). Start with the 1.2 feature struct.

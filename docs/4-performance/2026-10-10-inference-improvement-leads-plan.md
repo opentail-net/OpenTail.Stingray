@@ -334,3 +334,16 @@ decode 9.5 / 9.5 -> 10.9 / 10.9 t/s (+15%), prefill unchanged (12.6 t/s: it does
 ### A8 partial, B3b finding, 2026-10-11
 Qwen3-4B-Q4_K_M, Vulkan, Path 3 prefill (both modes), 1,915-token context, 48 greedy tokens, alternating A/B of the decode kernel: decode 3.3 / 3.3 t/s -> 10.9 / 11.0 t/s (3.3x), text identical.
 Prefill at that length with Path 3 was 41.3 t/s (71.3 at 493 tokens): the attention share of prefill grows with context (item B3b).
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code:
+
+- **Path 2 and Path 3 status matches the status board.** Path 2 serves Q4_K and Q6_K (`VulkanBackend.cs` 3177-3183) and Path 3 is the default. Items B6, B9 and Lead 2 are not affected.
+- **The decode-attention naming note** (item A6, "fp16-packed ('bf16')") is confirmed by this doc itself. The same naming issue is raised in [GR_performance.md](GR_performance.md) (last bullet, "Vulkan KV naming"). The code should say FP16, not bf16.
+
+Not checked in this pass: the status-board measurements, and the claimed wiring for A6, A9 and the GQA split-KV path. Those are dated measurements that I did not re-run.
+
+Web research: the Vulkan cooperative-matrix limits (RDNA3+ only) bear on Lead 1's ggml comparison. A Vega-class iGPU cannot use that route, so for this machine the ggml reference is the non-coopmat path only.

@@ -153,3 +153,18 @@ half a day if it does not.
 1. Is an approximate-but-reproducible MoE prefill (Option A semantics, ADR-0003 applied to experts) acceptable, or must MoE prefill
    stay bit-identical to per-token decode (Option B)? Step 1 produces the evidence; this can wait until step 0 passes.
 2. Should step 0 go ahead now? (It touches no engine code.)
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code:
+
+- **The plan's premise holds.** Expert matmuls go through `SimdKernels.MatMulBatched` with `allowQ8` set from `STINGRAY_MOE_PREFILL_Q8` (`src/OpenTail.Stingray.Engine/MoeBatchedExperts.cs` line 23 and lines 95-117). `MoeBatchedExperts.cs` does not reference the repacked Q4_Kx8 GEMM, so experts take the exact path by default.
+- **The repacked kernel is used on the dense path only.** `RepackedGemm` and `GetRepackedQ4Kx8` are referenced from `ForwardPass`, `HybridGdnForwardPass` and the `Cpu` project, not from `MoeBatchedExperts`.
+
+Not checked: the step 0 go/no-go (1.4x) has not been run, and nothing has been measured. The profile shares (79%, 37/35/27%) are the plan's own and were not re-measured.
+
+Web research: nothing to add beyond the ggml and ik_llama references already in the survey doc.
+
+**Next step:** step 0 (section 5) needs no engine change and is still open. The plan has no test project yet.

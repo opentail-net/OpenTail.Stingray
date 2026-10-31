@@ -563,3 +563,17 @@ Hypotheses checked against the data:
 - **Remaining gap to the reference (about 18% per forward)** is probably the GEMM kernel itself: ggml-vulkan's matmul
   uses FP16 shared-memory tiles, ours uses FP32. A redesign is the only lever with a large upside, and it is a kernel
   project with its own numerics decision (rule: approved numerics changes are documented everywhere).
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code and vendor docs:
+
+- **Subgroup pin on this iGPU.** The FLUX handoff asks whether `ComputePipeline.ShouldPinSubgroupSize32` fires on this device. The condition is at `ComputePipeline.cs` 67-70. The device comment in `Shaders.cs` (~4622) says the subgroup is fixed at 64, so the pin does **not** fire here. That is inferred from the comment, not from a runtime query. **Confirm by logging `MinSubgroupSize` and `MaxSubgroupSize` at startup.**
+- **Cooperative-matrix GEMM (Phase 3 feasibility) does not apply to this iGPU.** RADV exposes `VK_KHR_cooperative_matrix` only on RDNA3 and newer; this machine is Vega-class (gfx90c). `VulkanBackend.cs` ~384 reads the extension but never enables it. Phase 3's FP16-tile route is the only route on this box.
+- **Attention already uses subgroup shuffles.** `FlashAttention128` (`Shaders.cs` ~10580) relies on `subgroupShuffleXor` and needs a subgroup of at least 16. Any change to the subgroup pin must keep that working.
+
+Not checked: the Qwen Image MLP-chunking, FLUX GEMM and Wan numbers. They are the doc's own measurements, and I did not re-run them.
+
+**Next checks:** log the subgroup range on the iGPU; run the Phase 1 small-M kernel against a one-row matvec loop (the plan's own benchmark) before any Phase 3 work.

@@ -240,3 +240,17 @@ Real, measured GPU-vs-CPU timing (win or not, report honestly), a real numeric p
 the existing CPU path, and (where relevant) a real audio sample re-listened-to for correctness —
 not just "the run completed without error." Update `PerformanceLeague.md` per model as each is
 picked up, following this session's own established honesty bar throughout.
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code:
+
+- **The `IForwardPass` correction for HiggsAudio is confirmed.** `HiggsGenerator.cs` (line 31) and `HiggsArStepper.cs` (line 76) take an `IForwardPass`, so the LLM backbone can run on any backend the engine supports.
+- **The baseline never used a GPU.** `tests/OpenTail.Stingray.Tests.Audio/HiggsAudioPerfBaselineDebugTest.cs` line 44 constructs `new CpuBackend()`. Swapping in `VulkanBackend` is a one-line change for the backbone.
+- **The checkpoint is absent on this machine.** `find models -iname "higgs-audio-v3-tts-4b*"` returns nothing, and the test skips without it (`Assert.SkipUnless`, line 37). **The next step is therefore blocked on a multi-GB download,** and disk space needs checking first. I did not download it.
+
+Not checked: the other seven `IForwardPass` models the doc names (VibeVoice, PersonaPlex, OmniVoice, NeuTts, VoxCpm2, QwenTTS, Orpheus). Their perf tests were not read.
+
+The Vulkan backend's behaviour on this iGPU is covered in [GR_performance.md](../GR_performance.md) and the leads plan. Dispatch overhead is measured there, not here.

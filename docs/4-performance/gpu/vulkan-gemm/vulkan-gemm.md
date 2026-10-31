@@ -540,3 +540,19 @@ Per-shape reference deficits left: MLP-up at M=1024 (65 ms vs about 78 ms: rough
   different inner-loop structure: Phase 3 territory, with its numerics decision.
 - Observation: the unchanged Q3_K kernel at K=12288 (MLP-down) varied between 96 and 117 ms across repeated runs, while the
   K=3072 shapes were stable to about 1 ms. Long-K behaviour is cache/TLB sensitive, one more reason the chunked layout helps.
+
+---
+
+## Research findings (2026-10-30)
+
+Checked in code and vendor docs. Session date 2026-10-30 (the run crossed midnight; the checks were all done in that session).
+
+- **"Path 2 declines every shape today" is stale.** `VulkanBackend.cs` 3177-3183 (`TryMatMulBatchedPath2`) serves Q4_K and Q6_K when `nTok <= TiledQ4KBn` and `cols % 256 == 0`, and declines the rest. The "Using it" table and the scaffold text describe the state before the tiled Q4_K kernel was wired. Path 3 is still the default, so routing is unchanged. **Fix the doc text, not the code.**
+- **Path 2's accuracy caveat still stands.** The doc says Path 2 is not a drop-in (per-output association differs from Path 1). That is a property of the kernel, and the code's Path 2 comment (around lines 3185-3189) is consistent with it. The perplexity gate it lists is not run.
+- **The "tiled Q6_K shader" checkbox is done in code.** `SgemmQ6K` and `VulkanBackend.SgemmQuant` exist (leads plan, 2026-10-11), and `TryMatMulBatchedPath2` already accepts Q6_K. The checkbox should be closed or re-scoped.
+- **Phase 3, cooperative matrix, is not available on this iGPU.** RADV exposes `VK_KHR_cooperative_matrix` only on RDNA3 and newer, and this is a Vega-class (gfx90c) part. The FP16 shared-tile experiment (B) and the FP16-pair dot experiment (C) need a separate check: `VK_VALVE_shader_mixed_float_dot_product` and the dot2 path are not in the device-extension list read in `VulkanBackend.cs` (~384-386). The doc says the dot2 extension is an open question; the code does not enable it.
+- **Extension-name capability detection** (see [GR_performance.md](../../GR_performance.md), finding 2) applies to every Vulkan path in this doc, including the FP16 variants. A feature query is needed before any FP16 shader is enabled.
+
+Not checked: the Phase 1 and 2(c) numbers, the Qwen Image forward times, and the reference numbers from `sd-cli`.
+
+**Next checks:** update the "Using it" table; close or re-scope the Q6_K checkbox; before any Phase 3 work, run the feature query from the snippets file to see whether the FP16 features are available on this iGPU.
