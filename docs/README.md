@@ -45,6 +45,10 @@ For maintainers and coding agents. **[00-current-work.md](00-current-work.md) is
 ordered list of open work**; the folders hold the detail docs behind its items. The folder number
 is the priority.
 
+The latest session report and proposed next plan (what was done with evidence, what was found wrong in the docs, ranked next steps,
+owner decisions) is [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). It is a report, not
+the backlog: move any item from it into 00-current-work.md when someone takes it on.
+
 | Folder | What is in it |
 |---|---|
 | [1-correctness/](1-correctness) | Bugs in what is already claimed ([bugstofix.md](1-correctness/bugstofix.md)). Most correctness items are short enough to live in 00-current-work.md itself. |
