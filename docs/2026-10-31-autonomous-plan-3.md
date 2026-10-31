@@ -20,8 +20,9 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
 
 Decisions taken on the owner's behalf, all reversible: `CreateContext` kept unused; `FairModelScheduling` stays off (measured a net loss on the CPU: worst decode gap 1,183 ms against 81 ms, wall time 12% worse); dense-llama admission kept; Qwen3-Coder row uses a 0.97 per-step floor plus median above 0.999; the hybrid refuses scaled models; the planner notes CPU-only architectures; API choices (400 for `n != 1` and out-of-range sampling values, `tool_choice` any/tool refused, chunk size 0 means auto, the error envelope gained a nested `error` object additively).
 
+Closed: the superseded PR #81 (its file was taken over by #92; closed 2026-10-31 after a diff against `main`).
+
 Open for the owner:
-- Close the superseded PR #81 (the other session's partial P8; P8 was finished in #92)
 - Q2: implement the scales in the hybrid, or keep refusing Granite and Gemma 3
 - Q3: implement GPU soft-capping, or keep gemma2 CPU-only
 - Q4 `startPos > 0`: worth building only if long follow-up prompts matter
