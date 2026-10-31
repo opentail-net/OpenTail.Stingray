@@ -117,6 +117,8 @@ public sealed unsafe class SimdKernelsLegacyQ8_1Tests
     public void FastKernels_AreFasterThanDequantFallback()
     {
         const int rows = 17408, cols = 5120;
+        const int MaxAttempts = 3;
+        const double MinSpeedup = 1.0;
         var rng = new Random(0x8871);
         var report = new System.Text.StringBuilder();
         var failures = new List<string>();
@@ -134,39 +136,46 @@ public sealed unsafe class SimdKernelsLegacyQ8_1Tests
             fixed (float* ofPtr = outFast)
             fixed (float* obPtr = outFallback)
             {
-                const int trials = 7;
-                const int itersPerTrial = 10;
-                var fastTimes = new double[trials];
-                var fallbackTimes = new double[trials];
-
-                for (int w = 0; w < 5; w++)
+                // Contention only ever slows a trial down, so a fast kernel that is really ~5x faster can still miss 1.0x when a burst
+                // of other work lands on every trial of one attempt (seen once in five full-suite runs under load). Independent
+                // attempts make that vanishingly unlikely without weakening the claim; a genuinely slow kernel fails all of them.
+                for (int attempt = 1; attempt <= MaxAttempts; attempt++)
                 {
-                    fastMatVec((nint)ofPtr, (nint)wPtr, (nint)iPtr, rows, cols);
-                    SimdKernels.MatVecDequantFallback(obPtr, wPtr, iPtr, rows, cols, dtype);
+                    const int trials = 7;
+                    const int itersPerTrial = 10;
+                    var fastTimes = new double[trials];
+                    var fallbackTimes = new double[trials];
+
+                    for (int w = 0; w < 5; w++)
+                    {
+                        fastMatVec((nint)ofPtr, (nint)wPtr, (nint)iPtr, rows, cols);
+                        SimdKernels.MatVecDequantFallback(obPtr, wPtr, iPtr, rows, cols, dtype);
+                    }
+
+                    for (int t = 0; t < trials; t++)
+                    {
+                        var swFast = System.Diagnostics.Stopwatch.StartNew();
+                        for (int it = 0; it < itersPerTrial; it++) fastMatVec((nint)ofPtr, (nint)wPtr, (nint)iPtr, rows, cols);
+                        swFast.Stop();
+                        fastTimes[t] = swFast.Elapsed.TotalMilliseconds / itersPerTrial;
+
+                        var swFallback = System.Diagnostics.Stopwatch.StartNew();
+                        for (int it = 0; it < itersPerTrial; it++) SimdKernels.MatVecDequantFallback(obPtr, wPtr, iPtr, rows, cols, dtype);
+                        swFallback.Stop();
+                        fallbackTimes[t] = swFallback.Elapsed.TotalMilliseconds / itersPerTrial;
+                    }
+
+                    Array.Sort(fastTimes);
+                    Array.Sort(fallbackTimes);
+                    double fastMs = fastTimes[0]; // min, not median: noise only ever slows a trial down, never speeds it up
+                    double fallbackMs = fallbackTimes[0];
+                    double speedup = fallbackMs / fastMs;
+                    report.AppendLine($"{label} rows={rows} cols={cols}: fallback={fallbackMs:F3}ms fast={fastMs:F3}ms " +
+                        $"speedup={speedup:F2}x (min of {trials} trials, {itersPerTrial} iters each)");
+                    if (speedup > MinSpeedup) break;
+                    if (attempt == MaxAttempts)
+                        failures.Add($"{label}: speedup={speedup:F2}x is not > {MinSpeedup:F1} after {MaxAttempts} attempts");
                 }
-
-                for (int t = 0; t < trials; t++)
-                {
-                    var swFast = System.Diagnostics.Stopwatch.StartNew();
-                    for (int it = 0; it < itersPerTrial; it++) fastMatVec((nint)ofPtr, (nint)wPtr, (nint)iPtr, rows, cols);
-                    swFast.Stop();
-                    fastTimes[t] = swFast.Elapsed.TotalMilliseconds / itersPerTrial;
-
-                    var swFallback = System.Diagnostics.Stopwatch.StartNew();
-                    for (int it = 0; it < itersPerTrial; it++) SimdKernels.MatVecDequantFallback(obPtr, wPtr, iPtr, rows, cols, dtype);
-                    swFallback.Stop();
-                    fallbackTimes[t] = swFallback.Elapsed.TotalMilliseconds / itersPerTrial;
-                }
-
-                Array.Sort(fastTimes);
-                Array.Sort(fallbackTimes);
-                double fastMs = fastTimes[0]; // min, not median: noise only ever slows a trial down, never speeds it up
-                double fallbackMs = fallbackTimes[0];
-                double speedup = fallbackMs / fastMs;
-                report.AppendLine($"{label} rows={rows} cols={cols}: fallback={fallbackMs:F3}ms fast={fastMs:F3}ms " +
-                    $"speedup={speedup:F2}x (min of {trials} trials, {itersPerTrial} iters each)");
-                if (speedup <= 1.0)
-                    failures.Add($"{label}: median speedup={speedup:F2}x is not > 1.0");
             }
         }
 
@@ -178,7 +187,7 @@ public sealed unsafe class SimdKernelsLegacyQ8_1Tests
         // SimdKernels.MatVec's dispatch switch. Its equivalence test above still runs.
 
         Console.WriteLine(report.ToString());
-        Assert.True(failures.Count == 0, "Median speedup <= 1.0x for: " + string.Join("; ", failures) +
+        Assert.True(failures.Count == 0, "Speedup not above the bar for: " + string.Join("; ", failures) +
             "\n" + report);
     }
 }

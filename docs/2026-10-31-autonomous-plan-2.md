@@ -17,10 +17,14 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 | P4 | Measure the fair gate (two resident models, interleaved, 3 runs) | numbers in plan 032 slice 5 |
 | P5 | OpenTelemetry: allow-list test over every instrument and span, server canary | both tests mutation-checked |
 | P6 | CI: add `Audio.Fast` and `Vulkan.Fast` to the CPU-safe job and the release job (floors 70 and 38) | both suites run in CI; merged only if the workflow change is green |
-| P7 | Audit the server for request parameters that are accepted but ignored (read first: the request DTOs and where each field is used) | a list; every accepted-but-ignored field either gets an explicit error / reported-as-ignored response or a recorded reason |
-| P8 | Cancellation reaches the engine: a test that an HTTP disconnect or a cancelled token during decode stops generation and frees the slot (read first: whether such a test already exists) | test mutation-checked, or the existing one cited |
+| P7 | Audit the parameters Stingray documents as supported on the OpenAI and Anthropic endpoints (read first: the request DTOs and where each field is used). Do **not** reject unknown JSON properties: clients send vendor fields and that must keep working | a list of documented parameters; each is implemented, or rejected / reported as ignored, or has a recorded reason |
+| P8 | Cancellation, end to end through real HTTP: start a generation, wait until it has begun, disconnect the client, check cancellation reaches the engine's active operation, the concurrency slot is released, the next request completes, and no session or runtime handle leaks. A GPU kernel already running need not stop at once (read first: `ConcurrencyLimitTests`, `ModelRuntimeManagerTests`, `ServerTests`, which mention cancellation) | the test, mutation-checked, or the existing one cited |
+| P9 | Reproducibility helper: a small shared PowerShell function used by the benchmark scripts, printing commit and dirty state, model file name and identity, binary/build configuration, backend and device, context and generation settings, input and run count, date. Identify the model by size and modified time plus a hash cached per experiment; never rehash a 12 GB file per run | the Performance League scripts print it; one worked example |
+| P10 | `stingray config --show`, narrow: recognised `STINGRAY_*` settings that are set, with value (redacted where sensitive), source (default, environment, CLI) and class from the inventory; says so where the effective value cannot yet be resolved. Not a configuration framework | prints for a real command line; a test over redaction |
 
-Order: P1, P1b, P6, P2, P3, P7, P8, P4, P5. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
+Order: P1, P1b (split: hygiene first, the Qwen3-Coder row as its own correctness result), P6, P2, P3, P7, P8, P4, P5, P9, P10. P9 and P10 may move up only if they prove genuinely small; they do not displace correctness work.
+
+Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet. Each ends in its own merged PR, `Tests.Core` run before every merge. A stalled item is documented and the
 next one started.
 
 ## Progress
@@ -49,6 +53,24 @@ step 18 cosine 0.97997 (all other steps above 0.9966). That is a MoE model; the 
 exists, so it does not run there. I did not run the old build on that row, so "pre-existing" is an inference from the code path, not a
 measurement; it is carried as an open finding (P2 housekeeping).
 
+### P6 - fast suites in CI: done (PR 74, 2026-10-31)
+
+`Audio.Fast` (floor 70, 94 discovered) and `Vulkan.Fast` (floor 38, 48 discovered) now run in `ci.yml` and `release.yml`. The
+first CI run failed: `WhisperPipeline_TranscribeWithVad_SuccessfullyPrunesSilence` needs `silero_vad.onnx` and threw on the
+model-free runner. It passed here only because the model is on disk. It now skips visibly, and both suites were also run from copies
+outside the repo so no `models/` folder was reachable (Audio.Fast 94 total, 5 skipped, 0 failed; Vulkan.Fast 48 passed). The second CI
+run was green.
+
+### P1b - housekeeping: two of three done (2026-10-31)
+
+- `LtxVaeNoiseIsolationTest` writes to the temp directory. Ran for real (11 s, 1 passed, not skipped) and `git status` stayed clean.
+  The tracked png stays as the evidence for `docs/done/077`. Other Diffusion tests still write curated samples into
+  `docs/diffusion-samples` on purpose (rule 9).
+- `SimdKernelsLegacyQ8_1Tests.FastKernels_AreFasterThanDequantFallback`: idle speedup is 4.9x to 5.5x (3 runs), so the 1.0x bar only
+  fails when contention hits every trial of an attempt. It now allows three independent attempts and fails only if all three miss.
+  Mutation-checked: with the bar at 100x it ran three attempts and failed; at 1.0x it passes. The Q8_0 sibling already only prints.
+- Heavy `HybridCpuPrefillHandoffTests` with the warm-up: 24 tests, 1 failed, 1 skipped, 80 minutes. The one failure is the
+  Qwen3-Coder-30B `-g 4` slots-16 row; diagnosis follows.
 ## Review of the strategic gap analysis (2026-10-31, ChatGPT follow-up)
 
 The follow-up asked for 18 gaps and then, on being asked what is realistic, cut them down. I checked what could be checked against the
