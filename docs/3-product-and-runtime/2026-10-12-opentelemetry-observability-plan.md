@@ -149,9 +149,9 @@ Rules for the awkward cases: a cancelled or disconnected request records outcome
 |---|---|---|---|
 | `opentail.engine.prefill.duration`, `opentail.engine.prefill.tokens` | histogram, s and `{token}` | model, backend | Prompt-processing time and input tokens. Prefill throughput = input tokens / prefill time |
 | `opentail.engine.decode.duration`, `opentail.engine.decode.tokens` | histogram, s and `{token}` | model, backend | Generation time and output tokens. Decode throughput = output tokens / decode time |
-| `opentail.engine.model.load.duration` | histogram, s | model, backend |
-| `opentail.engine.kv_cache.bytes` | observable gauge, By | model, backend |
-| `opentail.engine.batch.size`, `opentail.engine.sequences.active` | histogram / gauge | model, only where continuous batching exposes them |
+| `opentail.engine.model.load.duration` | histogram, s | model, backend | Time to load the model |
+| `opentail.engine.kv_cache.bytes` | observable gauge, By | model, backend | Bytes held by the KV cache |
+| `opentail.engine.batch.size`, `opentail.engine.sequences.active` | histogram / gauge | model | Batch size and active sequence count, only where continuous batching exposes them |
 | `opentail.engine.speculative.drafts`, `.draft_tokens`, `.accepted_tokens` | counters | model, mode (draft model, lookup, MTP) | Phase 4 at the earliest. Cumulative counters, not a per-request ratio: acceptance rate is derived as `rate(accepted_tokens) / rate(draft_tokens)`. vLLM exports the same shape (`vllm:spec_decode_num_drafts`, `_num_draft_tokens`, `_num_accepted_tokens`), which is a useful precedent. **Not exported until drafts, drafted tokens and accepted tokens (and what counts as committed) have a precise written definition for each decoding mode**, so the number is comparable across modes. The existing `EngineEvents` MTP step events are the likely source |
 | `opentail.engine.speculative.accepted_tokens_by_position` | counter | model, mode, `position` | Bounded by the lookahead length (a small fixed number), so cardinality stays low. vLLM and llama.cpp both export an accepted-tokens-per-position series (`spec_decode_num_accepted_tokens_per_pos`); it shows where drafts stop being accepted |
 | `opentail.engine.prefix_cache.hits`, `opentail.engine.prefix_cache.shared_tokens` | counters | model | From the existing `ContinuousBatchingEngine` counters; hit rate is derived, not exported |
