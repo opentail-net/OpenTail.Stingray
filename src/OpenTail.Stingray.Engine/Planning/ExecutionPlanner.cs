@@ -30,6 +30,16 @@ public static class ExecutionPlanner
         var (selectedBackend, backendDeviceName) = SelectBackend(
             model, request, capabilities, decisions, warnings);
 
+        // An explicit GPU request that the architecture cannot honour runs on the CPU (the descriptor says so); say that instead of
+        // dropping it silently. Only when the user did not pin a backend of their own.
+        if (selectedBackend == ForwardPassBackend.Cpu && request.PinnedGpuLayers is { } pinnedLayers && pinnedLayers != 0
+            && (string.IsNullOrEmpty(request.PinnedBackend) || string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
+            && ArchitectureRegistry.Find(model.Semantics.Architecture) is { } cpuOnly
+            && (cpuOnly.Capabilities.Backends & (SupportedBackends.Cuda | SupportedBackends.Vulkan)) == 0)
+        {
+            warnings.Add(CpuOnlyArchitectureWarningPrefix + $"GPU layers were requested ({pinnedLayers}) but '{model.Semantics.Architecture}' runs on the CPU: {cpuOnly.BackendLimitation}");
+        }
+
         // 2. Context Size Selection
         int ctxSize = ResolveContextSize(
             model.PlanningFacts, resolvedGoal, request.PinnedContextSize, decisions, warnings);
@@ -400,6 +410,9 @@ public static class ExecutionPlanner
     }
 
     private static string KvDtypeEnvName(string pinned) => ExecutionPlan.KvDtypeToEnvValue(pinned);
+
+    /// <summary>Prefix of the plan warning raised when explicit GPU layers are overridden because the architecture is CPU-only.</summary>
+    public const string CpuOnlyArchitectureWarningPrefix = "cpu_only_architecture: ";
 
     private static (ForwardPassBackend Backend, string DeviceName) SelectBackend(
         ModelDescription model,

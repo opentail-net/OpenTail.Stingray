@@ -191,6 +191,9 @@ public sealed partial class RunCommand : Command<RunCommand.Settings>
 
                 request = ExecutionRequestEnvironment.ApplyTo(request);
                 resolvedPlan = ExecutionPlanner.Plan(modelDesc, request, capabilities);
+                foreach (string warning in resolvedPlan.Warnings)
+                    if (warning.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal))
+                        AnsiConsole.ErrorLine($"[yellow]Note:[/] {Markup.Escape(warning[ExecutionPlanner.CpuOnlyArchitectureWarningPrefix.Length..])}");
 
                 if (settings.Auto)
                 {

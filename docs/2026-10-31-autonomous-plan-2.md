@@ -49,12 +49,12 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 20:
   - [x] `ci.yml` (floors 70 and 38) (PR 74)
   - [x] `release.yml` (PR 74)
   - [x] Whisper+VAD test skips visibly without `silero_vad.onnx` (PR 74)
-- [ ] **P2** Handoff receipts on the Vulkan hybrid (Qwen2.5 done; Granite open; P2b opened) (one passing permanent row each; a failing family stays Unverified with its cosine recorded)
+- [ ] **P2** Handoff receipts on the Vulkan hybrid (Qwen2.5 done; Phi-3 and gemma-2 recorded; P2b done; Granite open: needs a dense Granite text checkpoint) (one passing permanent row each; a failing family stays Unverified with its cosine recorded)
   - [x] Qwen2.5 (receipt on the Vulkan hybrid; three permanent rows)
   - [x] Phi-3: tried, cannot run on the hybrid (fused `attn_qkv`, full offload only), stays Unverified; the full-GPU handoff path for it is untested
   - [x] gemma-2: tried, fails (min cosine 0.90 handoff vs sequential); the cause is the Vulkan hybrid and full GPU passes, not the handoff (see P2b); stays Unverified
   - [ ] Granite: the only dense checkpoint on the drives is the Granite Vision 3.2 LM, which fails like gemma-2 and has a CPU perplexity of 1,135 on plain text (itself suspicious); needs a dense Granite text checkpoint (`stingray pull`) before this can be answered
-  - [ ] **P2b** The Vulkan GPU passes accept gemma2 and granite but do not match the CPU: gemma-2 full-GPU perplexity 15.38 against 12.58; hybrid decode cosine about 0.80 against the CPU. The dense GPU path has no attention or final-logit soft-cap (`FinalLogitSoftcap` and `AttnLogitSoftcap` are read into the hyperparameters and applied only in the Gemma 4 trunk). Either refuse such models on the GPU with a clear reason (and make the planner fall back to the CPU) or implement soft-capping; first find who consults `GpuForwardPass.UnsupportedReason` today (nobody in `src/` calls it outside the partial-offload check)
+  - [x] **P2b** Silent GPU degradation for CPU-only architectures. Found: real runs were already safe (the gemma2 descriptor declares `SupportedBackends = Cpu` and the planner falls back to the CPU for `-g 8` and `-g -1`), but the override was silent, `stingray plan` reported 26 GPU layers (it did not consult the descriptor), and `perplexity -g -1` built the GPU pass directly and measured a 22 percent worse gemma-2 without saying so. Fixed: the planner raises a `cpu_only_architecture` warning when explicit GPU layers are overridden, `run` prints it as one note, `plan` consults the descriptor (and shows the reason), and `perplexity -g -1` refuses a CPU-only architecture. Tests: 3 planner and 3 plan tests, four production mutations each fail tests; the `run` note and the perplexity refusal were checked by hand only. Not changed: code that constructs the GPU passes directly (tests, library users) still accepts gemma2, and the dense GPU path still lacks soft-capping
   - Note: SmolLM2 and Mistral-7B were no longer in `models/` at 17:27 and are on no `_models` drive; re-pull before A/B work that needs them
 - [ ] **P3** Close the llama receipt gaps
   - [ ] Context above 1024 (`STINGRAY_HANDOFF_TEST_CTX`)
@@ -171,7 +171,7 @@ To see whether the two failures were the handoff, the three-way diagnostic compa
 | gemma-2-2b-it | min 0.78286, 40 of 40 below | min 0.79863, 40 of 40 | min 0.89898, 40 of 40 |
 | Granite vision 3.2 LM | min 0.69092, 40 of 40 | min 0.81136, 40 of 40 | min 0.69543, 40 of 40 |
 
-So for gemma-2 and Granite the hybrid itself disagrees with the CPU pass, before any handoff is involved. Perplexity of the full GPU pass against the CPU on 384 tokens
+So for gemma-2 and the Granite vision LM the hybrid itself disagrees with the CPU pass, before any handoff is involved. For gemma-2 the cause is the missing soft-capping; for the Granite checkpoint nothing is established (its CPU perplexity on plain text is 1,135, so the comparison says little). Perplexity of the full GPU pass against the CPU on 384 tokens
 of `scripts/kvarn-gate/wiki.test.raw` separates "different numbers" from "worse model": Qwen2.5-1.5B 11.07 against 11.19 (the control, bf16 KV), gemma-2 15.38
 against 12.58 (about 22 percent worse), Granite vision LM 1,172.7 against 1,135.7. With a 14-token prompt the greedy text is identical on the CPU, the hybrid and the
 full GPU, so the degradation is in the numbers, not visible in a short answer. Gemma 2 defines both an attention and a final-logit soft-cap; the dense GPU path applies neither.

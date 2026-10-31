@@ -335,12 +335,21 @@ public sealed record StaticPlanReport(
         bool deviceNone = string.Equals(device, "none", StringComparison.OrdinalIgnoreCase);
         if (deviceNone) gpuLayers = 0;
         string requested = config.Get<string>("backend").ToLowerInvariant();
-        string selected = requested == "auto" ? (gpuLayers == 0 ? "cpu" : cuda ? "cuda" : vulkan ? "vulkan" : "cpu") : requested;
+        // The architecture's declared backends (ArchitectureDescriptor.SupportedBackends) decide first, exactly as ExecutionPlanner does;
+        // without this the report said "26 GPU layers" for a model whose real run is CPU-only.
+        var archDescriptor = ArchitectureRegistry.Find(arch);
+        bool archCuda = archDescriptor is null || (archDescriptor.Capabilities.Backends & SupportedBackends.Cuda) != 0;
+        bool archVulkan = archDescriptor is null || (archDescriptor.Capabilities.Backends & SupportedBackends.Vulkan) != 0;
+        string selected = requested == "auto" ? (gpuLayers == 0 ? "cpu" : cuda && archCuda ? "cuda" : vulkan && archVulkan ? "vulkan" : "cpu") : requested;
         var decisions = new List<StaticPlanDecision>();
         bool selectedAvailable = backends.Any(x => x.Name == selected && x.Status == "available");
         bool backendNameValid = requested is "auto" or "cpu" or "cuda" or "vulkan";
         decisions.Add(new("backend", backendNameValid && selectedAvailable, !backendNameValid ? $"Rejected unknown backend '{requested}'." : selectedAvailable ? $"Selected {selected} from {config.Values["backend"].Source}." : $"Rejected {selected}: it is unavailable."));
         var configurationDiagnostics = config.Diagnostics.ToList();
+        if (requested == "auto" && gpuLayers != 0 && selected == "cpu" && !archCuda && !archVulkan)
+            configurationDiagnostics.Add(new("ignored", "gpu_layers", $"'{arch}' runs on the CPU: {archDescriptor?.BackendLimitation}"));
+        if ((requested == "cuda" && !archCuda) || (requested == "vulkan" && !archVulkan))
+            decisions.Add(new("architecture_backend", false, $"'{arch}' does not support the {requested} backend: {archDescriptor?.BackendLimitation}"));
         if (!backendNameValid)
             configurationDiagnostics.Add(new("invalid", "backend", "Expected auto, cpu, cuda, or vulkan."));
         if (deviceNone && config.Get<int>("gpu_layers") != 0)
