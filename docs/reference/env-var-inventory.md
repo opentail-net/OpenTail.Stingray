@@ -289,25 +289,25 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_ACT_SOA` | experimental | |
-| `STINGRAY_ACT_SOA_CPA` | experimental | |
-| `STINGRAY_ATTN_WAVE_BUDGET_MB` | experimental | |
-| `STINGRAY_BATCH_DECODE_WS_V2` | experimental | |
-| `STINGRAY_CUDA13` | experimental | |
-| `STINGRAY_CUDA_PRECISION` | experimental | |
-| `STINGRAY_DECODE_MMQ_BM32` | experimental | |
-| `STINGRAY_GPU_ARGMAX` | experimental | |
-| `STINGRAY_Q40_DP4A` | experimental | |
-| `STINGRAY_Q6K_DECODE_MMQ` | experimental | |
-| `STINGRAY_Q80_DP4A` | experimental | |
+| `STINGRAY_ACT_SOA` | experimental | `=1` makes the CUDA prefill MMQ over SoA-repacked weights read activations from the SoA Q8_1 layout. Bit-identical; default off until an end-to-end win is proven. No effect for AoS-weight prefill. |
+| `STINGRAY_ACT_SOA_CPA` | experimental | `=1` routes the Q8_0/Q4_0 CUDA prefill MMQ through cp.async double-buffered kernels (sm_80 and newer; scalar fallback below). Bit-identical. Default off: a +10-15% kernel-level win on probe shapes but end-to-end neutral on the real 48-layer prefill (matmul 74 to 73 ms), per the source comment. |
+| `STINGRAY_ATTN_WAVE_BUDGET_MB` | experimental | Positive integer, default 256: scratch budget in MiB for the CUDA attention wave scratch buffer. |
+| `STINGRAY_BATCH_DECODE_WS_V2` | experimental | `=0` restores the earlier byte-gather Q6_K weight-stationary batched-decode kernel instead of the word-load plus funnel-shift one (bit-identical either way). Default on. |
+| `STINGRAY_CUDA13` | experimental | `=1` makes the CUDA library resolver probe the CUDA 13 DLL pair first and fall back to the other major only if it is absent. Otherwise the other major is probed first. |
+| `STINGRAY_CUDA_PRECISION` | experimental | Overrides the cuBLAS GEMM compute type: `fp32`, `fp16`, `bf16`, `fp8` or `fp8e4m3`. Unrecognised values fall back to auto-detection by compute capability (fp8 on sm_90+ with CUDA 12 or newer, bf16 on sm_80+, fp16 on sm_53+, else fp32). Affects only the cuBLAS path; custom NVRTC kernels keep fp32 accumulators. |
+| `STINGRAY_DECODE_MMQ_BM32` | experimental | `=0` forces the BM=64 decode-MMQ tile for all shapes. BM=32 is on by default for grid-starved low-row shapes; output is bit-identical. |
+| `STINGRAY_GPU_ARGMAX` | experimental | `=0` forces the legacy full-vocab logits download instead of the on-device greedy argmax (8 bytes per token, bit-exact for finite logits). Default on. |
+| `STINGRAY_Q40_DP4A` | experimental | `=0` routes Q4_0 CUDA decode matvecs through the fp32 matvec instead of the dp4a/Q8_1 kernel. Default on; the dp4a path is argmax-stable, not bit-exact. |
+| `STINGRAY_Q6K_DECODE_MMQ` | experimental | `=0` disables the Q6_K decode-MMQ tile; Q6_K trunk shapes then use the bit-exact weight-stationary matvec. Default on. |
+| `STINGRAY_Q80_DP4A` | experimental | `=0` routes Q8_0 CUDA decode matvecs through the fp32-decode kernel instead of the dp4a/Q8_1 kernel. Default on; the dp4a path is argmax-stable, not bit-exact. |
 
 ## OpenTail.Stingray.Cuda, OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BATCH_DECODE_MMQ` | experimental | |
-| `STINGRAY_PREFILL_MMQ` | experimental | |
-| `STINGRAY_TRUNK_MATVEC_FAST` | experimental | |
+| `STINGRAY_BATCH_DECODE_MMQ` | experimental | Tri-state for the MMQ path in CUDA batched decode. Unset: on for multi-user continuous batching, off for speculative verify (which must stay bit-exact). `0`: off everywhere. `1`: on everywhere including spec-verify (argmax-stable; perf A/B only). |
+| `STINGRAY_PREFILL_MMQ` | experimental | `=0` reverts CUDA prefill from the MMQ path to the cuBLAS GEMM path (MMQ drops the fp16 weight temporary). Default on, under the prefill-GEMM gate. |
+| `STINGRAY_TRUNK_MATVEC_FAST` | experimental | `=1` enables the fast Q8_0 trunk matvec in the CUDA hybrid-GDN plain-decode path. Default off. |
 
 ## OpenTail.Stingray.Engine
 
@@ -319,9 +319,9 @@ dynamically composed names.
 | `STINGRAY_BATCHED_GDN_SCAN` | experimental | `=0` falls back to the per-position loop inside `GdnBlockBatched` of the CUDA hybrid-GDN pass. Default on. |
 | `STINGRAY_BATCHED_PREFILL` | experimental | `=0` forces the bit-exact per-token prefill loop in `CudaForwardPass` (A/B and parity debugging). Default on (batched-trunk prefill). |
 | `STINGRAY_BATCHED_TRUNK` | experimental | `=0` falls back to the per-token trunk loop in CUDA hybrid-GDN prefill. Default on. |
-| `STINGRAY_BATCH_DECODE_GEMM` | experimental | |
-| `STINGRAY_BATCH_DECODE_RAGGED` | experimental | |
-| `STINGRAY_BATCH_DECODE_WS` | experimental | |
+| `STINGRAY_BATCH_DECODE_GEMM` | experimental | `=1` routes CUDA batched decode through the compute-bound GEMM/MMQ path (argmax-stable, not bit-exact). Default off: measured slower than GEMM-N at realistic batch sizes (Qwen3-8B Q4_K_M on a 4070 Ti, N=4 99 vs 57 t/s aggregate). |
+| `STINGRAY_BATCH_DECODE_RAGGED` | experimental | `=0` restores the per-sequence QK-norm/RoPE/KV-append/attention launches in CUDA batched decode instead of the ragged kernels whose grid covers all sequences at their own positions (bit-identical per sequence, issue 197). Default on. |
+| `STINGRAY_BATCH_DECODE_WS` | experimental | `=0` falls back to the GEMM-N matvec (`MatMulBatched`) in CUDA batched decode instead of the weight-stationary path. Default on. |
 | `STINGRAY_BYPASS_ATTN` | experimental | Bisection only (`=1`): zero the attention block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_BYPASS_GDN` | experimental | Bisection only (`=1`): zero the Gated-DeltaNet block's contribution in the CPU hybrid forward pass to localise a bug. Default off. Also disables the optimized chunked prefill. |
 | `STINGRAY_BYPASS_MOE` | experimental | Bisection only (`=1`): zero the MoE block's contribution in the CPU hybrid forward pass. Default off. Also disables the optimized chunked prefill. |
