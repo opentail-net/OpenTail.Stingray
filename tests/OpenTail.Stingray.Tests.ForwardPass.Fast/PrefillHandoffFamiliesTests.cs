@@ -15,11 +15,35 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("qwen3moe")]
     [InlineData("qwen3")]
     [InlineData("llama4")]
+    [InlineData("qwen2")]   // dense Qwen2.5 on the Vulkan hybrid (2026-10-31)
     public void ReceiptedFamilies_AreAdmitted(string arch)
     {
         var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Admitted, c.Status);
         Assert.Null(PrefillHandoffFamilies.Refusal(c, null));
+    }
+
+    [Fact]
+    public void DenseQwen2_IsAdmittedOnTheVulkanHybridOnly()
+    {
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanLayerSplit).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.CudaHybrid).Status);
+    }
+
+    /// <summary>
+    /// Families that were tried on the Vulkan hybrid on 2026-10-31 and did not pass (docs/2026-10-31-autonomous-plan-2.md, P2): gemma2 and
+    /// granite disagree with the CPU pass before any handoff is involved (sequential hybrid against CPU, min cosine about 0.80); phi3 has a
+    /// fused attn_qkv the hybrid cannot run. They must not become Admitted by accident.
+    /// </summary>
+    [Theory]
+    [InlineData("gemma2")]
+    [InlineData("granite")]
+    [InlineData("phi3")]
+    public void FamiliesThatFailedTheVulkanHybridParityRun_StayUnverified(string arch)
+    {
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid).Status);
     }
 
     [Theory]
