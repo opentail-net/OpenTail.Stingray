@@ -117,6 +117,22 @@ public sealed class OpenTailStingrayServerOptions
     public Func<IServiceProvider, LoadedEngine>? EngineFactory { get; set; }
 
     /// <summary>
+    /// A turn gate shared by every model that competes for the same compute (docs/3-product-and-runtime/032 Phase 6, slice 5):
+    /// each continuous-batching engine takes one turn per batcher iteration, so a busy model cannot starve another. <c>null</c> (the
+    /// default) means no mediation: engines run independently, exactly as before. Only continuous-batching engines honour it; the
+    /// single-request <c>InferenceEngine</c> does not take turns. Set <see cref="FairModelScheduling"/> instead to have the server
+    /// create one shared <see cref="FairExecutionGate"/> for all <see cref="Models"/>.
+    /// </summary>
+    public IExecutionTurnGate? ExecutionTurnGate { get; set; }
+
+    /// <summary>
+    /// Multi-model mode only: give every entry of <see cref="Models"/> the same <see cref="FairExecutionGate"/> (one engine iteration per
+    /// turn, longest waiter first). Off by default. Use it when the models share one device, since a gate serialises iterations; models
+    /// on different devices gain nothing from it and should keep this off. Ignored when <see cref="ExecutionTurnGate"/> is set.
+    /// </summary>
+    public bool FairModelScheduling { get; set; }
+
+    /// <summary>
     /// Multi-model residency policy (docs/3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
     /// <c>null</c> (default) resolves to the <c>STINGRAY_MODEL_RESIDENCY_MODE</c> environment
     /// variable (<c>single</c> / <c>multi</c>, case-insensitive) when set, otherwise

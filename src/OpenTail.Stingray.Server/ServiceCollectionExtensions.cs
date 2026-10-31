@@ -52,6 +52,7 @@ public static class ServiceCollectionExtensions
         // (config + the host's inline Configure) by first construction. A positive
         // MaxQueuedRequests creates a bounded active+waiting policy around the engine's FIFO
         // admission path; an explicitly configured legacy MaxConcurrentRequests takes precedence.
+        services.TryAddSingleton<FairExecutionGate>();   // shared by every model when FairModelScheduling is on; unused otherwise
         services.TryAddSingleton(sp => new Endpoints.RequestConcurrencyGate(
             sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value));
         services.TryAddSingleton<ChatTemplateRenderer>(sp =>
@@ -209,6 +210,8 @@ public static class ServiceCollectionExtensions
             throw new InvalidOperationException($"No configured model in OpenTailStingrayServerOptions.Models matches '{id}'.");
 
         var perModelOpts = ForNamedModel(opts, named);
+        if (opts.FairModelScheduling && perModelOpts.ExecutionTurnGate is null)
+            perModelOpts.ExecutionTurnGate = sp.GetRequiredService<FairExecutionGate>();
 
         // named.EngineFactory (per-model, knows which entry it's building) takes precedence over
         // the top-level EngineFactory (which has no model identity to dispatch on — see its doc).

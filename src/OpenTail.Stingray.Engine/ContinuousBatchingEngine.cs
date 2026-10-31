@@ -75,6 +75,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         Channel.CreateUnbounded<PendingRequest>(new UnboundedChannelOptions { SingleWriter = false, SingleReader = true });
     private readonly Task _batcherTask;
     private volatile bool _disposed;
+    private readonly IExecutionTurnGate? _turnGate;
+    private readonly CancellationTokenSource _lifetime = new();
 
     // Observability counters (updated via Interlocked).
     private int _pendingCount;
@@ -232,6 +234,11 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// default is 256 MiB. Only backends implementing <see cref="IPrefixCacheableBatchedForwardPass"/>
     /// use it; CUDA deliberately opts out until it has ref-counted device pages.
     /// </param>
+    /// <param name="turnGate">
+    /// Shared with the other models resident in the same compute domain, or <c>null</c> (the default: this engine never waits, and
+    /// behaves exactly as before). When set, each batcher iteration (a prefill chunk plus one decode step) first takes a turn from
+    /// the gate and gives it back before the next, so a busy model cannot starve another (plan 032, Phase 6).
+    /// </param>
     public ContinuousBatchingEngine(
         IBatchedForwardPass fwd,
         ITokenizer tokenizer,
@@ -242,11 +249,13 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         int prefillChunkTokens = -1,
         long kvBudgetBytes = 0,
         long prefixCacheBytes = 256L * 1024 * 1024,
-        IKvCache? kvCache = null)
+        IKvCache? kvCache = null,
+        IExecutionTurnGate? turnGate = null)
     {
         ArgumentNullException.ThrowIfNull(fwd);
         ArgumentNullException.ThrowIfNull(tokenizer);
         _fwd = fwd;
+        _turnGate = turnGate;
         _tokenizer = tokenizer;
         ModelId = modelId;
         _maxBatchSize = Math.Max(1, maxBatchSize);
@@ -548,10 +557,16 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         // catch + finally-drain below, every in-flight caller would hang forever on a
         // never-completed channel and the per-sequence caches would leak.
         Exception? fatal = null;
+        IDisposable? turn = null;   // this iteration's turn from the shared gate, when there is one
         try
         {
         while (!_disposed)
         {
+            // Give the previous iteration's turn back before anything else, including the idle wait below: an engine with no work
+            // must never hold the gate.
+            turn?.Dispose();
+            turn = null;
+
             // Issue #302: rebind the backend's thread-affine context (CUDA) before any forward
             // work this iteration. The loop's `await WaitToReadAsync().ConfigureAwait(false)` on
             // the idle path can resume the continuation on a different thread-pool thread than the
@@ -581,6 +596,16 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     break;
                 }
                 continue;
+            }
+
+            // There is work: wait for this model's turn in the shared compute domain (immediate when nobody else is waiting).
+            // Disposal cancels the wait, which ends the loop the same way an empty queue does (callers see a truncated result).
+            if (_turnGate is not null)
+            {
+                try { turn = await _turnGate.AcquireTurnAsync(ModelId, _lifetime.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (_disposed) { break; }
+                // The wait can resume on another thread-pool thread; rebind the backend's thread-affine context (CUDA, issue #302).
+                _fwd.BindToCurrentThread();
             }
 
             // Advance prefilling prompts by one chunk, then give every active sequence
@@ -838,6 +863,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         }
         finally
         {
+            turn?.Dispose();
+
             // Drain: complete everything still in flight — with the fatal exception when
             // the loop died, so callers observe the failure instead of hanging. Pull any
             // requests still sitting in the channel first (written between our last
@@ -1467,6 +1494,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         if (_disposed) return;
         _disposed = true;
         _queue.Writer.TryComplete();
+        _lifetime.Cancel();   // a batcher queued for a turn at a shared gate would otherwise wait for the other models to finish
 
         // Wait for the batcher to leave the loop before touching anything it uses. Completing the
         // writer wakes the idle path immediately (WaitToReadAsync returns false); a step already in
@@ -1487,6 +1515,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         // it has exited. If it has not, leak them: process teardown reclaims the memory, whereas
         // freeing it now hands the still-running loop a dangling cache.
         if (!DrainedOnDispose) return;
+
+        _lifetime.Dispose();
 
         foreach (var entry in _prefixCache)
             entry.Cache.Dispose();

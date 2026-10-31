@@ -167,7 +167,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 - [ ] 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
    knobs, and an owner decision per obsolete-looking switch.
    [3-product-and-runtime/04-quality-of-life-improvements-plan.md](3-product-and-runtime/04-quality-of-life-improvements-plan.md).
-- [ ] 3. **Multi-model runtime**: execution-level service quantum / starvation protection (Phase 6) and
+- [ ] 3. **Multi-model runtime**: execution-level fairness is built as an opt-in turn gate (Phase 6 slice 5, 2026-10-31; off by default, continuous-batching engines only, no throughput measurement) and
    durable session restore across a restart in multi-model mode.
    [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
 - [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),

@@ -11,8 +11,8 @@
 **Phases 1, 2, and 4 implemented. Phase 3 at 10 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue
 step of the eviction hierarchy, bounded, observable, fair among queued waiters, and now immune to
-a fresh caller jumping that queue — execution-level service quantum/starvation-protection still
-open). Phase 7 implemented for the
+a fresh caller jumping that queue — execution-level service quantum/starvation protection added 2026-10-31 as an opt-in turn gate, Slice 5;
+its limits are listed under Slice 5). Phase 7 implemented for the
 stateless request surface (chat completions, messages, responses, model listing) and, as a
 follow-up, `/v1/sessions/*` — a session now holds a real `ModelRuntimeHandle` for its lifetime via
 `SessionModelRegistry`, closing the Phase 4 gap; durable/cold session restore across a process
@@ -345,7 +345,7 @@ background/speculative model preloading. All out of scope here.
 ### Phase Checklist
 
 - [ ] **Phase 3: Bounded, resource-aware residency** (Slices 1–10 done; accelerator accounting in progress)
-- [ ] **Phase 6: Fair scheduling & admission** (Slices 1–4 done; service quantum & starvation protection open)
+- [ ] **Phase 6: Fair scheduling & admission** (Slices 1–5 done; slice 5 = opt-in execution turn gate, 2026-10-31; its limits are listed under Slice 5)
 - [ ] **Phase 7: OpenTail server integration** (Stateless endpoints and session registry done; durable restore deferred)
 
 - [ ] 3. **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
@@ -564,7 +564,7 @@ background/speculative model preloading. All out of scope here.
    slice in a row to touch `AcquireAsync`/`NotifyResidencyChanged` directly.
    **Not yet done:** request age is now both observable (`OldestQueuedAdmissionAge`) *and* the
    actual scheduling key (oldest-admissible wins) — that part of "deliberately simple policy" is
-   done. Still open: service quantum and starvation protection for *execution*, not admission —
+   done. Still open when this was written (since built as Slice 5 below, 2026-10-31): service quantum and starvation protection for *execution*, not admission —
    i.e. once a model is loaded and generating, nothing yet bounds how long it monopolizes
    contended compute before another resident model gets a turn. That's a materially different,
    bigger problem (would need an execution-mediation layer that doesn't exist: can generation be
@@ -597,6 +597,33 @@ background/speculative model preloading. All out of scope here.
    just a plausible-looking test: manually reverting the reservation line reproduces the failure
    (the woken waiter times out, starved by a fresh caller repeatedly re-stealing the slot) before
    being restored. 328/328 fast, full solution build clean.
+   **Slice 5 done (2026-10-31): execution-level turn gate (service quantum and starvation protection, opt-in).**
+   The "execution-mediation layer" the Slice 3 note said did not exist turned out to need no preemption or KV checkpointing: a
+   `ContinuousBatchingEngine` iteration (one prefill chunk plus one decode step) is already a clean boundary, so the gate decides
+   only which model runs *next*. `IExecutionTurnGate.AcquireTurnAsync` / `FairExecutionGate` (`Engine/ExecutionTurnGate.cs`): one
+   turn at a time, handed straight to the longest waiter when a turn ends (the holder cannot re-take it ahead of waiters), so with N
+   busy models each gets one iteration in N and the worst wait is the sum of the others' single iterations; uncontended acquire is a
+   lock and a flag and completes synchronously. The engine takes a turn only when it has work, gives it back at the top of the next
+   iteration (so an idle engine never holds the gate), and rebinds the backend thread after the wait (CUDA thread affinity, issue
+   #302). Disposing an engine cancels a queued wait, so shutdown cannot hang behind another model. The quantum is deliberately fixed
+   at one iteration: no weights, priorities or time slices.
+   **Wiring:** `ContinuousBatchingEngine(..., turnGate:)`, `RuntimeInstance.Create(plan, model, turnGate)`,
+   `InferenceEngineLoader.LoadFromPlan(..., turnGate)`, `OpenTailStingrayServerOptions.ExecutionTurnGate` (explicit) and
+   `FairModelScheduling` (multi-model: one shared `FairExecutionGate` from DI for every `Models` entry). Both default to off, and with
+   no gate the engine loop is unchanged.
+   **Verified:** 7 gate tests and 2 engine tests (in-memory, exact: strict round-robin driven single-threaded, arrival order,
+   cancellation, double-dispose, forward work only inside a granted turn, at most one decode step per turn, dispose while queued);
+   mutation-checked (gate handing out turns last-in-first-out, engine skipping the acquire, engine never releasing the turn: each
+   makes a test fail); one real-model test (`ExecutionTurnGateRealModelTests`, SmolLM2-135M through the loader: two gated engines
+   generating at once produce text identical to an ungated engine and the gate granted every turn). Regression: ForwardPass.Fast
+   1140, Sessions.Fast 129, Server.Fast 492, 0 failed. Strict-order assertions over real threads were tried first and were flaky
+   (a participant preempted between releasing and re-asking legitimately queues behind the others), so the order tests are driven
+   without racing threads.
+   **Not done, stated plainly:** (1) the single-request `InferenceEngine` does not take turns, so a model served that way is not
+   mediated; (2) nothing measures whether sharing a gate improves throughput or latency for two resident models on this machine, so
+   `FairModelScheduling` is a fairness guarantee, not a speed claim; (3) a gate covers one compute domain and nothing picks the
+   domain automatically, so models on different devices must not share one; (4) there is no starvation guarantee across the
+   admission queue and the gate together beyond each being fair on its own.
 - [ ] 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*
@@ -849,13 +876,13 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 - **Implemented:** Phases 1, 2 and 4. Phase 7 for the stateless request surface (chat completions, messages, responses, model listing).
 - **Phase 3, residency:** 10 slices (checked 2026-10-31 against the plan's checklist): host and accelerator admission, eviction, observability, per-runtime accelerator residency and byte-exact hybrid bytes. Not done: the hybrid-GDN full-offload branches.
 - **Phase 5:** the no-lock half is proven with real models.
-- **Phase 6, fair scheduling:** 4 slices (the queue step of the eviction hierarchy, bounded, observable, fair among queued waiters, and immune to a fresh caller jumping the queue). **Execution-level service quantum and starvation protection are still open.**
+- **Phase 6, fair scheduling:** 5 slices (the fifth, 2026-10-31, is the opt-in execution turn gate) (the queue step of the eviction hierarchy, bounded, observable, fair among queued waiters, and immune to a fresh caller jumping the queue). **Execution-level service quantum and starvation protection: built as an opt-in turn gate (Slice 5); not enabled by default, covers continuous-batching engines only, and has no throughput measurement.**
 - **Phase 7, durable restore:** deferred. A session does not survive a restart in multi-model mode.
 
 ### Open items
 
 - [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches)
-- [ ] Phase 6: service quantum and starvation protection at execution level
+- [x] Phase 6: service quantum and starvation protection at execution level: opt-in `FairExecutionGate`, one engine iteration per turn (Slice 5, 2026-10-31). Open: `InferenceEngine` is not mediated; no throughput measurement
 - [ ] Phase 7: durable session restore across a restart in multi-model mode (deferred)
 - [x] Phase 7: model identity is exposed through `IInferenceService` (`ResolveModel`, `AvailableModelAliases`)
 - [x] Phase 6: per-model admission queues and request age are built (slices 1-4); only the execution-level quantum above is open
@@ -865,4 +892,4 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 - Review after each slice lands, and before any change to scheduling or residency defaults.
 - Re-read at least every two weeks while any item is open.
-- Close when Phase 6 has the service quantum, Phase 7 restore is built or written off, and the plan's status matches the code.
+- Close when Phase 7 restore is built or written off, and the plan's status matches the code.
