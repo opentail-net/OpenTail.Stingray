@@ -37,6 +37,20 @@ public static class OpenAiAudioEndpoints
                 return;
             }
 
+            // This endpoint always answers with WAV. A client that asks for another container (mp3, opus, aac, flac, pcm) would receive WAV bytes
+            // labelled audio/wav; refuse that instead of answering with a format the client did not ask for. Omitted or "wav" is accepted.
+            if (!string.IsNullOrEmpty(req.ResponseFormat) && !string.Equals(req.ResponseFormat, "wav", StringComparison.OrdinalIgnoreCase))
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(
+                        new ErrorResponse("invalid_request_error", $"'response_format' must be 'wav' (or omitted): this server only produces WAV audio (got '{req.ResponseFormat}')."),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse),
+                    ctx.RequestAborted);
+                return;
+            }
+
             string voice = string.IsNullOrWhiteSpace(req.Voice) ? "af_heart" : req.Voice;
             float speed = req.Speed > 0 ? req.Speed : 1.0f;
 

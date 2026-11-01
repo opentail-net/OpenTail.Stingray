@@ -60,8 +60,8 @@ builder.Services.AddOpenTailStingray(builder.Configuration);
 | `POST /v1/audio/transcriptions` | OpenAI Audio Transcriptions | Whisper STT with SRT, VTT, verbose_json |
 | `POST /v1/audio/translations` | OpenAI Audio Translations | Whisper Speech Translation |
 | `POST /v1/audio/speech` | OpenAI Audio Speech | Kokoro, Piper, MeloTTS, Chatterbox, F5-TTS with clause streaming |
-| `POST /v1/images/generations` | OpenAI Image Generations | SD 1.5, SDXL, SD 3/3.5, FLUX, Z-Image with Base64 / URL outputs |
-| `POST /v1/images/edits` | OpenAI Image Edits | Img2Img and Inpainting modifications |
+| `POST /v1/images/generations` | OpenAI Image Generations | **Not implemented: answers 501.** The route validates the request, then says to use `stingray image`. (Before 2026-11-01 it returned a placeholder gradient with a 200; it never called a diffusion pipeline.) Connecting the real pipelines is open work. |
+| `POST /v1/images/edits` | OpenAI Image Edits | **Not implemented: answers 501**, as above. |
 | `POST /v1/embeddings`, `POST /api/embed` | OpenAI Embeddings, Ollama Embed | Dense text embeddings (`STINGRAY_EMBEDDING_MODEL`) |
 | `POST /v1/rerank` | Cohere Rerank | Cross-encoder sequence reranking (`STINGRAY_RERANK_MODEL`) |
 | `POST /v1/messages` | Anthropic Messages | Anthropic Messages API parity |

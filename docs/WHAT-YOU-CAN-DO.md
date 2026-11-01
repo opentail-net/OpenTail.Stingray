@@ -25,7 +25,7 @@ client is the server.
 | **Make music and sound effects** | Audio from a text prompt | C# library (no CLI command yet) | ACE-Step 1.5, Stable Audio 3, MiniMax-Music3, MusicGen, AudioGen | Library-only today; [listen to samples](audio-samples/README.md); ACE-Step 2 s of audio takes 31 s on the CPU |
 | **Convert a voice** | Re-voice audio with a trained model | C# library | RVC | Library-only |
 | **Forecast time series, classify images** | Numeric forecasts, labels | C# library | Chronos, timm MobileNetV3/EfficientNet, CLIP | Library-only |
-| **Serve all of this over HTTP** | `/v1/chat/completions`, `/v1/audio/speech`, `/v1/images/generations`, `/v1/embeddings`, `/v1/messages`, `/v1/responses` and more | `OpenTail.Stingray.Server` | Any of the above | Endpoint list: [Server README](../src/OpenTail.Stingray.Server/README.md) |
+| **Serve all of this over HTTP** | `/v1/chat/completions`, `/v1/audio/speech`, `/v1/embeddings`, `/v1/messages`, `/v1/responses` and more | `OpenTail.Stingray.Server` | Any of the above | Endpoint list: [Server README](../src/OpenTail.Stingray.Server/README.md) |
 
 ## What do I need?
 

@@ -21,6 +21,19 @@ internal static class RequestParameterValidation
         ?? (r.N is { } n && n != 1 ? $"n must be 1: this server returns exactly one choice (got {n})" : null)
         ?? ParseOpenAiStops(r.Stop, out _);
 
+    /// <summary>
+    /// <c>/v1/responses</c>: ranges for the three sampling fields it reads, and the two request features it does not implement, refused with a
+    /// 400 that names them instead of being dropped (docs/reference/request-parameter-audit-other-endpoints-2026-11-01.md). An empty tools array is accepted.
+    /// </summary>
+    public static string? ValidateResponses(ResponsesRequest r) =>
+        PositiveInt("max_output_tokens", r.MaxOutputTokens)
+        ?? Range("temperature", r.Temperature, 0f, 2f)
+        ?? Range("top_p", r.TopP, 0f, 1f)
+        ?? (r.Tools is { ValueKind: System.Text.Json.JsonValueKind.Array } tools && tools.GetArrayLength() > 0
+            ? "tools are not supported on /v1/responses: this endpoint answers with text only (use /v1/chat/completions for tool calls)" : null)
+        ?? (!string.IsNullOrEmpty(r.PreviousResponseId)
+            ? "previous_response_id is not supported: /v1/responses is stateless here, send the whole conversation in 'input'" : null);
+
     public static string? ValidateAnthropic(AnthropicMessageRequest r) =>
         PositiveInt("max_tokens", r.MaxTokens)
         ?? Range("temperature", r.Temperature, 0f, 1f)
