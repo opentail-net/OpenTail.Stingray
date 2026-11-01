@@ -34,6 +34,11 @@ internal static class RequestParameterValidation
         ?? (!string.IsNullOrEmpty(r.PreviousResponseId)
             ? "previous_response_id is not supported: /v1/responses is stateless here, send the whole conversation in 'input'" : null);
 
+    /// <summary>A session turn's sampling fields, with the same ranges as the chat endpoints (the session route accepted any value before).</summary>
+    public static string? ValidateSessionTurn(SessionTurnRequest r) =>
+        Range("temperature", r.Temperature, 0f, 2f)
+        ?? Range("top_p", r.TopP, 0f, 1f);
+
     public static string? ValidateAnthropic(AnthropicMessageRequest r) =>
         PositiveInt("max_tokens", r.MaxTokens)
         ?? Range("temperature", r.Temperature, 0f, 1f)
