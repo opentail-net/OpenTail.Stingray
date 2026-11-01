@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTail.Stingray.Audio.Whisper;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
@@ -28,6 +29,7 @@ public sealed class ServerTelemetryAttributeSetTests
         ["model"] = "gen_ai.request.model",
         ["endpoint"] = "opentail.endpoint",
         ["outcome"] = "outcome",
+        ["error.type"] = "error.type",
         ["reason"] = "opentail.reason",
     };
 
@@ -62,6 +64,23 @@ public sealed class ServerTelemetryAttributeSetTests
         return result;
     }
 
+    private sealed class ThrowingProvider : IWhisperPipelineProvider
+    {
+        public WhisperPipeline Create(string? model) => throw new InvalidOperationException("secret provider failure");
+    }
+
+    private static byte[] SilentWav()
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        const int samples = 1600;
+        w.Write("RIFF"u8); w.Write(36 + samples * 2); w.Write("WAVE"u8);
+        w.Write("fmt "u8); w.Write(16); w.Write((short)1); w.Write((short)1); w.Write(16000); w.Write(32000); w.Write((short)2); w.Write((short)16);
+        w.Write("data"u8); w.Write(samples * 2); w.Write(new byte[samples * 2]);
+        w.Flush();
+        return ms.ToArray();
+    }
+
     [Fact]
     public async Task EveryEmittedServerTag_IsDocumentedForThatInstrument()
     {
@@ -83,7 +102,11 @@ public sealed class ServerTelemetryAttributeSetTests
         listener.Start();
 
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
-            b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"))));
+            b.ConfigureServices(s =>
+            {
+                s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
+                s.AddSingleton<IWhisperPipelineProvider>(new ThrowingProvider());   // a non-chat operation that fails: error.type
+            }));
         using var client = factory.CreateClient();
         foreach (bool stream in new[] { false, true })
         {
@@ -99,7 +122,15 @@ public sealed class ServerTelemetryAttributeSetTests
         });
         Assert.False(refused.IsSuccessStatusCode);
 
-        // Not vacuous: the request instruments really emitted attributes.
+        // A non-chat operation whose handler throws: the operation wrapper tags the duration with the exception type name (and rethrows).
+        using (var form = new MultipartFormDataContent { { new ByteArrayContent(SilentWav()), "file", "a.wav" } })
+        {
+            try { using var failed = await client.PostAsync("/v1/audio/transcriptions", form); }
+            catch (InvalidOperationException) { /* the exception reaches the test server client; the metric is what matters */ }
+        }
+
+        // Not vacuous: the request instruments really emitted attributes, and the failure path emitted error.type.
+        Assert.True(emitted["gen_ai.server.request.duration"].ContainsKey("error.type"), "the failing non-chat operation did not emit error.type");
         Assert.Contains(emitted, kv => kv.Key == "gen_ai.server.request.duration" && kv.Value.Count > 0);
         string[] problems = emitted
             .Select(kv => (Name: kv.Key, Extra: documented.TryGetValue(kv.Key, out var doc)

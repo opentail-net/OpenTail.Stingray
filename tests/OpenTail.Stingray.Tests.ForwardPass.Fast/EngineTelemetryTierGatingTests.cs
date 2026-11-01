@@ -66,7 +66,9 @@ public sealed class EngineTelemetryTierGatingTests
         Assert.False(EngineTelemetry.IterationEnabled, "tier-2 work stayed enabled after its listener went away");
 
         // Tier 3 exists only in diagnostic mode.
-        Assert.SkipWhen(Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1",
+        // Either diagnostic switch creates tier-3 instruments: STINGRAY_PROFILE_GPU_SPLIT=1 and STINGRAY_MOE_PHASE_TIMING=1 (read as MoePhaseTiming.Enabled,
+        // the very flag EngineTelemetry consults, so this cannot drift from it).
+        Assert.SkipWhen(Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1" || MoePhaseTiming.Enabled,
             "a tier-3 diagnostic switch is set in this environment");
         var tierThree = tierOf.Where(kv => kv.Value == 3).Select(kv => kv.Key).ToHashSet();
         Assert.DoesNotContain(seen, tierThree.Contains);
