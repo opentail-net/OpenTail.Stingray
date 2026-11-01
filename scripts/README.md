@@ -28,6 +28,7 @@ anything unless their name says so.
 | `verify-nuget-package.ps1` | CI | Packs and verifies the NuGet package for a given version. | `release.yml`, release checklist |
 | `../repack-nuget.ps1` (repo root) | Maintained | Packs `OpenTail.Stingray`, `.Server` and `.Cli` into `artifacts/nuget/`. A quick local pack, with no tests or smoke checks. | DEVELOPMENT.md |
 | `verify-package-consumers.ps1` | Maintained | Proves the documented NuGet usage compiles against the packed package, not against the source projects. | docs plans |
+| `telemetry-overhead-ab.ps1`, `telemetry-overhead-sink.ps1`, `telemetry-overhead-startup.ps1` | Maintained | The OpenTelemetry plan section 8 overhead A/B: interleaved requests across a pre-instrumentation baseline, HEAD, HEAD with an OTLP exporter and an A/A control, and start-up time. Build steps and the caveat on what each comparison isolates are in the script headers. | docs plans |
 | `check-aot-telemetry.ps1` | Maintained | Publishes the NativeAOT CLI and checks that engine metrics and spans reach an in-process listener. No model needed. | observability guide |
 
 ## Code generation and repository maintenance
