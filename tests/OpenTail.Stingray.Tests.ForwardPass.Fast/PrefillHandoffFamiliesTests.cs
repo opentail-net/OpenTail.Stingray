@@ -57,6 +57,16 @@ public sealed class PrefillHandoffFamiliesTests
         Assert.Null(PrefillHandoffFamilies.Refusal(c, "all"));
     }
 
+    /// <summary>hunyuan-moe earned a receipt on the Vulkan layer split only (LayerSplitCpuPrefillHandoffTests, 2026-11-01); every other path stays unverified.</summary>
+    [Fact]
+    public void HunyuanMoe_IsAdmittedOnTheVulkanLayerSplitOnly()
+    {
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanLayerSplit).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.CudaHybrid).Status);
+    }
+
     [Fact]
     public void MixtralStyleLlama_IsItsOwnFamily_NotDenseLlama()
     {
