@@ -184,7 +184,7 @@ doc as "worth another look" and not yet investigated.
         still F32 (`STINGRAY_MOE_PREFILL_Q8`). Record, evidence and rollback (`=0`):
         [ADR-0003](../reference/adr-0003-cpu-int8-prefill-default.md). Open follow-ups toward
         llama.cpp numerics and MoE int8, each to be verified before acting:
-        - [ ] Q3_K, MoE activation and small-prompt follow-ups, then the Granite re-run: see [prefill-numerics open list](../1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
+        - [ ] Q3_K (closed 2026-11-01, ADR-0003 addendum), MoE activation and small-prompt follow-ups, then the Granite re-run: see [prefill-numerics open list](../1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
       - **Done 2026-10-02 (0298f88e): the `DotQ3K_Q8KS_*` (1/2/4/8-input) int8-prefill kernels**
         got the same treatment, kept bit-identical: SIMD scale unpack, running `qs >> 2` and a
         doubling hmask bit in place of the switches, `Q3KAccumInput` unchanged. Real-weight
