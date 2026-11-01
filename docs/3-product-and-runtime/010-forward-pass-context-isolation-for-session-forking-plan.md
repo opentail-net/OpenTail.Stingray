@@ -6,8 +6,8 @@
 - Session forking on the **CPU dense** path works and is tested on a real model, sequentially and with both branches generating
   concurrently (`HotSessionForkRealModelTests`). It goes through `HotSessionRuntime.Fork` and the reference-counted KV cache, not
   through `IForwardPass.CreateContext()`.
-- `CreateContext()` has no caller in `src/`, so the per-backend work this plan proposes is not needed for forking. Whether to remove
-  the method, keep it unused, or give it a caller is an **owner decision**.
+- `CreateContext()` had no caller in `src/`, so the per-backend work this plan proposes is not needed for forking. **Decided 2026-11-01 (owner): remove it.**
+  It is removed from `IForwardPass` (with its two test doubles and the one test that exercised it); see the CHANGELOG.
 - Not verified: forking on the **GPU, hybrid and Gated-DeltaNet** passes (GDN cannot rewind, so it needs a state snapshot).
 - Everything after the "Original text follows" line below is the original design (written before the above was known), kept as history.
 
@@ -41,8 +41,8 @@ What that leaves open, and why the per-backend tiers below are **not** to be imp
 - `CreateContext()` is dead public surface on `IForwardPass`. Implementing it on seven passes would add code nothing calls.
 - The real fork path was checked on the CPU dense pass only. Whether `TryForkSharedPrefix` works for GPU, hybrid and GDN passes
   (GDN cannot rewind, so a mid-sequence fork needs a state snapshot) is the live question, not `CreateContext`.
-- **Owner decision needed:** remove `CreateContext()` from the public interface (a breaking change for external implementers), keep it
-  as an unused default, or give it a real caller. Until decided, this plan stays unimplemented.
+- **Decided 2026-11-01 (owner): `CreateContext()` is removed** from the public interface (it was a default member returning `this`; code that called it
+  breaks, an implementer that defined a `CreateContext()` method keeps compiling, an explicit interface implementation would not). This plan stays unimplemented.
 
 Original text follows, unchanged apart from this correction.
 
