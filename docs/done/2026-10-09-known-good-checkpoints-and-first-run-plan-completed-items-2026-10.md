@@ -26,3 +26,13 @@ Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-known-
 > from: ### Open items
 - [x] Known-good P4: `models --local` and `--verify` implemented (checked 2026-10-30)
 
+
+---
+
+## More completed items moved from 2026-10-09-known-good-checkpoints-and-first-run-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ### Open items
+- [x] Run the `speak` and `transcribe` recipes and record the result (2026-11-01, see the public-surface plan, Recipes item)
+

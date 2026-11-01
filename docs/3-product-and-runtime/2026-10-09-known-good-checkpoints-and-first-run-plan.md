@@ -190,7 +190,6 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 ### Open items
 
-- [ ] Run the `speak` and `transcribe` recipes and record the result (open item in the public-surface plan, B3/B4 recipes, added 2026-10-31)
 - [ ] Front door step 3: starter manifest and README recipes around the task commands
 - [ ] Known-good P0 leftover: `pull`'s download and listing parser still use their own client
 - [ ] Known-good P3: re-check `models use` end to end

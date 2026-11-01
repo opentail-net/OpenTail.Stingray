@@ -34,4 +34,28 @@ Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-public
 
 > from: ### Order of work
 - [x] 3. (Historical.) Task commands: done (registered; see B2 to B4). The library facade is superseded by §3.2. Rewriting the README recipes around them is C2.
-
+
+
+---
+
+## More completed items moved from 2026-10-09-public-developer-surface-and-front-door-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] Recipes: run `stingray speak` and `stingray transcribe` as README recipes and record the result. 2026-11-01, the published CLI 1.0.9 installed from nuget.org into a temporary tool path, with a temporary model home (`STINGRAY_MODEL_HOME`) holding the Piper lessac voice and `ggml-base.bin` copied from disk, so no download and no voice-licence prompt: `stingray models` showed speak and transcribe as installed; `stingray speak "Hello from Stingray." -o hello.wav` generated 1.47 s of audio in 0.85 s (0.58x RTF, 65 KB WAV); `stingray transcribe hello.wav` answered "Hello from TINGOT." (1.42 s). Both recipes work end to end; the transcript mishears the last word, so the round trip is not exact. The `setup speak` licence prompt itself was not exercised
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] D2. Verify the actual NuGet package *(2026-11-01: `scripts/verify-nuget-package.ps1` packs, checks the required package entries (README, assemblies, notices) and consumes the package from a clean project; `scripts/verify-package-consumers.ps1` compiles every marked README block, 17 checks and 0 failed; and the package served by nuget.org, version 1.0.9, was installed into a clean project outside the repo, the README sample built with 0 errors and 0 warnings, and the published CLI answered a prompt on a real model (Qwen3-0.6B Q8_0, CPU, 43 tok/s decode). CI does not run the real-weight step, by design)*
+
+> from: ### The front door (tooling)
+- [x] 4. **SUPERSEDED (2026-10-30; describe and image are not part of the current plan; chat, speak and transcribe are implemented).** Task commands that need no paths once set up: `stingray chat`, `speak`, `transcribe`,
+   `describe`, `image`. A missing model gives a one-line fix (`run: stingray setup speak (63 MB)`),
+   never a stack trace.
+
+> from: ### The front door (tooling)
+- [x] 6. **SUPERSEDED by §3.2 (no separate facade).** A small library facade so the README's C# is three lines per task, and the snippets are
+   compiled by a test so they cannot rot:
+   `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
+   `Speech.SynthesizeAsync(...)` / `Transcriber.TranscribeAsync(...)`. The facade is built on the
+   existing engines, not new math.
