@@ -84,10 +84,9 @@ public static class VibeVoiceGenerationTokenSelector
 /// "close at frame 0, diverging by frame 5+" (small early perturbation compounding through the
 /// closed generation loop). Callers MUST pass a genuinely separate <see cref="IForwardPass"/>
 /// instance for <c>negativeFwd</c> (e.g. a second <c>new ForwardPass(sameModel, sameBackend, sameHp)</c>)
-/// -- <see cref="IForwardPass.CreateContext"/> is NOT usable for this today; every real backend's
-/// override is the interface's `=> this` default (unimplemented per
-/// `docs/010-...Forward-Pass Context Isolation...md`), so calling it would silently alias back to
-/// the same shared cache this fix removes.</para>
+/// -- <see cref="IForwardPass"/> has no way to clone a pass (it had a <c>CreateContext</c> that every backend left at its
+/// `=> this` default; it was removed in 2026-11 as dead surface), so a shared instance would silently alias the
+/// same cache this fix removes.</para>
 /// </summary>
 public static class VibeVoiceGenerator
 {

@@ -9,6 +9,10 @@ human-facing map that a raw commit graph cannot.
 Ported from the upstream SharpInference snapshot in `examples/SharpInference08086`. **Not part of the
 1.0.3 packages**, which were built from the release-candidate commit before this work.
 
+### Removed
+
+- **`IForwardPass.CreateContext()`** (a default interface member that returned `this`; no backend ever overrode it and nothing in the library called it). This is a source and binary break for any code that called it on an `IForwardPass`; a class that happened to define its own `CreateContext()` method keeps compiling, an explicit interface implementation of it does not. Session forking never used it: it goes through `HotSessionRuntime.Fork` and the reference-counted KV cache. `Model.CreateContext(...)` (the public API entry point) is unrelated and unchanged.
+
 ### Changed
 
 - **`/metrics` names are now valid Prometheus identifiers.** The lifetime counters and gauges were emitted as `opentail-llm_*` (a hyphen is not allowed in a Prometheus metric name); they are now `opentail_llm_*`, matching the rest of the page. `stingray status` reads both spellings. Dashboards or alerts that used the hyphenated names must be updated.

@@ -49,7 +49,7 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
    durable session restore across a restart in multi-model mode.
    [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
   - [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
-   per-session LoRA in the batched engine, and the fate of the unused `IForwardPass.CreateContext` (owner decision, plan 010)
+   per-session LoRA in the batched engine, and the unused `IForwardPass.CreateContext` (removed 2026-11-01 on the owner's decision, plan 010)
    (2026-10-31: nothing in `src/` calls it; session forking goes through `HotSessionRuntime.Fork` and the shared KV cache, and now has a concurrent real-model test).
    [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
