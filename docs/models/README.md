@@ -23,7 +23,7 @@
 
 | Family | Architectures | Key Highlights | Architecture Card |
 |---|---|---|---|
-| **Qwen Series** | Qwen 2.5, Qwen 3, Qwen 3.5 MoE, Qwen-Coder | Default catalogue model (`0.5b`), weighted QK-norm, Gated DeltaNet MoE | [qwen.md](qwen.md) / [qwen-series.md](qwen-series.md) |
+| **Qwen Series** | Qwen 2.5, Qwen 3, Qwen 3.5 MoE, Qwen-Coder | Default catalogue model (`0.5b`), weighted QK-norm, Gated DeltaNet MoE | [qwen.md](qwen.md) |
 | **Qwen 3.5 / 3.6 / 3.8 Hybrid** | `qwen35`, `qwen35moe`, Ornith 1.0 | Gated DeltaNet recurrence with periodic full attention, MoE variants, MTP self-speculation | [qwen35.md](qwen35.md) |
 | **gpt-oss** | `gpt-oss` | Attention sinks, alternating sliding window, biased MoE, native MXFP4 | [gpt-oss.md](gpt-oss.md) |
 | **DeepSeek** | DeepSeek-V2, V2.5, V3, R1 | Multi-Head Latent Attention (MLA, 3.5× KV reduction), DeepSeekMoE, thinking traces | [deepseek.md](deepseek.md) |
