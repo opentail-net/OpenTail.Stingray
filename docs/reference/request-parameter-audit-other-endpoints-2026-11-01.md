@@ -98,7 +98,7 @@ On edits (multipart): `prompt` (required), `size`; the other OpenAI fields are n
 |---|---|
 | `model` | implemented |
 | `query` | implemented; required (400) |
-| `documents` | implemented; required and non-empty (400) |
+| `documents` | implemented; required and non-empty (400). **Error shape (2026-11-01, plan 5 E2):** the bad-JSON, missing-`query` and empty-`documents` 400s had only the nested `error` object; they now carry the flat `type` and `message` too, like every other route (found by the protocol smoke corpus) |
 | `top_n` | passed through; **no range check at the endpoint** (F5) |
 | `return_documents` | implemented |
 
