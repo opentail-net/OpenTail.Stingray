@@ -25,7 +25,7 @@ Everything that leaves the machine asks `ExternalAccess.Evaluate()` (`src/OpenTa
 * New network code goes through `ExternalHttpClient` only. It contacts Hugging Face hosts and nothing else (`huggingface.co`, `hf.co` and their subdomains, which covers the CDN and storage hosts a download redirects to), requires https, and follows redirects itself so that every hop is host-checked.
 * `HF_TOKEN` is sent to `huggingface.co` itself and **never** to a CDN or storage host. Tokens, query strings and URLs are never logged; the log keeps only request count, host names and bytes received.
 * Nothing is cached or written to disk by the gateway, and nothing is downloaded unless a command whose purpose is downloading (`pull`, `setup`) is run.
-* Still on its own client, not yet routed through the gateway: `pull`'s file download (it does honour the policy). Moving it is a follow-up.
+* `pull`'s listing goes through `ExternalHttpClient`. Its file download uses `ModelDownloader.CreateClient` (a Hugging Face-only handler: the same host rule, redirects checked, the token sent to the Hub only) instead of `ExternalHttpClient` itself, because a multi-gigabyte download needs no request timeout; both honour the policy. Checked 2026-11-01 (plan 6 A1).
 ---
 
 ## `stingray scout -m <gguf>`
