@@ -11,7 +11,7 @@
 | Family | Architectures | Key Highlights | Architecture Card |
 |---|---|---|---|
 | **Llama** | Llama 3, 3.1, 3.2, 3.3, Llama 4 | GQA, RMSNorm, 128k YaRN RoPE, Llama 4 L2 QK-Norm & NoPE 4-step | [llama.md](llama.md) |
-| **Gemma** | Gemma 3, Gemma 4 / E4B (Gemma 1 and 2 have no STATUS.md row: unverified) | RMSNorm unit offset, dual residual norms, logit soft-capping, SigLIP vision | [gemma.md](gemma.md) |
+| **Gemma** | Gemma 3, Gemma 4 / E4B (Gemma 1 and 2: STATUS.md rows, CPU only, one 2B file each) | RMSNorm unit offset, dual residual norms, logit soft-capping, SigLIP vision | [gemma.md](gemma.md) |
 | **Mistral & Mixtral** | Mistral 7B, Mistral 3, Mixtral 8x7B/8x22B, Ministral | Sliding Window Attention (SWA), Tekken tokenizer, top-2 sparse MoE | [mistral.md](mistral.md) |
 | **Microsoft Phi** | Phi-2, Phi-3, Phi-3.5, PhiMoE | LongRoPE dynamic factors, RMSNorm+bias, 16x3.8B MoE with 2 active experts | [phi.md](phi.md) |
 | **IBM Granite** | Granite 3.x, Granite MoE, Granite 4.0-H | Residual/logit scale trio, Mamba-2 SSM hybrid recurrence without KV cache | [granite.md](granite.md) |

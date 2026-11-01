@@ -8,18 +8,18 @@
 ## Correct state
 
 - **Gemma 2 (`gemma2`):** on the admitted list since the first release. Before the 2026-10-11 fix its output was incoherent, and the sanity check (`76def766`) called that "not a recent regression". The descriptor had no model semantics. The fix (`4a6027a6`) added the embedding scale, GeGLU, alternating sliding-window layers, and attention and final logit softcapping. Checked against llama-server on gemma-2-2b-it Q4_K_M: two cases exact (48/48), one near-tie (46/48, both misses inside the reference's own margin). **CPU only.** Vulkan and CUDA attention have no softcap, so the descriptor records a `BackendLimitation` for them (checked 2026-10-31; enforcement at load was not confirmed).
-- **Gemma 1 (`gemma`):** has an architecture descriptor (`GemmaArchitectures.cs`). No golden, no local checkpoint, no STATUS row. It was on the admitted list from the registry migration (`71619b9d`). Whether it ever worked is not recorded.
+- **Gemma 1 (`gemma`):** has an architecture descriptor (`GemmaArchitectures.cs`) and was on the admitted list from the registry migration (`71619b9d`). It never worked before 2026-11-01: every position predicted BOS until `FamilyModelSemantics.Gemma1` was added (see the done item below). It now has a golden (22/24 near-tie, gemma-1.1-2b-it Q8_0) and a STATUS row; CPU only.
 - **Gemma 3 and Gemma 4 E4B:** STATUS rows exist with dated evidence.
 
 ## Open items
 
 - [x] *(done 2026-11-01: gemma-1.1-2b-it Q8_0 pulled to F:\_models; the first golden run showed every position predicting BOS because the descriptor had no model semantics; `FamilyModelSemantics.Gemma1` added; golden `gemma.golden.json` now 22/24, near-tie; STATUS row added.)* Gemma 1: obtain a checkpoint (download is authorised for `models/_models/`), capture a golden against llama-server, and add a STATUS row or a dated "not verified" note
-- [ ] Gemma 2 on Vulkan and CUDA: needs an attention-logit softcap kernel there (currently refused, not supported)
+- [x] *(decided 2026-11-01: no. Gemma 2 stays CPU only; the limitation is in STATUS.)* Gemma 2 on Vulkan and CUDA: needs an attention-logit softcap kernel there (currently refused, not supported)
 - [ ] Gemma 2 beyond the 2B file: the record has no evidence for other sizes
 
 ## Decisions for the owner
 
-- Whether Gemma 1 is worth a checkpoint download and a golden, given it is an older family.
+- None open. (Gemma 1 was downloaded and checked 2026-11-01; Gemma 2 GPU soft-capping was decided against by the owner 2026-11-01.)
 
 ## Cadence
 
