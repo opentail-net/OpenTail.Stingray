@@ -157,3 +157,13 @@ jobs:
         run: |
           $version = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1).Matches[0].Groups[1].Value
           ./scripts/verify-nuget-package.ps1 -PackageVersion $version -Configuration Release -OutputDirectory ./artifacts/nupkg -SkipTests
+      # The README snippets marked <!-- verify:consumer --> and the samples that claim to be package consumers (Chat, Extract, Speech, Diffusion, ChatServer)
+      # must compile against the PACKED packages, not against the source projects. Nothing ran this script before, so a change to the public API could
+      # break the README and the samples while every other check stayed green. It reuses the packages built above (-Feed), so nothing is packed twice.
+      - name: Build the README snippets and consumer samples against the packed packages
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $feed = (Resolve-Path ./artifacts/nupkg).Path
+          ./scripts/verify-package-consumers.ps1 -Configuration Release -Feed $feed -Version $version
+          if ($LASTEXITCODE -ne 0) { throw 'a README snippet or consumer sample does not build against the packed package' }
