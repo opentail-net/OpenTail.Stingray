@@ -1,7 +1,7 @@
 # Plan: Q8_K activation quantization for the Q5_K decode matvec (GLM-4.5 PPL gap)
 
 **Implementation record:** [closed bugstofix scope 09](09-glm45-q5k-activation-implementation.md).
-**Open real-weight follow-up:** [item 19 in `docs/103-quickest-first-plan.md`](../103-quickest-first-plan.md).
+**Open real-weight follow-up:** [item 19 in `docs/done/103-quickest-first-plan-merged-2026-11-01.md`](103-quickest-first-plan-merged-2026-11-01.md).
 Item 7 in that file is closed for implementation and synthetic validation. The archive and follow-up
 carry the diagnostic history and exact numbers this plan continues from. Do not re-run the earlier
 diagnostic steps (layer bisection, print-resolution caveat, etc.) — they are already done and their
@@ -194,7 +194,7 @@ you flip the gate on by default**, every model using Q5_K needs to be re-verifie
 
 ### Step 8 — Close out
 
-- Update [docs/103-quickest-first-plan.md item 19](../103-quickest-first-plan.md) and the
+- Update [docs/done/103-quickest-first-plan-merged-2026-11-01.md item 19](103-quickest-first-plan-merged-2026-11-01.md) and the
   [archived implementation record](09-glm45-q5k-activation-implementation.md) with the real
   outcome — whether the gap closed, by how much, and the measured PPL number, dated. If it didn't
   close the gap, that's still a real, useful result to record (rules out this specific hypothesis,

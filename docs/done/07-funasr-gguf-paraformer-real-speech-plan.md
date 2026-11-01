@@ -1,6 +1,6 @@
 # Plan: FunASR GGUF Paraformer returns an empty transcript on real speech
 
-**Bug logged:** 2026-09-27 (`docs/103-quickest-first-plan.md` item 10; see
+**Bug logged:** 2026-09-27 (`docs/done/103-quickest-first-plan-merged-2026-11-01.md` item 10; see
 `docs/1-correctness/bugstofix.md`, item **07**).
 
 ## Goal and scope

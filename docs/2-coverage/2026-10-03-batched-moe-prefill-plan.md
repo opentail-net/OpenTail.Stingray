@@ -4,13 +4,10 @@
 
 ## Checklist (2026-10-30; code checked)
 
-- [ ] Phase 1 CUDA variant: written, compiles, never run (no NVIDIA GPU here; code: `CudaHybridPrefillHandoff.cs`)
 - [ ] Phase 2: batched hybrid trunk with host MoE (gated on the Phase 0/1 measurements)
 - [ ] Phase 3: GPU grouped-expert prefill on Vulkan (3a and, if justified, 3b)
 - [ ] Phase 4: oversized experts, streamed per chunk (regime C)
-- [ ] Phase 6: discrete-GPU decode miss split and device-side cache decisions
 - [ ] Decision for the user: approve Phase 0 + 1 as the first implementation (Phase 1 is done; Phases 2-5 gated on its measurements)
-- [ ] Decision for the user: a discrete-GPU machine for Phase 3/4 speed measurement
 
 Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status (updated 2026-10-31): Phase 0, Phase 1, Phase 1b and the Phase 5 measured chooser (`ExpertCalibration`, `stingray calibrate`) are implemented, but the engine does not yet read the chooser's profile; Phases 2-4 are not started. The original status, "plan only, nothing implemented", was true on 2026-10-03 and is superseded. See the thread state below.**
 
@@ -88,7 +85,6 @@ Goal: hybrid and full-GPU prefill on MoE models is never slower than the CPU-onl
 ## What the references do
 
 Reference survey (llama.cpp, vLLM, TensorSharp, FreeToken, ExLlamaV3, our own code): [../reference/2026-10-03-batched-moe-prefill-reference-survey.md](../reference/2026-10-03-batched-moe-prefill-reference-survey.md).
-
 
 What this changes in the plan: Phase 4 is validated and gains a concrete shape (double-buffered whole-layer stream, position == expert id, optional hit copy, batched asynchronous copies without tiny entries); Phase 3 gains a reconstruct tier for hot experts and rows-based kernel selection; Phase 5's calibration should be keyed first by device and expert format (FreeToken's key) with the model as secondary detail, and measure the *overlapped* CPU/transfer pair, not each alone; a new Phase 6 (decode miss split, device-side cache bookkeeping) is added.
 ## Key insight: three hardware regimes need different answers
@@ -217,7 +213,6 @@ Phase 0 (hours) -> Phase 1 (about a day or two, biggest win here, lowest risk) -
 
 ## Open items from the batched-prefill workstream (ported 2026-10-31)
 
-
 ## Decisions for you
 1. Approve Phase 0 + Phase 1 as the first implementation (CPU prefill with KV handoff), with Phases 2-5 gated on its measurements.
 2. Is there a machine with a discrete GPU where Phase 3/4 speed can be measured? Without one they stay correctness-only and off by default.
@@ -256,8 +251,6 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 - [ ] Phase 3 (3a, and 3b only if profiling justifies it), tested on a discrete GPU before any default change
 - [ ] Phase 4 (streamed experts), after the Phase 3 kernels exist, or with the CPU fallback below the gate
 - [ ] Phase 5 wiring: the engine reads the profile, once there is more than one path to choose between
-- [ ] CUDA variant: run on an NVIDIA machine
-- [ ] Phase 6 (discrete GPU only)
 
 - [ ] Gemma 4 on Vulkan with a prompt below the CPU-prefill handoff threshold runs at 9.3 tok/s (PerformanceLeague, 2026-10-11 recheck, finding 5; the "19 tokens" in older notes was the prompt length, not the threshold, as corrected in the performance pickup guide on 2026-10-31). The minimum is `STINGRAY_HYBRID_CPU_PREFILL_MIN_TOKENS`, default 32 (`Planning/EngineEnvironment.cs`), the same gate as llama.cpp's op offload (`HybridPrefillHandoff.cs`). The 19-token prompt skips the handoff. Gemma 4 has its own batched trunk (`ForwardGemma4`, `GpuForwardPass.cs`): check which path a short Gemma 4 prompt takes before changing the threshold.
 

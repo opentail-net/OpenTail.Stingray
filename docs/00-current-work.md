@@ -1,148 +1,101 @@
-# Current work
+# Current work: outstanding items, quickest first
 
-> Completed items moved to [done/00-current-work-completed-items-2026-10.md](done/00-current-work-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quickest-first-plan-merged-2026-11-01.md` (the quick-first working order, now the order of this file). The order is the quick-first order below. Each item appears once. Items from the themed backlog that have no quick-list entry follow in section order under "Remaining backlog". Completed items are in [done/](done) and their evidence is in each model's STATUS row.
 
-The open engineering backlog, in priority order. **Open items only.** This file is not a log:
-when an item closes, delete its line here, record the evidence in the model's
-[STATUS.md](STATUS.md) row (or the detail doc), and move any finished detail doc to [done](done).
-Working notes, measurements and histories go in the item's detail doc or in `done/`, never here.
+## Rules
 
-Latest session report: [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). The plan being worked
-from it (open items, each with a box): [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md); finished items and their evidence: [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md); what remains after it: [plan 3](2026-10-31-autonomous-plan-3.md). The three
-owner decisions were taken provisionally; they are recorded at the end of the session report.
+1. **Order.** Take items in this order. Do not reorder because another view ranks something higher.
+2. **If an item stalls,** write down the blocker precisely: in this file, and in `bugstofix.md` when
+   it is a bug. Then move to the next item (CLAUDE.md).
+3. **Evidence.** "Done" needs the check in the item's **Done when** line, with real weights and an
+   independent reference where one applies. Then:
+   - update the STATUS.md row;
+   - update the [RUNNING.md](RUNNING.md) row (command, measured RAM and speed, dated);
+   - commit.
+4. **Heavy runs one at a time.** Two 30 GB processes at once runs this 64 GB machine out of memory,
+   and concurrent runs make timings meaningless.
+5. **Estimates are guesses** unless an item says it has been investigated. Record the real time
+   taken when an item closes.
 
-The previous version of this file (a working log up to 2026-09-27, including every fixed bug and
-its history) is kept verbatim at
-[done/00-current-work-log-to-2026-09-27.md](done/00-current-work-log-to-2026-09-27.md). Older
-closed sections: [done/00-current-work-closed-2026-09.md](done/00-current-work-closed-2026-09.md),
-[done/00-current-work-standing-state-2026-08.md](done/00-current-work-standing-state-2026-08.md).
+---
 
-## How the list is ordered
+## About an hour
 
-The goal is still **run any GGUF from Hugging Face**, but the order below puts one thing ahead of
-new coverage: a model we already list as supported that gives a wrong answer is worse than a model
-we do not list, because users trust the STATUS matrix. So:
+### 3. GLM-4.7-Flash (`deepseek2`)
+- [ ] **3. GLM-4.7-Flash (`deepseek2`)** (BLOCKED 2026-09-27: logged in `bugstofix.md`)
+  - [x] `stingray pull -r unsloth/GLM-4.7-Flash-GGUF -q Q2_K` (10.6 GB downloaded to `models/_models/GLM-4.7-Flash-Q2_K.gguf`).
+  - [x] `admit-arch` verification (coherent generation, same top-k order as llama-server).
+  - [x] Run second-half PPL vs `llama-perplexity` (`-c 2048`): 8.1757 batched / 8.2100 sequential vs 8.0997. Not at parity.
+  - [ ] **Done when:** PPL within ~0.3% of llama.cpp; add STATUS/RUNNING rows, and entry in MODELS.md if it qualifies.
+  - *Note:* uses `deepseek2` in llama.cpp, not `glm4moe`, so it may already work. Waits for Item 2 sweep to free machine.
 
-1. **Correctness** of what is already claimed ([1-correctness/](1-correctness)).
-2. **Model coverage**: new families and half-built ones ([2-coverage/](2-coverage)).
-3. **Product and runtime**: the first-run experience, serving, sessions ([3-product-and-runtime/](3-product-and-runtime)).
-4. **Performance**, last locally; measure first ([4-performance/](4-performance)).
-9. **Needs hardware this machine does not have** ([9-external-hardware/](9-external-hardware)).
+---
 
-Within each section the first items have the biggest effect for the least work. Every fix follows
-CLAUDE.md: real weights, an independent reference, timed test runs (rule 12), and the STATUS row
-updated with dated evidence in the same pass.
+## A day or more
 
-## Work order (2026-11-01)
+### 13. MoE variants of the recurrent families
+- [ ] **13. MoE variants of the recurrent families**
+  - [x] Admit Granite 4.0-H tiny/small (MoE) with PPL parity. Small DONE 2026-09-28 (top-k renormalisation fix; +1.2% residual at -c 2048 logged).
+  - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity. No local checkpoint (2026-09-28); not downloaded (C: has no free space, K: ~10 GB).
+  - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
+  - [ ] **Done when:** each variant admitted with PPL parity against reference.
 
-The items below were moved here from the numbered sections, text unchanged, so that the order of this file is the order of the work. Item numbers in the headings are the original ones, kept so that links and notes still resolve.
-
-### A. Runnable now on this PC (no owner decision needed)
-
-- [ ] 20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
-    **2.6 t/s**, MTP **2.0-2.1 t/s** at every draft depth (accept 76% / 62% / 45% at depth 1 / 2 / 3), i.e. 0.77-0.81x of plain.
-    The same engine on Qwen3.8-27B (same `qwen35` architecture and MTP head, different quant mix) wins by +12% (2.7 vs 2.4); see
-    item 17 and `PerformanceLeague.md`. Not diagnosed. First steps: (a) diff the tensor-dtype histograms of the two files, especially
-    the FFN and attention-projection types, and check which have no shared-decode 2-/4-input kernel (IQ2_XS, IQ2_XXS and Q3_K do
-    not; IQ3_S, IQ4_XS, IQ3_XXS and IQ2_S do); (b) time one k=2 verify step on both files against a plain step (the Qwen3.8 numbers
-    were 0.92 s -> ~0.58 s vs 0.42 s plain); (c) if a missing kernel explains it, add it; if not, check the MTP head's own quant and
-    the acceptance rate per position. Until this is understood the CPU MTP draft-depth default (1) is evidenced by Qwen3.8 only, and
-    `--spec-type mtp` should be compared with plain on the user's own file.
-
-- [ ] 3. Image-token prefill in VLMs. **Partly done; the "runs per token (about 9 t/s)" wording was stale** (rechecked in code 2026-10-31, not re-measured). The CPU `ForwardPass.PrefillEmbeddings` batches a whole image through the `PrefillCore` trunk, and the CLI's main image path (`RunCommand.Image.cs`) and two tests (`Granite4VisionE2ETests`, `Qwen3VlVulkanMRopeParityTests`) use it. Still per token: (a) the CLI's segment path (`segs`, the LLaVA-NeXT-style per-view layout); (b) the server's Gemma 4 path (`InferenceEngine`), where batching would change nothing today because the batched trunk excludes models with per-layer head dimensions (`_layerHeadDim is null`) and falls back to per-row `ForwardEmbedding`; (c) the Vulkan and CUDA passes, which have no batched embedding entry point (they loop `ForwardEmbedding`). A batched path is not numerically identical to the per-token one (batched prefill quantises activations differently, see [done/029](done/029-prefill-batch-composition-numerics-bug.md)), so any new caller needs a real-checkpoint output comparison, not just a speed number.
-
-- [ ] 4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
-   projection; the Q3_K activation-format question is closed 2026-11-01, see the ADR-0003 addendum: Q8_KS in the batched path is deliberate and more precise; still open: a Q8_KS variant of the repacked Q4_Kx8 GEMM and the MoE activation items), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
-   in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
-
-- [ ] 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
-   CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
-   - prefill is batched (`Mamba2Prefill`, `ShortConvPrefill` in `PrefillCore`), and since 2026-10-30 Q8_0 uses the
-     int8 batched dispatch: Granite 4.0-H 1B 142 vs llama.cpp 115 t/s, 350M 518 vs 486 (PerformanceLeague, "Q8_0
-     batched prefill scheduling"). Remaining: the conv and scan still walk tokens in order (0.65 s of 6.8 s);
-   - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
-     prefix cache is off for these models), and no zero KV rows for recurrent layers;
-   - GPU paths;
-   - untested variants: MoE Nemotron-H, LFM2-VL/Audio, and the Nemotron-Nano-12B-v2-VL vision tower
-     end to end; Falcon-H1 should come almost free.
-
-- [ ] 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
-
-- [ ] 3. **Multi-model runtime**: execution-level fairness is built as an opt-in turn gate (Phase 6 slice 5, 2026-10-31; off by default, continuous-batching engines only, no throughput measurement) and
-   durable session restore across a restart in multi-model mode.
-   [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
-
-- [ ] 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
+### 16. Product items
+- [ ] **16. Product items**: the four sub-items are the next four lines.
+  - [ ] 2. **Configuration ownership**: source-tracked effective configuration beyond the static planning
    knobs, and an owner decision per obsolete-looking switch.
    [3-product-and-runtime/04-quality-of-life-improvements-plan.md](3-product-and-runtime/04-quality-of-life-improvements-plan.md).
-
-- [ ] 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
-   [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
-
-### B. Waiting on the owner (a decision, a licence accept, or a listening verdict)
-
-- [ ] 1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
-   around task commands. [3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30).
-   2026-10-11 evidence: the README recipes around the task commands landed (root, package and CLI READMEs; their snippets build against the packed package), and `stingray setup chat` then `stingray chat` ran on a clean model home (5 to 6 s total). **Not yet run:** the CLI `speak` and `transcribe` recipes (`setup speak` asks the user to accept a voice data licence; the Speech and QuickStart samples exercised the same engines). Close this item once those two are run and recorded.
-
-- [ ] 15. CosyVoice3 ODE step count: the fewer-steps A/B (by ear plus a Whisper round trip) was never run;
-    the default is still 10. Item 2 of [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md).
-
-- [ ] 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
-
-- [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
+  - [ ] 3. **Multi-model runtime**: execution-level fairness is built as an opt-in turn gate (Phase 6 slice 5, 2026-10-31; off by default, continuous-batching engines only, no throughput measurement) and
+   durable session restore across a restart in multi-model mode.
+   [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
+  - [ ] 4. **Sessions**: `Fork()` skill/instruction propagation (design question, wait for a real caller),
    per-session LoRA in the batched engine, and the fate of the unused `IForwardPass.CreateContext` (owner decision, plan 010)
    (2026-10-31: nothing in `src/` calls it; session forking goes through `HotSessionRuntime.Fork` and the shared KV cache, and now has a concurrent real-model test).
    [051](done/051-hotsession-capability-wiring-plan.md),
    [010](3-product-and-runtime/010-forward-pass-context-isolation-for-session-forking-plan.md).
-
-- [ ] 18. Vision timings: Pixtral 12B and GLM-4.6V (gated; need an `HF_TOKEN` with the licence accepted),
-    LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL, Llama 4 vision.
-
-### C. Needs hardware this PC does not have
-
-- [ ] CUDA passes apply `rope_freqs` for Gemma 4 only, so Llama-3.1-style models on CUDA are wrong at
-  long context (fixed on Vulkan 2026-09-26).
-
-- [ ] CUDA partial offload for the newer architectures (Vulkan `-g N` is done).
-
-- [ ] Discrete-GPU measurements before changing any default: speculative decoding with a draft model
-  on Vulkan, the UMT5 GPU path, gpt-oss on Vulkan.
-
-### D. Stale or decided: close or re-word (checked 2026-11-01)
-
-- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) was a separate case and was fixed 2026-11-01 (item 9).** See [the sanity-check findings](done/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
-
-- [ ] 4a. Spin-then-park CPU worker pool for the tiny-model decode gap. **The experiment is done and shipped opt-in (2026-10-02, rechecked in code 2026-11-01):**
-   `SpinParkWorkerPool` (`STINGRAY_CPU_POOL=spin`, ported from TensorSharp `CpuWorkerPool`), decode loops only. Interleaved on this machine, identical text: SmolLM2-135M 152 -> 193 t/s,
-   SmolLM2-360M 86 -> 103, Qwen2.5-0.5B 69 -> 82 (ratio to llama.cpp 0.73x -> 0.87x), Mistral-7B tie, MoE prefill -18..19% (why it is not the default).
-   Still open, all policy: a per-phase or per-model default (pool for dense decode only), concurrent-server throughput before any default change, and a many-core host.
-   Detail and tables: §1 of
-   [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md).
-
-- [ ] 5. Batched prefill for partially offloaded dense models and the remaining per-token paths. **Rechecked 2026-10-31; the earlier wording ("`VulkanLayerSplitForwardPass` and the MoE path prefill per token") was wrong in both directions.** `GpuForwardPass` batches dense Q4_K/Q6_K models; `VulkanLayerSplitForwardPass` already hands long fresh prompts to the CPU batched pass and imports the KV (glm4moe and afmoe have receipts); the gap that was real was a **dense `llama`-architecture model with a partial offload (`-g N`, `HybridForwardPass`)**, which had no handoff receipt and prefilled token by token (SmolLM2-1.7B `-g 12`: 18 tok/s against 227 CPU-only). Closed 2026-10-31 by a `llama` receipt on the Vulkan hybrid: 18 -> 180 tok/s there and 7.7 -> 44-49 tok/s for Mistral-7B `-g 4` (see the STATUS row for the evidence, the Falcon3 `-g 8` deviation; the one-time 1.9 s warm-up of the first decode was moved to model load the same day, PR 73). Later turns (`startPos > 0`) were closed 2026-11-01 on the Vulkan hybrid (#103), the full-offload pass (#106) and the layer split (#107), and hunyuan-moe has a layer-split receipt (#113). Still per token: prompts under 32 tokens, families without a receipt (dense llama on the full-GPU and layer-split paths, other dense architectures: Qwen2.5 has a hybrid receipt since 2026-10-31; Gemma 2 is CPU-only by design (its soft-capping is not in the GPU passes, so the planner keeps it on the CPU and says so); Granite and Gemma 3 are wrong on the Vulkan hybrid because it applies none of the model scale fields, so it now refuses them (plan 2 P2c); Phi-3 cannot run on the hybrid), and the MoE paths without a handoff receipt ([batched MoE plan](2-coverage/2026-10-03-batched-moe-prefill-plan.md), [Vulkan GEMM doc](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)).
-
-## Thread owners
-
-Items below are grouped by thread. Each thread has one owner doc that holds the full text; other docs point to it. Stage folders (`1-correctness/`, `2-coverage/`, `3-product-and-runtime/`, `4-performance/`) hold the detail.
-
-- **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
-- **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
-- **Vulkan GEMM for LLM prefill** (owner: [thread owner](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image section of the [diffusion owner doc](4-performance/diffusion/diffusion-performance.md)).
-- **Qwen Image and diffusion performance** (owner: [thread owner](4-performance/diffusion/diffusion-performance.md)): no backlog item for Qwen Image; items 8 and 9 (section 4, diffusion) are FLUX.
-- **Batched MoE prefill** (owner: [thread owner](2-coverage/2026-10-03-batched-moe-prefill-plan.md)): item 5 (section 4, GPU).
-- **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
-- **First run, catalogue and public surface** (owner: [thread owner](3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md)): item 1 (section 3).
-- **Gemma** (owner: [thread owner](2-coverage/2026-10-31-gemma-family-plan.md)): items 7 and 9 (sections 1 and 2).
-- **Scout and architecture admission** (owner: [thread owner](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md)): no backlog item of its own; the deferred phases are in the plan's thread-state section.
-- **OpenTelemetry observability** (owner: [thread owner](3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md)): no backlog item of its own; its header was corrected on 2026-10-30; the acceptance items remain open.
-- **Multi-model runtime** (owner: [thread owner](3-product-and-runtime/032-multi-model-inference-runtime-plan.md)): item 3 (section 3).
-- **Documentation architecture** (owner: [thread owner](3-product-and-runtime/2026-10-09-documentation-architecture-plan.md)): no backlog item of its own.
-- **Configuration and sessions** (owner: [thread owner](3-product-and-runtime/04-quality-of-life-improvements-plan.md)): no backlog item of its own; plan 010 is planning only.
-- **CPU performance** (owner: [thread owner](4-performance/perf-sweep-plan.md)): no backlog item of its own; the pickup doc is the index.
-- **Audio GPU residency** (owner: [thread owner](4-performance/audio/080-tts-asr-gpu-residency-checklist.md)): no backlog item of its own; discrete-GPU work is in section 9.
+  - [ ] 5. **Releases**: follow [reference/nuget-release-checklist.md](reference/nuget-release-checklist.md).
 
 ---
+
+## Can't be scheduled
+
+### 17. CPU greedy non-determinism
+- [ ] **17. CPU greedy non-determinism** (never reproduced; act only on a new sighting).
+  - Detail: 6. **CPU greedy-decode non-determinism**: two sightings under CPU contention, neither reproduced.
+
+### 18. Blocked on the user or on other hardware
+- [ ] **18. Blocked items**: the four entries below are its sub-items.
+  - 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
+    `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
+    checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
+  - 13. **HunyuanVideo numeric verification — BLOCKED**: the vendored sd.cpp supports HunyuanVideo
+    1.5 only; patched to load v1 it produces noise (1-step velocity cosine 0.187), so it is not an
+    independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
+    an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
+    [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
+  - 18. Vision timings: Pixtral 12B and GLM-4.6V (gated; need an `HF_TOKEN` with the licence accepted),
+    LLaVA-NeXT/OneVision, GLM-4V/OCR, Hunyuan-VL, Llama 4 vision.
+  - 19. Llama-4 Scout 17B-16E: no ratio vs llama.cpp (the ~93 GB download failed once; its state is
+    unknown, and it does not fit this machine's 64 GB RAM).
+
+---
+
+## Follow-up validation
+
+### 19. GLM-4.5 real-weight Q5_K×Q8_K validation
+- [ ] **19. GLM-4.5 real-weight Q5_K×Q8_K validation** (implementation is complete under item 7; this remains the correctness/admission gate)
+  - [~] On the real `cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K.gguf` checkpoint and matching 326-token prompt, compare gate-off and `ZZ_Q5K_Q8K=1` layer-0 `o_proj` against the existing llama.cpp reference using raw values and record max-abs, mean-abs, RMS, relative-L2, and cosine metrics.
+  - [x] If the layer-0 relative-L2 error improves, measure both gate modes' second-half wikitext PPL at `-c 2048` against the unchanged llama.cpp reference 8.6125; record exact command, memory, and measured values.
+  - **Measured 2026-10-01 (paired per-token NLL instead of the layer-0 dump, whose harness prints only 6 values at 4 decimals):** `llama-perplexity -c 2048 --chunks 1 --save-all-logits` (CPU, `PPL = 8.6125 +/- 0.70301`) decoded per-token against `stingray perplexity -c 2048 --dump-nll` (per-token decode, 1,023 paired tokens, 0 token mismatches). Gate off: `[1024,+)` PPL 8.7753, paired dNLL +0.01639 (SE 0.01024, +1.6 SE), per-token rms 0.328. `STINGRAY_Q5K_DECODE_Q8K=1`: `[1024,+)` PPL **8.5956** (-0.20% vs llama.cpp, inside the ~0.3% target), paired dNLL -0.00397 (SE 0.00646, -0.6 SE), per-token rms **0.207** (-37%). Gate affects only the non-MLA decode `wo` Q5_K matvec. 82B Q2_K read from K: (33.3 GB; C: has ~15 GB free), ~2.1 tok/s per-token, 15-17 min per run, run one at a time. Reader: scratchpad `pair.cs` (decodes the llama.cpp logits file: header, tokens, per-token `scale`,`min_log_prob`, uint16 log-probs). **Hypothesis supported on real weights; layer-0 raw comparison, the small-Q5_K regression, and the broader inventory remain open, gate stays off by default.** Residual rms 0.207 suggests other K-quant matvecs (non-`wo`) also differ from ggml's Q8_K-activation behaviour.
+  - [x] **19a. Small real-weight Q5_K regression (own check, gates the default flip):** pull a small Q5_K_M text model (e.g. SmolLM2-1.7B-Instruct, ~1.2 GB; no local text LLM has Q5_K tensors), run paired per-token NLL vs llama.cpp (`--save-all-logits` / `--dump-nll`) with `STINGRAY_Q5K_DECODE_Q8K` off and on, record PPL, paired mean dNLL and rms for both. Gate-on must not be worse than off beyond noise.
+- **Measured 2026-10-01:** gate extended to every decode Q5_K matvec (single/dual/2-in/4-in, folded MoE dot) plus Q5_1 (Q8_1 activations). GLM-4.5 (same paired method, per-token, -c 2048): wo-only `[1024,+)` PPL 8.5956, rms 0.2067; extended 8.6200 (+0.09% vs llama.cpp 8.6125), paired dNLL -0.00131 (-0.2 SE), rms 0.2038. **SmolLM2-1.7B-Instruct Q5_K_M** (144 Q5_K + 25 Q6_K tensors; llama.cpp `PPL = 6.8582 +/- 0.54279`, identical with `-ctk/-ctv f32`): gate off `[1024,+)` 6.8304, paired dNLL -0.00822 (-1.9 SE), rms 0.1416; gate on 6.8410, dNLL -0.00659 (-1.4 SE), rms 0.1484; on-off per-token sd 0.137. **Reading:** the gate is not worse beyond noise on a normal Q5_K model, but it does not improve it either; the clear win is GLM-4.5 (rms 0.328 -> 0.204, on-off sd 0.229 moving toward llama.cpp). Evidence for a default flip is therefore mixed: keep the gate off by default until 19b, and do not claim a general Q5_K fix. Residual rms ~0.14-0.20 on both models has another source (not KV precision, not Q5_K activation format); Q4_K Q8KS (per-32 scale vs ggml per-256) is one untested candidate.
+- **Q4_K Q8KS candidate ruled out 2026-10-01** (Maincoder-1B Q4_K_M: 192 Q4_K + 33 Q6_K; llama.cpp `PPL = 12.0051 +/- 1.04898`; same paired method): default Q8KS (per-32 scales) `ppl` 11.9204, paired dNLL -0.00708 (-2.9 SE), rms **0.0771**; `STINGRAY_LEGACY_DOTQ4K=1` (plain F32 activations, no quantization) 11.9418, dNLL -0.00529, rms **0.0765**. Identical floor with and without activation quantization, so the Q4_K activation format is not a source of the gap and a ggml-exact `DotQ4K_Q8K` is not needed for correctness. Floor scales with the model's quantization noise (Maincoder Q4_K_M 0.077, SmolLM2 Q5_K_M 0.142, GLM-4.5 Q2_K-heavy 0.204). Remaining small systematic offset (ours ~0.005-0.008 nats lower than llama.cpp on the dense models, 2-3 SE) is unexplained.
+- **Measured 2026-10-01 (CLOSED: gate stays off by default).** Paired per-token NLL vs llama.cpp (`--save-all-logits` / `--dump-nll`), gate off -> on, per-token rms: GLM-4.5 0.328 -> 0.204; phi-2 0.121 -> 0.091; Phi-3-mini 0.127 -> 0.112; jais-590M 0.205 -> 0.169; Ornith-9B 0.066 -> 0.063; SmolLM2 0.142 -> 0.148 (the one regression). Paired mean dNLL stays within about 2 SE of zero everywhere (phi3 +0.0043 -> +0.0076, +2.2 SE; jais -0.0179 -> -0.0053), no token mismatches. So fidelity improves on 5 of 6 models at no systematic cost. **Speed (alone, alternating off/on, 5 runs each, CPU, 96-token decode, Release): SmolLM2-1.7B Q5_K_M 21.0 -> 13.3 t/s median (-37%); phi-2 11.7 -> 9.8 t/s (-16%).** The gate is not worth that decode cost as a default; it stays an opt-in for Q5_K-heavy MoE models like GLM-4.5 where the fidelity gain is large. Not covered: the two 27B Qwen UD files (too slow per-token), gemma-4-E4B (1 Q5_K tensor), and GPU/hybrid paths. A faster `DotQ5K_Q8K` would change the trade-off.
+  - [ ] **Done when:** real-weight evidence is recorded; only if PPL is within ~0.3% of llama.cpp should GLM-4.5 admission and STATUS/RUNNING/MODELS updates be considered. Keep the gate off by default until then. See the [closed implementation record](done/09-glm45-q5k-activation-implementation.md) and [the detailed plan](done/09-glm45-q5k-activation-quant-plan.md).
+
+---
+
+## Remaining backlog (themed, from the former 00-current-work)
 
 ## 1. Correctness of what is already claimed
 
@@ -162,18 +115,11 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
    much slower here. The baselines are a regression guard (our own known-good output), not an independent
    reference. Origin: item 4 of §4 in
    [done/2026-09-24-diffusion-perf-session-handoff.md](done/2026-09-24-diffusion-perf-session-handoff.md).
-- [ ] 12. **CosyVoice 2 garbled endings — BLOCKED** on an independent reference: one recorded upstream
-    `inference_zero_shot` run (input token ids, generated speech tokens, ideally per-step top-k),
-    checked in as data. What is already ruled out: #10 in [done/102](done/102-status-open-items-plan.md).
-- [ ] 13. **HunyuanVideo numeric verification — BLOCKED**: the vendored sd.cpp supports HunyuanVideo
-    1.5 only; patched to load v1 it produces noise (1-step velocity cosine 0.187), so it is not an
-    independent reference. Needs one v1 reference run (ComfyUI or diffusers) recorded as data, or
-    an upstream C++ port with v1 support. The row stays ⚪ with visual-only evidence. #13 in
-    [done/102](done/102-status-open-items-plan.md) lists the local sd.cpp patch.
 - [ ] 14. **Remaining open items in [1-correctness/bugstofix.md](1-correctness/bugstofix.md)**: #15 LLaVA-NeXT/OneVision residuals
     (pixel-level and per-view embedding parity unverified).
     Closed 2026-10-09: #24 DeepSeek-V2-Lite greedy receipt vs Q3_K kernel (retained e7b7aa8a AVX2 Q3_K dot; characterized token-9 near-tie; explicit receipt in `DeepSeek2GreedyParityTests`; landed IQ4_NL folded MoE path) and #22 stale numpy-golden vision parity tests (retired in favor of active `LlamaMtmdVisionParityTests` oracles).
     Closed 2026-10-01: #19/#20 (RWKV6/RWKV7 admitted) and #23 (DeepSeek-V2-Lite receipt pinned to Q8 prefill).
+- [ ] 15. **Stable Audio 3 Small quality**: our local SA3 checkpoints are the `-base` (pre-trained) models, which sound    worse than the post-trained releases. Waiting on the user's listening verdict on the audio.cpp post-trained    clips (`docs/audio-samples/sa3_small_*_POSTTRAINED_*`); if better, add GGUF loading (or gated safetensors via    `HF_TOKEN`) and an opt-in `pingpong` sampler (8 steps, CFG 1.0). Detail: [done/104](done/104-handover-2026-09-28.md) §2.
 
 - [ ] 17. **Qwen3.8-27B (priority checkpoint): MTP self-speculation now wins on CPU: +12% (2.7 vs 2.4 t/s) at draft depth 1.**
     Use `--spec-type mtp --no-thinking --temp 0` (auto mode does not engage it: it also requires no history penalty).
@@ -211,6 +157,16 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 - [ ] 1. **GLM (`glm4moe`), follow-ups.** GLM-4.5-Air was admitted on 2026-10-04 (Q2_K, CPU and Vulkan layer split;
    STATUS row). Open: other quantisations and the GLM-4.6 / 4.7 checkpoints on real weights, and Vulkan offload
    beyond `-g 4` (every expert of a resident layer is uploaded, so device memory runs out). GLM-4 dense already runs.
+- [ ] 2. **Recurrent-state families, follow-ups** (Granite 4.0-H, Nemotron-H and LFM2 were admitted on
+   CPU on 2026-09-27; #14, #15, #17 in [done/102](done/102-status-open-items-plan.md)):
+   - prefill is batched (`Mamba2Prefill`, `ShortConvPrefill` in `PrefillCore`), and since 2026-10-30 Q8_0 uses the
+     int8 batched dispatch: Granite 4.0-H 1B 142 vs llama.cpp 115 t/s, 350M 518 vs 486 (PerformanceLeague, "Q8_0
+     batched prefill scheduling"). Remaining: the conv and scan still walk tokens in order (0.65 s of 6.8 s);
+   - partial rewind of the recurrent state (`SupportsPartialRewind` is false, so the server's
+     prefix cache is off for these models), and no zero KV rows for recurrent layers;
+   - GPU paths;
+   - untested variants: LFM2-VL/Audio (MoE variants are item 13 above), and the Nemotron-Nano-12B-v2-VL vision tower
+     end to end; Falcon-H1 should come almost free.
 - [ ] 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt` (`--model sensevoice` /
     `paraformer`). Open: now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
 - [ ] 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
@@ -236,7 +192,9 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 - [ ] **Architecture semantics in the descriptor** (adding a model = one component, no central edits): plan and live checklist in
   [2-coverage/2026-10-08-architecture-semantics-admission-plan.md](2-coverage/2026-10-08-architecture-semantics-admission-plan.md).
 
-- [ ] 5. **Releases**: follow [reference/nuget-release-checklist.md](reference/nuget-release-checklist.md).
+- [ ] 1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
+   around task commands. [3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30).
+   2026-10-11 evidence: the README recipes around the task commands landed (root, package and CLI READMEs; their snippets build against the packed package), and `stingray setup chat` then `stingray chat` ran on a clean model home (5 to 6 s total). **Not yet run:** the CLI `speak` and `transcribe` recipes (`setup speak` asks the user to accept a voice data licence; the Speech and QuickStart samples exercised the same engines). Close this item once those two are run and recorded.
 - [ ] 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
    Phases 4-6, the ONNX-runtime path for engines that already have native ports.
 
@@ -256,6 +214,16 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
+- [ ] 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
+   [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
+- [ ] 3. Image-token prefill in VLMs. **Partly done; the "runs per token (about 9 t/s)" wording was stale** (rechecked in code 2026-10-31, not re-measured). The CPU `ForwardPass.PrefillEmbeddings` batches a whole image through the `PrefillCore` trunk, and the CLI's main image path (`RunCommand.Image.cs`) and two tests (`Granite4VisionE2ETests`, `Qwen3VlVulkanMRopeParityTests`) use it. Still per token: (a) the CLI's segment path (`segs`, the LLaVA-NeXT-style per-view layout); (b) the server's Gemma 4 path (`InferenceEngine`), where batching would change nothing today because the batched trunk excludes models with per-layer head dimensions (`_layerHeadDim is null`) and falls back to per-row `ForwardEmbedding`; (c) the Vulkan and CUDA passes, which have no batched embedding entry point (they loop `ForwardEmbedding`). A batched path is not numerically identical to the per-token one (batched prefill quantises activations differently, see [done/029](done/029-prefill-batch-composition-numerics-bug.md)), so any new caller needs a real-checkpoint output comparison, not just a speed number.
+- [ ] 4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
+   projection; the Q3_K activation-format question is closed 2026-11-01, see the ADR-0003 addendum: Q8_KS in the batched path is deliberate and more precise; still open: a Q8_KS variant of the repacked Q4_Kx8 GEMM and the MoE activation items), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
+   in [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
+  - Folded from todo.md (same numerics thread): Step 2: or a Q8_KS variant of the unified GEMM (keeps our decode precision; no reference
+  implementation; the TensorSharp Q8_K kernels are the readable model).
+  - Measure (same item): decode t/s, prefill t/s, PPL vs llama.cpp (SmolLM2: F32 0.03%, int8 0.69% today),
+  decode-vs-prefill logit identity. Docs: ADR, League rows, perf-sweep-plan 10.2.
 
 **GPU, LLM** ([4-performance/gpu/](4-performance/gpu))
 - [ ] 6. Raw-quant matvec bandwidth on Vulkan (gpt-oss decode is MXFP4 matvec-bound, ~18 GB/s here).
@@ -280,6 +248,8 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
     [079](4-performance/audio/079-minimax-music3-gpu-residency-plan.md).
 - [ ] 14. MusicGen / AudioGen performance and DRY passes (CFG as a batch-2 GEMM, a T5 kernel shared with
     Parler) plus top-p sampling. "Known gaps" in [done/062](done/062-musicgen-implementation-plan.md).
+- [ ] 15. CosyVoice3 ODE step count: the fewer-steps A/B (by ear plus a Whisper round trip) was never run;
+    the default is still 10. Item 2 of [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md).
 - [ ] 16. Stable Audio 3: `IStableAudio3Engine` consolidation now that three variants exist (Sprint 3 of
     [done/065](done/065-stable-audio-3-medium-smallsfx-future-plan.md)).
 - [ ] 17. TTS/ASR GPU residency, one engine at a time:
@@ -288,12 +258,104 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
     [done/053](done/053-vulkan-backend-audit-remaining-audio-engines.md)); Whisper, Parakeet and
     FunASR encoders are named future candidates there.
 
-**Measurement gaps in `PerformanceLeague.md`**
-- [ ] 19. Llama-4 Scout 17B-16E: no ratio vs llama.cpp (the ~93 GB download failed once; its state is
-    unknown, and it does not fit this machine's 64 GB RAM).
+- [ ] 20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
+    **2.6 t/s**, MTP **2.0-2.1 t/s** at every draft depth (accept 76% / 62% / 45% at depth 1 / 2 / 3), i.e. 0.77-0.81x of plain.
+    The same engine on Qwen3.8-27B (same `qwen35` architecture and MTP head, different quant mix) wins by +12% (2.7 vs 2.4); see
+    item 17 and `PerformanceLeague.md`. Not diagnosed. First steps: (a) diff the tensor-dtype histograms of the two files, especially
+    the FFN and attention-projection types, and check which have no shared-decode 2-/4-input kernel (IQ2_XS, IQ2_XXS and Q3_K do
+    not; IQ3_S, IQ4_XS, IQ3_XXS and IQ2_S do); (b) time one k=2 verify step on both files against a plain step (the Qwen3.8 numbers
+    were 0.92 s -> ~0.58 s vs 0.42 s plain); (c) if a missing kernel explains it, add it; if not, check the MTP head's own quant and
+    the acceptance rate per position. Until this is understood the CPU MTP draft-depth default (1) is evidenced by Qwen3.8 only, and
+    `--spec-type mtp` should be compared with plain on the user's own file.
+  - Folded from todo.md: 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
+
+## 5. Scout, admission tooling and MTP follow-ups (merged from todo.md, 2026-11-01)
+
+Open items from the old `todo.md`, each kept once. Owners: the scout plan for 5a, the MTP ADR and the TensorSharp plan for 5b.
+
+### 5a. Scout and admission tooling
+
+- [ ] Admit ONE real, annoying model with the playbook and write down where scout helped / misled / was irrelevant, with times. Candidates: `ornith-ai/Ornith-1.5-35B-A3B-GGUF`
+      (qwen35moe + an extra next-n head: does our loader ignore the unused `nextn` tensors?), a relabel, or the next item in `docs/00-current-work.md`. If it does not save time, fix scout before adding features.
+
+- [ ] Quant picker cost on large-vocab families: ~11 MiB per file (248k-token vocabulary), so a 31-quant repo = 352 MiB / 177 requests. All quants of a repo share their metadata size roughly; learn it from the first file and fetch the exact range in one request. Low priority.
+
+- [ ] **Signature harvest**: remote-scout single-file quants of ADMITTED architectures we have no local file for and `--emit-signature` them (Hub provenance, no download). `qwen3moe` is admitted but ranks against dense `qwen3` only because it has no signature. Prefer single files: split models have no single hash.
+
+- [ ] **Demand-ranked backlog**: `api/models?filter=gguf&sort=downloads&expand[]=gguf&expand[]=downloads` returns architecture, 30-day downloads, gated and total size per repo in ONE call (verified). Aggregate by architecture, mark registered/admitted, rank the unregistered.
+      Caveat: downloads are per repository over 30 days, not per file, not inference use. Bounded `--limit`, list-only, never a crawler.
+
+- [ ] **Batch triage**: feed a repo list through remote scout; buckets: identical to an admitted family / identical structure under a new name (relabel candidates, the fast lane, still needs a golden) / near-parent with differences / nothing close / blocked (dtype, tokenizer, size). Machine-readable.
+
+- [ ] **Compare semantics-changing metadata too** (not only tensors): a short curated list (rope scaling type, sliding window, expert gating...) shown as separate informational differences. Not keys that vary with fine-tuning (rope base). qwen3 vs qwen3vl are tensor-identical and differ only in metadata.
+
+- [ ] **Scout output as the bug-report format**: a user whose model fails pastes the JSON (no paths, no weights); maintainer reproduces with `scout -r` at the pinned commit.
+
+- [ ] **Shared goldens index** (file sha256 -> golden): goldens are tiny, hash-pinned, path-free. Checking one needs no llama.cpp; only capturing does. Lets scout say "verified for exactly this file".
+
+- [ ] **Estimator**: MLA (DeepSeek2), hybrid/GDN and RWKV are Unknown (blocked); other MoE families unmeasured (only Phi-3.5-MoE: experts not repacked); only one machine calibrated; GPU placement deliberately not estimated (CLAUDE.md rule 13). Re-measure when the engine changes (the Q4_K repack copy is why a Q4_K_M file costs ~1.8x its size).
+
+- [ ] **Leave-one-out** (`scripts/scout-leave-one-out.ps1`) again whenever signatures grow; still n=12. Observed split: <=11 differences = real near-relative, >=14 = nothing close.
+
+- [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
+
+- [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
+
+### 5b. MTP and numerics follow-ups
+
+- [ ] ggml vs Stingray Q8 activation cross-check on identical rows (the long40 pos-541 projection
+      inputs). P/Invoke the vendored b10306 `ggml-base.dll` (`quantize_row_q8_K_ref`,
+      `dequantize_row_q8_K`) and `ggml_get_type_traits_cpu` vec_dot (q4_K/q6_K x q8_K).
+      - Per 256-block: amax, scale, % blocks identical, differing q per block, max |dq|, dequant RMS
+        vs x (ggml Q8_K vs our Q8_KS).
+      - Four-way projection decomposition: FP64(W.x) oracle, FP64(W.deq(q_ggml)),
+        FP64(W.deq(q_ours)), actual ggml vec_dot vs our dot. Report absolute error next to relative
+        (cancellation rows).
+
+- [ ] `MtpDecoder_GreedyParity_LlamaCpp` doc: already diverges from llama.cpp at token 1 on the
+      exact path; re-baseline on the fast path when `Qwen3.6-27B-MTP-Q4_K_M.gguf` is available
+
+- [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
+
+- [ ] MTP draft acceptance, StrictSequential vs Optimized prefill, same prompts: accepted per
+      round, acceptance by draft position, generated output (identical draft traces not required)
+
+- [ ] llama.cpp b10306 comparison via `llama-server` pre-sampling `n_probs`
+
+- [ ] Optional: name the strict path explicitly (e.g. a `StrictSequential` prefill mode) instead
+      of only the env switch
+
+---
 
 ## 9. Needs hardware this machine does not have
 
 [9-external-hardware/90-external-hardware-work.md](9-external-hardware/90-external-hardware-work.md):
 CUDA release evidence, Gemma 4 12B on CUDA, CUDA gate/up fusion, the CUDA graph default, ARM64.
-Also waiting on hardware:
+
+---
+
+## Thread owners
+
+Items below are grouped by thread. Each thread has one owner doc that holds the full text; other docs point to it. Stage folders (`1-correctness/`, `2-coverage/`, `3-product-and-runtime/`, `4-performance/`) hold the detail.
+
+- **MTP and hybrid-GDN** (owner: [reference/adr-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)): items 17 (section 1) and 20 (section 4).
+- **Quantised numerics: Q8_K, int8 and MoE activations** (owner: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md)): item 4b (section 4).
+- **Vulkan GEMM for LLM prefill** (owner: [thread owner](4-performance/gpu/vulkan-gemm/vulkan-gemm.md)): no backlog item of its own; related to item 6 (section 4, GPU). The diffusion FP16-tile project is a separate thread (see the Qwen Image section of the [diffusion owner doc](4-performance/diffusion/diffusion-performance.md)).
+- **Qwen Image and diffusion performance** (owner: [thread owner](4-performance/diffusion/diffusion-performance.md)): no backlog item for Qwen Image; items 8 and 9 (section 4, diffusion) are FLUX.
+- **Batched MoE prefill** (owner: [thread owner](2-coverage/2026-10-03-batched-moe-prefill-plan.md)): item 5 (section 4, GPU).
+- **Ported families** (owner: [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md)): item 14 (section 2) and the status ladder.
+- **First run, catalogue and public surface** (owner: [thread owner](3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md)): item 1 (section 3).
+- **Gemma** (owner: [thread owner](2-coverage/2026-10-31-gemma-family-plan.md)): items 7 and 9 (sections 1 and 2).
+- **Scout and architecture admission** (owner: [thread owner](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md)): open items are in section 5a below (merged from todo.md); the deferred phases are in the plan's thread-state section.
+- **OpenTelemetry observability** (owner: [thread owner](3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md)): no backlog item of its own; its header was corrected on 2026-10-30; the acceptance items remain open.
+- **Multi-model runtime** (owner: [thread owner](3-product-and-runtime/032-multi-model-inference-runtime-plan.md)): item 3 (section 3).
+- **Documentation architecture** (owner: [thread owner](3-product-and-runtime/2026-10-09-documentation-architecture-plan.md)): no backlog item of its own.
+- **Configuration and sessions** (owner: [thread owner](3-product-and-runtime/04-quality-of-life-improvements-plan.md)): no backlog item of its own; plan 010 is planning only.
+- **CPU performance** (owner: [thread owner](4-performance/perf-sweep-plan.md)): no backlog item of its own; the pickup doc is the index.
+- **Audio GPU residency** (owner: [thread owner](4-performance/audio/080-tts-asr-gpu-residency-checklist.md)): no backlog item of its own; discrete-GPU work is in section 9.
+
+---
+
+## Log
+
+> Historical log entries from 2026-09-27 through 2026-09-28 are archived in [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md).

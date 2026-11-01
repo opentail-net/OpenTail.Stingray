@@ -1,7 +1,7 @@
-# TODO: completed items split from docs/todo.md (2026-10-30)
-> Open items stay in [../todo.md](../todo.md).
+# TODO: completed items split from docs/done/todo-merged-2026-11-01.md (2026-10-30)
+> Open items stay in [../todo.md](todo-merged-2026-11-01.md).
 
-Finished items moved verbatim out of [../todo.md](../todo.md). Items still open stay there.
+Finished items moved verbatim out of [../todo.md](todo-merged-2026-11-01.md). Items still open stay there.
 
 ## Scout / Hugging Face: completed items
 

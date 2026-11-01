@@ -1,6 +1,6 @@
 # 103: Outstanding work, quickest first — Closed items and execution log
 
-> **ARCHIVED.** Split verbatim out of [../103-quickest-first-plan.md](../103-quickest-first-plan.md), which keeps the active open backlog (Items 3, 11 remainder, 13, 16, 17, 18, 19).
+> **ARCHIVED.** Split verbatim out of [../103-quickest-first-plan.md](103-quickest-first-plan-merged-2026-11-01.md), which keeps the active open backlog (Items 3, 11 remainder, 13, 16, 17, 18, 19).
 > Items here were closed through 2026-09-28 and 2026-10-01.
 
 ## Closed items

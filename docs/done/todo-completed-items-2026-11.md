@@ -1,6 +1,6 @@
 # Completed items split from todo.md (2026-11-01)
 
-Finished items moved verbatim out of [../todo.md](../todo.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+Finished items moved verbatim out of [../todo.md](todo-merged-2026-11-01.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
 
 > from: ## Ideas, in the order I would do them
 - [x] Unrelated finding (resolved: CLAUDE.md rule 8 now says they are git-ignored local checkouts): `CLAUDE.md` said `examples/*.cpp` and `tools/llama.cpp` were "checked into this repo". They are git-ignored (0 tracked files), so other contributors do not have them. Decide the wording.
@@ -83,7 +83,7 @@ Finished items moved verbatim out of [../todo.md](../todo.md). Open items stay t
 
 ## More completed items moved from todo.md on 2026-11-01
 
-Finished items moved verbatim out of [../todo.md](../todo.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+Finished items moved verbatim out of [../todo.md](todo-merged-2026-11-01.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
 
 > from: ## Docs
 - [x] *(done 2026-11-01: 8.1 and 8.4 t/s medians, about 10 percent background load; League section `CPU prefill at the int8 default`)* Re-measure Qwen3.8-27B (and Qwen3.6-27B) prefill, uncontended; dated `PerformanceLeague.md` rows

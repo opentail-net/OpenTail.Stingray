@@ -1,6 +1,8 @@
-> Finished items moved to [done/todo-done-2026-10.md](done/todo-done-2026-10.md) on 2026-10-30. This file keeps only the open work.
+> Superseded 2026-11-01: the open items were merged into [00-current-work.md](../00-current-work.md) (section 5 and item 4b/20). This file is kept as history; its earlier moves are in [todo-done-2026-10.md](todo-done-2026-10.md) and [todo-completed-items-2026-11.md](todo-completed-items-2026-11.md).
 
-> Completed items moved to [done/todo-completed-items-2026-11.md](done/todo-completed-items-2026-11.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+> Finished items moved to [done/todo-done-2026-10.md](todo-done-2026-10.md) on 2026-10-30. This file keeps only the open work.
+
+> Completed items moved to [done/todo-completed-items-2026-11.md](todo-completed-items-2026-11.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
 
 ## SCOUT / HUGGING FACE: IDEAS AND TODO (written 2026-10-09)
 
@@ -122,7 +124,7 @@ experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollbac
 `STINGRAY_CPU_PREFILL_Q8=0`.
 
 ## Follow-ups: closing the remaining gaps
-- [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
+- [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](../1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
 
 ## TODO: TensorSharp takeaways (user order 2026-10-02: 1, 2, 3, then 4)
 
@@ -134,7 +136,7 @@ stays internal). Committed.
 - Each port adds its file to the TensorSharp section of `THIRD_PARTY_NOTICES.md`
 
 ## Follow-ups (not blocking)
-- [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
+- [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 - [ ] MTP draft acceptance, StrictSequential vs Optimized prefill, same prompts: accepted per
       round, acceptance by draft position, generated output (identical draft traces not required)
 - [ ] llama.cpp b10306 comparison via `llama-server` pre-sampling `n_probs`

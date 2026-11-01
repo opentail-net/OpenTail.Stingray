@@ -166,7 +166,7 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
 - [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 - [ ] Re-baseline `MtpDecoder_GreedyParity_LlamaCpp`: see ADR-0002 (open follow-ups).
 
-### Follow-ups from the MoE audit (moved from docs/todo.md, 2026-10-30)
+### Follow-ups from the MoE audit (moved from docs/00-current-work.md, 2026-10-30)
 
 - [ ] NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
       rel-RMS per projection (vs 9e-7 for the F32 GEMM). Compare our `QuantizeRowToQ8KS` + dot

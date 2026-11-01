@@ -1,12 +1,14 @@
-# 103: Outstanding work, quickest first
+# 103: Outstanding work, quickest first (history)
 
-> Completed items moved to [done/103-quickest-first-plan-completed-items-2026-10.md](done/103-quickest-first-plan-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+> Superseded 2026-11-01: merged into [00-current-work.md](../00-current-work.md), which now holds the working order and every open item. The checkboxes below are the state at the merge and are not maintained here.
+
+> Completed items moved to [done/103-quickest-first-plan-completed-items-2026-10.md](103-quickest-first-plan-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
 
 Written 2026-09-27 at the user's request. **This file sets the working order.** Other views of the
-same problems exist, such as the themed backlog in [00-current-work.md](00-current-work.md) and
-[1-correctness/bugstofix.md](1-correctness/bugstofix.md). Those remain the detail and evidence
+same problems exist, such as the themed backlog in [00-current-work.md](../00-current-work.md) and
+[1-correctness/bugstofix.md](../1-correctness/bugstofix.md). Those remain the detail and evidence
 sources, but work proceeds in the order below.
-Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archived in [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md).
+Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archived in [done/103-quickest-first-plan-closed-items.md](103-quickest-first-plan-closed-items.md).
 
 ## Rules
 
@@ -16,7 +18,7 @@ Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archive
 3. **Evidence.** "Done" needs the check in the item's **Done when** line, with real weights and an
    independent reference where one applies. Then:
    - update the STATUS.md row;
-   - update the [RUNNING.md](RUNNING.md) row (command, measured RAM and speed, dated);
+   - update the [RUNNING.md](../RUNNING.md) row (command, measured RAM and speed, dated);
    - commit.
 4. **Heavy runs one at a time.** Two 30 GB processes at once runs this 64 GB machine out of memory,
    and concurrent runs make timings meaningless.
@@ -66,8 +68,6 @@ Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archive
   - [ ] **HunyuanVideo** numeric check: blocked on independent v1 output (noise + latent).
   - [ ] **Pixtral 12B / GLM-4.6V timings:** blocked on `HF_TOKEN` with accepted license.
   - [ ] **Llama-4 Scout:** blocked on ~93 GB disk space.
-  - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
-  - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion (attention shader and audits: measurable on the iGPU but only pays off on a discrete GPU, see item 15), TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
 
 ## Follow-up validation
 
@@ -80,10 +80,10 @@ Closed items (1, 2, 4-12, 14, 15, and the completed sub-items of 16) are archive
 - **Measured 2026-10-01:** gate extended to every decode Q5_K matvec (single/dual/2-in/4-in, folded MoE dot) plus Q5_1 (Q8_1 activations). GLM-4.5 (same paired method, per-token, -c 2048): wo-only `[1024,+)` PPL 8.5956, rms 0.2067; extended 8.6200 (+0.09% vs llama.cpp 8.6125), paired dNLL -0.00131 (-0.2 SE), rms 0.2038. **SmolLM2-1.7B-Instruct Q5_K_M** (144 Q5_K + 25 Q6_K tensors; llama.cpp `PPL = 6.8582 +/- 0.54279`, identical with `-ctk/-ctv f32`): gate off `[1024,+)` 6.8304, paired dNLL -0.00822 (-1.9 SE), rms 0.1416; gate on 6.8410, dNLL -0.00659 (-1.4 SE), rms 0.1484; on-off per-token sd 0.137. **Reading:** the gate is not worse beyond noise on a normal Q5_K model, but it does not improve it either; the clear win is GLM-4.5 (rms 0.328 -> 0.204, on-off sd 0.229 moving toward llama.cpp). Evidence for a default flip is therefore mixed: keep the gate off by default until 19b, and do not claim a general Q5_K fix. Residual rms ~0.14-0.20 on both models has another source (not KV precision, not Q5_K activation format); Q4_K Q8KS (per-32 scale vs ggml per-256) is one untested candidate.
 - **Q4_K Q8KS candidate ruled out 2026-10-01** (Maincoder-1B Q4_K_M: 192 Q4_K + 33 Q6_K; llama.cpp `PPL = 12.0051 +/- 1.04898`; same paired method): default Q8KS (per-32 scales) `ppl` 11.9204, paired dNLL -0.00708 (-2.9 SE), rms **0.0771**; `STINGRAY_LEGACY_DOTQ4K=1` (plain F32 activations, no quantization) 11.9418, dNLL -0.00529, rms **0.0765**. Identical floor with and without activation quantization, so the Q4_K activation format is not a source of the gap and a ggml-exact `DotQ4K_Q8K` is not needed for correctness. Floor scales with the model's quantization noise (Maincoder Q4_K_M 0.077, SmolLM2 Q5_K_M 0.142, GLM-4.5 Q2_K-heavy 0.204). Remaining small systematic offset (ours ~0.005-0.008 nats lower than llama.cpp on the dense models, 2-3 SE) is unexplained.
 - **Measured 2026-10-01 (CLOSED: gate stays off by default).** Paired per-token NLL vs llama.cpp (`--save-all-logits` / `--dump-nll`), gate off -> on, per-token rms: GLM-4.5 0.328 -> 0.204; phi-2 0.121 -> 0.091; Phi-3-mini 0.127 -> 0.112; jais-590M 0.205 -> 0.169; Ornith-9B 0.066 -> 0.063; SmolLM2 0.142 -> 0.148 (the one regression). Paired mean dNLL stays within about 2 SE of zero everywhere (phi3 +0.0043 -> +0.0076, +2.2 SE; jais -0.0179 -> -0.0053), no token mismatches. So fidelity improves on 5 of 6 models at no systematic cost. **Speed (alone, alternating off/on, 5 runs each, CPU, 96-token decode, Release): SmolLM2-1.7B Q5_K_M 21.0 -> 13.3 t/s median (-37%); phi-2 11.7 -> 9.8 t/s (-16%).** The gate is not worth that decode cost as a default; it stays an opt-in for Q5_K-heavy MoE models like GLM-4.5 where the fidelity gain is large. Not covered: the two 27B Qwen UD files (too slow per-token), gemma-4-E4B (1 Q5_K tensor), and GPU/hybrid paths. A faster `DotQ5K_Q8K` would change the trade-off.
-  - [ ] **Done when:** real-weight evidence is recorded; only if PPL is within ~0.3% of llama.cpp should GLM-4.5 admission and STATUS/RUNNING/MODELS updates be considered. Keep the gate off by default until then. See the [closed implementation record](done/09-glm45-q5k-activation-implementation.md) and [the detailed plan](done/09-glm45-q5k-activation-quant-plan.md).
+  - [ ] **Done when:** real-weight evidence is recorded; only if PPL is within ~0.3% of llama.cpp should GLM-4.5 admission and STATUS/RUNNING/MODELS updates be considered. Keep the gate off by default until then. See the [closed implementation record](09-glm45-q5k-activation-implementation.md) and [the detailed plan](09-glm45-q5k-activation-quant-plan.md).
 
 ---
 
 ## Log
 
-> Historical log entries from 2026-09-27 through 2026-09-28 are archived in [done/103-quickest-first-plan-closed-items.md](done/103-quickest-first-plan-closed-items.md).
+> Historical log entries from 2026-09-27 through 2026-09-28 are archived in [done/103-quickest-first-plan-closed-items.md](103-quickest-first-plan-closed-items.md).
