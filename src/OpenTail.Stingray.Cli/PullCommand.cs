@@ -58,17 +58,19 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             return ExitCodes.Failure;
         }
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };   // downloads (ModelDownloader still takes a plain HttpClient)
         http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTail.Stingray/pull");
+        // The listing goes through the shared client: HTTPS to Hugging Face hosts only, every redirect hop checked, HF_TOKEN sent to the Hub and never to a CDN, response size capped.
+        using var hub = new OpenTail.Stingray.Core.Net.ExternalHttpClient("OpenTail.Stingray/pull", timeout: TimeSpan.FromMinutes(10));
 
         var publishedSha256 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         List<(string Name, long? Size)> files;
         string? resolvedRevision = null;
         try
         {
-            files = ListGgufFiles(http, repo, settings.Revision, cancellation, publishedSha256, out resolvedRevision);
+            files = ListGgufFiles(hub, repo, settings.Revision, cancellation, publishedSha256, out resolvedRevision);
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException or InvalidDataException or OpenTail.Stingray.Core.Net.ExternalAccessDeniedException)
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] could not fetch repo listing for '{Markup.Escape(repo)}': {Markup.Escape(ex.Message)}");
             AnsiConsole.MarkupLine("If this repo is gated, accept its terms on huggingface.co first and set HF_TOKEN — anonymous access is used otherwise.");
@@ -167,26 +169,18 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         return input;
     }
 
-    private static List<(string Name, long? Size)> ListGgufFiles(HttpClient http, string repo, string? revision, CancellationToken ct, Dictionary<string, string>? sha256ByName, out string? resolvedRevision)
+    internal static List<(string Name, long? Size)> ListGgufFiles(OpenTail.Stingray.Core.Net.ExternalHttpClient http, string repo, string? revision, CancellationToken ct, Dictionary<string, string>? sha256ByName, out string? resolvedRevision)
     {
         // ?blobs=true makes the API return each file's size and (for LFS files) its SHA-256; the default response carries neither.
         string apiUrl = revision is { Length: > 0 }
             ? $"https://huggingface.co/api/models/{repo}/revision/{Uri.EscapeDataString(revision)}?blobs=true"
             : $"https://huggingface.co/api/models/{repo}?blobs=true";
-        using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
-        string? token = Environment.GetEnvironmentVariable("HF_TOKEN");
-        if (!string.IsNullOrEmpty(token))
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-
-        using var response = http.Send(request, ct);
-        response.EnsureSuccessStatusCode();
-        using var stream = response.Content.ReadAsStream(ct);
-        using var doc = JsonDocument.Parse(stream);
+        string json = http.GetStringAsync(new Uri(apiUrl), ct).GetAwaiter().GetResult();
+        using var doc = JsonDocument.Parse(json);
         // The commit the listing describes. Downloading from it (not from "main") keeps the files consistent with what was listed and hashed.
         resolvedRevision = doc.RootElement.TryGetProperty("sha", out var shaEl) && shaEl.ValueKind == JsonValueKind.String && shaEl.GetString() is { Length: >= 7 } s ? s : null;
         return ParseGgufListing(doc.RootElement, sha256ByName);
     }
-
     /// <summary>Reads the .gguf files (and, when published, their LFS SHA-256) from a Hugging Face model API response.</summary>
     internal static List<(string Name, long? Size)> ParseGgufListing(JsonElement root, Dictionary<string, string>? sha256ByName = null)
     {
