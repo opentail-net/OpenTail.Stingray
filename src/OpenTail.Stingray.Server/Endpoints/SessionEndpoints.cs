@@ -475,6 +475,8 @@ public static partial class SessionEndpoints
             return Results.BadRequest(new ErrorResponse("invalid_request_error", "expected_revision must be a non-negative integer."));
         if (request.MaxTokens is <= 0)
             return Results.BadRequest(new ErrorResponse("invalid_request_error", "max_tokens must be positive."));
+        if (RequestParameterValidation.ValidateSessionTurn(request) is { } invalidSampling)
+            return Results.BadRequest(new ErrorResponse("invalid_request_error", invalidSampling));
 
         var sampling = SamplingParamsBuilder.Build(options.Value,
             temperature: request.Temperature,
@@ -492,7 +494,10 @@ public static partial class SessionEndpoints
         // confused with the fields that follow it.
         byte[] canonical = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{request.AppendPrompt.Length}:{request.AppendPrompt}"
-            + $"|{expectedRevision}|{sampling.MaxNewTokens}|{sampling.Temperature}|{sampling.TopP}"));
+            + $"|{expectedRevision}|{sampling.MaxNewTokens}|{sampling.Temperature}|{sampling.TopP}"
+            // allowed_choices constrains what the turn can answer, so it is part of what is executed. Appended only when present: a digest already
+            // stored for a turn without choices (cold sessions persist them) must stay byte-for-byte what it was.
+            + (request.AllowedChoices is { Length: > 0 } choices ? "|choices:" + string.Join('\u001f', choices) : "")));
         var digest = SessionRequestDigest.FromCanonicalValue(Convert.ToHexString(canonical));
 
         // An idempotency key is only useful if it is STABLE ACROSS RETRIES. Defaulting to
