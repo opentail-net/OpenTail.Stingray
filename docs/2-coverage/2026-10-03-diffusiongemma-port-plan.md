@@ -1238,7 +1238,7 @@ This is the architectural work worth retaining after DiffusionGemma itself is co
 - [ ] Download the real Q4_K_M GGUF (16.8 GB) and run the Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler)
 - [ ] Level 4 paged real-weight run (00-current-work item 14)
 - [ ] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass), from the HF or vLLM source. 2026-10-31: the HF `config.json` has no such keys, so they are GGUF tensors and their semantics are still undocumented in the config. Open.
-- [ ] Confirm the self-conditioning MLP width. The plan's test name says 2112, but the config's `intermediate_size` 2112 is the dense FFN width (2026-10-31), so the self-conditioning width is not established.
+- [x] Confirm the self-conditioning MLP width (closed 2026-11-01). The real Q4_K_M GGUF (`E:\_models\diffusiongemma\diffusiongemma-26B-A4B-it-Q4_K_M.gguf`) has `self_cond_gate.weight` and `self_cond_up.weight` as `[2816, 2112]` and `self_cond_down.weight` as `[2112, 2816]` (GGUF dims, first = input), so the MLP width is 2112. `DiffusionGemmaTensorSet` checks these shapes against `SelfCondIntermediateDim = 2112` with `ValidateShape`, which throws on mismatch, so the loader rejects any other width. Read from the header with a scratchpad reader (no weights loaded). This settles the width only; the self-conditioning semantics are not checked by this box.
 
 ---
 
