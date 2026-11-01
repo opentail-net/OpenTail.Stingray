@@ -63,7 +63,9 @@ public sealed class OperationMetricsFilterTests
             var audio = Assert.Single(samples, s => s.Name == "opentail.audio.duration");
             Assert.Equal(4.0, audio.Value);
             var rtf = Assert.Single(samples, s => s.Name == "opentail.audio.realtime_factor");
-            Assert.InRange(rtf.Value, 0.004, 0.5);   // about 0.02 s of work for 4 s of audio
+            // About 0.02 s of work for 4 s of audio, but Task.Delay(20) can complete a few milliseconds early on Windows (timer granularity: 13.8 ms was seen),
+            // so the floor is 8 ms, not 16: it still proves the factor comes from elapsed time and is not zero.
+            Assert.InRange(rtf.Value, 0.002, 0.5);
             var failure = Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration" && (string?)s.Tags["opentail.endpoint"] == "test.filter_boom");
             Assert.Equal("error", failure.Tags["outcome"]);
             Assert.Equal("InvalidOperationException", failure.Tags["error.type"]);
