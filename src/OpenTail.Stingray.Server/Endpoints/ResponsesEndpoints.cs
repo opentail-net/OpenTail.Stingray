@@ -145,8 +145,13 @@ public static class ResponsesEndpoints
 
             var sb = new StringBuilder();
             long tokenCount = 0;
-            await foreach (var token in engine.GenerateAsync(prompt, sp, ctx.RequestAborted))
+            int promptTokens = 0;
+            await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
             {
+                // The engine reports the prompt size out of band, as a usage chunk; only text chunks are the answer.
+                if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
+                if (chunk.Kind != GenerateChunkKind.Text) continue;
+                string token = chunk.Text;
                 timing.MarkAdmitted();
                 timing.MarkFirstToken();
                 tokenCount++;
@@ -173,7 +178,7 @@ public static class ResponsesEndpoints
                 JsonSerializer.Serialize(itemDoneEvent, OpenTailStingrayJsonContext.Default.RespOutputItemDoneEvent));
 
             // response.completed
-            var usage = new RespUsage(0, (int)tokenCount, (int)tokenCount);
+            var usage = new RespUsage(promptTokens, (int)tokenCount, promptTokens + (int)tokenCount);
             var completedResp = new RespObject(responseId, "response", createdAt, modelId, "completed",
                 [finalItem], usage);
             var completedEvent = new RespCompletedEvent("response.completed", completedResp);
@@ -189,16 +194,19 @@ public static class ResponsesEndpoints
         {
             var sb = new StringBuilder();
             long tokenCount = 0;
-            await foreach (var token in engine.GenerateAsync(prompt, sp, ctx.RequestAborted))
+            int promptTokens = 0;
+            await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
             {
+                if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
+                if (chunk.Kind != GenerateChunkKind.Text) continue;
                 timing.MarkAdmitted();
                 timing.MarkFirstToken();
                 tokenCount++;
-                sb.Append(token);
+                sb.Append(chunk.Text);
             }
 
             string text = sb.ToString();
-            var usage = new RespUsage(0, (int)tokenCount, (int)tokenCount);
+            var usage = new RespUsage(promptTokens, (int)tokenCount, promptTokens + (int)tokenCount);
             var item = new RespOutputItem(itemId, "message", "assistant",
                 [new RespContentPart("output_text", text)]);
             timing.MarkGenerationComplete();

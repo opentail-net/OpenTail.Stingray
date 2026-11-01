@@ -73,6 +73,45 @@ public sealed class OtherEndpointParameterTests
         Assert.Equal(1, fake.EnteredCount);
     }
 
+    // ── /v1/responses usage: the prompt size comes from the engine's usage chunk, not a constant 0 ──
+
+    [Fact]
+    public async Task Responses_NonStreaming_ReportsThePromptTokensTheEngineCounted()
+    {
+        var fake = new FakeInferenceEngine("test-model") { PromptTokens = 17 };
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/v1/responses", ResponsesBody());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var usage = doc.RootElement.GetProperty("usage");
+        Assert.Equal(17, usage.GetProperty("input_tokens").GetInt32());
+        Assert.Equal(3, usage.GetProperty("output_tokens").GetInt32());   // the fake streams three text chunks
+        Assert.Equal(20, usage.GetProperty("total_tokens").GetInt32());
+    }
+
+    [Fact]
+    public async Task Responses_Streaming_CompletedEventReportsThePromptTokensTheEngineCounted()
+    {
+        var fake = new FakeInferenceEngine("test-model") { PromptTokens = 17 };
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/v1/responses", ResponsesBody(("stream", true)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        string? completed = body.Split('\n').Where(l => l.StartsWith("data:", StringComparison.Ordinal)).Select(l => l[5..].Trim())
+            .LastOrDefault(l => l.Contains("response.completed", StringComparison.Ordinal));
+        Assert.NotNull(completed);
+        using var doc = JsonDocument.Parse(completed!);
+        var usage = doc.RootElement.GetProperty("response").GetProperty("usage");
+        Assert.Equal(17, usage.GetProperty("input_tokens").GetInt32());
+        Assert.Equal(3, usage.GetProperty("output_tokens").GetInt32());
+        Assert.Equal(20, usage.GetProperty("total_tokens").GetInt32());
+    }
     [Fact]
     public async Task Responses_MalformedJson_IsA400_WithABody()
     {

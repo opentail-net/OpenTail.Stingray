@@ -19,6 +19,7 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
 - [ ] **Q5** API follow-ups
   - [x] `tool_choice: none` endpoint test (PR 96)
   - [x] Parameter audit of the other endpoints, 2026-11-01: [the audit](reference/request-parameter-audit-other-endpoints-2026-11-01.md) covers `/v1/responses`, `/v1/audio/speech`, `/v1/images/*`, `/v1/embeddings`, `/v1/rerank`. Fixed: `/v1/responses` refuses non-empty `tools`, `previous_response_id` and out-of-range sampling values, and all its 400s now carry the error body; `/v1/audio/speech` refuses a `response_format` other than `wav`; **`/v1/images/generations` and `/edits` returned a prompt-seeded gradient with a 200 and never ran diffusion** (the README claimed SD/SDXL/FLUX), now 501 with the docs corrected (owner chose this). 18 tests, five mutations fail them
+  - [x] `/v1/responses` reported 0 input tokens in both modes (it read the text-only stream, which drops the engine's usage chunk). Fixed 2026-11-01: it now reads the chunk stream, so `input_tokens`, `output_tokens` and `total_tokens` are real; two tests, mutation checked (found by the external review)
   - [ ] The audit has not covered `/v1/audio/transcriptions` and `/translations` beyond their form fields, `/v1/sessions/*`, `/tokenize`, `/detokenize`, `/props`, `/status` and `/api/embed`; and `/v1/rerank` `top_n` has no endpoint range check (F5)
   - [ ] The stale `stop_sequences` snippet in the design doc
   - [ ] A fake engine that emits tool calls so the telemetry canary covers tool-call argument leakage
@@ -36,10 +37,9 @@ Decisions taken on the owner's behalf, all reversible: `CreateContext` kept unus
 
 Closed: the superseded PR #81 (its file was taken over by #92; closed 2026-10-31 after a diff against `main`).
 
+Decided by the owner (2026-11-01): keep the hybrid scale work (Q2, merged in PR 98); build the `startPos > 0` handoff (Q4, merged for the three Vulkan paths); keep the 0.99 bar for dense rows and the relaxed criterion for the MoE row for now ("may change my mind later").
+
 Open for the owner:
-- Q2: implement the scales in the hybrid, or keep refusing Granite and Gemma 3
 - Q3: implement GPU soft-capping, or keep gemma2 CPU-only
-- Q4 `startPos > 0`: worth building only if long follow-up prompts matter
-- Keep the 0.99 bar for dense rows and the relaxed criterion for the MoE row, or tighten
 
 Blocked: CUDA and discrete-GPU hardware (P2d, CUDA receipts, shared-GPU gate evaluation); a Llama-3.1 checkpoint; an idle machine for clean perf numbers; the NaN if it never reproduces.
