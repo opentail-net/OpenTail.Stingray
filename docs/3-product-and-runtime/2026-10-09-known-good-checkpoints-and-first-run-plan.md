@@ -5,7 +5,6 @@
 ## Checklist (2026-10-30; code checked)
 
 - [ ] P0 leftover: `pull`'s download and listing parser still use their own client and parser
-- [ ] P3 favourites: `Favourites.cs` and `ModelsCommand.cs` exist; end-to-end `models use` not re-checked
 - [ ] P5 docs as tests: a test that fails when a cited file, hash or evidence disappears
 
 **Status:** In progress (2026-10-09). **P0 first-run seam DONE** (`SetupFlow`; `chat`/`speak`/`transcribe` offer to install a missing model, interactive only; `pull --revision` and default commit pin). P0 leftovers: `pull`'s download and listing parser still use their own client/parser instead of the gateway/`HubClient`. **P1 shared preflight DONE for `chat` and `setup`** (see 061; Unknown warns rather than blocks; `run`/`serve` wired to the preflight since 2026-10-30, see the checklist above; estimator location not re-checked). **P2 DONE (2026-10-10):** `FamilyId` + `Qualifications` on `CatalogEntry`; three Qwen2.5 chat entries (0.5b default Exact 32/32, 1.5b and 7b NearTie 31/32, each pinned to a llama-server 10306 golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`); `setup` offers the largest smaller qualified same-family model that fits when the chosen one does not; `models <task>` and the setup summary print a scoped "Qualified" row (unqualified entries say so). **P3 favourites implemented (`models use`, `--clear`; end-to-end run not recorded), P4 `models --local [--verify]` implemented** (cards F, E). **P5 partly done:** catalogue guards plus a test that every cited golden exists and pins the entry's file name, size and SHA-256; README/STATUS rows citing catalogue ids not yet covered. Speeds on the 1.5b/7b rows are single golden runs (33.3 and 8.0 tok/s decode), not rule-7 measurements. Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.
@@ -192,7 +191,6 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 - [ ] Front door step 3: starter manifest and README recipes around the task commands
 - [ ] Known-good P0 leftover: `pull`'s download and listing parser still use their own client
-- [ ] Known-good P3: re-check `models use` end to end
 - [ ] Known-good P5: docs-as-tests
 - [ ] Public surface: A2 to A4, B5 (application-name item), C2, D2, D3, E
 
