@@ -104,6 +104,8 @@ public static class OpenAiAudioEndpoints
         return app;
     }
 
+    private static readonly HashSet<string> s_speechToTextFormats = new(StringComparer.OrdinalIgnoreCase) { "json", "text", "srt", "verbose_json", "vtt" };
+
     private static async Task HandleSpeechToTextAsync(HttpContext ctx, SpeechTask task)
     {
         float[]? samples = null;
@@ -115,6 +117,10 @@ public static class OpenAiAudioEndpoints
         bool useVad = false;
         bool stream = false;
 
+        // Client mistakes are 400s that name the problem, not unhandled exceptions: a body that is not WAV audio used to surface as a 500
+        // (InvalidDataException), and an unparseable temperature, an unknown response_format or a non-boolean flag was silently replaced by a default.
+        string? invalid = null;
+
         if (ctx.Request.HasFormContentType)
         {
             var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
@@ -123,28 +129,40 @@ public static class OpenAiAudioEndpoints
             if (file != null && file.Length > 0)
             {
                 using var fileStream = file.OpenReadStream();
-                var wavData = WavReader.ReadWav(fileStream);
-                samples = wavData.Samples;
-                sampleRate = wavData.SampleRate;
+                try
+                {
+                    var wavData = WavReader.ReadWav(fileStream);
+                    samples = wavData.Samples;
+                    sampleRate = wavData.SampleRate;
+                }
+                catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException) { invalid = $"'file' is not a valid WAV file: {ex.Message}"; }
             }
 
             language = form["language"].FirstOrDefault();
             prompt = form["prompt"].FirstOrDefault() ?? form["initial_prompt"].FirstOrDefault();
             responseFormat = form["response_format"].FirstOrDefault() ?? "json";
-            
-            if (float.TryParse(form["temperature"].FirstOrDefault(), CultureInfo.InvariantCulture, out float temp))
+
+            string? tempText = form["temperature"].FirstOrDefault();
+            if (tempText is not null)
             {
-                temperature = temp;
+                if (float.TryParse(tempText, NumberStyles.Float, CultureInfo.InvariantCulture, out float temp) && temp >= 0f && temp <= 1f)
+                    temperature = temp;
+                else
+                    invalid ??= $"temperature must be a number between 0 and 1 (got '{tempText}')";
             }
 
-            if (bool.TryParse(form["vad"].FirstOrDefault() ?? form["use_vad"].FirstOrDefault(), out bool vadFlag))
+            string? vadText = form["vad"].FirstOrDefault() ?? form["use_vad"].FirstOrDefault();
+            if (vadText is not null)
             {
-                useVad = vadFlag;
+                if (bool.TryParse(vadText, out bool vadFlag)) useVad = vadFlag;
+                else invalid ??= $"vad must be true or false (got '{vadText}')";
             }
 
-            if (bool.TryParse(form["stream"].FirstOrDefault(), out bool streamFlag))
+            string? streamText = form["stream"].FirstOrDefault();
+            if (streamText is not null)
             {
-                stream = streamFlag;
+                if (bool.TryParse(streamText, out bool streamFlag)) stream = streamFlag;
+                else invalid ??= $"stream must be true or false (got '{streamText}')";
             }
         }
         else
@@ -155,18 +173,41 @@ public static class OpenAiAudioEndpoints
             ms.Position = 0;
             if (ms.Length > 0)
             {
-                var wavData = WavReader.ReadWav(ms);
-                samples = wavData.Samples;
-                sampleRate = wavData.SampleRate;
+                try
+                {
+                    var wavData = WavReader.ReadWav(ms);
+                    samples = wavData.Samples;
+                    sampleRate = wavData.SampleRate;
+                }
+                catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException) { invalid = $"the request body is not a valid WAV file: {ex.Message}"; }
             }
 
             if (ctx.Request.Query.TryGetValue("language", out var langVal)) language = langVal.ToString();
             if (ctx.Request.Query.TryGetValue("prompt", out var promptVal)) prompt = promptVal.ToString();
             if (ctx.Request.Query.TryGetValue("response_format", out var formatVal)) responseFormat = formatVal.ToString();
-            if (ctx.Request.Query.TryGetValue("vad", out var vadVal) && bool.TryParse(vadVal, out bool v)) useVad = v;
-            if (ctx.Request.Query.TryGetValue("stream", out var streamVal) && bool.TryParse(streamVal, out bool s)) stream = s;
+            if (ctx.Request.Query.TryGetValue("vad", out var vadVal))
+            {
+                if (bool.TryParse(vadVal, out bool v)) useVad = v;
+                else invalid ??= $"vad must be true or false (got '{vadVal}')";
+            }
+            if (ctx.Request.Query.TryGetValue("stream", out var streamVal))
+            {
+                if (bool.TryParse(streamVal, out bool s)) stream = s;
+                else invalid ??= $"stream must be true or false (got '{streamVal}')";
+            }
         }
 
+        if (invalid is null && !s_speechToTextFormats.Contains(responseFormat))
+            invalid = $"response_format must be one of json, text, srt, verbose_json, vtt (got '{responseFormat}')";
+        if (invalid is not null)
+        {
+            ctx.Response.StatusCode = 400;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", invalid), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                ctx.RequestAborted);
+            return;
+        }
         if (samples == null || samples.Length == 0)
         {
             ctx.Response.StatusCode = 400;
