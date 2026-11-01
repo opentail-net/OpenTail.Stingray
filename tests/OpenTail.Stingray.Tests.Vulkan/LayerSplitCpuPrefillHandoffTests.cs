@@ -116,6 +116,32 @@ public sealed class LayerSplitCpuPrefillHandoffTests : HeavyTestBase
             }
         Console.WriteLine($"[split-later-turn-timing] {file} -g 4, {second.Length}-token second turn: handoff {string.Join(" / ", viaHandoff.Select(x => x.ToString("F0")))} ms, sequential {string.Join(" / ", viaSequential.Select(x => x.ToString("F0")))} ms");
     }
+    /// <summary>The CPU prefill holds a whole-model F32 K/V cache, GPU layers included, so the layer split enforces the same memory budget as the other handoffs.</summary>
+    [Fact]
+    public void TrinityMini_HandoffIsRefused_WhenTheWholeModelKvCacheExceedsTheBudget()
+    {
+        const string file = "Trinity-Mini-Q4_K_M.gguf";
+        string? path = FindModelPath(file);
+        Assert.SkipWhen(path is null, $"{file} not present");
+        VulkanBackend? gpu;
+        try { gpu = new VulkanBackend(); } catch { gpu = null; }
+        Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
+        using var _gpu = gpu;
+        using var model = GgufModel.Open(path!);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+        int[] prompt = GgufTokenizer.FromGgufModel(model).Encode(Prose).ToArray();
+        using var f = new VulkanLayerSplitForwardPass(model, gpu!, hp, 4, maxContextLength: 1024);
+
+        f.CpuPrefillKvBudgetBytes = 1L << 20;   // 1 MiB: far below a 100-token whole-model cache
+        f.Prefill(prompt.AsSpan(0, 48).ToArray(), 0);
+        Assert.False(f.LastPrefillUsedCpuHandoff);
+        Assert.Contains("budget", f.LastCpuPrefillRefusal);
+
+        f.ResetCache();
+        f.CpuPrefillKvBudgetBytes = 4L << 30;   // the default: the same prompt takes the handoff (positive control)
+        f.Prefill(prompt.AsSpan(0, 48).ToArray(), 0);
+        Assert.True(f.LastPrefillUsedCpuHandoff, f.LastCpuPrefillRefusal);
+    }
     // One Fact per checkpoint (not a Theory) so a single heavy model can be run alone with -method; each loads a 16-45 GB file.
     [Fact] public void GlmAir_Handoff_GpuKvEqualsCpuAndDecodeAgrees() => Handoff("GLM-4.5-Air-Q2_K.gguf", 4);                   // glm4moe: leading dense layer, selection-bias sigmoid routing, partial RoPE, shared expert
     [Fact] public void HunyuanA13B_Handoff_GpuKvEqualsCpuAndDecodeAgrees() => Handoff("tencent.Hunyuan-A13B-Instruct.Q3_K_S.gguf", 4);   // hunyuan-moe: shared expert, QK-norm after RoPE
