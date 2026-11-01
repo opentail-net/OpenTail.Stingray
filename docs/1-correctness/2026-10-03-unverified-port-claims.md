@@ -98,8 +98,18 @@ as the port (level 2, not independent). Unchecked: real-weight parity against ll
 1e-8 post-norm and 3.87 / 1.0 Q/K scaling on real tensors, and the vision tower and DFlash drafter (deferred).
 
 ### Bonsai2 PRISM / Q1_0
-A real checkpoint produces coherent greedy answers at about 0.4 tokens/s. Still unchecked: the comparison against
-the publisher's reference and a fast ternary kernel.
+A real checkpoint produces coherent greedy answers at about 0.4 tokens/s. Still unchecked: a fast ternary kernel, and a teacher-forced golden.
+
+**Reference comparison, 2026-11-01 (plan 5 B2).** The publisher's own reference needs no fork build: the Bonsai model card says stock llama.cpp runs `Ternary-Bonsai-2-27B-Q2_0.gguf` from release b11556 onward (the dev repo's `...-prism-fork-required` file and the `PTQ1_0` file we had on `F:` use a fork-private type id, 143, which stock rejects: "invalid ggml type 143"). So the stock-compatible `Q2_0` file (7,626,008,928 bytes, from `prism-ml/Ternary-Bonsai-2-27B-gguf`) was pulled to `E:\_models\bonsai2`, and the stock `llama-b11556-bin-win-cpu-x64` `llama-completion` was run against it as the independent reference (`-t 8`, greedy, `--top-k 1`). Our CLI ran the same file with `STINGRAY_EXPERIMENTAL_PRISM=1`, `--temp 0 --repeat-penalty 1.0` and an identity chat template (`{{ messages[0].content }}`, so the prompt is raw, as in the reference), CPU.
+
+| Prompt | New tokens | Result |
+|---|---|---|
+| `The capital of France is` | 16 | identical text: `Paris.` / `The capital of Germany is Berlin.` / `The capital of Italy is` |
+| `Water boils at 100 degrees Celsius at sea level because` | 24 | identical text: `the vapor pressure of water equals the atmospheric pressure. At higher altitudes, the atmospheric pressure is lower, so water boils` |
+
+Timing (rule 12, wall clock including load): reference 26.9 s and 41.4 s; ours 48.0 s and 82.9 s (0.5 t/s decode, prefill included). Both runs loaded real weights (7.08 GiB pre-faulted).
+
+This is evidence, not admission: two short greedy prompts, text compared rather than token ids or logits. Rule 14 still applies, so the family stays internal and gets no STATUS row. What would admit it: the `admit-arch` teacher-forced golden against this reference build, a perplexity comparison, and a decision on the 0.4 t/s speed.
 
 ## Cross-cutting
 - **Provenance:** there is no DeepSeek-V4.1 attribution in the TensorSharp section of `THIRD_PARTY_NOTICES.md`,
