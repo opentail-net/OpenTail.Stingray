@@ -540,11 +540,6 @@ public sealed class HotSession : IDisposable
 
                     var outcome = _state.LastTurn
                         ?? throw new InvalidOperationException("The retained engine completed without a retained turn outcome.");
-                    // Only successfully committed turns count toward ISessionMetrics (its own doc
-                    // says "successfully committed") -- the cancel/fail branches below deliberately
-                    // do not record partial metrics.
-                    _metrics.AddPromptTokens(appendTokens.Length, prefillElapsed);
-                    _metrics.AddGeneratedTokens(outcome.GeneratedTokenIds.Length, generationElapsed);
                     var nextCursor = BuildNextCursor(appendTokens, outcome);
                     _store.Transition(lease, operationId, SessionOperationState.Generating, SessionOperationState.CommitPrepared);
                     var resultChunks = chunks.ToImmutable();
@@ -569,6 +564,10 @@ public sealed class HotSession : IDisposable
                     // faults, the catch path can still restore cache, cursor and accounting.
                     var completed = _store.Complete(lease, operationId, resultChunks);
                     operationCommitted = true;
+                    // Only after the store commit: a turn that fails anywhere before it is compensated (cursor, cache, accounting) and must not
+                    // leave its tokens in counters whose contract is "successfully committed".
+                    _metrics.AddPromptTokens(appendTokens.Length, prefillElapsed);
+                    _metrics.AddGeneratedTokens(outcome.GeneratedTokenIds.Length, generationElapsed);
                     var (reason, toolCalls) = HotSessionTurnResult.DescribeOutcome(resultChunks, cancelled: false, failed: false);
                     NotifyTokenListeners(outcome.GeneratedTokenIds);
                     return new HotSessionTurnResult(completed, nextCursor, resultChunks, IsIdempotentReplay: false, reason, toolCalls);

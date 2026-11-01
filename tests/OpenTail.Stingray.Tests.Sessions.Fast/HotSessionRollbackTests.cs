@@ -35,6 +35,9 @@ public sealed class HotSessionRollbackTests
 
         var cursorBefore = session.Cursor;
         var revisionBefore = first.Operation.CommittedRevision!.Value;
+        var metricsBefore = (session.Metrics.PromptTokens, session.Metrics.GeneratedTokens,
+            session.Metrics.TotalPrefillTime, session.Metrics.TotalGenerationTime);
+        Assert.True(metricsBefore.PromptTokens > 0);   // not vacuous: the committed turn did count
 
         // Fault the turn at the one point where the full compensation body runs.
         session.FaultBeforeCommitForTests = () => throw new InvalidOperationException("injected");
@@ -48,6 +51,10 @@ public sealed class HotSessionRollbackTests
         Assert.Equal(cursorBefore.AcceptedPositionCount, session.Cursor.AcceptedPositionCount);
         Assert.Equal(cursorBefore.MaterializedPositionCount, session.Cursor.MaterializedPositionCount);
         Assert.Equal(cursorBefore.ExecutionLog.Length, session.Cursor.ExecutionLog.Length);
+
+        // ISessionMetrics counts successfully committed tokens only; the failed turn must not have been added.
+        Assert.Equal(metricsBefore, (session.Metrics.PromptTokens, session.Metrics.GeneratedTokens,
+            session.Metrics.TotalPrefillTime, session.Metrics.TotalGenerationTime));
     }
 
     /// <summary>

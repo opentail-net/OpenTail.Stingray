@@ -793,4 +793,49 @@ public sealed class ColdSessionPersistenceTests
         }
         finally { DeleteDirectory(dir); }
     }
+
+    /// <summary>
+    /// Opening or creating a session is look up, then restore or create; the hot store refuses a second session with the same id. Callers
+    /// arriving together (for example right after a restart) used to both miss and both try, and one failed with a duplicate. Both must now
+    /// succeed and receive the same session. Many rounds of simultaneous callers, each on a fresh address, make a lost race near-certain.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentOpenOrCreate_ForOneAddress_AllSucceed_AndShareOneSession(bool existingColdManifest)
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_cold_single_flight_{Guid.NewGuid():N}");
+        try
+        {
+            using var engine = new ContinuousBatchingEngine(new ProductionPagedKvForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+            var hot = new HotSessionRuntime(engine, new Tokenizer());
+            var cold = new ColdSessionRuntime(hot, engine, tempDir, ModelFormat.SafeTensors);
+
+            for (int round = 0; round < 25; round++)
+            {
+                var address = new SessionAddress("tenant", "role", $"thread-{round}", "test");
+                if (existingColdManifest)
+                {
+                    var seed = cold.OpenOrCreate(address);
+                    await seed.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
+                        SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
+                    cold.EvictToDisk(seed, "test");   // leaves a manifest and no hot session
+                }
+
+                const int callers = 16;
+                using var start = new Barrier(callers);
+                var opened = await Task.WhenAll(Enumerable.Range(0, callers).Select(_ => Task.Run(() =>
+                {
+                    start.SignalAndWait();
+                    return cold.OpenOrCreate(address);
+                })));
+
+                Assert.All(opened, s => Assert.Same(opened[0], s));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }

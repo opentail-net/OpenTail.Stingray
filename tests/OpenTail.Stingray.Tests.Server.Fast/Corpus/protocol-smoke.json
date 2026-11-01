@@ -39,5 +39,7 @@
   {"name": "speech: speed 0.1", "route": "/v1/audio/speech", "body": {"model": "tts", "input": "hi", "speed": 0.1}, "status": 400, "errorType": "invalid_request_error", "messageContains": "speed"},
   {"name": "speech: speed 5.0", "route": "/v1/audio/speech", "body": {"model": "tts", "input": "hi", "speed": 5.0}, "status": 400, "errorType": "invalid_request_error", "messageContains": "speed"},
   {"name": "rerank: top_n 0", "route": "/v1/rerank", "body": {"query": "q", "documents": ["a", "b"], "top_n": 0}, "status": 400, "errorType": "invalid_request_error", "messageContains": "top_n"},
-  {"name": "rerank: top_n -2", "route": "/v1/rerank", "body": {"query": "q", "documents": ["a", "b"], "top_n": -2}, "status": 400, "errorType": "invalid_request_error", "messageContains": "top_n"}
+  {"name": "rerank: top_n -2", "route": "/v1/rerank", "body": {"query": "q", "documents": ["a", "b"], "top_n": -2}, "status": 400, "errorType": "invalid_request_error", "messageContains": "top_n"},
+  {"name": "embeddings: input missing", "route": "/v1/embeddings", "body": {"model": "test-model"}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input"},
+  {"name": "embeddings: malformed JSON body", "route": "/v1/embeddings", "rawBody": "{\"model\": ", "status": 400, "errorType": "invalid_request_error", "messageContains": "JSON"}
 ]
