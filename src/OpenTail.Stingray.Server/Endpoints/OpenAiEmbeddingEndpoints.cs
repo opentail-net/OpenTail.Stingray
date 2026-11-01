@@ -197,10 +197,14 @@ public static class OpenAiEmbeddingEndpoints
     {
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
-        string escaped = JsonSerializer.Serialize(message);
-        await ctx.Response.WriteAsync(openAiShape
-            ? $"{{\"error\":{{\"message\":{escaped},\"type\":\"invalid_request_error\"}}}}"
-            : $"{{\"error\":{escaped}}}");
+        // The OpenAI route answers like every other OpenAI route (flat type and message plus the nested error object); the Ollama route
+        // (/api/embed) keeps Ollama's own shape, {"error": "text"}.
+        if (openAiShape)
+        {
+            await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", message), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+            return;
+        }
+        await ctx.Response.WriteAsync($"{{\"error\":{JsonSerializer.Serialize(message)}}}");
     }
 }
 

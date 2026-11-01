@@ -66,6 +66,14 @@ public sealed class ColdSessionRuntime
 
     public HotSession Create(SessionAddress address) => _hotRuntime.Create(address);
 
+    // Restoring or creating a session is look up, then restore or create, and the hot store refuses a second session with the same id. Two callers
+    // that both miss would both go on to restore or create it, and the second would fail with a duplicate. These gates make it single-flight per id:
+    // the second caller waits, looks again, and gets the session the first one made. A fixed set of gates is striped by id, so nothing grows with
+    // the number of sessions; two ids that share a gate only serialise their (rare) restores.
+    private readonly object[] _openGates = Enumerable.Range(0, 64).Select(_ => new object()).ToArray();
+
+    private object OpenGate(SessionId sessionId) => _openGates[(sessionId.Value.GetHashCode() & int.MaxValue) % _openGates.Length];
+
     /// <summary>Opens an active session or restores its verified cold representation.</summary>
     public HotSession Open(SessionId sessionId)
     {
@@ -75,9 +83,19 @@ public sealed class ColdSessionRuntime
         }
         catch (SessionNotFoundException)
         {
-            string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
-            if (!File.Exists(manifestPath)) throw;
-            return RestoreColdSession(FileSessionManifest.Load(manifestPath));
+            lock (OpenGate(sessionId))
+            {
+                try
+                {
+                    return _hotRuntime.Open(sessionId);   // a concurrent caller may have restored it while this one waited
+                }
+                catch (SessionNotFoundException)
+                {
+                    string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
+                    if (!File.Exists(manifestPath)) throw;
+                    return RestoreColdSession(FileSessionManifest.Load(manifestPath));
+                }
+            }
         }
     }
 
@@ -92,16 +110,26 @@ public sealed class ColdSessionRuntime
         }
         catch (SessionNotFoundException)
         {
-            // Search for cold manifest on disk
-            string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
-            if (File.Exists(manifestPath))
+            lock (OpenGate(sessionId))
             {
-                var manifest = FileSessionManifest.Load(manifestPath);
-                return RestoreColdSession(manifest);
-            }
+                try
+                {
+                    return _hotRuntime.Open(sessionId);   // a concurrent caller may have restored or created it while this one waited
+                }
+                catch (SessionNotFoundException)
+                {
+                    // Search for cold manifest on disk
+                    string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
+                    if (File.Exists(manifestPath))
+                    {
+                        var manifest = FileSessionManifest.Load(manifestPath);
+                        return RestoreColdSession(manifest);
+                    }
 
-            // Otherwise create new active hot session
-            return _hotRuntime.Create(address);
+                    // Otherwise create new active hot session
+                    return _hotRuntime.Create(address);
+                }
+            }
         }
     }
 
