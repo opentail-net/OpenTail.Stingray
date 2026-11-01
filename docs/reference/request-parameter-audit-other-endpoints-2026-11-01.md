@@ -11,7 +11,16 @@ field in its handler, and read the 4xx paths. Tests added with this audit are in
 **Covered:** `/v1/responses`, `/v1/audio/speech`, `/v1/images/generations`, `/v1/images/edits`, `/v1/embeddings`, `/v1/rerank`.
 **Read later the same day, no defect found (by reading, with tests for the missing-payload paths):** `/tokenize`, `/detokenize`, `/props`, `/status` and `/api/embed`. A missing `content` or `tokens` is a 400 (tested); a token id outside the vocabulary decodes to empty (`GgufTokenizer.DecodeBytes`); the embedding alias shares the validated parser; `/status` and `/props` take no body.
 
-**Not covered, and so not claimed:** `/v1/sessions/*`, which still needs its own pass ([plan 4](../2026-11-01-plan-4.md), item C1).
+**F7. Sessions: the idempotency digest ignored `allowed_choices`, and the sampling fields were unchecked (fixed, 2026-11-01).** `POST /v1/sessions/{id}/turns` derives
+the operation id from a digest of what the turn executes, so an identical retry is recognised as a replay. The digest covered the prompt, the expected revision, `max_tokens`, `temperature`
+and `top_p` but not `allowed_choices`, which constrains what the turn can answer: a retry of the same prompt at the same revision with other choices was answered as a replay of the
+first turn, returning the first answer to a question it never asked (a test showed `idempotent_replay: true`). The choices are now part of the digest, appended only when present so a
+digest already stored for an older turn (cold sessions persist them) is unchanged. `temperature` and `top_p` accepted any value; they now use the same ranges as the chat endpoints
+(0 to 2, 0 to 1) and a violation is a 400 that names the field. The other handlers (`skills`, `tool-calls/validate`, `checkpoints`, `rollback`) reject their empty required
+fields with a 400 and need no change. Tests: `SessionEndpointTests` (five new); both mutations fail them.
+
+**Not covered, and so not claimed:** nothing else in the server's route list; the audit is now complete for the routes it names. Open from it: the audio `model` and `language` fields, the speech
+`speed` fallback and the rerank `top_n` range ([plan 4](../2026-11-01-plan-4.md), item C2).
 
 ## Findings
 
