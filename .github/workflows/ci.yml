@@ -94,3 +94,42 @@ jobs:
         run: |
           dotnet publish src/OpenTail.Stingray.Cli -c Release -r linux-x64 -o aot-out
           ./aot-out/stingray telemetry-selftest
+
+  # Windows x64 lane (added 2026-11-01). Windows is the primary target and the machine every measurement comes from, but both
+  # workflows above ran on Linux only, so nothing independently proved the Windows build, the win-x64 NativeAOT publish, the
+  # published CLI starting, or a clean package consumer. This job does those four things. Same CPU-safe suites and floors as the
+  # Linux job (no models, no GPU on the runner), so it adds coverage of the platform, not of more tests.
+  windows:
+    name: Windows build, tests, NativeAOT and package smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore OpenTail.Stingray.slnx
+      - name: Build
+        run: dotnet build OpenTail.Stingray.slnx -c Release --no-restore
+      - name: CPU-safe test suites
+        shell: pwsh
+        run: |
+          $suites = @(
+            @('Core', 450), @('Pipeline', 40), @('TurboQuant', 60), @('Cli', 300), @('Vision', 55),
+            @('Server.Fast', 200), @('Sessions.Fast', 100), @('ForwardPass.Fast', 480), @('Audio.Fast', 70), @('Vulkan.Fast', 38))
+          foreach ($s in $suites) {
+            dotnet test "tests/OpenTail.Stingray.Tests.$($s[0])/OpenTail.Stingray.Tests.$($s[0]).csproj" -c Release --no-restore -- --minimum-expected-tests $s[1]
+            if ($LASTEXITCODE -ne 0) { throw "suite $($s[0]) failed (exit $LASTEXITCODE)" }
+          }
+      - name: Publish the CLI (NativeAOT, win-x64) and run the telemetry self-test
+        shell: pwsh
+        run: |
+          dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64 -o aot-out
+          if ($LASTEXITCODE -ne 0) { throw 'AOT publish failed' }
+          ./aot-out/stingray.exe telemetry-selftest
+          if ($LASTEXITCODE -ne 0) { throw 'telemetry self-test failed' }
+      - name: Pack and smoke-test the packages as a clean consumer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./scripts/verify-nuget-package.ps1 -PackageVersion $version -Configuration Release -OutputDirectory ./artifacts/nupkg -SkipTests
