@@ -197,9 +197,11 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 - [ ] 2. Qwen3.6-35B-A3B prefill at 0.63x of llama.cpp (Phase 8 of
    [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
 - [ ] 3. Image-token prefill in VLMs. **Partly done; the "runs per token (about 9 t/s)" wording was stale** (rechecked in code 2026-10-31, not re-measured). The CPU `ForwardPass.PrefillEmbeddings` batches a whole image through the `PrefillCore` trunk, and the CLI's main image path (`RunCommand.Image.cs`) and two tests (`Granite4VisionE2ETests`, `Qwen3VlVulkanMRopeParityTests`) use it. Still per token: (a) the CLI's segment path (`segs`, the LLaVA-NeXT-style per-view layout); (b) the server's Gemma 4 path (`InferenceEngine`), where batching would change nothing today because the batched trunk excludes models with per-layer head dimensions (`_layerHeadDim is null`) and falls back to per-row `ForwardEmbedding`; (c) the Vulkan and CUDA passes, which have no batched embedding entry point (they loop `ForwardEmbedding`). A batched path is not numerically identical to the per-token one (batched prefill quantises activations differently, see [done/029](done/029-prefill-batch-composition-numerics-bug.md)), so any new caller needs a real-checkpoint output comparison, not just a speed number.
-- [ ] 4a. Spin-then-park CPU worker pool (TensorSharp `CpuWorkerPool`) for the tiny-model decode gap
-   (SmolLM2-135M ~0.55x, Qwen2.5-0.5B ~0.75x): an experiment the earlier `PersistentThreadPool`
-   loss did not cover. §1 of
+- [ ] 4a. Spin-then-park CPU worker pool for the tiny-model decode gap. **The experiment is done and shipped opt-in (2026-10-02, rechecked in code 2026-11-01):**
+   `SpinParkWorkerPool` (`STINGRAY_CPU_POOL=spin`, ported from TensorSharp `CpuWorkerPool`), decode loops only. Interleaved on this machine, identical text: SmolLM2-135M 152 -> 193 t/s,
+   SmolLM2-360M 86 -> 103, Qwen2.5-0.5B 69 -> 82 (ratio to llama.cpp 0.73x -> 0.87x), Mistral-7B tie, MoE prefill -18..19% (why it is not the default).
+   Still open, all policy: a per-phase or per-model default (pool for dense decode only), concurrent-server throughput before any default change, and a many-core host.
+   Detail and tables: §1 of
    [2-coverage/2026-10-02-tensorsharp-takeaways-plan.md](2-coverage/2026-10-02-tensorsharp-takeaways-plan.md).
 - [ ] 4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
    projection; the Q3_K activation-format question is closed 2026-11-01, see the ADR-0003 addendum: Q8_KS in the batched path is deliberate and more precise; still open: a Q8_KS variant of the repacked Q4_Kx8 GEMM and the MoE activation items), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
