@@ -88,6 +88,7 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf", 4, -1)]
     [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 8, -1)]
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", 4, -1)]   // carries rope_freqs.weight (Llama-3.1 scaling); 8 KV heads
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 16, -1)]
     // Dense Qwen2.5 (the qwen2 receipt): Q/K/V biases, 2 KV heads.
     [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf", 8, -1)]
