@@ -81,6 +81,9 @@ public sealed class HotSession : IDisposable
     private readonly int _maxSequenceLength;
     private readonly int _maxCapturedOutputChunks;
     private readonly string _modelKey;
+
+    /// <summary>The key this session's residency and reservations are accounted under; forks inherit it.</summary>
+    internal string ModelKey => _modelKey;
     private readonly Action<SessionId, HotSession>? _onDisposed;
     private readonly Func<SessionId, long, long>? _reclaimIdleBytes;
     private readonly RetainedSequenceState _state = new();
@@ -319,12 +322,17 @@ public sealed class HotSession : IDisposable
     /// </summary>
     internal void SeedFromSharedPrefix(ImmutableArray<int> prefixTokens, ISequenceKvCache forkedCache)
     {
+        // Admission first, before any state is touched: a refusal leaves the forked cache with the caller to dispose.
+        // Each session is charged its full prefix even though pages are shared (the conservative policy the rest of
+        // the accounting already uses), against the aggregate, per-session and per-model limits.
+        long prefixBytes = checked((long)prefixTokens.Length * _kvBytesPerToken);
+        using var reservation = _resources.Reserve(SessionId, prefixBytes, _modelKey);
         _state.SeedWithForkedCache(forkedCache, prefixTokens.Length);
         var log = ImmutableArray.Create<ExecutionSegment>(new TokenSegment(prefixTokens));
         var seededCursor = new SessionCursor(log, prefixTokens.Length, prefixTokens.Length,
             prefixTokens.Length, prefixTokens.Length, StateCoverage.Full);
         lock (_cursorGate) _cursor = seededCursor;
-        _resources.SetResidentBytes(SessionId, checked((long)prefixTokens.Length * _kvBytesPerToken));
+        reservation.Complete(prefixBytes);
     }
 
     /// <summary>
@@ -965,7 +973,7 @@ public sealed class HotSessionRuntime
             ImmutableArray<int>? sharedTokens = null;
             for (int i = 0; i < count; i++)
             {
-                var branch = Create(sessionId: null, modelKey: null, parentSessionId: parent.SessionId);
+                var branch = Create(sessionId: null, modelKey: parent.ModelKey, parentSessionId: parent.SessionId);
                 branches.Add(branch);
                 foreach (var kv in parent.Metadata.GetEntries()) branch.Metadata.Set(kv.Key, kv.Value);
                 if (tokenOnlyLength == 0) continue;
@@ -974,7 +982,8 @@ public sealed class HotSessionRuntime
                     ?? throw new InvalidOperationException(
                         "Cannot fork session: it is not idle, or the active backend does not support prefix forking.");
                 sharedTokens ??= tokens[..forked.Length];
-                branch.SeedFromSharedPrefix(sharedTokens.Value, forked.Cache);
+                try { branch.SeedFromSharedPrefix(sharedTokens.Value, forked.Cache); }
+                catch { forked.Cache.Dispose(); throw; }
             }
             return branches;
         }

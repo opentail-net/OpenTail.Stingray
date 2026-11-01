@@ -622,10 +622,20 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             OpenTail.Stingray.Engine.EngineTelemetry.LoadHolder.Value = holder;
             var loaded = _loader(model);
             var runtime = new ModelRuntime(model, loaded, _estimateBytes(model), loaded.Instance);
+            bool managerDisposed;
             lock (_lock)
             {
-                _resident[model] = runtime;
                 _pendingLoads.Remove(model);
+                // Dispose() may have run while the loader was working; publishing now would leave an engine
+                // nobody owns and hand a waiter a runtime of a manager that has shut down.
+                managerDisposed = _disposed;
+                if (!managerDisposed) _resident[model] = runtime;
+            }
+            if (managerDisposed)
+            {
+                runtime.Dispose();
+                tcs.TrySetException(new ObjectDisposedException(nameof(ModelRuntimeManager)));
+                return;
             }
             Interlocked.Increment(ref _modelLoads);
             NotifyResidencyChanged(mayHaveFreedResources: false); // a successful load only ever
