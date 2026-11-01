@@ -1233,6 +1233,8 @@ public sealed record Message(
 public partial class ApiJsonContext : JsonSerializerContext { }
 ```
 
+> **This snippet is a design sketch, not the shipped records.** The shipped request is `AnthropicMessageRequest` in `src/OpenTail.Stingray.Server/Endpoints/AnthropicEndpoints.cs` (`System` is a `JsonElement` because clients send either a string or content blocks; it also reads `thinking`, `tools`, `tool_choice`, `stop_sequences`, `preserve_thinking`, `opentail_timing` and `skills`). `stop_sequences` is honoured: the stream is cut at the earliest match, the match is not emitted, the engine is cancelled and `stop_reason` is `stop_sequence` (2026-10-31, `StopSequences.cs`). Values the server cannot honour are refused with a 400 that names the field ([parameter audit](request-parameter-audit-2026-10-31.md)).
+
 ### 9.6 Configuration
 
 ```json
