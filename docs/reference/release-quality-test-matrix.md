@@ -56,6 +56,8 @@ shared history.
 
 ## Evidence status — 2026-08-07 (single developer machine)
 
+> Refreshed 2026-11-01 only for the one finding below that was later closed (`committed_revision`, fixed 2026-08-08). The rest of this section has not been re-run since 2026-08-07; read each row with its date, and re-check a row before using it for a release decision.
+
 Recorded so the gaps are legible rather than assumed. **This machine is a Ryzen 7 5700G: Zen 3,
 AVX2 only (no AVX-512, no VNNI), integrated Radeon graphics, no NVIDIA GPU.** Per the rule at the
 top of this document, a pass here is not evidence for a row whose runner this machine is not.
@@ -88,14 +90,7 @@ top of this document, a pass here is not evidence for a row whose runner this ma
 
 ### Known open, with evidence rather than suspicion
 
-- **`committed_revision` is not a usable concurrency token.** The API advertises a value it then
-  rejects: a live session reports `committed_revision: 6` after one turn and answers the next
-  request carrying 6 with `409 "Expected revision 6, but current revision is 1"`. Read-then-send is
-  the only pattern optimistic concurrency admits. **This is a live defect on a shipped HTTP
-  surface** and should gate advertising sessions as supported. Both single-sided fixes were
-  implemented and measured and both break something else; the correct fix is an on-disk
-  persisted-revision decision. Full characterisation and reproduction in
-  `done/session-revision-contract-defect.md`.
+- **FIXED 2026-08-08 (kept here as the record):** `committed_revision` used to be unusable as a concurrency token: a live session reported `committed_revision: 6` after one turn and answered the next request carrying 6 with `409 "Expected revision 6, but current revision is 1"`. The store's turn counter is now authoritative and the published, persisted, restored and validated revisions agree by construction; see the Resolution in `done/session-revision-contract-defect.md` and the live-session regression test. It no longer gates advertising sessions.
 - Gemma 4 per-layer-head-dim models get **no batched prefill**: 3.8 t/s prefill against 3.7 t/s
   decode, where every other model measured runs prefill at 1.9-6.6x decode. Against the nearest size
   class (Qwen3-8B) it decodes 1.7x slower — explainable by parameter count — but prefills 9.7x
