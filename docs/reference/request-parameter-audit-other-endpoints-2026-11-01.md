@@ -6,10 +6,10 @@ never declared, with a stated reason). A field a record does not declare is drop
 silently ignored. Unknown JSON properties stay accepted: clients send vendor fields.
 
 **Method.** For each endpoint: read the request record or the form reads in `src/OpenTail.Stingray.Server/Endpoints/`, grep every use of each
-field in its handler, and read the 4xx paths. Tests added with this audit are in `OtherEndpointParameterTests` (Server.Fast, 18 tests).
+field in its handler, and read the 4xx paths. Tests added with this audit are in `OtherEndpointParameterTests` (Server.Fast, 30 tests).
 
 **Covered:** `/v1/responses`, `/v1/audio/speech`, `/v1/images/generations`, `/v1/images/edits`, `/v1/embeddings`, `/v1/rerank`.
-**Not covered, and so not claimed:** `/v1/audio/transcriptions` and `/v1/audio/translations` beyond listing the form fields they read, `/v1/sessions/*`,
+**Not covered, and so not claimed:** `/v1/sessions/*`,
 `/tokenize`, `/detokenize`, `/props`, `/status`, `/api/embed`. They still need their own pass.
 
 ## Findings
@@ -92,10 +92,24 @@ On edits (multipart): `prompt` (required), `size`; the other OpenAI fields are n
 | `top_n` | passed through; **no range check at the endpoint** (F5) |
 | `return_documents` | implemented |
 
-## Transcriptions and translations (form fields only)
+## Transcriptions and translations
 
-The handler reads `file`, `language`, `prompt` (or `initial_prompt`), `response_format` (default `json`, also accepted as a query parameter),
-`temperature`, `vad` (or `use_vad`) and `stream`. How an unknown `response_format` or an out-of-range `temperature` is handled was not checked here.
+**F6. A body that is not WAV audio was a 500, and bad values were silently replaced (fixed, 2026-11-01).** The handler reads `file` (or a raw WAV body), `language`,
+`prompt` (or `initial_prompt`), `response_format` (default `json`, also a query parameter), `temperature`, `vad` (or `use_vad`) and `stream`. Probed
+with a throw-away test: junk bytes, as a raw body or as the form file, raised `InvalidDataException` (`Not a valid RIFF WAV file`) out of `WavReader` and the
+request failed with a 500; a RIFF header cut short raised `EndOfStreamException` and did the same. `temperature` that did not parse was ignored and one outside
+0 to 1 was accepted, an unknown `response_format` fell through to JSON, and a `stream` or `vad` that was not a boolean was ignored. Now each is a 400 that names the
+problem (`'file' is not a valid WAV file`, `temperature must be a number between 0 and 1`, `response_format must be one of json, text, srt, verbose_json, vtt`,
+`stream must be true or false`). Not changed: `model` is not read (the route always builds a `WhisperPipeline`) and `language` is not validated; both stay open.
+
+| Field | Outcome |
+|---|---|
+| `file` / raw body | implemented; **400 when it is not WAV** (was 500) |
+| `language`, `prompt` / `initial_prompt` | implemented, not validated |
+| `response_format` | implemented; **400 unless json, text, srt, verbose_json or vtt** (was silently JSON) |
+| `temperature` | implemented; **400 unless a number from 0 to 1** (was silently ignored or unbounded) |
+| `vad` / `use_vad`, `stream` | implemented; **400 unless true or false** (was silently ignored) |
+| `model`, `timestamp_granularities[]` | not read: silently ignored |
 
 ## Tests
 

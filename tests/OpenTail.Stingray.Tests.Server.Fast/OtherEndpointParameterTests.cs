@@ -207,4 +207,71 @@ public sealed class OtherEndpointParameterTests
         using var notMultipart = new StringContent("{}", Encoding.UTF8, "application/json");
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/v1/images/edits", notMultipart)).StatusCode);
     }
+
+    // ── /v1/audio/transcriptions and /translations: client mistakes are 400s that name the problem (a non-WAV body used to be a 500) ──
+
+    private static byte[] TruncatedRiff() => "RIFF"u8.ToArray().Concat(new byte[] { 0x24, 0, 0, 0 }).Concat("WAVEfmt "u8.ToArray()).ToArray();
+
+    [Theory]
+    [InlineData("/v1/audio/transcriptions")]
+    [InlineData("/v1/audio/translations")]
+    public async Task SpeechToText_NonWavBody_IsA400_NotA500(string route)
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        using var junk = new ByteArrayContent(Enumerable.Range(1, 64).Select(i => (byte)i).ToArray());
+        junk.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
+        var direct = await client.PostAsync(route, junk);
+        await AssertRefusedNamingAsync(direct, "WAV");
+
+        using var form = new MultipartFormDataContent { { new ByteArrayContent(Enumerable.Range(1, 64).Select(i => (byte)i).ToArray()), "file", "a.wav" } };
+        await AssertRefusedNamingAsync(await client.PostAsync(route, form), "WAV");
+    }
+
+    [Fact]
+    public async Task SpeechToText_TruncatedRiffHeader_IsA400_NotA500()
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        using var form = new MultipartFormDataContent { { new ByteArrayContent(TruncatedRiff()), "file", "a.wav" } };
+        await AssertRefusedNamingAsync(await client.PostAsync("/v1/audio/transcriptions", form), "WAV");
+    }
+
+    [Theory]
+    [InlineData("response_format", "bogus", "response_format")]
+    [InlineData("temperature", "abc", "temperature")]
+    [InlineData("temperature", "2", "temperature")]
+    [InlineData("temperature", "-0.1", "temperature")]
+    [InlineData("stream", "maybe", "stream")]
+    [InlineData("vad", "perhaps", "vad")]
+    public async Task SpeechToText_BadParameter_IsA400_NamingTheField(string field, string value, string named)
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        using var form = new MultipartFormDataContent { { new StringContent(value), field } };
+        await AssertRefusedNamingAsync(await client.PostAsync("/v1/audio/transcriptions", form), named);
+    }
+
+    [Fact]
+    public async Task SpeechToText_ValidParameters_AreNotRefused_TheMissingAudioIsWhatIsReported()
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        using var form = new MultipartFormDataContent
+        {
+            { new StringContent("srt"), "response_format" }, { new StringContent("0.2"), "temperature" },
+            { new StringContent("true"), "vad" }, { new StringContent("false"), "stream" },
+        };
+        var response = await client.PostAsync("/v1/audio/transcriptions", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        string text = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Audio file or payload is required", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("temperature", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("response_format", text, StringComparison.Ordinal);
+    }
 }
