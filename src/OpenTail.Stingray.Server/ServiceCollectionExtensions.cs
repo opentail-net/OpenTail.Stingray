@@ -93,6 +93,9 @@ public static class ServiceCollectionExtensions
         // single-model deployments, where it's a thin, side-effect-free wrapper.
         services.TryAddSingleton<IInferenceService, InferenceService>();
 
+        // The Whisper pipeline behind /v1/audio/transcriptions and /translations: the installed catalog model, loaded on first use.
+        services.TryAddSingleton<IWhisperPipelineProvider>(_ => new InstalledWhisperPipelineProvider());
+
         services.TryAddSingleton<IInferenceEngine>(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;

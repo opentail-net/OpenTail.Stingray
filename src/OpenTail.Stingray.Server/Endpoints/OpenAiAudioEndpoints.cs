@@ -6,6 +6,7 @@ using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.MeloTTS;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Audio.Whisper;
+using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Server.Endpoints;
@@ -248,7 +249,23 @@ public static class OpenAiAudioEndpoints
         }
 
         ctx.Items[OperationMetricsFilterExtensions.AudioSecondsItem] = (double)samples.Length / sampleRate; // input audio, for opentail.audio.* metrics
-        using var pipeline = new WhisperPipeline();
+        // Real weights, as `stingray transcribe` uses. A valid model that is not installed is a 503 that says how to install it; it used to be a
+        // weightless placeholder pipeline whose "transcript" bore no relation to the audio.
+        WhisperPipeline created;
+        try
+        {
+            created = ctx.RequestServices.GetRequiredService<IWhisperPipelineProvider>().Create(model);
+        }
+        catch (TranscriptionModelUnavailableException ex)
+        {
+            ctx.Response.StatusCode = 503;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("model_not_installed", ex.Message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                ctx.RequestAborted);
+            return;
+        }
+        using var pipeline = created;
         var req = new SpeechToTextRequest
         {
             AudioSamples = samples,
