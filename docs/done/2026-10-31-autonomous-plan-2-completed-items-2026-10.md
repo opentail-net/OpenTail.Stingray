@@ -206,3 +206,14 @@ one is found; the deferral covers programmes, not defects. Not testable on this 
 **One point of agreement worth keeping.** The review's closing rule is to close more items than are opened. This plan therefore adds
 only P6 to P8, each small, and removes nothing from the earlier list.
 
+---
+
+## More completed items moved from 2026-10-31-autonomous-plan-2.md on 2026-11-01
+
+Finished items moved verbatim out of [../2026-10-31-autonomous-plan-2.md](../2026-10-31-autonomous-plan-2.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Checklist
+- [x] Plan 3 written (merged as [plan 3](../2026-10-31-autonomous-plan-3.md), PR 95) and a final report listing only owner decisions and blocked items (posted to the owner 2026-11-01; plan 3 repeats the decisions and blocked items)
+
+> from: ## Checklist
+- [x] Memory note `project_session_2026_10_31_loop_state.md` updated to the final state (kept current through PR 108, 2026-11-01)

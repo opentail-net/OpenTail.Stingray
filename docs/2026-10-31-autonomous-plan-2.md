@@ -15,7 +15,7 @@ machine, interleaved A/B, 3+ runs and equal output (rule 7); real-weight tests m
 | P1c | Find the NaN in hybrid MoE decode (Qwen3-Coder `-g 4`): find which side returns non-finite logits in the control, log the first one with the slot cache state, test the two candidates in the P1b write-up | the cause measured, or the NaN reproduced under a fixed setting; then a fix or a recorded decision about the 0.99 bar for MoE rows |
 | P2 | Receipts for Qwen2.5, Phi-3, gemma-2, Granite on the Vulkan hybrid, one passing row each | permanent rows pass with no override; a family that fails stays Unverified with the measured cosine recorded |
 
-Order: P1c (the NaN), then P2d (blocked on hardware). The full original order is in the done half.
+Order: P1c (the NaN), then P2d (blocked on hardware). The full original order is in the done half. **Both open items are also tracked in [plan 3](2026-10-31-autonomous-plan-3.md)** (P1c and P2d); this file keeps their evidence.
 
 Rule for adding to this plan: a new item must name an identifiable failure, a user-visible limitation, a measurable gain, or a recurring cost it removes. Without one of those it is not built yet.
 
@@ -24,7 +24,7 @@ Each item ends in its own merged PR, `Tests.Core` run before every merge. A stal
 ## Checklist
 
 Ticked means done **and merged to `main`** (or, for a measurement, recorded in a merged document). Anything in an open PR, in progress,
-or only partly answered stays unticked, with a note. Last checked 2026-10-31 22:00 against `main` at `7526fbde` (PR 94, CI green): PRs 72 to 94 are merged except 81, the delegate session's partial P8. Items the delegate session finished (PRs 78 to 82) were ticked after reading each PR description and re-running the P9 self-test; the CPU-safe CI suites run all of their tests on every PR.
+or only partly answered stays unticked, with a note. Last checked 2026-11-01 against `main` at `237753da` (PR 107, CI green): PRs 72 to 107 are merged; PR 81 was closed as superseded by PR 92. Plan 3 holds the work after plan 2. Items the delegate session finished (PRs 78 to 82) were ticked after reading each PR description and re-running the P9 self-test; the CPU-safe CI suites run all of their tests on every PR.
 
 - [ ] **P1c** Find the NaN in hybrid MoE decode (the bar decision is made; the NaN is open)
   - [ ] Capture the NaN: 1 in 18 control runs, not reproduced in 12 later runs; the control test now asserts finite logits and names the run and step
@@ -39,8 +39,6 @@ or only partly answered stays unticked, with a note. Last checked 2026-10-31 22:
   - [ ] P2d (blocked: no NVIDIA hardware) The CUDA full and hybrid passes have no reference to the residual or logit scale either, and the new guard does not cover them; confirm on a machine with a CUDA GPU before relying on Granite or Gemma 3 there
   - [x] **P2b** Silent GPU degradation for CPU-only architectures. Found: real runs were already safe (the gemma2 descriptor declares `SupportedBackends = Cpu` and the planner falls back to the CPU for `-g 8` and `-g -1`), but the override was silent, `stingray plan` reported 26 GPU layers (it did not consult the descriptor), and `perplexity -g -1` built the GPU pass directly and measured a 22 percent worse gemma-2 without saying so. Fixed: the planner raises a `cpu_only_architecture` warning when explicit GPU layers are overridden, `run` prints it as one note, `plan` consults the descriptor (and shows the reason), and `perplexity -g -1` refuses a CPU-only architecture. Tests: 3 planner and 3 plan tests, four production mutations each fail tests; the `run` note and the perplexity refusal were checked by hand only. Not changed: code that constructs the GPU passes directly (tests, library users) still accepts gemma2, and the dense GPU path still lacks soft-capping
   - Note: SmolLM2 and Mistral-7B were no longer in `models/` at 17:27 and are on no `_models` drive; re-pull before A/B work that needs them
-- [ ] Plan 3 written and a final report listing only owner decisions and blocked items
-- [ ] Memory note `project_session_2026_10_31_loop_state.md` updated to the final state
 
 ## Progress
 
