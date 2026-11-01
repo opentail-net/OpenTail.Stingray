@@ -48,7 +48,10 @@ public sealed unsafe class HybridScaleParityTests : HeavyTestBase
     [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 20)]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf", 8)]
     [InlineData("gemma-3-4b-it-Q4_K_M.gguf", 20)]
-    public void SequentialHybrid_AgreesWithTheCpuPass_ForModelsThatSetScaleFields(string file, int gpuLayers)
+    // The CPU-resident embedding and output branch (taken for very large vocabularies): it computes the logits itself, so it needs the logit scale too.
+    [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 8, true)]
+    [InlineData("gemma-3-4b-it-Q4_K_M.gguf", 8, true)]
+    public void SequentialHybrid_AgreesWithTheCpuPass_ForModelsThatSetScaleFields(string file, int gpuLayers, bool forceCpuOutput = false)
     {
         string? path = Find(file);
         Assert.SkipWhen(path is null, $"{file} not present");
@@ -71,7 +74,7 @@ public sealed unsafe class HybridScaleParityTests : HeavyTestBase
         var ratio = new List<double>();   // logit magnitude: cosine ignores a uniform scale, so a missing logit scale needs this
         int agree = 0;
         using (var hybrid = new HybridForwardPass(model, gpuOwner, hp,
-                   new LayerPlacement(gpuLayers, hp.NumLayers - gpuLayers, 0, 0, 1024), expertSlotCapacity: -1))
+                   new LayerPlacement(gpuLayers, hp.NumLayers - gpuLayers, 0, 0, 1024), expertSlotCapacity: -1, forceCpuEmbeddingOutput: forceCpuOutput))
             for (int i = 0; i < prompt.Length; i++)
             {
                 var l = hybrid.Forward(prompt[i], i);
@@ -81,7 +84,7 @@ public sealed unsafe class HybridScaleParityTests : HeavyTestBase
             }
         cos.Sort();
         ratio.Sort();
-        Console.WriteLine($"[scale-parity] {file} -g {gpuLayers}: {prompt.Length} steps, min cosine {cos[0]:F5}, median {cos[cos.Count / 2]:F5}, argmax agree {agree}/{prompt.Length}, median norm ratio {ratio[ratio.Count / 2]:F4}, {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"[scale-parity] {file} -g {gpuLayers}{(forceCpuOutput ? " (CPU-resident output)" : "")}: {prompt.Length} steps, min cosine {cos[0]:F5}, median {cos[cos.Count / 2]:F5}, argmax agree {agree}/{prompt.Length}, median norm ratio {ratio[ratio.Count / 2]:F4}, {sw.Elapsed.TotalSeconds:F1}s");
         Assert.True(cos[0] > 0.98, $"minimum per-step cosine {cos[0]:F4} (median {cos[cos.Count / 2]:F4})");
         Assert.True(cos[cos.Count / 2] > 0.995, $"median per-step cosine {cos[cos.Count / 2]:F4}");
         Assert.InRange(ratio[ratio.Count / 2], 0.98, 1.02);

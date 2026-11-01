@@ -71,11 +71,16 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
 
     internal int CpuPrefillMinTokens { get; set; }
 
+    /// <summary>Largest temporary F32 K/V cache the CPU prefill may hold for the WHOLE model, GPU-resident layers included (their rows are read back into it
+    /// for a later turn and written into it by the CPU pass). <c>STINGRAY_HYBRID_CPU_PREFILL_KV_BUDGET_MB</c>, default 4 GiB, the same budget as the other handoffs.</summary>
+    internal long CpuPrefillKvBudgetBytes { get; set; }
+
     private void InitCpuPrefillHandoff()
     {
         var p = _settings.Prefill;
         CpuPrefillEnabled = p.HybridCpuPrefill != "0";
         CpuPrefillMinTokens = p.HybridCpuPrefillMinTokens;
+        CpuPrefillKvBudgetBytes = p.HybridCpuPrefillKvBudgetMb * 1024L * 1024L;
     }
 
     /// <summary>True when the last <see cref="Prefill"/> ran on the CPU and handed its KV to the GPU layers.</summary>
@@ -92,6 +97,9 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
         if (startPos + n > MaxSeqLen) return "prompt longer than the context";
         if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
+        long kvBytes = KvHandoff.TemporaryKvBytes(startPos + n, _hp.NumKvHeads, _hp.HeadDim, _hp.NumLayers);
+        if (kvBytes > CpuPrefillKvBudgetBytes)
+            return $"temporary CPU KV cache for the whole model ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
         if (_settings.Kv.RoundBf16 || _settings.Kv.Store != KvStoreMode.Fp32)
             return "bf16 KV store requested: exact F32 K/V cannot be guaranteed";
         return KvHandoff.FamilyRefusal(_model, _settings.Prefill.HybridCpuPrefill, HandoffPath.VulkanLayerSplit);
