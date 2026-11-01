@@ -6,6 +6,7 @@ using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.MeloTTS;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Audio.Whisper;
+using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
@@ -113,6 +114,22 @@ public static class OpenAiAudioEndpoints
         return app;
     }
 
+    // OpenAI's own id for its transcription model, and the catalog's task name (ModelCatalog.Find accepts it for the task default).
+    private static readonly string[] s_transcriptionAliases = ["whisper-1", "transcribe"];
+
+    /// <summary>
+    /// Null when <paramref name="model"/> is omitted (the route keeps its default pipeline), is an alias, or names a catalog entry of the
+    /// transcribe task; otherwise a message that names the field and lists the valid ids.
+    /// </summary>
+    internal static string? ValidateTranscriptionModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return null;
+        var ids = ModelCatalog.Entries.Where(e => e.Task.Equals("transcribe", StringComparison.OrdinalIgnoreCase)).Select(e => e.Id).ToList();
+        ids.AddRange(s_transcriptionAliases);
+        if (ids.Contains(model, StringComparer.OrdinalIgnoreCase)) return null;
+        return $"model must be one of {string.Join(", ", ids)} (got '{model}')";
+    }
+
     private static readonly HashSet<string> s_speechToTextFormats = new(StringComparer.OrdinalIgnoreCase) { "json", "text", "srt", "verbose_json", "vtt" };
 
     private static async Task HandleSpeechToTextAsync(HttpContext ctx, SpeechTask task)
@@ -121,6 +138,7 @@ public static class OpenAiAudioEndpoints
         int sampleRate = 16000;
         string? language = null;
         string? prompt = null;
+        string? model = null;
         float temperature = 0.0f;
         string responseFormat = "json";
         bool useVad = false;
@@ -148,6 +166,7 @@ public static class OpenAiAudioEndpoints
             }
 
             language = form["language"].FirstOrDefault();
+            model = form["model"].FirstOrDefault();
             prompt = form["prompt"].FirstOrDefault() ?? form["initial_prompt"].FirstOrDefault();
             responseFormat = form["response_format"].FirstOrDefault() ?? "json";
 
@@ -192,6 +211,7 @@ public static class OpenAiAudioEndpoints
             }
 
             if (ctx.Request.Query.TryGetValue("language", out var langVal)) language = langVal.ToString();
+            if (ctx.Request.Query.TryGetValue("model", out var modelVal)) model = modelVal.ToString();
             if (ctx.Request.Query.TryGetValue("prompt", out var promptVal)) prompt = promptVal.ToString();
             if (ctx.Request.Query.TryGetValue("response_format", out var formatVal)) responseFormat = formatVal.ToString();
             if (ctx.Request.Query.TryGetValue("vad", out var vadVal))
@@ -207,6 +227,7 @@ public static class OpenAiAudioEndpoints
         }
 
         invalid ??= RequestParameterValidation.ValidateLanguageCode(language);
+        invalid ??= ValidateTranscriptionModel(model);
         if (invalid is null && !s_speechToTextFormats.Contains(responseFormat))
             invalid = $"response_format must be one of json, text, srt, verbose_json, vtt (got '{responseFormat}')";
         if (invalid is not null)
