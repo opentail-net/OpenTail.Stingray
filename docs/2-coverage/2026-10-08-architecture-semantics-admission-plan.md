@@ -138,9 +138,6 @@ resolution path; admission stays fail-closed; real-weight receipts intact; no re
 
 ## Open items moved from 2026-10-08-architecture-capabilities-plan.md (2026-10-30)
 
-- [ ] 0.3 (deferred: low value, table is private). Test that every key in `PrefillHandoffFamilies` names a registered architecture. Checked 2026-10-30: `PrefillHandoffFamiliesTests` covers receipted families (`ReceiptedFamilies_AreAdmitted`), not every key.
-- [x] 3.1 Decide D1 (done, confirmed 2026-10-30): may Core accept a traits input from Engine (recommended yes, via `ModelArchitectureSemanticsContext`). Checked 2026-10-30: the context type lives in Core and is used from `ModelGraph.cs`, which suggests D1 is already implemented. Confirm and tick, or record the alternative.
-
 ---
 
 ## Research findings (2026-10-31)

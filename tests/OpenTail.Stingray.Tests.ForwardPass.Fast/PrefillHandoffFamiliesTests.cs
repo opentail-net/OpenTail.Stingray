@@ -130,6 +130,17 @@ public sealed class PrefillHandoffFamiliesTests
         }
     }
 
+    /// <summary>A receipt keyed by a misspelled or retired architecture id would never match a real checkpoint and would read as evidence anyway.</summary>
+    [Fact]
+    public void EveryReceiptKey_NamesARegisteredArchitecture()
+    {
+        foreach (var (family, path) in PrefillHandoffFamilies.Receipts.Keys)
+        {
+            string architecture = family == "llama+experts" ? "llama" : family;   // Mixtral-style llama is its own family key, not an architecture id
+            Assert.True(ArchitectureRegistry.TryGet(architecture, out _), $"receipt on {path} names '{family}', which is not a registered architecture");
+        }
+    }
+
     [Fact]
     public void Receipts_AreForOnePath_AndDoNotAuthorizeAnother()
     {
