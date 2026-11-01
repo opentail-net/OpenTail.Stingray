@@ -27,7 +27,8 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
 - [ ] **Q7** Connect the HTTP image API to the real diffusion pipelines (the ones `stingray image` runs), so `/v1/images/generations` and `/edits` can stop answering 501. Needs model selection, weights, timing and memory handling; own plan
 - [ ] **Q6** Release verification (the release workflow already runs `scripts/verify-nuget-package.ps1`, so the claim that nothing proves installation was too strong; what is missing is a machine that is not this one)
   - [x] 2026-10-31 on `main` at `f7f981eb`: the script packed all three packages at 1.0.9 and passed: a library consumer restored from the local feed and ran, a server consumer built, and the CLI installed as a dotnet tool and printed `1.0.9+f7f981eb`. Then the installed tool (a temp `--tool-path`, outside the repo) answered a prompt on Qwen3-0.6B Q8_0: CPU `-g 0` 41.6 tok/s decode, Vulkan hybrid `-g 4` 26.7 tok/s decode, same text
-  - [ ] Run the installed package on a machine with no repo, no SDK from this checkout and no GPU driver tweaks, and install the package that nuget.org serves rather than the locally packed one (blocked: there is no second machine; the NativeAOT self-test in CI covers the AOT binary only)
+  - [x] 2026-11-01: the package nuget.org serves (1.0.9) was installed into clean projects outside the repo on this machine: the README sample built (0 errors, 0 warnings) and the CLI tool ran a real model (43 tok/s decode); speak and 	ranscribe ran from the installed tool
+  - [ ] The same on a machine that is not this one (no repo, no checkout SDK, no GPU driver tweaks; blocked: there is no second machine; the NativeAOT self-test in CI covers the AOT binary only)
 - [ ] **P2d** CUDA passes have no scale references (blocked: no NVIDIA hardware)
 - [ ] Memory note updated to the final state
 
