@@ -27,7 +27,8 @@ public sealed class ProtocolSmokeCorpusTests
         foreach (var c in cases)
         {
             string name = c.GetProperty("name").GetString()!;
-            using var request = new StringContent(c.GetProperty("body").GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            string payload = c.TryGetProperty("rawBody", out var raw) ? raw.GetString()! : c.GetProperty("body").GetRawText();
+            using var request = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
             using var response = await client.PostAsync(c.GetProperty("route").GetString(), request);
             string text = await response.Content.ReadAsStringAsync();
 
