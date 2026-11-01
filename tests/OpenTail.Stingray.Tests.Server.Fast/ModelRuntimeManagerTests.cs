@@ -182,6 +182,31 @@ public sealed class ModelRuntimeManagerTests
         }
     }
 
+    [Fact]
+    public async Task ManagerDispose_WhileLoadInFlight_DisposesTheLoadedEngine_AndFailsTheAcquisition()
+    {
+        var loaderEntered = new ManualResetEventSlim();
+        var releaseLoader = new ManualResetEventSlim();
+        DisposableFakeEngine? engine = null;
+        var manager = new ModelRuntimeManager(id =>
+        {
+            loaderEntered.Set();
+            Assert.True(releaseLoader.Wait(TimeSpan.FromSeconds(10)));
+            engine = new DisposableFakeEngine(id.Value);
+            return new LoadedEngine(engine, "qwen2", null);
+        });
+
+        var acquire = manager.AcquireAsync(Id("late")).AsTask();
+        Assert.True(loaderEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        manager.Dispose();
+        releaseLoader.Set();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => acquire);
+        Assert.NotNull(engine);
+        Assert.True(engine!.Disposed);
+        Assert.False(manager.TryGetResident(Id("late"), out _));
+    }
     // ── SingleSlot residency ─────────────────────────────────────────────────
 
     [Fact]

@@ -124,11 +124,11 @@ public sealed class HotSessionForkTests
         return second.Operation.CommittedRevision!.Value;
     }
 
-    private static (FakeForwardPass Fwd, ContinuousBatchingEngine Engine, HotSessionRuntime Runtime) NewRuntime()
+    private static (FakeForwardPass Fwd, ContinuousBatchingEngine Engine, HotSessionRuntime Runtime) NewRuntime(HotSessionRuntimeOptions? options = null)
     {
         var fwd = new FakeForwardPass();
         var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 4);
-        var runtime = new HotSessionRuntime(engine, new Tokenizer());
+        var runtime = new HotSessionRuntime(engine, new Tokenizer(), options);
         return (fwd, engine, runtime);
     }
 
@@ -161,6 +161,78 @@ public sealed class HotSessionForkTests
         }
     }
 
+    // Two full turns leave 8 tokens at 10 bytes each: a parent, and every branch charged its full prefix, holds 80 bytes.
+    private const long SessionBytes = 80;
+
+    [Fact]
+    public async Task Fork_ExceedingTheGlobalBudget_IsRefused_AndLeavesOnlyTheParentResident()
+    {
+        var (_, engine, runtime) = NewRuntime(new HotSessionRuntimeOptions(maxResidentBytes: 2 * SessionBytes + 40));
+        using var _e = engine;
+        using var parent = runtime.Create();
+        await RunTwoFullTurnsAsync(parent);
+        Assert.Equal(SessionBytes, runtime.ResidentBytes);
+
+        // Two branches would bring residency to 3 * 80 = 240 against a limit of 200.
+        Assert.ThrowsAny<SessionResourceBudgetExceededException>(() => runtime.Fork(parent, 2));
+        Assert.Equal(SessionBytes, runtime.ResidentBytes);
+
+        var one = runtime.Fork(parent, 1);
+        try { Assert.Equal(2 * SessionBytes, runtime.ResidentBytes); }
+        finally { foreach (var b in one) b.Dispose(); }
+    }
+
+    [Fact]
+    public async Task Fork_ExceedingTheModelBudget_IsRefused_AndLeavesOnlyTheParentUnderThatModel()
+    {
+        var budgets = new Dictionary<string, long> { ["test"] = 2 * SessionBytes + 40 };
+        var (_, engine, runtime) = NewRuntime(new HotSessionRuntimeOptions(modelBudgets: budgets));
+        using var _e = engine;
+        using var parent = runtime.Create();
+        await RunTwoFullTurnsAsync(parent);
+        Assert.Equal(SessionBytes, runtime.GetModelResidentBytes("test"));
+
+        Assert.ThrowsAny<SessionResourceBudgetExceededException>(() => runtime.Fork(parent, 2));
+        Assert.Equal(SessionBytes, runtime.GetModelResidentBytes("test"));
+        Assert.Equal(SessionBytes, runtime.ResidentBytes);
+    }
+
+    [Fact]
+    public async Task Fork_ChildrenStayUnderTheParentsModelKey()
+    {
+        var (_, engine, runtime) = NewRuntime();
+        using var _e = engine;
+        using var parent = runtime.Create(sessionId: null, modelKey: "custom-fingerprint");
+        await RunTwoFullTurnsAsync(parent);
+
+        var branches = runtime.Fork(parent, 2);
+        try
+        {
+            Assert.Equal(3 * SessionBytes, runtime.GetModelResidentBytes("custom-fingerprint"));
+            Assert.Equal(0, runtime.GetModelResidentBytes("test"));
+        }
+        finally
+        {
+            foreach (var b in branches) b.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task SharedPrefixHint_ExceedingTheGlobalBudget_FallsBackToAColdSession()
+    {
+        var (_, engine, runtime) = NewRuntime(new HotSessionRuntimeOptions(maxResidentBytes: SessionBytes + 20));
+        using var _e = engine;
+        using var sibling = runtime.Create();
+        await RunTwoFullTurnsAsync(sibling);
+        var tokens = sibling.Cursor.ExecutionLog.SelectMany(s => ((TokenSegment)s).TokenIds).ToImmutableArray();
+
+        var (session, seeded) = runtime.CreateWithSharedPrefixHint(tokens);
+        using var _s = session;
+
+        Assert.Equal(0, seeded);
+        Assert.Equal(0, session.Cursor.MaterializedPositionCount);
+        Assert.Equal(SessionBytes, runtime.ResidentBytes);
+    }
     [Fact]
     public async Task Fork_IsZeroCopy_EachBranchContributesToTheSharedPrefixCounter()
     {
