@@ -13,7 +13,8 @@ namespace OpenTail.Stingray.Engine;
 /// GPU kernels.</para>
 ///
 /// <para><b>Hard rules</b> (each has a refusal reason in <see cref="CpuPrefillRefusal"/>):
-/// fresh sequences only (<c>startPos == 0</c>; a CPU pass built here does not hold the hybrid's earlier K/V);
+/// a later turn (<c>startPos &gt; 0</c>) first downloads the hybrid's earlier K/V rows into the temporary CPU cache, so the CPU pass
+/// sees the same history the sequential path would (<see cref="SeedPrefillCache"/>), and startPos may not exceed what the hybrid holds;
 /// the prefill cache is constructed as F32 explicitly (<c>PagedKvCache</c> would otherwise follow
 /// <c>STINGRAY_KV_STORE</c> and could narrow itself to BF16 at 1,024 tokens), and the process-wide BF16 rounding flag
 /// (<c>STINGRAY_KV_DTYPE=bf16</c>) refuses the path; only model families with a hybrid-versus-CPU logit parity test
@@ -93,21 +94,21 @@ public sealed unsafe partial class HybridForwardPass
     {
         if (!CpuPrefillEnabled) return "disabled (STINGRAY_HYBRID_CPU_PREFILL=0)";
         if (_cpuPrefillBroken) return _cpuPrefillBrokenReason;
-        if (startPos != 0) return "startPos != 0 (a CPU pass built here does not hold the earlier turns' K/V)";
+        if (startPos < 0 || startPos > _kvLength) return $"startPos {startPos} is beyond the {_kvLength} K/V rows the hybrid holds";
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
-        if (n > _maxSeqLen) return "prompt longer than the hybrid context";
+        if (startPos + n > _maxSeqLen) return "prompt longer than the hybrid context";
         if (_tqEnabled) return "TurboQuant KV is active";
         if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
         if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (_nGpuLayers + _nCpuLayers != _hp.NumLayers) return "layer placement does not cover the model";
         if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.HybridCpuPrefill, HandoffPath.VulkanHybrid) is { } familyRefusal) return familyRefusal;
-        long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _headDim, _hp.NumLayers);
+        long kvBytes = KvHandoff.TemporaryKvBytes(startPos + n, _numKvHeads, _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
         return null;
     }
 
-    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens)
+    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, int startPos)
     {
         lock (_cpuPrefillGate)
         {
@@ -120,6 +121,7 @@ public sealed unsafe partial class HybridForwardPass
                 int n = tokens.Count;
                 using var cache = new PagedKvCache(_hp.NumLayers, _numKvHeads, _headDim,
                     bf16Store: false, autoBf16: false, layerHeadDim: null);
+                if (startPos > 0) SeedPrefillCache(cache, startPos);
                 // Which GPU-layer experts does this prompt use? The sequential prefill loaded them into the GPU expert cache as a
                 // side effect; the CPU pass does not touch it, so decode would start cold (measured: 62-70% of lookups missing in
                 // the first 16 tokens, decode 14 tok/s against 19). Each layer's routing is known the moment that layer's batched
@@ -129,13 +131,13 @@ public sealed unsafe partial class HybridForwardPass
                 if (warm is not null)
                     _cpuPrefillPass!.MoeRoutingObserver = (layer, counts) => { if (layer < _nGpuLayers) warm.Add(layer, counts); };
                 ReadOnlySpan<float> logits;
-                try { logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, 0); }
+                try { logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, startPos); }
                 finally { _cpuPrefillPass!.MoeRoutingObserver = null; warm?.Complete(); }
                 logits[.._logitsBuf.Length].CopyTo(_logitsBuf);
                 long t2 = Stopwatch.GetTimestamp();
 
-                HandoffKv(cache, n);
-                _kvLength = n;
+                HandoffKv(cache, startPos + n);
+                _kvLength = startPos + n;
                 long t3 = Stopwatch.GetTimestamp();
                 long t4 = Stopwatch.GetTimestamp();
 
@@ -163,6 +165,26 @@ public sealed unsafe partial class HybridForwardPass
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Fills the temporary CPU cache with the hybrid's first <paramref name="count"/> K/V rows (GPU tensors and CPU cache, via
+    /// <see cref="ReadKvRows"/>) so a CPU prefill of a later turn attends to the same history as the sequential path. The rows are
+    /// F32 on both sides, so this is a copy, not a conversion.
+    /// </summary>
+    private void SeedPrefillCache(PagedKvCache cache, int count)
+    {
+        int kvDim = _numKvHeads * _headDim;
+        var k = new float[(long)count * kvDim];
+        var v = new float[(long)count * kvDim];
+        cache.ReserveBlockAt(count - 1);
+        for (int layer = 0; layer < _hp.NumLayers; layer++)
+        {
+            ReadKvRows(layer, count, k, v);
+            for (int pos = 0; pos < count; pos++)
+                cache.AppendAt(layer, pos, k.AsSpan(pos * kvDim, kvDim), v.AsSpan(pos * kvDim, kvDim));
+        }
+        for (int pos = 0; pos < count; pos++) cache.IncrementPosition();
     }
 
     private ExpertWarmup? _warmup;

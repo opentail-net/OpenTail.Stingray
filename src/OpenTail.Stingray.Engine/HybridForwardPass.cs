@@ -761,7 +761,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         // every case the handoff refuses, runs the sequential per-token loop below.
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(tokens.Count, startPos);
-        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, startPos))
             return _logitsBuf;
 
         long t0 = s_prefillTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
