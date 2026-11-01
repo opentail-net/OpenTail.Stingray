@@ -756,6 +756,64 @@ public sealed class SessionEndpointTests : IDisposable
     /// The derived key must be content-addressed, not constant: two genuinely different turns at
     /// the same revision must not collide into one replayed operation.
     /// </summary>
+    /// <summary>
+    /// The idempotency digest must cover everything that changes what the turn does. `allowed_choices` constrains generation, but the digest
+    /// (and so the derived operation id) left it out: a retry with other choices was answered as a replay of the first turn, returning the
+    /// first answer for a question it never asked.
+    /// </summary>
+    [Fact]
+    public async Task Turn_SamePromptAndRevision_DifferentAllowedChoices_IsNotTreatedAsReplay()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var first = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns",
+            new { append_prompt = "pick", expected_revision = 0L, max_tokens = 4, allowed_choices = new[] { "yes" } });
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        using var firstJson = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        string firstOperation = firstJson.RootElement.GetProperty("operation_id").GetString()!;
+
+        var other = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns",
+            new { append_prompt = "pick", expected_revision = 0L, max_tokens = 4, allowed_choices = new[] { "no" } });
+
+        if (other.StatusCode == HttpStatusCode.OK)
+        {
+            using var otherJson = JsonDocument.Parse(await other.Content.ReadAsStringAsync());
+            Assert.False(otherJson.RootElement.GetProperty("idempotent_replay").GetBoolean(), "different allowed_choices were answered as a replay");
+            Assert.NotEqual(firstOperation, otherJson.RootElement.GetProperty("operation_id").GetString());
+        }
+        else
+        {
+            Assert.Equal(HttpStatusCode.Conflict, other.StatusCode);   // a stale revision is the other correct answer
+        }
+
+        // Positive control: the very same request, choices included, IS a replay.
+        var same = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns",
+            new { append_prompt = "pick", expected_revision = 0L, max_tokens = 4, allowed_choices = new[] { "yes" } });
+        Assert.Equal(HttpStatusCode.OK, same.StatusCode);
+        using var sameJson = JsonDocument.Parse(await same.Content.ReadAsStringAsync());
+        Assert.True(sameJson.RootElement.GetProperty("idempotent_replay").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("temperature", 2.5)]
+    [InlineData("temperature", -0.1)]
+    [InlineData("top_p", 1.5)]
+    [InlineData("top_p", -0.2)]
+    public async Task Turn_OutOfRangeSampling_IsA400_NamingTheField(string field, double value)
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var body = new Dictionary<string, object?> { ["append_prompt"] = "hi", ["expected_revision"] = 0L, ["max_tokens"] = 4, [field] = value };
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Contains(field, doc.RootElement.GetProperty("message").GetString());
+    }
     [Fact]
     public async Task Turn_DifferentPromptSameRevision_IsNotTreatedAsReplay()
     {
