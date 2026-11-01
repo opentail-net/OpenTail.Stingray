@@ -17,6 +17,10 @@ namespace OpenTail.Stingray.Tests.Sessions;
 public abstract class HeavyTestBase : IDisposable
 {
     private static readonly Mutex Gate = new(initiallyOwned: false, @"Global\OpenTailStingray.HeavyTests");
+
+    /// <summary>Set by a test that starts a child test process while it holds the gate (the restart-proof test). The child then does not wait for the gate: it
+    /// would be waiting for its own parent, which waits for the child, and nothing ever finishes (the parent's three-minute timeout was the only way out).</summary>
+    internal const string GateHeldByParentVariable = "OPENTAIL_HEAVY_GATE_HELD_BY_PARENT";
     private readonly ManualResetEventSlim _releaseGate = new(false);
     private readonly Thread? _gateOwnerThread;
 
@@ -25,6 +29,9 @@ public abstract class HeavyTestBase : IDisposable
         Assert.SkipUnless(
             Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1",
             "Heavy/serial suite skipped by default for fast local iteration. Set STINGRAY_RUN_HEAVY_TESTS=1 to run it.");
+
+        if (Environment.GetEnvironmentVariable(GateHeldByParentVariable) == "1")
+            return;
 
         // A Mutex is thread-affine. Async test methods resume on another worker thread, so the
         // test instance cannot release a mutex acquired on its constructor thread. Keep a small

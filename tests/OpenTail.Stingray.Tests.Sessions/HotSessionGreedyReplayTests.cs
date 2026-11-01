@@ -335,6 +335,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
         };
         start.ArgumentList.Add("-method");
         start.ArgumentList.Add($"{typeof(HotSessionGreedyReplayTests).FullName}.{nameof(ColdSession_RealModel_CrossProcessChild)}");
+        start.Environment[HeavyTestBase.GateHeldByParentVariable] = "1";   // this test holds the heavy-test gate; the child must not wait for it
         start.Environment[RestartPhaseEnvironment] = phase;
         start.Environment[RestartModelEnvironment] = modelPath;
         start.Environment[RestartStorageEnvironment] = storage;
