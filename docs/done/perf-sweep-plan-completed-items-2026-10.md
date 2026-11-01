@@ -300,3 +300,83 @@ Finished items moved verbatim out of [../4-performance/perf-sweep-plan.md](../4-
       with an explanation instead of corrupting memory. **"A path that corrupts memory cannot be
       timed" — the upside of fixing this was never even quantifiable by the cheap route.**
 
+---
+
+## More completed items moved from perf-sweep-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../4-performance/perf-sweep-plan.md](../4-performance/perf-sweep-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Phase 10 — Vision-Language Model decode weakness (~0.48x pattern, worst point 0.41x prefill)
+- [x] 10.1 *(closed 2026-11-01: answered by the 2026-10-01/02 re-measure below and by 10.2 and 10.3)* These are all **text-only** measurements (no `--image`/`--mmproj` — see the section's
+      own caveat) — i.e. this is the LLM backbone underneath a VLM, not vision-encoding cost. So
+      the ~0.48x decode pattern converging across 3 different backbones is suspicious: check
+      whether something in how these checkpoints are loaded/dispatched (e.g. a shared
+      VLM-specific code path even in text-only mode) differs from a "pure" LLM of the same
+      backbone size, rather than assuming it's per-backbone-architecture coincidence.
+      **2026-10-01/02 re-measure:** the shared ~0.48x was mostly the Q4_K decode scheduling issue
+      fixed in Phase 7; InternVL3-2B and Granite-4.0-3B-Vision now decode at ~0.75-0.79x.
+      Granite-Vision-3.2-2B stayed at ~0.47x because every projection is Q3_K (see 10.2).
+
+> from: ## Phase 10 — Vision-Language Model decode weakness (~0.48x pattern, worst point 0.41x prefill)
+- [x] 10.4 *(closed 2026-11-01: done through 10.2 and 10.3; the benchmarks are in the League, the Q3_K follow-ups are tracked under 10.2)* Implement + verify (real image-understanding sanity check if touching anything
+      vision-adjacent, not just text-only re-runs) + re-benchmark + record.
+
+> from: ## Phase 1 — Voxtral-Mini-4B-Realtime (worst ratio in the doc, 0.02x → 0.221x, PLATEAU DECLARED 2026-09-12)
+- [x] 1.2 *(closed 2026-11-01: done and recorded in the League 2026-09-12, 1.51x and 0.221x; later work moved this pipeline to about 0.81x on 2026-10-02)* Quantize Voxtral weights to Q8_0 (currently raw F32 — 4x the memory traffic of every
+      other model in this engine per matvec). Likely the single biggest remaining lever. Needs a
+      perplexity/transcript-quality check before shipping (CLAUDE.md rule 7).
+      - [x] 1.2e *(closed 2026-11-01: benchmarked 164.2 s to 108.9 s and recorded 2026-09-12)* Repeat for `VoxtralAudioEncoderWeights`: Q/K/V/O/gate/up/down/Projector1/
+            Projector2 quantized to Q8_0 (biases and conv weights stay F32 — conv path uses a
+            different mechanism, out of scope this pass); `VoxtralAudioEncoder.LinearNoBias`/
+            `LinearBias` switched to `SimdKernels.MatVecQ8_0` (bias now added as a separate pass
+            after the quantized dot, since `MatVecQ8_0` has no fused-bias overload). Also fixed
+            `VoxtralAudioEncoderWeightsLoadTests`' now-wrong `float.IsFinite`/exact-length
+            assertions on the newly-`byte[]` fields. Builds clean. A real-audio correctness
+            re-check PASSED: 5/5 tests, transcript still exact match. **Benchmarked: 164.163s →
+            108.861s (1.51x), ratio 0.147x → 0.221x. Cumulative from original baseline: 1203.1s →
+            108.861s = 11.05x, ratio 0.02x → 0.221x.** Recorded in `PerformanceLeague.md`
+            2026-09-12. Diminishing returns visible (5.6x → 1.3x → 1.51x per Q8_0 pass) but still
+            3.5x off the C++ reference — not fully plateaued.
+
+> from: ## Phase 1 — Voxtral-Mini-4B-Realtime (worst ratio in the doc, 0.02x → 0.221x, PLATEAU DECLARED 2026-09-12)
+- [x] 1.4 Wire a real CLI/pipeline path using `PrefillWithCache`/`Step` — currently only test
+      harnesses reach the KV-cache incremental path at all; without this, kernel speed is moot for
+      real usage. **Concrete lead found**: this codebase has an established `ISpeechToTextPipeline`
+      interface (`src/OpenTail.Stingray.Audio/ISpeechToTextPipeline.cs`) with working
+      implementations for every other ASR model (`ParakeetPipeline`, `WhisperPipeline`,
+      `QwenAsrPipeline`, `FunAsrPipeline`, `ParaformerOnnxPipeline`) — a `VoxtralPipeline` class
+      following the same shape (mel-extract → prefill → greedy `Step` loop, mirroring what
+      `VoxtralGenerationLoopTests`/`VoxtralPerfBaselineDebugTest` already do by hand) is the
+      concrete next step, not a research question. None of the existing pipelines appear wired
+      into `src/OpenTail.Stingray.Cli` either (grepped, no hits) — check `Server.Host` or a
+      not-yet-found CLI ASR command before assuming a new dispatch point is needed from scratch.
+      - [x] *(closed 2026-11-01: `stingray transcribe` exists, `TranscribeCommand` and `SttCommand` wire the `ISpeechToTextPipeline` implementations, and `VoxtralPipeline` is referenced from `SttCommand`)* Was: no CLI/Server.Host dispatch point found yet wiring ANY of this project's
+            `ISpeechToTextPipeline` implementations (not just Voxtral) into a runnable command —
+            worth a real look at `src/OpenTail.Stingray.Server*` before assuming one needs to be
+            built from scratch, but out of scope for finishing 1.4's Voxtral-specific goal.
+
+> from: ## Phase 8 — DeepSeek-V2-Lite-Chat (`deepseek2`, prefill 0.49x)
+- [x] 8.2 *(closed 2026-11-01: moot, `deepseek2` was admitted 2026-09-26 and no `--allow-unverified-arch` is needed)* This architecture requires `--allow-unverified-arch` — confirm the perf harness/CLI
+      invocation still works the same way for a profiled run (`STINGRAY_PROFILE_DECODE=1` plus
+      the flag) before assuming standard tooling applies unmodified.
+
+> from: ## Phase 9 — Worst-RTF TTS/audio-generation pipelines (114.14x — worse than Voxtral's original 85.5x)
+- [x] 9.2 *(closed 2026-11-01: golden-parity tests now exist, `AceStepDiTGoldenParityTests`, `AceStepLyricEncoderGoldenParityTests` and `AceStepOobleckDecoderGoldenParityTests`)* No numeric golden reference exists yet for this port (per the doc's own caveat,
+      "non-degeneracy checked only") — any perf change here needs at minimum a real audio-energy/
+      non-degeneracy re-check before/after, since byte-identical or transcript-based verification
+      (Voxtral's approach) isn't available for this model class.
+
+> from: ## Phase 2 — Qwen3.6 hybrid-GDN family (0.05x-0.17x across 27B/35B/9B size points)
+- [x] 2.4 *(closed 2026-11-01: the 9B and 27B size points were measured and fixed 2026-10-02, see the Phase 2 notes above and ADR-0002)* Repeat 2.1-2.3 for the 9B (Ornith-1.0-9B) and 27B (Qwen3.6-27B Q3_K_XL) size points if
+      a 35B fix is found and generalizes; record each in `PerformanceLeague.md`.
+
+> from: ## Phase 6 — Gemma family (0.12x-0.13x prefill, real "batched-prefill-missing" architectural gap)
+- [x] 6.3 *(closed 2026-11-01: obsolete. `ForwardPass.PrefillCore` handles per-layer KV heads and a per-layer window, checked in code; the section's own 2026-10-02 note says the rest landed 2026-09-16. `PrefillWithCache` still refuses per-layer head dimensions, which is a separate limit.)* **Real feature work, not attempted this pass** (same category as Phase 4/13's GPU
+      dispatch fusion and Phase 14's EXAONE post-norm gap) — implementing per-layer KV heads,
+      KV-layer sharing, `attention_k_eq_v`, per-head V norm, and a real `windowSize` parameter for
+      `PrefillCoreAttention` is a multi-feature engineering project, not a quick fix or a flag
+      flip. `docs/done/gemma4-12b-evidence.md`'s own conclusion stands: scope this properly (check
+      `docs/done/cpu-prefill-repack-gemm-plan.md` for reusable batched-prefill design) before attempting
+      it, and do NOT try to force the existing path again — that route is confirmed memory-unsafe,
+      not just slow-to-verify. **Phase 6 is correctly closed at "well-understood, real,
+      substantial follow-on work" for this pass — matches the category, doesn't need re-deriving.**
