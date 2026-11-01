@@ -119,7 +119,7 @@ Items below are grouped by thread. Each thread has one owner doc that holds the 
 
 Not fixable on this machine (kept 🔴 in STATUS): MiMo-VL (upstream mmproj projects to 3584, the
 text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint declares the projector).
-- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) is a separate case: no golden, no local checkpoint, no STATUS row.** See [the sanity-check findings](done/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
+- [ ] 7. **Gemma-2 (`gemma2`): fixed 2026-10-11 on the CPU, golden-checked (2B file); Vulkan and CUDA not supported (no attention-logit softcap kernel there); Before that fix, Gemma 2 was on the admitted list from the first release but produced incoherent output (the 2026-10-11 sanity check, `76def766`, called it "not a recent regression"); no earlier working run is recorded. Gemma 1 (`gemma`) was a separate case and was fixed 2026-11-01 (item 9).** See [the sanity-check findings](done/2026-10-11-llm-reply-sanity-check.md#gemma-2-fixed-2026-10-11-same-day).
 
 ## 2. Model coverage
 
@@ -138,8 +138,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
      end to end; Falcon-H1 should come almost free.
 - [ ] 8. **ONNX pipelines**: SenseVoice and ONNX Paraformer are wired into `stingray stt` (`--model sensevoice` /
     `paraformer`). Open: now that several ONNX pipelines exist, see whether a shared shape is worth extracting.
-- [ ] 9. **Gemma 1 (`gemma`)**: needs the Gemma-2 semantics and a checkpoint to verify with. Gemma 2 was fixed on the CPU on
-   2026-10-11 (§1 item 7).
+- [x] 9. **Gemma 1 (`gemma`)**: fixed 2026-11-01 on the CPU. It predicted `<bos>` at every position because the descriptor had no model semantics; `FamilyModelSemantics.Gemma1` added (sqrt(n_embd) embedding scale, GELU-tanh gated FFN). Golden `gemma.golden.json` 22/24 (near-tie) on gemma-1.1-2b-it Q8_0; STATUS row added. Only the 2B file, one case and the CPU were run; the 7B and Vulkan are unverified.
 - [ ] 10. **Newer LTX families** (LTX-2.3 / 2.5), a later campaign.
 - [x] 11. **Missing GGML op kernels**: none left; RWKV6 / RWKV7 closed 2026-10-01 (see
     [done/bugstofix-resolved-2026-10.md](done/bugstofix-resolved-2026-10.md); the rest of the old op gap: [done/17](done/17-ggml-op-coverage-verification-plan.md)).
