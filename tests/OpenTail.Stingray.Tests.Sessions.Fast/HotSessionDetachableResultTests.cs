@@ -38,6 +38,8 @@ public sealed class HotSessionDetachableResultTests
         public bool PrefillDequantCacheActive => false;
         public bool EmitNonStopOnPrefill { get; set; }
         public TimeSpan DecodeDelay { get; set; }
+        /// <summary>Runs inside every decode step, on the engine's batcher thread: a test cancels from here so the cancellation provably lands while the turn is generating.</summary>
+        public Action? OnDecodeStep { get; set; }
 
         public ISequenceKvCache CreateCache() => new FakeCache();
 
@@ -53,6 +55,7 @@ public sealed class HotSessionDetachableResultTests
 
         public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
+            OnDecodeStep?.Invoke();
             if (DecodeDelay > TimeSpan.Zero) Thread.Sleep(DecodeDelay);
             for (int i = 0; i < caches.Length; i++)
             {
@@ -128,17 +131,16 @@ public sealed class HotSessionDetachableResultTests
     [Fact]
     public async Task HotSession_GetOperation_ReturnsCancelledOperation_OnCancellation()
     {
-        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true, DecodeDelay = TimeSpan.FromMilliseconds(50) };
+        using var cts = new CancellationTokenSource();
+        // Cancel from inside the first decode step. A timer (CancelAfter(5)) raced the start of the turn: on a slow or cold run it fired before the operation
+        // existed (GetOperation threw KeyNotFoundException, 41 of 200 runs locally) or at a point the Windows CI run recorded as Failed.
+        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true, DecodeDelay = TimeSpan.FromMilliseconds(50), OnDecodeStep = () => cts.Cancel() };
         using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);
         var runtime = new HotSessionRuntime(engine, new Tokenizer());
         using var session = runtime.Create();
-        using var cts = new CancellationTokenSource();
 
         var sampling = new SamplingParams { Temperature = 0f, MaxNewTokens = 10 };
         var operationId = SessionOperationId.New();
-
-        // Cancel while turn is in-flight
-        cts.CancelAfter(5);
 
         try
         {
