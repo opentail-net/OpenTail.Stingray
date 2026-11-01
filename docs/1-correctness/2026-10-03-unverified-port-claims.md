@@ -195,3 +195,14 @@ Corrections this scouting made to earlier statements:
 - V4.1: three of the unsloth quants (Q8_K_XL, Q4_K_XL, Q3_K_XL) carry `per_layer_token_embd.weight` with GGML type id 43, which this build does not support; the smaller IQ quants do not and are 217 GiB or more.
 - The `Q2_0` in the Bonsai2 dev repo is the only file listed; scout reads `general.architecture` (`qwen35`, admitted) and cannot see the `STINGRAY_EXPERIMENTAL_PRISM` gate, so its "Fits" is about size only.
 - The dossiers (JSON) are in the 2026-11-01 session scratchpad, not in the repository.
+## Independent references, 2026-11-01 (plan 5 B3)
+
+Checked against `ggml-org/llama.cpp` tag b11556 (`src/models`, 160 files, listed through the GitHub contents API) and the families' own notes. A reference counts only if it is not the code the port was derived from (CLAUDE.md rule 8).
+
+| Family | Independent reference | End state |
+|---|---|---|
+| Bonsai2 PRISM | **Yes.** Stock llama.cpp from b11556 runs `Ternary-Bonsai-2-27B-Q2_0.gguf` (model card); used 2026-11-01, see the Bonsai2 section above. The fork-private types (`PTQ1_0`, id 143) are rejected by stock builds. | Reference exists; admission still needs a teacher-forced golden and a perplexity check. |
+| DiffusionGemma | **None found.** `src/models` has no diffusion-gemma file (`gemma4.cpp` is the backbone the port follows, `minimax-m3.cpp` and others are unrelated). `examples/diffusion` exists (`diffusion-cli.cpp`) but nothing here shows it loads this architecture. TensorSharp is what the port was written against, so it is not independent. The Hugging Face reference is Python, and CLAUDE.md forbids adding Python reference scripts. The only partial route is the one in the 2026-10-03 note: relabel a copy of the GGUF as `gemma4` and compare the causal prefill path; the canvas, self-conditioning and sampler paths have no oracle. | Stays internal; what can be checked is the backbone only, and that check has not been run. |
+| MiniMax-H3 (video and audio) | **None found.** `src/models` has `minimax-m3.cpp`, `minimax-m2.cpp` and `minimax-01.cpp`, which are the text models, no H3. It is a SafeTensors diffusion model outside the GGUF tooling, and the port is a foundation only (no real DiT loader, no conditioning, see the table in the tensorsharp plan). | Stays internal; no pass is claimed, and none can be until a real checkpoint and a reference exist. |
+
+Not checked: whether the `examples/diffusion` CLI could run DiffusionGemma, and any reference outside llama.cpp b11556 (vLLM, Hugging Face).
