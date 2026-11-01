@@ -121,6 +121,9 @@ public sealed class Model : IModel
     /// <inheritdoc/>
     public IModelContext CreateContext(IContextParams? contextParams = null)
     {
+        if (contextParams?.TurboQuantHeadDim is not null)
+            throw new NotSupportedException("ContextParams.TurboQuantHeadDim is not supported: the TurboQuant head dimension is always taken from the model.");
+
         lock (_lock)
         {
             ThrowIfDisposed();
