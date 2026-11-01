@@ -25,6 +25,8 @@ Stingray uses `System.Runtime.Intrinsics.X86` and `System.Runtime.Intrinsics.Arm
 | **AVX2 & FMA** | 256 bits (8 floats) | `Avx2`, `Fma`, `Avx` | Quantized block dequantization, GEMM dot products |
 | **ARM Neon** | 128 bits (4 floats) | `AdvSimd` | Mobile / Apple Silicon vectorization |
 
+**What has actually run.** Every measurement and test in this repository ran on AVX2 and FMA: the development machine (Ryzen 7 5700G) and the Windows CI runner (AMD EPYC 7763) are both Zen 3, which has no AVX-512. The AVX-512 and Neon paths are implemented and selected by capability checks, but no AVX-512 or ARM64 hardware has executed them here, so they are unverified. See the [reconciliation report](../1-correctness/2026-11-01-documentation-claim-reconciliation-report.md), R3.
+
 ### Fused Dequantize-and-Multiply (GEMM)
 Rather than dequantizing entire weight matrices into intermediate 32-bit float buffers (which would flood the L3 CPU cache), Stingray executes fused dequantization:
 - Weights are stored in block-quantized formats (e.g. `Q4_K` with 256 weights per block, grouped scales and mins).

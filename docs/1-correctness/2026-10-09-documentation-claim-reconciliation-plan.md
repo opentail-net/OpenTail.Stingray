@@ -2,13 +2,13 @@
 
 ## Checklist
 
-- [ ] R1. Public C# example: model-home resolution
+- [x] R1. Public C# example: model-home resolution *(2026-11-01: [report](2026-11-01-documentation-claim-reconciliation-report.md))*
 - [ ] R2. Diffusion claims: HunyuanVideo and Wan 2.2
-- [ ] R3. AVX-512: implemented path versus verified execution
-- [ ] R4. Environment registry: source-of-truth filename and drift checks
-- [ ] R5. TurboQuant KV-cache modes and the guide's scope
-- [ ] Audit report with an evidence row per disagreement (none found in `docs/` on 2026-10-30)
-- [ ] Targeted plan and document edits applied (only the evidence-backed ones)
+- [x] R3. AVX-512: implemented path versus verified execution *(2026-11-01: implemented, never executed on AVX-512 hardware; docs corrected)*
+- [x] R4. Environment registry: source-of-truth filename and drift checks *(2026-11-01: `KnownEnvironmentVariables.cs`; no `StingrayEnv.cs` exists)*
+- [x] R5. TurboQuant KV-cache modes and the guide's scope *(2026-11-01: Lloyd-Max and KVarN only; no FP8 or INT4 KV mode)*
+- [x] Audit report with an evidence row per disagreement: [2026-11-01-documentation-claim-reconciliation-report.md](2026-11-01-documentation-claim-reconciliation-report.md) (R2 is not re-tested there and stays open)
+- [x] Targeted plan and document edits applied (only the evidence-backed ones; R2 has none yet)
 
 > **Status:** Proposed — evidence-gathering pass, not an implementation verdict  
 > **Date:** October 9, 2026  
