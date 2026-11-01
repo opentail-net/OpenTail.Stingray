@@ -263,6 +263,9 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
 
             lock (_lock)
             {
+                // Every attempt, not only the first: a waiter woken by Dispose must fail here, not start a load on a manager that has shut down.
+                ObjectDisposedException.ThrowIf(_disposed, this);
+
                 // Fast path: already resident. Handle creation happens while still holding the
                 // lock (via the ctor's OnHandleAcquired) so this can never race the eviction path
                 // below, which also mutates _resident only under this same lock — the
@@ -682,6 +685,8 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     /// process/host shutdown only, same contract as <see cref="OpenTail.Stingray.Core.SharedModelCache.Dispose"/>.</summary>
     public void Dispose()
     {
+        AdmissionWaiter[] queued;
+        List<TaskCompletionSource<ModelRuntime>> pending;
         lock (_lock)
         {
             if (_disposed) return;
@@ -691,6 +696,16 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 if (!rt.IsPinned) rt.Dispose();
             }
             _resident.Clear();
+            queued = [.. _admissionQueue];
+            _admissionQueue.Clear();
+            pending = [.. _pendingLoads.Values.Select(p => p.Tcs)];
         }
+
+        // Nothing that is waiting may be left waiting: a SingleSlot waiter behind a pinned runtime, an admission waiter and a joiner of an
+        // unfinished load would otherwise depend on an event that can no longer happen. Each wakes, rechecks _disposed and throws.
+        foreach (var waiter in queued) waiter.WakeSignal?.TrySetResult();
+        var disposed = new ObjectDisposedException(nameof(ModelRuntimeManager));
+        foreach (var load in pending) load.TrySetException(disposed);
+        NotifyResidencyChanged(mayHaveFreedResources: false);
     }
 }

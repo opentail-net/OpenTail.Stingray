@@ -149,9 +149,11 @@ public sealed class ColdSessionRuntime
         ArgumentNullException.ThrowIfNull(session);
         ArgumentException.ThrowIfNullOrEmpty(modelFingerprint);
 
-        if (session.IsInUse)
-            throw new InvalidOperationException(
-                $"Session '{session.SessionId}' has a turn in flight and cannot be evicted. " +
+        // An exclusive lease on the turn gate, held through export, manifest publication and deletion: IsInUse alone clears while a turn is still
+        // committing, which let a manifest pair a new cursor with the previous revision and operation ledger.
+        using var exclusive = session.TryAcquireExclusive()
+            ?? throw new InvalidOperationException(
+                $"Session '{session.SessionId}' has a turn in flight or committing and cannot be evicted. " +
                 "KV export is not synchronised against a running turn.");
 
         byte[] exportedState = session.ExportState(modelFingerprint, modelFormat: _modelFormat);
