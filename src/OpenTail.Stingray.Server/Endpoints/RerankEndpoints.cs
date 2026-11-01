@@ -37,6 +37,16 @@ public static class RerankEndpoints
                 return;
             }
 
+            if (RequestParameterValidation.ValidateRerankTopN(req.TopN) is { } topNError)
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", topNError), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                    ctx.RequestAborted);
+                return;
+            }
+
             string? modelPath = EncoderModelResolver.Resolve(req.Model, EncoderModelResolver.RerankEnv);
             if (modelPath is null)
             {

@@ -104,6 +104,18 @@ internal static class RequestParameterValidation
         return null;
     }
 
+    /// <summary>`/v1/audio/speech` `speed`: OpenAI's documented range; a non-positive or NaN value used to be replaced by 1.0 silently.</summary>
+    public static string? ValidateSpeechSpeed(float speed) => Range("speed", speed, 0.25f, 4.0f);
+
+    /// <summary>`/v1/rerank` `top_n` must be at least 1 when given.</summary>
+    public static string? ValidateRerankTopN(int? topN) => PositiveInt("top_n", topN);
+
+    /// <summary>Spoken-language code for transcription: two or three letters (en, de, haw); not checked against Whisper's list.</summary>
+    public static string? ValidateLanguageCode(string? language) =>
+        string.IsNullOrEmpty(language) || (language.Length is 2 or 3 && language.All(char.IsAsciiLetter))
+            ? null
+            : $"language must be a two or three letter code such as 'en' (got '{language}')";
+
     private static string? PositiveInt(string name, int? value) =>
         value is { } v && v < 1 ? $"{name} must be at least 1 (got {v})" : null;
 

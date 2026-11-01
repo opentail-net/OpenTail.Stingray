@@ -52,7 +52,16 @@ public static class OpenAiAudioEndpoints
             }
 
             string voice = string.IsNullOrWhiteSpace(req.Voice) ? "af_heart" : req.Voice;
-            float speed = req.Speed > 0 ? req.Speed : 1.0f;
+            if (RequestParameterValidation.ValidateSpeechSpeed(req.Speed) is { } speedError)
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", speedError), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                    ctx.RequestAborted);
+                return;
+            }
+            float speed = req.Speed;
 
             bool isMelo = req.Model != null && req.Model.Contains("melo", StringComparison.OrdinalIgnoreCase);
             bool isChatterbox = req.Model != null && req.Model.Contains("chatter", StringComparison.OrdinalIgnoreCase);
@@ -197,6 +206,7 @@ public static class OpenAiAudioEndpoints
             }
         }
 
+        invalid ??= RequestParameterValidation.ValidateLanguageCode(language);
         if (invalid is null && !s_speechToTextFormats.Contains(responseFormat))
             invalid = $"response_format must be one of json, text, srt, verbose_json, vtt (got '{responseFormat}')";
         if (invalid is not null)
