@@ -899,7 +899,7 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 ### Open items
 
-- [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches)
+- [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches). **2026-11-01 (plan 6 C1):** until now the shipped server never fed accelerator-aware admission at all (`AddOpenTailStingray` built the manager without an estimator, so every candidate counted as 0). It now passes a pre-load estimate, the weights the execution plan places on the GPU (`InferenceEngineLoader.EstimateAcceleratorBytes`, from the same `BuildPlan` the load runs); on the real Qwen3-0.6B Q8_0 on Vulkan it equals the loaded runtime's resident figure (798,797,824 bytes). Whether the plan's GPU weight figure is right for the hybrid-GDN full-offload branches was not checked, so this box stays open for that.
 - [ ] Phase 7: durable session restore across a restart in multi-model mode (deferred)
 
 ### Cadence

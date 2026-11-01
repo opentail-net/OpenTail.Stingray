@@ -166,6 +166,69 @@ public sealed class AcceleratorResidencyTests
         Assert.Empty(manager.Snapshot()); // rejected before any load started — nothing resident
     }
 
+    /// <summary>
+    /// Plan 6 C1: the production wiring hands the manager a candidate accelerator estimate BEFORE it loads, and that figure is what the loaded runtime records
+    /// afterwards (both are the weights the execution plan places on the GPU). Before this, <c>AddOpenTailStingray</c> built the manager without an estimator,
+    /// so every candidate counted as 0 and accelerator-aware admission could never run in a real server. The unit tests (Tests.Server.Fast) pass a fake estimator;
+    /// this goes through the real DI wiring, the real planner and a real model.
+    /// </summary>
+    [Fact]
+    public async Task RealVulkanModel_ProductionWiring_PassesTheCandidateEstimate_ThatEqualsTheLoadedResidentFigure()
+    {
+        string? modelPath = FindModelAnywhere("Qwen3-0.6B-Q8_0.gguf");
+        Assert.SkipUnless(modelPath is not null, "Qwen3-0.6B-Q8_0.gguf is required for this test.");
+        SkipUnlessVulkanAvailable();
+
+        var services = new ServiceCollection();
+        services.AddOpenTailStingray(o =>
+        {
+            o.ModelPath = modelPath;
+            o.Backend = ServerBackend.Vulkan;
+            o.NGpuLayers = -1;
+            o.ContextSize = 512;
+        });
+        using var provider = services.BuildServiceProvider();
+        var manager = (ModelRuntimeManager)provider.GetRequiredService<IModelRuntimeManager>();
+        var budget = new RecordingBudget();
+        manager.ResourceBudget = budget;
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        using var handle = await manager.AcquireAsync(ModelId.Canonicalize(modelPath!));
+        TimeSpan took = clock.Elapsed;
+
+        long candidate = Assert.Single(budget.CandidateAcceleratorBytes);
+        Assert.True(candidate > 0, "the production wiring passed 0 accelerator bytes for a GPU-resident model");
+        Assert.Equal(handle.Runtime.AcceleratorResidentBytesEstimate, candidate);
+        Assert.True(took > TimeSpan.FromSeconds(0.2), $"the load took {took.TotalMilliseconds:F0} ms; a real model takes longer");
+        Console.Error.WriteLine($"[AcceleratorResidencyTests] candidate {candidate:N0} bytes == resident {handle.Runtime.AcceleratorResidentBytesEstimate:N0} bytes; load {took.TotalSeconds:F1} s");
+    }
+
+    /// <summary>Always admits, and records what the manager asked it to judge.</summary>
+    private sealed class RecordingBudget : IResourceBudget
+    {
+        public List<long> CandidateAcceleratorBytes { get; } = [];
+        public ResourceSnapshot GetCurrent() => new(0, 0, null, 0, 0);
+        public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0)
+        {
+            CandidateAcceleratorBytes.Add(candidateAcceleratorBytes);
+            return ResourceAdmission.Allowed;
+        }
+    }
+
+    /// <summary><c>models/</c> or <c>models/_models/</c> above the test, else a <c>_models</c> folder at the root of any fixed drive.</summary>
+    private static string? FindModelAnywhere(string fileName)
+    {
+        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null; dir = dir.Parent)
+            foreach (string candidate in new[] { Path.Combine(dir.FullName, "models", fileName), Path.Combine(dir.FullName, "models", "_models", fileName) })
+                if (File.Exists(candidate)) return candidate;
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
+        {
+            string candidate = Path.Combine(drive.RootDirectory.FullName, "_models", fileName);
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
     private static void SkipUnlessVulkanAvailable()
     {
         try
@@ -178,17 +241,5 @@ public sealed class AcceleratorResidencyTests
         }
     }
 
-    private static string? FindModel(string fileName)
-    {
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", fileName);
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModel(string fileName) => FindModelAnywhere(fileName);   // one lookup for every test here: models/, models/_models/, then a _models folder on each fixed drive
 }

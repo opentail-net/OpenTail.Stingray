@@ -138,6 +138,17 @@ public static class InferenceEngineLoader
         if (opts.CpuThreads > 0)
             SimdKernels.CpuThreads = opts.CpuThreads;
 
+        var plan = BuildPlan(opts);
+        return LoadFromPlan(plan, opts.SessionStorageDirectory, opts.ExecutionTurnGate);
+    }
+
+    /// <summary>
+    /// The execution plan <see cref="Load"/> would run for <paramref name="opts"/>: opens the model package (metadata only, no weights are read) and runs the
+    /// pure <see cref="ExecutionPlanner"/>. <see cref="Load"/> and the pre-load resource estimate (<see cref="EstimateAcceleratorBytes"/>) both go through it,
+    /// so an estimate and the load it predicts cannot disagree about what was asked for.
+    /// </summary>
+    internal static ExecutionPlan BuildPlan(OpenTailStingrayServerOptions opts)
+    {
         var modelPath = ResolvePath(opts.ModelPath, "model", "STINGRAY_MODEL", "ModelPath");
 
         bool isPackage = Directory.Exists(modelPath)
@@ -192,8 +203,22 @@ public static class InferenceEngineLoader
             ExpertStatsPath = string.IsNullOrEmpty(opts.ExpertStatsPath) ? null : opts.ExpertStatsPath,
         };
 
-        var plan = ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
-        return LoadFromPlan(plan, opts.SessionStorageDirectory, opts.ExecutionTurnGate);
+        return ExecutionPlanner.Plan(modelDesc, ExecutionRequestEnvironment.ApplyTo(request), capabilities);
+    }
+
+    /// <summary>
+    /// Bytes the plan for <paramref name="opts"/> expects to put on an accelerator (the weights placed on the GPU), the figure the model manager hands to
+    /// <see cref="IResourceBudget.EstimateAdmission"/> before it loads anything. 0 for a CPU-only plan, and 0 when no estimate can be made (the model is
+    /// missing or unreadable): an unknown size is not grounds to refuse a model, and the load itself reports the real error. Same quantity the loaded
+    /// runtime records afterwards (<c>GpuWeightBytes</c>), so the candidate and the resident figures are comparable.
+    /// </summary>
+    internal static long EstimateAcceleratorBytes(OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, ExecutionPlan>? buildPlan = null)
+    {
+        try { return buildPlan is null ? BuildPlan(opts).Placement?.GpuWeightBytes ?? 0 : buildPlan(opts).Placement?.GpuWeightBytes ?? 0; }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or NotSupportedException or InvalidDataException)
+        {
+            return 0;
+        }
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────

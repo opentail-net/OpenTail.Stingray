@@ -78,7 +78,8 @@ public static class ServiceCollectionExtensions
                 : (id => LoadNamedModel(opts, id, sp));
 
             var manager = new ModelRuntimeManager(
-                loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
+                loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment(),
+                estimateAcceleratorBytes: CreateAcceleratorEstimator(opts));
 
             // Off unless explicitly opted into (see OpenTailStingrayServerOptions.EnableResourceAdmission
             // doc for why this isn't a new default) — leaving it null preserves today's exact behavior.
@@ -202,6 +203,30 @@ public static class ServiceCollectionExtensions
     /// per-model options surface, matching the scope <see cref="NamedModelOptions"/>'s own doc
     /// comment states.
     /// </summary>
+    /// <summary>
+    /// What the manager expects a model to put on an accelerator, asked before it loads (accelerator-aware admission, docs/032 Phase 3). Without this the
+    /// manager treats every candidate as 0 accelerator bytes and the accelerator branch of <see cref="IResourceBudget"/> is never consulted in a real server.
+    /// The figure is the weights the execution plan would place on the GPU (<see cref="InferenceEngineLoader.EstimateAcceleratorBytes"/>), computed from the same
+    /// plan the load itself runs. 0 when a custom engine factory loads the model (the server cannot know what it builds) or when no estimate can be made.
+    /// A model's plan inputs are fixed for the life of the process, so each answer is computed once.
+    /// </summary>
+    internal static Func<ModelId, long> CreateAcceleratorEstimator(
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, long>? estimate = null)
+    {
+        estimate ??= o => InferenceEngineLoader.EstimateAcceleratorBytes(o);
+        var known = new System.Collections.Concurrent.ConcurrentDictionary<ModelId, long>();
+        return id => known.GetOrAdd(id, _ =>
+        {
+            if (opts.Models.Count == 0)
+                return opts.EngineFactory is not null ? 0 : estimate(opts);
+            NamedModelOptions? named = null;
+            foreach (var candidate in opts.Models)
+                if (ModelId.Canonicalize(candidate.ModelPath).Equals(id)) { named = candidate; break; }
+            if (named is null || named.EngineFactory is not null || opts.EngineFactory is not null) return 0;
+            return estimate(ForNamedModel(opts, named));
+        });
+    }
+
     private static LoadedEngine LoadNamedModel(OpenTailStingrayServerOptions opts, ModelId id, IServiceProvider sp)
     {
         NamedModelOptions? named = null;
