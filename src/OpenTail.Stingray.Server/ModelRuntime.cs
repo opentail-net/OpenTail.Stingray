@@ -170,16 +170,14 @@ public sealed class ModelRuntime : IDisposable
         Loaded.RuntimeResolution is { Backend: "cuda" or "vulkan" };
 
     /// <summary>
-    /// Estimated VRAM this runtime consumes, for observability only (docs/032's admission math
-    /// doesn't factor this in yet). When <see cref="IsAcceleratorResident"/>: uses
-    /// <see cref="LoadedEngine.GpuWeightBytesExact"/> when the loader dispatch branch had a real
-    /// per-layer figure available (docs/032 Phase 3 Slice 8 follow-up — currently the CUDA/Vulkan
-    /// partial-offload hybrid paths, via <c>TierPlanner</c>'s own placement), falling back to
-    /// <see cref="EstimatedModelBytes"/> otherwise — <b>exact for full GPU offload</b> (all
-    /// weights genuinely on the accelerator, so the whole-file estimate is already correct), and
-    /// still an overestimate for the hybrid-GDN paths (their placement isn't
-    /// <c>TierPlanner</c>-driven, so no precise figure exists there yet). 0 when not accelerator
-    /// resident.
+    /// Estimated VRAM this runtime consumes (the figure accelerator admission adds up). When
+    /// <see cref="IsAcceleratorResident"/>: <see cref="LoadedEngine.GpuWeightBytesExact"/>, which the loader
+    /// sets from the execution plan for every GPU plan (weights placed on the accelerator plus the KV cache and
+    /// scratch for the configured context, <c>InferenceEngineLoader.PlannedAcceleratorBytes</c>), falling back to
+    /// <see cref="EstimatedModelBytes"/> for an engine built by a custom factory. A <b>lower bound, not an exact
+    /// count</b>: measured 2026-11-01 on a Vulkan iGPU, the device held about 1.3x this for Qwen3-0.6B and 1.5x
+    /// for Qwen3.5-0.8B, mostly because Vulkan dequantises an output head that is not Q4_K, Q6_K or Q3_K to F32
+    /// (docs/2026-11-01-plan-6.md F2). 0 when not accelerator resident.
     /// </summary>
     public long AcceleratorResidentBytesEstimate =>
         IsAcceleratorResident ? Loaded.GpuWeightBytesExact ?? EstimatedModelBytes : 0;
