@@ -171,7 +171,7 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
     }
 
-    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true)
+    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true, (string name, long[] dims, DType dtype, byte[] data)[]? extraTensors = null)
     {
         var metadata = new Dictionary<string, (GgufValueType, object)>
         {
@@ -191,6 +191,7 @@ public sealed class ExecutionPlannerTests : IDisposable
             ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
             ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
         };
+        if (extraTensors is not null) tensors = [.. tensors, .. extraTensors];
         var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
         var caps = new BackendCapabilities(
             CudaAvailable: false,
@@ -199,6 +200,31 @@ public sealed class ExecutionPlannerTests : IDisposable
             VulkanDeviceName: vulkan ? "Simulated Vulkan GPU" : null,
             RecommendedThreadCount: 8);
         return ExecutionPlanner.Plan(desc, request, caps);
+    }
+
+    /// <summary>
+    /// Plan 6 F2: the planner's per-layer weight figure summed a fixed list of plain-transformer tensor names, so the fused QKV, Gated-DeltaNet and SSM
+    /// projections of a hybrid layer were uploaded but never counted (Qwen3.5-0.8B: 195 MiB of 795). Each such tensor present in a layer now adds exactly its
+    /// bytes; a tensor the list does not name still adds nothing, so a family without them measures what it always did.
+    /// </summary>
+    [Fact]
+    public void Plan_GpuWeightBytes_CountsTheFamilySpecificTensorsOfALayer()
+    {
+        var request = new ExecutionRequest { PinnedContextSize = 512 };
+        long baseline = PlanTinyModel(request).Placement!.GpuWeightBytes;
+
+        var hybridTensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("blk.0.attn_qkv.weight", [64, 192], DType.Float32, new byte[64 * 192 * 4]),
+            ("blk.0.ssm_out.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_gate.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.ssm_conv1d.weight", [4, 64], DType.Float32, new byte[4 * 64 * 4]),
+        };
+        long withHybrid = PlanTinyModel(request, extraTensors: hybridTensors).Placement!.GpuWeightBytes;
+        Assert.Equal(64 * 192 * 4 + 64 * 64 * 4 + 64 * 64 * 4 + 4 * 64 * 4, withHybrid - baseline);
+
+        var unnamed = new (string name, long[] dims, DType dtype, byte[] data)[] { ("blk.0.unlisted_extra.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]) };
+        Assert.Equal(baseline, PlanTinyModel(request, extraTensors: unnamed).Placement!.GpuWeightBytes);
     }
 
     [Fact]

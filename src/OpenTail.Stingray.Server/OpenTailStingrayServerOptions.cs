@@ -588,14 +588,11 @@ public sealed class NamedModelOptions
 /// unavailable for that engine).
 /// </param>
 /// <param name="GpuWeightBytesExact">
-/// Precise accelerator-resident weight-byte figure (docs/032 Phase 3 Slice 8 follow-up), when the
-/// loader dispatch branch that built this engine had one genuinely available — currently only the
-/// CUDA/Vulkan <em>partial</em>-offload hybrid paths, which already compute a real per-layer
-/// placement via <c>TierPlanner</c>. Null everywhere else (CPU-only; full dense GPU offload,
-/// where <c>ModelRuntime.EstimatedModelBytes</c> is already exact; hybrid-GDN, whose placement
-/// isn't <c>TierPlanner</c>-driven) — <see cref="ModelRuntime.AcceleratorResidentBytesEstimate"/>
-/// falls back to that same file-size estimate when this is null, exactly as before this field
-/// existed. A custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> leaves this null.
+/// What the execution plan expects this engine to hold on an accelerator: the weights placed there plus the KV
+/// cache and scratch for the configured context (<c>InferenceEngineLoader.PlannedAcceleratorBytes</c>, the same
+/// figure the model manager is given before loading). A lower bound, not an exact count. Null when the plan has no
+/// placement (CPU-only) — <see cref="ModelRuntime.AcceleratorResidentBytesEstimate"/> then falls back to the file-size
+/// estimate. A custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> leaves this null.
 /// </param>
 public sealed record LoadedEngine(
     IInferenceEngine Engine,

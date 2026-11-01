@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;
@@ -10,6 +11,51 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 public sealed class AcceleratorEstimatorTests
 {
     private const long Gib = 1L << 30;
+
+    private const double MiB = 1048576.0;
+
+    private static ExecutionPlan PlanWith(long weightBytes, MemoryPlan? memory) =>
+        ExecutionPlan.CreateSynthesized("llama", new ForwardPassDecision(ForwardPassKind.CpuDense, null), ForwardPassBackend.Vulkan, 512, -1)
+            with { Placement = new PlacementPlan(28, 0, 28, weightBytes, 0), Memory = memory };
+
+    /// <summary>
+    /// Plan 6 F2: the figure admission is given used to be the weights alone, which left the KV cache out (112 MiB for Qwen3-0.6B at context 512). The plan's own
+    /// memory figure is weights plus KV, and the scratch is separate; the loaded runtime records the same quantity.
+    /// </summary>
+    [Fact]
+    public void PlannedAcceleratorBytes_AddsTheKvCacheAndScratchToTheWeights()
+    {
+        long weights = 800_000_000;
+        var plan = PlanWith(weights, new MemoryPlan(EstimatedVramMb: 900.0, EstimatedRamMb: 0, ScratchBytes: 1_000));
+
+        Assert.Equal((long)Math.Ceiling(900.0 * MiB) + 1_000, InferenceEngineLoader.PlannedAcceleratorBytes(plan));
+        Assert.True(InferenceEngineLoader.PlannedAcceleratorBytes(plan) > weights);
+    }
+
+    [Fact]
+    public void PlannedAcceleratorBytes_NeverFallsBelowTheWeightFigure()
+    {
+        long weights = 800_000_000;
+        var plan = PlanWith(weights, new MemoryPlan(EstimatedVramMb: 10.0, EstimatedRamMb: 0, ScratchBytes: 0));
+
+        Assert.Equal(weights, InferenceEngineLoader.PlannedAcceleratorBytes(plan));
+    }
+
+    [Fact]
+    public void PlannedAcceleratorBytes_FallsBackToTheWeights_WhenThePlanHasNoMemoryFigure_AndIsZeroWithoutAPlacement()
+    {
+        Assert.Equal(800_000_000, InferenceEngineLoader.PlannedAcceleratorBytes(PlanWith(800_000_000, memory: null)));
+        Assert.Equal(0, InferenceEngineLoader.PlannedAcceleratorBytes(PlanWith(800_000_000, memory: null) with { Placement = null }));
+    }
+
+    [Fact]
+    public void EstimateAcceleratorBytes_IsThePlannedFigure_SoTheCandidateAndTheResidentEstimateAgree()
+    {
+        var plan = PlanWith(800_000_000, new MemoryPlan(EstimatedVramMb: 900.0, EstimatedRamMb: 0, ScratchBytes: 1_000));
+        var opts = new OpenTailStingrayServerOptions { ModelPath = PathOf("planned") };
+
+        Assert.Equal(InferenceEngineLoader.PlannedAcceleratorBytes(plan), InferenceEngineLoader.EstimateAcceleratorBytes(opts, _ => plan));
+    }
 
     private static string PathOf(string name) => Path.Combine(Path.GetTempPath(), "opentail_estimator_" + name + ".gguf");
 

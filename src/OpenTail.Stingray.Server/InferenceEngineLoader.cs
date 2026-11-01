@@ -99,7 +99,7 @@ public static class InferenceEngineLoader
             .ToArray();
 
         var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat) with { GpuLayers = plan.GpuLayers };
-        long? gpuWeightBytes = plan.Placement?.GpuWeightBytes;
+        long? gpuWeightBytes = plan.Placement is null ? null : PlannedAcceleratorBytes(plan);
         var engine = instance.Engine is ContinuousBatchingEngine cbe
             ? new OwnedDisposableEngine(cbe, instance)
             : instance.Engine;
@@ -207,14 +207,29 @@ public static class InferenceEngineLoader
     }
 
     /// <summary>
-    /// Bytes the plan for <paramref name="opts"/> expects to put on an accelerator (the weights placed on the GPU), the figure the model manager hands to
+    /// What a plan expects to put on an accelerator: the weights it places there PLUS the KV cache and scratch for the configured context. The weight figure
+    /// alone left the KV out (112 MiB for Qwen3-0.6B at context 512, about 54 MiB of KV and recurrent state for Qwen3.5-0.8B), so an admission decision made on it
+    /// was too optimistic. One function feeds both the pre-load candidate estimate and the figure the loaded runtime records, so the two stay comparable.
+    /// A lower bound on what the device holds, not an exact count: on Vulkan the output head is dequantised to F32 (Q4_K, Q6_K and Q3_K stay raw), which the
+    /// planner's facts do not model yet (plan 6 F2); CUDA keeps Q8_0 raw, so that correction cannot be made backend-neutrally.
+    /// </summary>
+    internal static long PlannedAcceleratorBytes(ExecutionPlan plan)
+    {
+        if (plan.Placement is not { } placement) return 0;
+        if (plan.Memory is not { } memory) return placement.GpuWeightBytes;
+        long withKv = (long)Math.Ceiling(memory.EstimatedVramMb * 1048576.0) + memory.ScratchBytes;
+        return Math.Max(placement.GpuWeightBytes, withKv);
+    }
+
+    /// <summary>
+    /// Bytes the plan for <paramref name="opts"/> expects to put on an accelerator (<see cref="PlannedAcceleratorBytes"/>), the figure the model manager hands to
     /// <see cref="IResourceBudget.EstimateAdmission"/> before it loads anything. 0 for a CPU-only plan, and 0 when no estimate can be made (the model is
     /// missing or unreadable): an unknown size is not grounds to refuse a model, and the load itself reports the real error. Same quantity the loaded
-    /// runtime records afterwards (<c>GpuWeightBytes</c>), so the candidate and the resident figures are comparable.
+    /// runtime records afterwards, so the candidate and the resident figures are comparable.
     /// </summary>
     internal static long EstimateAcceleratorBytes(OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, ExecutionPlan>? buildPlan = null)
     {
-        try { return buildPlan is null ? BuildPlan(opts).Placement?.GpuWeightBytes ?? 0 : buildPlan(opts).Placement?.GpuWeightBytes ?? 0; }
+        try { return PlannedAcceleratorBytes(buildPlan is null ? BuildPlan(opts) : buildPlan(opts)); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or NotSupportedException or InvalidDataException)
         {
             return 0;

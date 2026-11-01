@@ -459,8 +459,26 @@ public sealed record ModelDescription(
             }
         }
 
+        // Tensors only some families carry, which the plain-transformer lists above do not name: a fused QKV, the Gated-DeltaNet and SSM projections of hybrid
+        // layers, post-norms. They are uploaded like the rest, so leaving them out made the weight figure too small (Qwen3.5-0.8B: attn_qkv, attn_gate and ssm_out
+        // were 195 MiB of the model, none of it counted). Counted only when present, so a family without them measures exactly what it did before.
+        foreach (var name in LayerFamilySpecificGpuTensors)
+        {
+            var info = model.FindTensor($"blk.{layer}.{name}");
+            if (info is not null)
+                total += EstimateGpuTensorBytes(info.Value);
+        }
+
         return total;
     }
+
+    private static readonly string[] LayerFamilySpecificGpuTensors =
+    [
+        "attn_qkv.weight", "attn_gate.weight",
+        "ssm_in.weight", "ssm_out.weight", "ssm_alpha.weight", "ssm_beta.weight", "ssm_conv1d.weight",
+        "ssm_a", "ssm_d", "ssm_dt.weight", "ssm_dt.bias", "ssm_norm.weight",
+        "post_attention_norm.weight"
+    ];
 
     private static long MeasureLayerCpuBytes(GgufModel model, ModelHyperparams hp, int layer)
     {
