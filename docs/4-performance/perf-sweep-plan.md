@@ -4,7 +4,7 @@
 
 > **STATUS 2026-10-02.** Horizontal Pass A, Phase 5, and Phase 16 are also closed and moved verbatim to
 
-**Thread:** [CPU performance](perf-sweep-plan.md). Checked 2026-10-30: 22 open items; the pickup doc gives the current ranking.
+**Thread:** [CPU performance](perf-sweep-plan.md). Checked 2026-11-01 against the code and the League: 13 open boxes (11.3, 1.5, 1.6, 8.1, 8.3, 9.3, 2.3b, 4.1, 4.2, 13.1 to 13.3 and the Q3_K follow-up under 10.2); the pickup doc gives the current ranking.
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md).
 > **STATUS 2026-10-01.** Horizontal Passes B and C and Phases 7 and 15 are also closed and moved to the same file. **STATUS 2026-09-27.** Phases 12 and 14 are closed and moved verbatim to
 > [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md). Also since the phases below were written: Phase 8's item 8.2 is
@@ -143,15 +143,6 @@ decode ratio is a real pattern, not noise on one checkpoint. Separately, `Granit
 Vulkan decode (4.1 t/s) is dramatically worse than its own CPU decode (17.1 t/s) — flagged in the
 doc as "worth another look" and not yet investigated.
 
-- [ ] 10.1 These are all **text-only** measurements (no `--image`/`--mmproj` — see the section's
-      own caveat) — i.e. this is the LLM backbone underneath a VLM, not vision-encoding cost. So
-      the ~0.48x decode pattern converging across 3 different backbones is suspicious: check
-      whether something in how these checkpoints are loaded/dispatched (e.g. a shared
-      VLM-specific code path even in text-only mode) differs from a "pure" LLM of the same
-      backbone size, rather than assuming it's per-backbone-architecture coincidence.
-      **2026-10-01/02 re-measure:** the shared ~0.48x was mostly the Q4_K decode scheduling issue
-      fixed in Phase 7; InternVL3-2B and Granite-4.0-3B-Vision now decode at ~0.75-0.79x.
-      Granite-Vision-3.2-2B stayed at ~0.47x because every projection is Q3_K (see 10.2).
 - [x] 10.2 `Granite-Vision-3.2-2B Q3_K_S`: **DONE 2026-10-02.** Q3_K matvec measured at only
       7-21 GB/s on the real weights (scratch harness, all 40 layers' tensors per kind), against
       30+ GB/s for Q4_K. Not scheduling (Q3_K already balances per row); it was the kernel:
@@ -207,8 +198,6 @@ doc as "worth another look" and not yet investigated.
         18.2-19.0 -> 19.6 ms (slower). Tiered JIT off, 3 interleaved rounds each. Unlike Q4_K, the
         Q3_K dot is compute-bound (heavier unpack); two rows' worth of live vectors likely spills
         the 16 YMM registers, and per-row dynamic balancing is already the right granularity.
-- [ ] 10.4 Implement + verify (real image-understanding sanity check if touching anything
-      vision-adjacent, not just text-only re-runs) + re-benchmark + record.
 
 ---
 
@@ -222,36 +211,6 @@ reduction) is left open below as a real, scoped follow-up, not abandoned — but
 mandate ("once you reach a plateau... record results and pick the next worst performing
 inference"), moving to Phase 2 now rather than continuing to grind marginal gains here.
 
-- [ ] 1.2 Quantize Voxtral weights to Q8_0 (currently raw F32 — 4x the memory traffic of every
-      other model in this engine per matvec). Likely the single biggest remaining lever. Needs a
-      perplexity/transcript-quality check before shipping (CLAUDE.md rule 7).
-      - [ ] 1.2e Repeat for `VoxtralAudioEncoderWeights`: Q/K/V/O/gate/up/down/Projector1/
-            Projector2 quantized to Q8_0 (biases and conv weights stay F32 — conv path uses a
-            different mechanism, out of scope this pass); `VoxtralAudioEncoder.LinearNoBias`/
-            `LinearBias` switched to `SimdKernels.MatVecQ8_0` (bias now added as a separate pass
-            after the quantized dot, since `MatVecQ8_0` has no fused-bias overload). Also fixed
-            `VoxtralAudioEncoderWeightsLoadTests`' now-wrong `float.IsFinite`/exact-length
-            assertions on the newly-`byte[]` fields. Builds clean. A real-audio correctness
-            re-check PASSED: 5/5 tests, transcript still exact match. **Benchmarked: 164.163s →
-            108.861s (1.51x), ratio 0.147x → 0.221x. Cumulative from original baseline: 1203.1s →
-            108.861s = 11.05x, ratio 0.02x → 0.221x.** Recorded in `PerformanceLeague.md`
-            2026-09-12. Diminishing returns visible (5.6x → 1.3x → 1.51x per Q8_0 pass) but still
-            3.5x off the C++ reference — not fully plateaued.
-- [x] 1.4 Wire a real CLI/pipeline path using `PrefillWithCache`/`Step` — currently only test
-      harnesses reach the KV-cache incremental path at all; without this, kernel speed is moot for
-      real usage. **Concrete lead found**: this codebase has an established `ISpeechToTextPipeline`
-      interface (`src/OpenTail.Stingray.Audio/ISpeechToTextPipeline.cs`) with working
-      implementations for every other ASR model (`ParakeetPipeline`, `WhisperPipeline`,
-      `QwenAsrPipeline`, `FunAsrPipeline`, `ParaformerOnnxPipeline`) — a `VoxtralPipeline` class
-      following the same shape (mel-extract → prefill → greedy `Step` loop, mirroring what
-      `VoxtralGenerationLoopTests`/`VoxtralPerfBaselineDebugTest` already do by hand) is the
-      concrete next step, not a research question. None of the existing pipelines appear wired
-      into `src/OpenTail.Stingray.Cli` either (grepped, no hits) — check `Server.Host` or a
-      not-yet-found CLI ASR command before assuming a new dispatch point is needed from scratch.
-      - [ ] Still open: no CLI/Server.Host dispatch point found yet wiring ANY of this project's
-            `ISpeechToTextPipeline` implementations (not just Voxtral) into a runnable command —
-            worth a real look at `src/OpenTail.Stingray.Server*` before assuming one needs to be
-            built from scratch, but out of scope for finishing 1.4's Voxtral-specific goal.
 - **2026-10-02 re-measure + three bit-identical wins** (stale header: the League already had
   0.46x from 2026-09-17). Stage profile on a.wav (5.95s) showed the audio encoder at 53% of
   inference: every encoder linear was one full Q8_0 matvec per frame (weights re-streamed per
@@ -295,9 +254,6 @@ Ornith-1.0-9B/Qwen3-ASR elsewhere in the doc).
       something batched-prefill-shaped again, similar in symptom to Phase 6 but a different
       architecture (MLA attention + MoE, not Gemma's dense path) — do not assume the same root
       cause without checking; profile prefill specifically.
-- [ ] 8.2 This architecture requires `--allow-unverified-arch` — confirm the perf harness/CLI
-      invocation still works the same way for a profiled run (`STINGRAY_PROFILE_DECODE=1` plus
-      the flag) before assuming standard tooling applies unmodified.
 - [ ] 8.3 Implement + verify (numeric-output-quality note: this checkpoint's greedy output is
       already known-wrong regardless of any perf fix — verify by token-for-token match against a
       pre-fix run instead of by transcript sensibility) + re-benchmark + record.
@@ -311,10 +267,6 @@ are in a similar range: Stable Audio 3 Medium (96.75x), AudioGen-medium (31.16x)
 Small Music (25.36x). These are important production TTS/music-generation models, not obscure
 ones.
 
-- [ ] 9.2 No numeric golden reference exists yet for this port (per the doc's own caveat,
-      "non-degeneracy checked only") — any perf change here needs at minimum a real audio-energy/
-      non-degeneracy re-check before/after, since byte-identical or transcript-based verification
-      (Voxtral's approach) isn't available for this model class.
 - [ ] 9.3 Implement + verify + re-benchmark + record. If ACE-Step Turbo plateaus or has no quick
       win, move to Stable Audio 3 Medium (96.75x) as the next-worst using the same approach.
       - **2026-10-02, Stable Audio 3 Medium.** Re-measured (4s, 12 steps, CFG 6, seed 1234; scratch
@@ -364,8 +316,6 @@ Open. The blanket threading fix was reverted (cause 5 above); the spin-then-park
   investigation found no systematic accuracy difference
   ([ADR-0002](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md)); the gate is removed.
   The 27B speed is recorded in ADR-0002 and the League.
-- [ ] 2.4 Repeat 2.1-2.3 for the 9B (Ornith-1.0-9B) and 27B (Qwen3.6-27B Q3_K_XL) size points if
-      a 35B fix is found and generalizes; record each in `PerformanceLeague.md`.
 
 ## Phase 6 — Gemma family (0.12x-0.13x prefill, real "batched-prefill-missing" architectural gap)
 
@@ -385,16 +335,6 @@ the signature of a model with NO real batched-prefill path (every prefill token 
 it were a lone decode step, one at a time, instead of one batched matmul over all prompt tokens
 at once). This is a different, more fundamental gap than the small-model-threading issue in
 Phase 3.
-
-- [ ] 6.3 **Real feature work, not attempted this pass** (same category as Phase 4/13's GPU
-      dispatch fusion and Phase 14's EXAONE post-norm gap) — implementing per-layer KV heads,
-      KV-layer sharing, `attention_k_eq_v`, per-head V norm, and a real `windowSize` parameter for
-      `PrefillCoreAttention` is a multi-feature engineering project, not a quick fix or a flag
-      flip. `docs/done/gemma4-12b-evidence.md`'s own conclusion stands: scope this properly (check
-      `docs/done/cpu-prefill-repack-gemm-plan.md` for reusable batched-prefill design) before attempting
-      it, and do NOT try to force the existing path again — that route is confirmed memory-unsafe,
-      not just slow-to-verify. **Phase 6 is correctly closed at "well-understood, real,
-      substantial follow-on work" for this pass — matches the category, doesn't need re-deriving.**
 
 ## Phase 7 — Dense 7-8B decode gap — CLOSED 2026-10-01 (Mistral-7B ~0.80x -> 0.88x); moved to [done/perf-sweep-plan-closed-phases.md](../done/perf-sweep-plan-closed-phases.md)
 
@@ -485,7 +425,7 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-3
 
 ### Open items
 
-- [ ] Perf sweep: the 22 open items in [perf-sweep-plan.md](perf-sweep-plan.md), phase by phase
+- [ ] Perf sweep: the 13 open boxes in [perf-sweep-plan.md](perf-sweep-plan.md) (checked against the code 2026-11-01; 8 stale boxes were closed), phase by phase
 - [ ] Q4_K expert GEMM: the three open items in its plan (options A or B, the plan's section 5, and the owner's decisions)
 - [ ] Pickup rows 8 and 9 (long-context decode; OLMoE) still have no owning plan
 
