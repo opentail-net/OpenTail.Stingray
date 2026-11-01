@@ -174,7 +174,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     public HybridForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
         int expertSlotCapacity = -1,
-        EngineSettings? settings = null)
+        EngineSettings? settings = null,
+        bool forceCpuEmbeddingOutput = false)
     {
         _settings = settings ?? EngineSettings.FromEnvironment();
         InitCpuPrefillHandoff();
@@ -226,7 +227,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _shexpGate = new CpuWeightRef[hp.NumLayers];
             for (int li = 0; li < hp.NumLayers; li++) _shexpGate[li] = ResolveCpuWeightFor(model, $"blk.{li}.ffn_gate_inp_shexp.weight");
         }
-        bool cpuEmbeddingOutputOnly = ShouldKeepFixedWeightsOnCpu(
+        // forceCpuEmbeddingOutput exists so tests can exercise the CPU-resident embedding and output branch on a checkpoint small enough to fit the GPU.
+        bool cpuEmbeddingOutputOnly = forceCpuEmbeddingOutput || ShouldKeepFixedWeightsOnCpu(
             model.FindTensor("token_embd.weight")!.Value,
             model.FindTensor("output.weight"));
         _tqEnabled = enableTq;
@@ -734,8 +736,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.EndRecordAndSubmit();
         _gpu.ReadFromStaging(_logitsBuf);
         AddOutputBias();
-        if (_hp.LogitScale != 1f)   // Granite / MiniCPM final-logit scale (already the reciprocal, see ModelHyperparams.LogitScale)
-            System.Numerics.Tensors.TensorPrimitives.Multiply(_logitsBuf.AsSpan(0, _hp.VocabSize), _hp.LogitScale, _logitsBuf.AsSpan(0, _hp.VocabSize));
+        ApplyLogitScale();
 
         _kvLength = position + 1;
         return _logitsBuf;
@@ -1529,6 +1530,14 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         fixed (float* logits = _logitsBuf)
             SimdKernels.MatVec(logits, _cpuOutputWeight.DataPtr, _cpuNormBuf, _hp.VocabSize, _embDim, _cpuOutputWeight.DType);
         AddOutputBias();
+        ApplyLogitScale();   // the GPU output branch applies it too: both placements must agree (Granite / MiniCPM)
+    }
+
+    /// <summary>Granite / MiniCPM final-logit scale (already the reciprocal, see <c>ModelHyperparams.LogitScale</c>), applied to the host logits.</summary>
+    private void ApplyLogitScale()
+    {
+        if (_hp.LogitScale != 1f)
+            System.Numerics.Tensors.TensorPrimitives.Multiply(_logitsBuf.AsSpan(0, _hp.VocabSize), _hp.LogitScale, _logitsBuf.AsSpan(0, _hp.VocabSize));
     }
 
     private void AddOutputBias()
