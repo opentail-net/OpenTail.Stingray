@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "architecture": "gemma",
+  "notes": "gemma 1.1 2b it Q8_0, llama-server greedy",
+  "model": {
+    "fileName": "gemma-1.1-2b-it-Q8_0.gguf",
+    "sizeBytes": 2669070048,
+    "sha256": "769d716580c94c874864da0991e54a53d27ead0760b419e38a2d56bcfc4d4f8d",
+    "source": "bartowski/gemma-1.1-2b-it-GGUF"
+  },
+  "reference": {
+    "engine": "llama-server",
+    "build": "10306 (6b5c2efb4)",
+    "settings": "-ngl 0 -c 512 -t 4",
+    "sampling": {
+      "temperature": 0,
+      "topK": 1,
+      "seed": 0,
+      "repeatPenalty": 1,
+      "cachePrompt": false
+    },
+    "capturedUtc": "2026-11-01T08:42:05Z"
+  },
+  "cases": [
+    {
+      "name": "capital",
+      "promptText": "The capital of France is",
+      "promptTokens": [
+        2,
+        714,
+        6037,
+        576,
+        6081,
+        603
+      ],
+      "tokenizerOracle": "llama-tokenize",
+      "nPredict": 24,
+      "tokens": [
+        235292,
+        109,
+        235280,
+        235265,
+        7127,
+        108,
+        235305,
+        235265,
+        36704,
+        108,
+        235288,
+        235265,
+        71801,
+        108,
+        235299,
+        235265,
+        59933,
+        109,
+        651,
+        3448,
+        603,
+        586,
+        235265,
+        109
+      ],
+      "text": ":\n\nA. Paris\nB. Lyon\nC. Marseille\nD. Bordeaux\n\nThe answer is A.\n\n",
+      "mode": "teacherForced",
+      "margins": [
+        0.2619,
+        0.7023,
+        0.0123,
+        0.5767,
+        5.4636,
+        2.7626,
+        13.8802,
+        13.7621,
+        1.3577,
+        6.0823,
+        10.7789,
+        14.6566,
+        2.904,
+        4.6151,
+        11.6211,
+        13.0799,
+        0.0731,
+        0.5783,
+        4.9633,
+        4.2124,
+        9.0573,
+        2.1712,
+        9.5459,
+        4.5099
+      ],
+      "minConfident": 0
+    }
+  ]
+}
