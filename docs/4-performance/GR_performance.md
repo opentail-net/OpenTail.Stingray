@@ -192,7 +192,7 @@ None of these conclusions establishes whether OpenTail is presently faster than 
 
 ## Research findings (2026-10-30)
 
-Checked against the working tree on 2026-10-30. Code excerpts are in [research/2026-10-30-capability-gating-snippets.md](research/2026-10-30-capability-gating-snippets.md). The text above describes the 2026-10-14 state; this section says what has changed and what still holds.
+Checked against the working tree on 2026-10-30. Code excerpts are in [research/2026-10-31-performance-snippets.md](research/2026-10-31-performance-snippets.md), section 10. The text above describes the 2026-10-14 state; this section says what has changed and what still holds.
 
 | # | Finding | Status 2026-10-30 | Evidence |
 |---|---|---|---|
