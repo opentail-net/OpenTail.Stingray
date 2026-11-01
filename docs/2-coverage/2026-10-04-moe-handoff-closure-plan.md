@@ -174,7 +174,7 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 ## Open (checked 2026-10-30 against the status line)
 
-- [ ] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome)
+- [x] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome). Decided 2026-10-04; the record is the `cohere2moe` line above. Closed 2026-11-01.
 - [ ] llama4: no handoff receipt yet (Stage A only)
 
 ## Family coverage table (merged 2026-10-30 from 2026-10-04-moe-handoff-coverage.md)
