@@ -143,8 +143,9 @@ public sealed class OpenTailStingrayServerOptions
     public ModelResidencyMode? ModelResidencyMode { get; set; }
 
     /// <summary>
-    /// Enables host-memory admission checking (<see cref="HostResourceBudget"/>) on the
-    /// <see cref="IModelRuntimeManager"/> this server registers (docs/032 §"Resource admission").
+    /// Enables host-memory and accelerator admission checking (<see cref="HostResourceBudget"/>) on the
+    /// <see cref="IModelRuntimeManager"/> this server registers (docs/032 §"Resource admission"). The accelerator figure a candidate is judged by is the
+    /// weights its execution plan places on the GPU, worked out before the load; a custom engine factory is judged as 0, because the server cannot know what it builds.
     /// <c>null</c> (default) resolves to the <c>STINGRAY_ENABLE_RESOURCE_ADMISSION</c> environment
     /// variable (<c>1</c>/<c>true</c>, case-insensitive) when set, otherwise <b>off</b>. Off means
     /// exactly today's behavior: a cold model load is never rejected or made to wait on memory
