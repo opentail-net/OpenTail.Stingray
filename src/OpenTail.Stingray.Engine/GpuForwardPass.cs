@@ -1406,7 +1406,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(N, startPos);
         if (s_prefillTiming && LastCpuPrefillRefusal is not null) Console.Error.WriteLine($"[gpu-prefill] cpu handoff refused: {LastCpuPrefillRefusal}");
-        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, startPos))
             return _logitsBuf;
         if (s_prefillTiming && LastCpuPrefillRefusal is null && _cpuPrefillBroken) Console.Error.WriteLine($"[gpu-prefill] cpu handoff unavailable: {_cpuPrefillBrokenReason}");
 
