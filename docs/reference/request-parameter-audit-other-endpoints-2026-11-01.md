@@ -9,8 +9,9 @@ silently ignored. Unknown JSON properties stay accepted: clients send vendor fie
 field in its handler, and read the 4xx paths. Tests added with this audit are in `OtherEndpointParameterTests` (Server.Fast, 30 tests).
 
 **Covered:** `/v1/responses`, `/v1/audio/speech`, `/v1/images/generations`, `/v1/images/edits`, `/v1/embeddings`, `/v1/rerank`.
-**Not covered, and so not claimed:** `/v1/sessions/*`,
-`/tokenize`, `/detokenize`, `/props`, `/status`, `/api/embed`. They still need their own pass.
+**Read later the same day, no defect found (by reading, with tests for the missing-payload paths):** `/tokenize`, `/detokenize`, `/props`, `/status` and `/api/embed`. A missing `content` or `tokens` is a 400 (tested); a token id outside the vocabulary decodes to empty (`GgufTokenizer.DecodeBytes`); the embedding alias shares the validated parser; `/status` and `/props` take no body.
+
+**Not covered, and so not claimed:** `/v1/sessions/*`, which still needs its own pass ([plan 4](../2026-11-01-plan-4.md), item C1).
 
 ## Findings
 

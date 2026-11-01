@@ -25,7 +25,7 @@ Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-known-
 
 > from: ### Open items
 - [x] Known-good P4: `models --local` and `--verify` implemented (checked 2026-10-30)
-
+
 
 ---
 
@@ -35,4 +35,16 @@ Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-known-
 
 > from: ### Open items
 - [x] Run the `speak` and `transcribe` recipes and record the result (2026-11-01, see the public-surface plan, Recipes item)
-
+
+
+---
+
+## More completed items moved from 2026-10-09-known-good-checkpoints-and-first-run-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md](../3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] P3 favourites: `Favourites.cs` and `ModelsCommand.cs` exist; end-to-end `models use` checked 2026-11-01 (see the later box)
+
+> from: ### Open items
+- [x] Known-good P3: re-check `models use` end to end *(2026-11-01, published CLI 1.0.9 with a temporary model home: `models speak` shows the entry; `models use speak piper-lessac` answers "Configured piper-lessac as favourite for speak." and `models` then marks it "(favourite)"; an unknown id is refused with the list of available ids; `--clear` reverts it. The favourite is stored in `%APPDATA%\stingray\favourites.json` (`STINGRAY_CONFIG_DIR` redirects it), not in the model home)*

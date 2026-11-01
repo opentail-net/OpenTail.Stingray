@@ -49,7 +49,7 @@ The latest session report and proposed next plan (what was done with evidence, w
 owner decisions) is [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). It is a report, not
 the backlog: move any item from it into 00-current-work.md when someone takes it on.
 
-The plan being worked from it is [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](2026-10-31-autonomous-plan-3.md).
+The plan being worked from it is [2026-10-31-autonomous-plan-2.md](2026-10-31-autonomous-plan-2.md) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](2026-10-31-autonomous-plan-3.md), and what is worth doing after that, checked against the code, is [plan 4](2026-11-01-plan-4.md).
 Two reference documents came out of it: the [request parameter audit](reference/request-parameter-audit-2026-10-31.md) (which fields of the OpenAI
 and Anthropic endpoints are honoured, refused or ignored, and why) and the [specs for the client-disconnect test and the server
 telemetry canary](done/2026-10-31-server-lifecycle-and-canary-specs.md).
