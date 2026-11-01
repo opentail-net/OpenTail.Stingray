@@ -59,3 +59,19 @@ Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-public
    `await using var chat = await StingrayChat.OpenAsync("qwen2.5-0.5b");` /
    `Speech.SynthesizeAsync(...)` / `Transcriber.TranscribeAsync(...)`. The facade is built on the
    existing engines, not new math.
+
+---
+
+## More completed items moved from 2026-10-09-public-developer-surface-and-front-door-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md](../3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] A2. Audit ownership, disposal and lock-order protocol
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] A3. Audit misleading parameter options
+
+> from: ## Checklist (2026-10-30; code checked)
+- [x] A4. Interface conformance, incomplete-turn semantics, behaviour tests
+

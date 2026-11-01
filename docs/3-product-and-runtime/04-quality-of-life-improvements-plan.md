@@ -8,7 +8,6 @@
 
 Overlap (ported from the retired workstream, 2026-10-31): item 4 (server observability) is tracked in the [OpenTelemetry plan](2026-10-12-opentelemetry-observability-plan.md). Item 6 depends on the outcome of [plan 010](010-forward-pass-context-isolation-for-session-forking-plan.md).
 
-
 **Status:** planning/diagnostics baseline shipped; deterministic static-plan decision fixtures
 and typed host-key classification are now in place. Environment ownership and execution parity remain.
 
@@ -68,9 +67,6 @@ Historical implementation record: [done/quality-of-life-improvements-plan-2026-0
 - [ ] 04 item 4: server observability (VRAM and RAM breakdown, streaming timing, per-request cache signal). Covered by the observability plan
 - [ ] 04 item 5: model and API compatibility corpus, with protocol smoke coverage
 - [ ] 04 item 6: keep sessions out of the product configuration surface until the proven CPU-dense restart lane is proven
-- [x] 010: `CreateContext` per backend: **not needed for session forking** (no caller in `src/`; see the correction at the top of plan 010). Whether to remove the method is an owner decision
-- [x] 010: a concurrency test for a fork bound to a real model, with parent and child driven at once: done 2026-10-31, `HotSessionForkRealModelTests.Fork_TwoBranchesGeneratingConcurrently_DoNotDisturbEachOtherOrTheParent` (CPU dense, SmolLM2-1.7B)
-- [x] 010: the fork guard (`ThrowIfForwardPassNotIsolated`) is not in the repository; nothing to remove
 
 ### Cadence
 

@@ -1,5 +1,7 @@
 # OpenTail.Stingray — Design Document
 
+> Completed items moved to [../done/OpenTail.Stingray-Design-completed-items-2026-10.md](../done/OpenTail.Stingray-Design-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 **A .NET 10 / C# 14 LLM inference engine optimized for consumer desktop hardware**
 
 Version: 0.1.0-draft
@@ -1526,20 +1528,6 @@ SPIR-V bytecode is embedded as assembly resources and loaded at runtime.
 
 **Goal:** Correct output, then maximum CPU performance.
 
-- [x] GGUF parser with memory-mapped tensor access (zero-copy via `MemoryMappedFile`)
-- [x] Tokenizer integration via `Microsoft.ML.Tokenizers` (BPE with special token handling)
-- [x] Q4_K and Q6_K scalar dequantization matching ggml-quants.c
-- [x] Full LLaMA-family forward pass: GQA attention, SwiGLU FFN, interleaved RoPE
-- [x] FP32 KV cache with per-layer buffers
-- [x] Temperature / top-k / top-p / min-p sampling
-- [x] AVX2 SIMD: fused dequant-matvec with multi-accumulator FMA chains
-- [x] Multi-threaded MatVec via `Parallel.For` (24 threads)
-- [x] Batched prefill with layer-by-layer cache-hot weight reuse
-- [x] OpenBLAS GEMM integration for large-batch prefill
-- [x] CLI chat REPL (`stingray`) with llama.cpp-compatible flags
-- [x] Reference test: output matches llama.cpp greedy decode token-for-token
-- [x] BenchmarkDotNet harness measuring decode and prefill throughput
-
 **Results:** 48.6 t/s decode (matches llama.cpp 45.1 t/s on same hardware). 85 tests passing.
 
 **Target model:** SmolLM2 1.7B (dense, Apache 2.0) ✅
@@ -1547,18 +1535,6 @@ SPIR-V bytecode is embedded as assembly resources and loaded at runtime.
 ### Phase 2: Vulkan GPU Acceleration ✅
 
 **Goal:** Competitive single-GPU speed for VRAM-fitting models.
-
-- [x] Vortice.Vulkan device initialization and dedicated compute queue
-- [x] GPU buffer management: device-local VRAM, staging transfers, cached download buffers
-- [x] Compute shader pipeline: GLSL→SPIR-V via glslc, descriptor sets, push constants
-- [x] Compute shaders: MatVecQ4K, MatVecQ6K, MatVecF32, RMSNorm, RoPE, softmax, SiLU, attention, embedding lookup, KV append
-- [x] Batched command buffer: all ~240 dispatches per token in one submission with memory barriers
-- [x] FP32 KV cache in VRAM (per-layer, device-local)
-- [x] GPU attention with shared-memory parallel reduction (no atomics, no PCIe round-trips)
-- [x] All weights resident in VRAM (Q4_K raw, Q6_K raw, F32 norms)
-- [x] Zero managed allocation per decode token
-- [x] GPU forward pass validated against CPU token-for-token
-- [x] NativeAOT-ready CLI with IlcOptimizationPreference=Speed, IlcInstructionSet=native
 
 **Results:** 87.4 t/s decode on RTX 4070 Ti (1.80× faster than CPU, 250% of ≥35 t/s target).
 Optimized from initial 68.7 t/s (+28%) via shared-memory block caching in Q4_K/Q6_K shaders,
@@ -1569,21 +1545,6 @@ atomic-free attention reduction, descriptor set caching, fence-based sync, and s
 ### Phase 2b: Qwen3 8B Scaling
 
 **Goal:** Generalize the inference engine from SmolLM2-only to support Qwen3 8B and other architectures.
-
-- [x] Architecture-agnostic hyperparameter extraction (arch-prefixed GGUF metadata keys)
-- [x] Attention bias support: optional Q/K/V/O bias tensors (detected via `_opentailllm.has_attn_bias` synthetic metadata)
-- [x] CPU forward pass: bias addition after Q/K/V/O MatVec projections (both single-token and batched prefill)
-- [x] GPU forward pass: bias tensors uploaded to VRAM, applied via AddInPlace shader dispatches
-- [x] Dynamic RoPE theta from GGUF metadata (supports Qwen3's 1M+ base frequency)
-- [x] All shaders dimension-agnostic via push constants (no hardcoded sizes)
-- [x] KV cache scales to any head count/dim configuration
-- [x] Per-head QK-norm: RMSNorm on Q/K per head (CPU + HeadNorm GPU shader), detected via `_opentailllm.has_qk_norm`
-- [x] Vocab size inference from `tokenizer.ggml.tokens` array when `{arch}.vocab_size` metadata missing
-- [x] Quantized embedding table in VRAM: EmbedLookupQ4K shader dequantizes per-token (saves ~1.7 GB vs F32)
-- [x] Auto VRAM context sizing: estimates weight/scratch footprint, gives remaining to KV cache
-- [x] CLI `-c`/`--ctx-size` flag (matches llama.cpp) with model info in output
-- [x] End-to-end validation: Qwen3 8B Q4_K_M produces coherent output on CPU and GPU
-- [x] Performance benchmark: decode t/s on RTX 4070 Ti
 
 **Results:** CPU 13.0 t/s, GPU 23.5 t/s decode (RTX 4070 Ti, auto context 17K tokens).
 SmolLM2 1.7B unchanged: CPU 48.5 t/s, GPU 88.7 t/s. Zero managed allocations on GPU for both models.
@@ -1623,17 +1584,6 @@ Capture script: `scripts/xcheck-llamacpp.ps1`.
 
 **Goal:** 4–6x KV cache reduction, enabling 64K+ context on 12GB VRAM.
 
-- [x] Lloyd-Max codebook generation (offline tool `tools/CodebookGen`, 3-bit and 4-bit codebooks for d=128 and d=256)
-- [x] Walsh-Hadamard transform (scalar reference + AVX2 SIMD butterfly, `WalshHadamard.cs`)
-- [x] 3-bit quantize / dequant with bit packing (`BitPacking.cs`, `TurboQuantOps.cs`)
-- [x] Fused dequant-dot-product (CPU scalar + AVX2 + Vulkan `TqKvAppend` / `TqAttention` shaders)
-- [x] Adaptive precision: FP32 recent window (256 tokens) + TQ compressed history (`TurboQuantKvCache.cs`)
-- [x] K/V magnitude profiler for per-model bit budget selection (`MagnitudeProfiler.cs`)
-- [x] MSE validation tests (25 tests covering round-trip, WHT, bit packing, dequant-dot accuracy)
-- [x] GPU TQ end-to-end: `GpuForwardPass` TQ mode with compressed VRAM KV cache, `TqRotateQuery` + `TqAttention` shaders
-- [x] Hybrid TQ end-to-end: `HybridForwardPass` TQ mode for GPU-resident layers plus CPU-side TQ cache for offloaded layers
-- [x] Needle-in-a-haystack test at 1K / 2K / 4K / 8K: TurboQuantNeedleTests verifies the compressed needle key has the highest raw attention score (top 1%) vs random background keys
-
 **Results:** CPU: FP32 12.8 t/s, TQ3 12.7 t/s (< 0.1% overhead). GPU: FP32 24.1 t/s at 17K ctx, TQ3 24.0 t/s at 40K ctx (0.4% overhead, 2.4x context).
 DequantDot micro: 87 ns (3-bit scalar), 69 ns (4-bit scalar). Zero managed allocations on all paths. 25 TQ tests passing.
 
@@ -1643,13 +1593,6 @@ DequantDot micro: 87 ns (3-bit scalar), 69 ns (4-bit scalar). Zero managed alloc
 
 **Goal:** Run dense models larger than VRAM with auto-adaptive layer placement.
 
-- [x] HardwareProfile: auto-detect VRAM, RAM, CPU cores, PCIe bandwidth, AVX-512
-- [x] TierPlanner: greedy layer placement (embedding+output always GPU, layers packed until VRAM full)
-- [x] Pinned host memory (`VkMemoryPropertyFlags.HostVisible | HostCoherent`, BAR fallback)
-- [x] HybridForwardPass: GPU layers + CPU layers + hidden state transfer via pinned buffer
-- [x] CLI `-g N` three-way dispatch: CPU-only / all-GPU / hybrid, `-g -1` auto-detect
-- [x] Q5_K dequantization support (scalar fallback for Llama 3.1 70B mixed quantization)
-- [x] BpeTokenizer fallback for Llama 3.1 tokenizer compatibility
 - [ ] Double-buffered layer streaming (DMA overlapped with compute) — Phase 4b
 - [ ] `io_uring` interop for async NVMe reads (Linux) — deferred
 - [ ] Profiling: measure PCIe utilization, GPU stall time
@@ -1665,31 +1608,13 @@ Decode: 1.8 t/s hybrid, 1.6 t/s CPU-only. 114 tests passing.
 After Phase 4a, a dedicated optimization pass targeting CPU and GPU throughput:
 
 **CPU Optimizations:**
-- [x] Q5_K fused AVX2 dequant-matvec (2.7x on 70B, matching llama.cpp)
-- [x] AVX-512 DotQ4K and DotQ5K kernels (+5% on 8B CPU via reduced loop overhead)
-- [x] Physical-core-only Parallel.For (no SMT for SIMD workloads)
-- [x] Async GPU submit API (`EndRecordAndSubmitAsync` + `WaitForGpu`)
-- [x] Mmap weight prefaulting in HybridForwardPass
 
 **GPU Optimizations:**
-- [x] Multi-row workgroups: 8 rows per workgroup, 32 threads per row
-- [x] subgroupAdd for zero-barrier reduction (eliminates shared memory reduction tree)
-- [x] Register-based scale/min precomputation (3 uint32 reads → 8 scale pairs)
-- [x] unpackHalf2x16 for d/dmin (single-instruction FP16 decode)
 
 **Remaining GPU Optimizations (future):**
 - [ ] 16-thread tile pattern with vec4 input loads (llama.cpp style, ~50+ t/s but has correctness bug in qs byte mapping — deferred, requires vec4-aligned layout incompatible with proven Q4_K qs byte mapping)
-- [x] Q6_K shader modernization (8-row + subgroupAdd, currently uses old 256-thread reduction)
-- [x] Reduce barrier count: use buffer-specific VkBufferMemoryBarrier instead of global barriers (~540 per token)
-- [x] Fold logits download into main command buffer (eliminate second submit-wait)
-- [x] Compute-shader buffer copy (replace vkCmdCopyBuffer transfer to stay in compute pipeline stage)
-- [x] Fix attention shader for seq_len > 256: replaced fast/tiled split with stored-scores path (shared float scores[4096]) matching TqAttention; triple-pass retained only for seq_len > 4096
 
 **Remaining CPU Optimizations (future):**
-- [x] Fused gate+up MatVec (single Parallel.For for both FFN projections, halves thread dispatch count)
-- [x] Parallel attention heads (per-thread score buffers, Parallel.For over heads)
-- [x] KV cache head-major transpose (contiguous access per KV head across positions — token-major is already optimal)
-- [x] Precomputed RoPE cos/sin tables (avoid MathF.Pow/Cos/Sin per head per layer)
 
 **Results — cumulative from baseline to final:**
 
@@ -1711,30 +1636,12 @@ Deferred: analysis showed PCIe 4.0 bandwidth (25 GB/s) is slower than DDR5 (50 G
 12GB-class GPU + 64GB RAM desktop, then iterate toward expert caching and prefetching.
 
 Architecture:
-- [x] Detect MoE architecture from GGUF metadata (`{arch}.expert_count`, `{arch}.expert_used_count`)
-- [x] Parse expert tensor naming: `blk.{i}.ffn_gate_exps.weight`, `blk.{i}.ffn_up_exps.weight`, `blk.{i}.ffn_down_exps.weight`, `blk.{i}.ffn_gate_inp.weight` (router)
-- [x] Extend `ModelHyperparams` with `NumExperts`, `NumActiveExperts`, `IsMoE`
 
 Routing:
-- [x] MoE router: compute `ffn_gate_inp` MatVec → top-k softmax → expert indices + weights
-- [x] Sparse expert FFN: only execute selected experts, weighted-sum outputs
 
 Execution and placement:
-- [x] CPU MoE reference path for correctness and fallback
-- [x] True GPU MoE FFN execution for GPU-resident layers
-- [x] True hybrid MoE execution for GPU-resident layers with CPU execution for offloaded layers
-- [x] MoE-aware `TierPlanner` placement using actual uploaded weight size rather than raw GGUF bytes
-- [x] Smart defaults for Scout-class models: cap auto context to practical VRAM defaults and keep giant fixed tensors on CPU when that improves placement
-- [x] Scout decode benchmarks: CPU, CPU+TQ3, auto hybrid, auto hybrid+TQ3
-- [x] Scout microbenchmarks: router/top-k and MoE FFN layer
 
 Expert memory management:
-- [x] Expert slot cache in VRAM: N slots (sized to fit available VRAM after attention weights + KV cache)
-- [x] SLRU eviction policy: probationary → protected segments, exploiting routing skew (~20% experts handle ~80% tokens)
-- [x] `Channel<T>` async prefetch pipeline: router reveals needed experts → enqueue DMA from pinned RAM → VRAM
-- [x] Router-driven predictive prefetching (1-token lookahead from router logits)
-- [x] CPU fallback for expert cache misses: compute on CPU via mmap while GPU handles cached experts
-- [x] Expert access frequency profiler: per-layer hit rate metrics, hot expert identification
 
 **Phase 5 complete.** Expert slot cache (SLRU) and CPU fallback for cache misses implemented.
 `ExpertSlotManager` (Engine) lazily uploads expert GPU tensors on demand and evicts via SLRU;
@@ -1903,17 +1810,6 @@ the biggest gains for server workloads, combined with our existing TurboQuant co
 #### Phase 7a: Working API Server (✅ Complete)
 
 Core server:
-- [x] ASP.NET Core Minimal API with NativeAOT compatibility
-- [x] Anthropic Messages API: `POST /v1/messages` (streaming SSE + non-streaming)
-- [x] OpenAI Chat Completions API: `POST /v1/chat/completions` (streaming SSE + non-streaming)
-- [x] Model listing: `GET /v1/models`
-- [x] Health endpoint: `GET /health` with model ID and uptime
-- [x] Prometheus-format metrics: `GET /metrics` (request counts, tokens generated, uptime)
-- [x] Source-generated JSON serialization throughout (NativeAOT-compatible)
-- [x] Configuration via `STINGRAY_MODEL` / `STINGRAY_N_GPU_LAYERS` env vars and `appsettings.json`
-- [x] `IInferenceEngine` interface for testability; `WebApplicationFactory` integration tests (8 tests)
-- [x] Chat templates: ChatML (Qwen2/SmolLM2), Llama 3.x, Llama 4
-- [x] Serialized single-request via `SemaphoreSlim`; concurrent callers block in arrival order
 
 **Architecture:**
 - `IInferenceEngine` (Engine project) — interface for generation, used by all endpoints
@@ -1940,25 +1836,10 @@ curl http://localhost:5000/v1/messages \
 #### Phase 7b: PagedKvCache + Batched Prefill + Prefix Caching (✅ Complete)
 
 **PagedKvCache** (`src/OpenTail.Stingray.Engine/PagedKvCache.cs`):
-- [x] Lazy page allocation: pages (16 positions each) allocated on first write, not upfront
-- [x] Per-layer pool: `_pool[layer][slot]` — each slot is `PageSize × kvDim × 2 floats` (keys + values)
-- [x] Free-list warm pool: returned pages are reused across requests without `NativeMemory.Free`
-- [x] Soft `TruncateTo(n)`: moves length pointer without freeing pages — enables zero-copy prefix reuse
-- [x] Full `Reset()`: returns all slots to warm pool — use at start of unrelated request
-- [x] Eliminates GBs-upfront pre-allocation (Llama 4 Scout's 10M context would have been 40TB+)
-- [x] Replaces `KvCache` in `ForwardPass`; `KvCache` retained for `HybridForwardPass` compatibility
 
 **Batched Prefill via `IForwardPass.Prefill(tokens, startPos = 0)`**:
-- [x] Added to `IForwardPass` interface — all implementations provide it
-- [x] `ForwardPass`: existing per-layer batched GEMM path; updated to accept `startPos` for prefix reuse
-- [x] `GpuForwardPass`, `HybridForwardPass`: sequential `Forward()` fallback
-- [x] `InferenceEngine` now uses `Prefill()` instead of a loop of `Forward()` calls
 
 **Prefix caching in `InferenceEngine`**:
-- [x] `FindCacheablePrefix()`: compares new prompt tokens against previous request, finds longest page-aligned common prefix
-- [x] On hit: `TruncateTo(prefixLen)` keeps cached K/V, then `Prefill(suffix, prefixLen)` fills only the new portion
-- [x] On miss: `ResetCache()` (full reset) + `Prefill(allTokens)`
-- [x] Eliminates repeated system-prompt prefill cost for multi-turn chat API workloads
 
 **Memory savings example** — SmolLM2-1.7B (24 layers, kvDim=512):
 - Before: `32768 × 512 × 2 × 4B × 24L = 3.2GB` pre-allocated per engine instance
@@ -1969,26 +1850,10 @@ curl http://localhost:5000/v1/messages \
 #### Phase 7c: Continuous Batching (✅ Complete)
 
 **`BatchForwardMulti`** in `ForwardPass`:
-- [x] Batched decode step for N sequences simultaneously — one token per sequence
-- [x] Shared weight reads (Q/K/V/FFN GEMMs) amortized across N sequences per decode step
-- [x] Per-sequence `PagedKvCache` — each sequence has its own independent KV cache
-- [x] Per-sequence: individual RoPE, cache append at `positions[n]`, and causal attention against `caches[n]`
-- [x] Not supported for MoE models or with TurboQuant (throws `NotSupportedException`)
 
 **`PrefillWithCache`** / **`ForwardCore`** / **`CreateCache`** in `ForwardPass`:
-- [x] `PrefillWithCache(tokens, cache, startPos)` — prefills a given sequence's cache (used during admission)
-- [x] `ForwardCore(token, pos, cache)` — single-token forward into explicit cache (supports MoE)
-- [x] `CreateCache()` — factory method returns a compatible `PagedKvCache` for the model's dimensions
 
 **`ContinuousBatchingEngine`** (`src/OpenTail.Stingray.Engine/ContinuousBatchingEngine.cs`):
-- [x] Implements `IInferenceEngine` — drop-in replacement for `InferenceEngine`
-- [x] Unbounded request channel — callers enqueue via `GenerateAsync`, stream results back via `IAsyncEnumerable<string>`
-- [x] Background batcher loop:
-  1. Admits pending requests up to `_maxBatchSize` (prefills each individually with own `PagedKvCache`)
-  2. Batched decode: `BatchForwardMulti` processes all active sequences in one forward pass per step
-  3. Samples next token per sequence; writes to that sequence's output channel
-  4. Retires sequences that hit EOS, `MaxNewTokens`, or cancellation; disposes cache
-- [x] Enabled via `STINGRAY_MAX_BATCH` environment variable (server `Program.cs`); `> 1` activates continuous batching
 
 **Throughput model**: with batch size N, weight reads are amortized N×. For N=8 on a memory-bandwidth-bound decode, expect up to 8× total throughput (tokens/s across all users) vs single-user baseline.
 
@@ -2039,24 +1904,10 @@ percentiles and aggregate t/s for legacy vs chunked admission).
 **Goal:** Fix broken metrics recording, expose engine observability, and add `logit_bias` sampling support.
 
 **Engine observability** (`IInferenceEngine`, `InferenceEngine`, `ContinuousBatchingEngine`):
-- [x] `int QueueDepth` — pending requests waiting to start (0 for serialized engine, real queue depth for batching engine)
-- [x] `int ActiveRequests` — requests currently generating tokens (0 or 1 for serialized, batch count for batching engine)
-- [x] Interlocked counters in both engines; zero-overhead for callers
 
 **Metrics fix + enrichment** (`HealthEndpoints`):
-- [x] **Fixed bug**: `RecordRequest()` / `RecordTokens()` were never called — now wired into both OpenAI and Anthropic handlers
-- [x] Token count uses actual decoded token chunks (not character count)
-- [x] `opentail-llm_tokens_per_second` gauge — lifetime-average tokens/second since server start
-- [x] `opentail-llm_queue_depth` gauge — `engine.QueueDepth` (live pending requests)
-- [x] `opentail-llm_active_requests` gauge — `engine.ActiveRequests` (live active sequences)
-- [x] `/metrics` handler now injects `IInferenceEngine` for live observable state
 
 **`logit_bias` support** (`SamplingParams`, `Sampler`, `OpenAiEndpoints`):
-- [x] `IReadOnlyDictionary<int, float>? LogitBias` added to `SamplingParams`
-- [x] Applied before temperature scaling in `Sampler.Sample()` (additive in logit space, range [-100, 100])
-- [x] Out-of-range token IDs silently skipped
-- [x] `logit_bias` field added to `ChatCompletionRequest` (OpenAI wire format: `{"tokenId": bias}` with string keys)
-- [x] String → int key conversion in endpoint handler; `Dictionary<string, float>` registered in `AppJsonContext`
 
 **Tests**: 7 new tests — 3 server tests (metrics recording counters increment, new Prometheus metrics present, logit_bias accepted) + 4 sampler tests (negative bias blocks token, positive bias forces token, out-of-range IDs ignored, null bias). All 169 tests pass.
 
@@ -2166,14 +2017,6 @@ All 207 tests pass.
 ### Phase 8: CUDA Backend ✅
 
 **Goal:** Replace Vulkan with NVIDIA cuBLAS for fp32/bf16 GEMM to unlock Tensor Core throughput on RTX hardware, and enable the image generation pipeline.
-
-- [x] `CuBlasInterop.cs` — P/Invoke bindings for `cublasSgemm`, `cublasGemmEx`, `cudaMalloc`, `cudaFree`, `cudaMemcpy`, `cudaDeviceSynchronize`
-- [x] `CudaBackend.cs` — `IComputeBackend` implementation: `Upload` (fp32 + bf16), `UploadBf16`, `Allocate`, `Free`, `Download`, `DownloadBf16`, `Sgemm`, `Synchronize`
-- [x] `Sgemm(C, A, B, m, k, n)` — `C[m,n] = A[m,k] @ B[n,k]ᵀ` via cuBLAS COLUMN_MAJOR row-swap trick
-- [x] bf16 SGEMM: `cublasGemmEx` with `CUDA_R_16BF` compute for Tensor Core acceleration on sm_80+
-- [x] fp32 SGEMM: `cublasSgemm` with TF32 compute on sm_80+ (automatic, no code change)
-- [x] `CudaBackend.IsAvailable()` — runtime probe via `cudaGetDeviceCount`
-- [x] Auto-select in `ImageCommand.cs`: CUDA → Vulkan → CPU
 
 **Hardware:** RTX 4070 Ti (sm_89, Ada Lovelace). fp8 requires sm_90+; bf16 and TF32 work on sm_80+.
 

@@ -4,9 +4,6 @@
 
 ## Checklist (2026-10-30; code checked)
 
-- [x] A2. Audit ownership, disposal and lock-order protocol
-- [x] A3. Audit misleading parameter options
-- [x] A4. Interface conformance, incomplete-turn semantics, behaviour tests
 - [ ] C2. Front-door and API documents
 - [ ] D3. Model-backed task qualification
 - [ ] E. Close-out and release-quality review

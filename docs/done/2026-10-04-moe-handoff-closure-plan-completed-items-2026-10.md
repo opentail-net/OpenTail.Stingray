@@ -27,3 +27,12 @@ Finished items moved verbatim out of [../2-coverage/2026-10-04-moe-handoff-closu
   - **Part B, our engine, after all pending code changes in this plan are committed and verified:** the same three modes: CPU (`-g 0`), mixed (`-g N`: Vulkan hybrid, or the layer split for GLM, with N stated) and GPU-only (`-g -1`, which falls back to the hybrid when the model does not fit; say which path actually ran). Same prompt lengths, same thread count, reported as prefill and decode tokens per second and as a ratio to llama.cpp in the same mode.
   - Rules: report what ran (path, thread count, quantisation, context), keep failures and "not available" as rows rather than omitting them, and do not conclude "the GPU path is slow" from the iGPU alone.
 
+---
+
+## More completed items moved from 2026-10-04-moe-handoff-closure-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../2-coverage/2026-10-04-moe-handoff-closure-plan.md](../2-coverage/2026-10-04-moe-handoff-closure-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Open (checked 2026-10-30 against the status line)
+- [x] hunyuan-moe Stage B: run 2026-11-01 on the Vulkan layer split (-g 4, 217-token prompt, 148 s, with STINGRAY_HYBRID_CPU_PREFILL=all): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps worst cosine 0.9943, 1 argmax near-tie flip of 41. The receipt (hunyuan-moe, VulkanLayerSplit) was added to PrefillHandoffFamilies, with a test that the other three paths stay unverified. Memory was not the problem this time (about 48 GiB free, the 35 GB file mapped)
+

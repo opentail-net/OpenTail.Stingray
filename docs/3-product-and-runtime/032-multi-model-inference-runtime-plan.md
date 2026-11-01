@@ -900,11 +900,7 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 ### Open items
 
 - [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches)
-- [x] Phase 6: service quantum and starvation protection at execution level: opt-in `FairExecutionGate`, one engine iteration per turn (Slice 5, 2026-10-31). Open: `InferenceEngine` is not mediated; throughput and latency were measured 2026-10-31 (Slice 5): on the CPU the gate loses to the OS's own sharing, so it stays off
 - [ ] Phase 7: durable session restore across a restart in multi-model mode (deferred)
-- [x] Phase 7: model identity is exposed through `IInferenceService` (`ResolveModel`, `AvailableModelAliases`)
-- [x] Phase 6: per-model admission queues and request age are built (slices 1-4); only the execution-level quantum above is open
-- [x] Phase 3: resident tracking, memory estimates and `IResourceBudget` are built (slices 1-3); the hybrid-GDN accounting above is the open part
 
 ### Cadence
 

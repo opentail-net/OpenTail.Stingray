@@ -1,5 +1,7 @@
 # ADR-0001: retain session state through the existing batching engine
 
+> Completed items moved to [../done/adr-0001-session-cache-lifecycle-completed-items-2026-10.md](../done/adr-0001-session-cache-lifecycle-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 **Status:** accepted for the CPU-dense seam spike  
 **Date:** 2026-08-02
 
@@ -62,9 +64,4 @@ lossless capability introduced after hot continuation is proven.
 
 ## Verification required before broadening scope
 
-- [x] A fake-backend unit test covers ownership transfer, append re-admission and single-writer exclusion.
 - [ ] A real CPU-dense seam spike proves detach, re-admission and greedy replay equivalence.
-- [x] Mid-generation cancellation proves turn-start rollback before retention with a deterministic fake backend.
-- [x] Existing continuous-batching and prefix-cache tests still pass.
-- [x] The initial API, ownership boundary and patch surface are recorded here; persistence remains
-  blocked on the real CPU-model equivalence gate.

@@ -80,7 +80,6 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 Update the coverage table in the section "Family coverage table" below after each family.
 
-
 Realistic total for 1-3: about a week. 4 and 5 depend on disk and on whether they are wanted.
 
 ## Results log
@@ -164,7 +163,6 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 **Stay outside this class** (keep the structural refusals): `deepseek2` (MLA, needs a latent-cache handoff), recurrent/conv-state families (`lfm2moe`, `qwen35moe`, `qwen3next`, `granitehybrid`, Nemotron-H), `gpt-oss` (own forward pass).
 
-
 ### Extension wave results
 
 - **`hunyuan-moe` Stage A (Hunyuan-A13B-Instruct Q3_K_S, DevQuasar, 34.8 GB on `H:\_models`, 2026-10-04)**: two `ModelGraph` changes from memory of the HF/llama.cpp references, both confirmed by the real run: QK-norm after RoPE (as `hunyuan-dense`) and renormalised top-k expert weights (no `expert_weights_norm` key). `HunyuanMoeGreedyParityTests` teacher-forced against `llama-server` (same GGUF, CPU, no prefix token): all 39 confident positions matched (27 of 32 on a 196-token prompt whose continuation is repetitive, 12 of 22 on "The capital of France is"), 0 near-tie differences, 37 s real run. Second-half wikitext PPL at -c 512: ours 219.8 (bucket [256,1024)), `llama-perplexity` 201.57 +/- 53.71. I did not run the code without the two changes, so which of them was individually required is not shown. `hunyuan-moe` is in the `ModelCompatibility` allowlist (CPU only, Q3_K_S only). Not done: any GPU path, a handoff receipt (QK-norm after RoPE is refused on the partial-offload paths, so the layer split is the candidate), Stage A2.
@@ -176,7 +174,6 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 ## Open (checked 2026-10-30 against the status line)
 
-- [x] hunyuan-moe Stage B: run 2026-11-01 on the Vulkan layer split (-g 4, 217-token prompt, 148 s, with STINGRAY_HYBRID_CPU_PREFILL=all): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps worst cosine 0.9943, 1 argmax near-tie flip of 41. The receipt (hunyuan-moe, VulkanLayerSplit) was added to PrefillHandoffFamilies, with a test that the other three paths stay unverified. Memory was not the problem this time (about 48 GiB free, the 35 GB file mapped)
 - [ ] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome)
 - [ ] llama4: no handoff receipt yet (Stage A only)
 
