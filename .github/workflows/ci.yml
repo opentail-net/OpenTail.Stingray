@@ -21,6 +21,12 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      # NuGet packages are restored from the cache when no package reference changed (restore was 38 s of the Windows job).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'Directory.Packages.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
       - name: Runner hardware
         run: |
           {
@@ -74,16 +80,16 @@ jobs:
       # adjusted then; main CI has not been green since 2026-08-26.
       - name: CPU-safe test suites
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 450
-          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore -- --minimum-expected-tests 40
-          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore -- --minimum-expected-tests 60
-          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
-          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 200
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 100
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 480
-          dotnet test tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 70
-          dotnet test tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 38
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 450
+          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 40
+          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 60
+          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 55
+          dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 200
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 100
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 480
+          dotnet test tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 70
+          dotnet test tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 38
 
   # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
   # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
@@ -116,6 +122,12 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      # NuGet packages are restored from the cache when no package reference changed (restore was 38 s of the Windows job).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'Directory.Packages.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
       # What hardware did this run get? Printed and written to the job summary so timings and flaky-test reports can be read against it.
       - name: Runner hardware
         shell: pwsh
@@ -135,14 +147,19 @@ jobs:
         run: dotnet restore OpenTail.Stingray.slnx
       - name: Build
         run: dotnet build OpenTail.Stingray.slnx -c Release --no-restore
+      # OPENTAIL_SKIP_BENCHMARK_TESTS=1 skips the timing-comparison tests (kernel against fallback, scalar against SIMD, a bandwidth gauge):
+      # five of them were 57% of ForwardPass.Fast's summed test time on this 4-vCPU runner. The Linux job and local runs still execute them,
+      # and a skipped test is still discovered, so the floors below hold.
       - name: CPU-safe test suites
         shell: pwsh
+        env:
+          OPENTAIL_SKIP_BENCHMARK_TESTS: '1'
         run: |
           $suites = @(
             @('Core', 450), @('Pipeline', 40), @('TurboQuant', 60), @('Cli', 300), @('Vision', 55),
             @('Server.Fast', 200), @('Sessions.Fast', 100), @('ForwardPass.Fast', 480), @('Audio.Fast', 70), @('Vulkan.Fast', 38))
           foreach ($s in $suites) {
-            dotnet test "tests/OpenTail.Stingray.Tests.$($s[0])/OpenTail.Stingray.Tests.$($s[0]).csproj" -c Release --no-restore -- --minimum-expected-tests $s[1]
+            dotnet test "tests/OpenTail.Stingray.Tests.$($s[0])/OpenTail.Stingray.Tests.$($s[0]).csproj" -c Release --no-restore --no-build -- --minimum-expected-tests $s[1]
             if ($LASTEXITCODE -ne 0) { throw "suite $($s[0]) failed (exit $LASTEXITCODE)" }
           }
       - name: Publish the CLI (NativeAOT, win-x64) and run the telemetry self-test

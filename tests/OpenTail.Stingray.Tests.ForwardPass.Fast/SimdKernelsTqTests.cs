@@ -201,6 +201,7 @@ public sealed unsafe class SimdKernelsTqTests
     [Fact]
     public void Tq2_0_FastKernel_TimingReport()
     {
+        BenchmarkGate.SkipWhenDisabled();
         const int rows = 17408, cols = 5120;
         var rng = new Random(0x7703);
         byte[] weightBytes = BuildTq2_0Matrix(rows, cols, rng);

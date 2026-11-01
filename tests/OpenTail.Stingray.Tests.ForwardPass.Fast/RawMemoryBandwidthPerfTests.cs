@@ -17,6 +17,7 @@ public sealed unsafe class RawMemoryBandwidthPerfTests(ITestOutputHelper output)
     [Fact]
     public unsafe void PerfGauge_RawSequentialReadBandwidth()
     {
+        BenchmarkGate.SkipWhenDisabled();
         // ~1.06 GiB, matching SmolLM2-1.7B-Instruct-Q4_K_M's resident weight size (confirmed via
         // this session's own "[ForwardPass] Pre-faulted 1.06 GiB" load-time log line).
         long totalBytes = (long)(1.06 * 1024 * 1024 * 1024);

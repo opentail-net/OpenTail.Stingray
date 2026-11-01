@@ -71,6 +71,7 @@ public sealed unsafe class VisionOpsBenchmarkTests
     [Fact]
     public void Benchmark_Attention_ScalarVsVectorized()
     {
+        BenchmarkGate.SkipWhenDisabled();
         int nTokens = 1024, heads = 16, headDim = 64;
         int total = nTokens * heads * headDim;
 
@@ -188,6 +189,7 @@ public sealed unsafe class VisionOpsBenchmarkTests
     [Fact]
     public void Benchmark_AttentionGqa_ScalarVsVectorized()
     {
+        BenchmarkGate.SkipWhenDisabled();
         int nTokens = 1024, qHeads = 16, kvHeads = 8, headDim = 64;
         int qTotal = nTokens * qHeads * headDim;
         int kvTotal = nTokens * kvHeads * headDim;
@@ -341,6 +343,7 @@ public sealed unsafe class VisionOpsBenchmarkTests
     [Fact]
     public void Benchmark_MatVecF16_ScalarVsSimd()
     {
+        BenchmarkGate.SkipWhenDisabled();
         int nTokens = 256;
         int inDim = 1024;
         int outDim = 2048;
