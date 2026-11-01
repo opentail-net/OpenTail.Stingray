@@ -274,4 +274,53 @@ public sealed class OtherEndpointParameterTests
         Assert.DoesNotContain("temperature", text, StringComparison.Ordinal);
         Assert.DoesNotContain("response_format", text, StringComparison.Ordinal);
     }
+
+    // ── C2: speech speed, STT language, rerank top_n ──
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(-1.0)]
+    [InlineData(0.1)]
+    [InlineData(5.0)]
+    public async Task Speech_SpeedOutsideTheRange_IsA400_NamingTheField(double speed)
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        var response = await client.PostAsJsonAsync("/v1/audio/speech", new { model = "tts", input = "Hello", speed });
+
+        await AssertRefusedNamingAsync(response, "speed");
+    }
+
+    [Theory]
+    [InlineData("english")]
+    [InlineData("e")]
+    [InlineData("e1")]
+    public async Task SpeechToText_BadLanguage_IsA400_NamingTheField(string language)
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        using var form = new MultipartFormDataContent { { new StringContent(language), "language" } };
+        await AssertRefusedNamingAsync(await client.PostAsync("/v1/audio/transcriptions", form), "language");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-2)]
+    public async Task Rerank_TopNBelowOne_IsA400_NamingTheField(int topN)
+    {
+        var (client, _, factory) = Host();
+        using var _f = factory; using var _c = client;
+
+        var response = await client.PostAsJsonAsync("/v1/rerank", new { query = "q", documents = new[] { "a", "b" }, top_n = topN });
+
+        await AssertRefusedNamingAsync(response, "top_n");
+    }
+
+    [Theory]
+    [InlineData("en")]
+    [InlineData("haw")]
+    [InlineData(null)]
+    public void LanguageCode_Accepts(string? code) => Assert.Null(RequestParameterValidation.ValidateLanguageCode(code));
 }
