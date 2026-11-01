@@ -26,7 +26,7 @@ public static class OpenAiAudioEndpoints
             {
                 ctx.Response.StatusCode = 400;
                 ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"Invalid JSON request body\",\"type\":\"invalid_request_error\"}}");
+                await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "Invalid JSON request body"), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
 
@@ -34,7 +34,7 @@ public static class OpenAiAudioEndpoints
             {
                 ctx.Response.StatusCode = 400;
                 ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"'input' text field is required.\",\"type\":\"invalid_request_error\"}}");
+                await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "'input' text field is required."), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
 
@@ -243,7 +243,7 @@ public static class OpenAiAudioEndpoints
         {
             ctx.Response.StatusCode = 400;
             ctx.Response.ContentType = "application/json";
-            await ctx.Response.WriteAsync("{\"error\":{\"message\":\"Audio file or payload is required.\",\"type\":\"invalid_request_error\"}}");
+            await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "Audio file or payload is required."), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
 

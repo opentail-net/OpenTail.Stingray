@@ -203,9 +203,54 @@ public sealed class ModelRuntimeManagerTests
         releaseLoader.Set();
 
         await Assert.ThrowsAsync<ObjectDisposedException>(() => acquire);
+        // The acquisition now fails at Dispose, while the loader thread is still finishing; give it time to dispose the engine.
+        SpinWait.SpinUntil(() => engine is { Disposed: true }, TimeSpan.FromSeconds(10));
         Assert.NotNull(engine);
         Assert.True(engine!.Disposed);
         Assert.False(manager.TryGetResident(Id("late"), out _));
+    }
+    [Fact]
+    public async Task ManagerDispose_WakesASingleSlotWaiterBehindAPinnedRuntime()
+    {
+        int loads = 0;
+        var manager = new ModelRuntimeManager(id => { Interlocked.Increment(ref loads); return Load(id.Value); }, ModelResidencyMode.SingleSlot);
+        var held = await manager.AcquireAsync(Id("a"));
+        held.Runtime.IsPinned = true;
+        held.Dispose();   // idle but pinned: model b can never evict it, and no later handle release will wake b
+
+        var waiting = manager.AcquireAsync(Id("b")).AsTask();
+        await Task.Delay(100);
+        Assert.False(waiting.IsCompleted);   // the premise: b is really waiting
+
+        manager.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(1, Volatile.Read(ref loads));   // only "a": a woken waiter must not start a load on a manager that has shut down
+    }
+
+    [Fact]
+    public async Task ManagerDispose_FailsAcquisitionsJoinedToAnUnfinishedLoad_WithoutWaitingForTheLoader()
+    {
+        var loaderEntered = new ManualResetEventSlim();
+        var releaseLoader = new ManualResetEventSlim();
+        var manager = new ModelRuntimeManager(id =>
+        {
+            loaderEntered.Set();
+            releaseLoader.Wait(TimeSpan.FromSeconds(30));
+            return Load(id.Value);
+        });
+        var first = manager.AcquireAsync(Id("slow")).AsTask();
+        Assert.True(loaderEntered.Wait(TimeSpan.FromSeconds(10)));
+        var joined = manager.AcquireAsync(Id("slow")).AsTask();
+
+        manager.Dispose();
+
+        try
+        {
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => first.WaitAsync(TimeSpan.FromSeconds(10)));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => joined.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        finally { releaseLoader.Set(); }
     }
     // ── SingleSlot residency ─────────────────────────────────────────────────
 

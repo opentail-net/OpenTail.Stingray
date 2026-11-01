@@ -668,7 +668,12 @@ public sealed class HotSession : IDisposable
             if (_disposed) return;
             _disposed = true;
         }
-        _turnGate.WaitAsync().GetAwaiter().GetResult();
+        // The holder of an exclusive lease (see TryAcquireExclusive) already owns the turn gate; waiting for it here would deadlock.
+        // The holder is on this thread because eviction is synchronous. This dispose consumes the lease, so its release is a no-op.
+        if (Volatile.Read(ref _exclusiveThread) == Environment.CurrentManagedThreadId)
+            Volatile.Write(ref _exclusiveThread, 0);
+        else
+            _turnGate.WaitAsync().GetAwaiter().GetResult();
         try
         {
             _state.Dispose();
@@ -720,6 +725,45 @@ public sealed class HotSession : IDisposable
 
     /// <summary>True while a turn holds this session's retained state.</summary>
     internal bool IsInUse => _state.IsInUse;
+
+    // Managed thread id of the holder of the exclusive lease, 0 when none. Only read to let that holder dispose the session.
+    private int _exclusiveThread;
+
+    /// <summary>
+    /// Takes the session's turn gate without waiting, or returns null when a turn is running, committing or queued ahead of us, or the session is
+    /// disposed. <see cref="IsInUse"/> is not enough for this: it clears when the engine finishes, while the turn still publishes its cursor and commits
+    /// its revision and operation record under the gate. While the lease is held no turn can start, so the cursor, revision, ledger and KV are one
+    /// consistent state. Disposing the session on the same thread while holding the lease is allowed and consumes it.
+    /// </summary>
+    internal IDisposable? TryAcquireExclusive()
+    {
+        lock (_lifecycleGate)
+            if (_disposed) return null;
+        try
+        {
+            if (!_turnGate.Wait(0)) return null;
+        }
+        catch (ObjectDisposedException) { return null; }
+        if (_state.IsInUse)
+        {
+            _turnGate.Release();
+            return null;
+        }
+        Volatile.Write(ref _exclusiveThread, Environment.CurrentManagedThreadId);
+        return new ExclusiveLease(this);
+    }
+
+    private sealed class ExclusiveLease(HotSession owner) : IDisposable
+    {
+        private int _released;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            // Zero means a same-thread Dispose already consumed the lease and released and disposed the gate.
+            if (Interlocked.Exchange(ref owner._exclusiveThread, 0) == 0) return;
+            owner._turnGate.Release();
+        }
+    }
 
     /// <summary>
     /// Restores cursor state and seeds the store's revision.

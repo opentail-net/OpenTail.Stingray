@@ -612,4 +612,48 @@ public sealed class ColdSessionPersistenceTests
             if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    /// <summary>
+    /// <see cref="HotSession.IsInUse"/> clears when the engine finishes, while the turn still publishes its cursor and commits its revision and
+    /// operation record. Eviction used to pass its check there and export a cursor that did not match the revision and ledger it wrote beside it.
+    /// The seam parks the turn after the cursor is published and before the store commit; eviction must be refused and publish nothing.
+    /// </summary>
+    [Fact]
+    public async Task EvictToDisk_WhileATurnIsCommitting_IsRefused_AndPublishesNothing()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_cold_commit_race_{Guid.NewGuid():N}");
+        try
+        {
+            using var engine = new ContinuousBatchingEngine(new ProductionPagedKvForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+            var hot = new HotSessionRuntime(engine, new Tokenizer());
+            var cold = new ColdSessionRuntime(hot, engine, tempDir, ModelFormat.SafeTensors);
+            using var session = cold.Create(new SessionAddress("tenant", "role", "thread", "test"));
+
+            using var atCommit = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            session.FaultBeforeCommitForTests = () =>
+            {
+                atCommit.Set();
+                Assert.True(release.Wait(TimeSpan.FromSeconds(10)));
+            };
+            var turn = session.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
+                SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
+            Assert.True(atCommit.Wait(TimeSpan.FromSeconds(10)));
+
+            Assert.False(session.IsInUse);   // the premise: the engine is done, yet the turn has not committed
+            Assert.Throws<InvalidOperationException>(() => cold.EvictToDisk(session, "test"));
+            Assert.Empty(Directory.GetFiles(tempDir, "*.manifest"));
+            Assert.Empty(Directory.GetFiles(tempDir, "*.pack"));
+
+            release.Set();
+            var result = await turn;
+            var manifest = cold.EvictToDisk(session, "test");   // once the turn has committed, eviction works
+            Assert.Equal(result.Operation.CommittedRevision, manifest.Revision);
+            Assert.Single(Directory.GetFiles(tempDir, "*.manifest"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
 }
