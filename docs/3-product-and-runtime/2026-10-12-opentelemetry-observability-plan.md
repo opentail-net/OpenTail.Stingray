@@ -294,8 +294,6 @@ Each question carries a **proposed** answer from the independent reviews. None i
 - [ ] Concurrent requests do not cross-contaminate trace context or measurements (tests).
 - [ ] Time per output token is a true per-token figure; the old `itl_ms` meaning is documented as changed (Phase 2).
 - [ ] One chat request yields one connected trace with the expected child spans, and a shared model load is a separate operation with linked waits (Phase 3).
-- [ ] The library emits data with no OpenTelemetry package referenced.
-- [ ] The published NativeAOT CLI, run with a listener attached, shows the expected instruments and activities.
 - [ ] `/metrics`, the `Meter` instruments and `stingray status` agree on request counts and latency, and existing public behaviour is unchanged (Phase 2).
 - [ ] Overhead is reported with no listener, an in-process listener and an OTLP exporter, using the §8 procedure, and is within the agreed thresholds.
 - [ ] `docs/guides/observability.md` and the worked example exist and were run on a clean machine.
@@ -458,8 +456,6 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 - [ ] Acceptance: concurrent requests do not cross-contaminate trace context or measurements (line 292)
 - [ ] Time per output token is a true per-token figure; the old `itl_ms` meaning documented as changed (line 294)
 - [ ] One chat request yields one connected trace; a shared model load is a separate operation with linked waits (line 295)
-- [ ] The library emits data with no OpenTelemetry package referenced (line 296)
-- [ ] The published NativeAOT CLI, with a listener attached, shows the expected instruments and activities (line 297)
 - [ ] `/metrics`, the `Meter` instruments and `stingray status` agree on counts and latency (line 298)
 - [ ] Overhead reported with no listener, in-process listener and OTLP exporter, within agreed thresholds (line 299)
 - [ ] `docs/guides/observability.md` run on a clean machine (line 300)
