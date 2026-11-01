@@ -21,6 +21,15 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      - name: Runner hardware
+        run: |
+          {
+            echo "### Runner hardware"
+            echo "- CPU: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p'), $(nproc) logical processors"
+            echo "- RAM: $(free -g | awk '/^Mem:/ {print $2" GiB total, "$7" GiB available"}')"
+            echo "- Disk /: $(df -h / | awk 'NR==2 {print $2" total, "$4" free"}')"
+            echo "- OS: $(. /etc/os-release && echo "$PRETTY_NAME"), image $ImageOS $ImageVersion"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Restore
         run: dotnet restore OpenTail.Stingray.slnx
       - name: Build
@@ -107,6 +116,21 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      # What hardware did this run get? Printed and written to the job summary so timings and flaky-test reports can be read against it.
+      - name: Runner hardware
+        shell: pwsh
+        run: |
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+          $os = Get-CimInstance Win32_OperatingSystem
+          $disk = Get-PSDrive -Name C
+          $lines = @(
+            "### Runner hardware",
+            "- CPU: $($cpu.Name.Trim()), $($cpu.NumberOfCores) cores, $($cpu.NumberOfLogicalProcessors) logical processors, max $($cpu.MaxClockSpeed) MHz",
+            "- RAM: $([math]::Round($os.TotalVisibleMemorySize / 1MB, 1)) GiB visible, $([math]::Round($os.FreePhysicalMemory / 1MB, 1)) GiB free",
+            "- Disk C: $([math]::Round(($disk.Used + $disk.Free) / 1GB, 0)) GiB, $([math]::Round($disk.Free / 1GB, 0)) GiB free",
+            "- OS: $($os.Caption) $($os.Version), image $env:ImageOS $env:ImageVersion")
+          $lines | ForEach-Object { Write-Host $_ }
+          $lines | Add-Content -Path $env:GITHUB_STEP_SUMMARY
       - name: Restore
         run: dotnet restore OpenTail.Stingray.slnx
       - name: Build
