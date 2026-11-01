@@ -21,13 +21,7 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
 
 ## About an hour
 
-### 3. GLM-4.7-Flash (`deepseek2`)
-- [ ] **3. GLM-4.7-Flash (`deepseek2`)** (BLOCKED 2026-09-27: logged in `bugstofix.md`)
-  - [x] `stingray pull -r unsloth/GLM-4.7-Flash-GGUF -q Q2_K` (10.6 GB downloaded to `models/_models/GLM-4.7-Flash-Q2_K.gguf`).
-  - [x] `admit-arch` verification (coherent generation, same top-k order as llama-server).
-  - [x] Run second-half PPL vs `llama-perplexity` (`-c 2048`): 8.1757 batched / 8.2100 sequential vs 8.0997. Not at parity.
-  - [ ] **Done when:** PPL within ~0.3% of llama.cpp; add STATUS/RUNNING rows, and entry in MODELS.md if it qualifies.
-  - *Note:* uses `deepseek2` in llama.cpp, not `glm4moe`, so it may already work. Waits for Item 2 sweep to free machine.
+(none open; the item 3 closure is in done/bugstofix-resolved-2026-10.md item 10)
 
 ---
 
