@@ -58,8 +58,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             return ExitCodes.Failure;
         }
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };   // downloads (ModelDownloader still takes a plain HttpClient)
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("OpenTail.Stingray/pull");
+        using var http = ModelDownloader.CreateClient("OpenTail.Stingray/pull");   // downloads: Hugging Face hosts only, redirects checked, token to the Hub only
         // The listing goes through the shared client: HTTPS to Hugging Face hosts only, every redirect hop checked, HF_TOKEN sent to the Hub and never to a CDN, response size capped.
         using var hub = new OpenTail.Stingray.Core.Net.ExternalHttpClient("OpenTail.Stingray/pull", timeout: TimeSpan.FromMinutes(10));
 
