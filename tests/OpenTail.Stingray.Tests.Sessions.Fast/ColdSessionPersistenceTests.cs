@@ -612,4 +612,141 @@ public sealed class ColdSessionPersistenceTests
             if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    private static string NewOrphanTestDirectory(string name)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"opentail_orphan_{name}_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static void DeleteDirectory(string dir)
+    {
+        if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+    }
+
+    /// <summary>Creates a session with real KV pages and a completed operation, evicts it, and returns its id and pack paths.</summary>
+    private static async Task<(SessionId SessionId, List<string> PackPaths)> EvictSessionWithRealPacksAsync(string dir)
+    {
+        using var engine = new ContinuousBatchingEngine(new ProductionPagedKvForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+        var cold = new ColdSessionRuntime(new HotSessionRuntime(engine, new Tokenizer()), engine, dir, ModelFormat.SafeTensors);
+        var session = cold.Create();
+        await session.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
+            SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
+        var manifest = cold.EvictToDisk(session, "test");
+        var packs = manifest.Blocks.Select(b => SegmentPackStore.GetPackPath(dir, b.BlockId)).ToList();
+        Assert.NotEmpty(packs);
+        return (session.SessionId, packs);
+    }
+
+    private static void AgeFiles(IEnumerable<string> paths) =>
+        paths.ToList().ForEach(p => File.SetLastWriteTimeUtc(p, DateTime.UtcNow.AddMinutes(-10)));
+
+    private static ColdSessionRuntime ColdRuntimeOver(string dir, out ContinuousBatchingEngine engine)
+    {
+        engine = new ContinuousBatchingEngine(new ProductionPagedKvForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+        return new ColdSessionRuntime(new HotSessionRuntime(engine, new Tokenizer()), engine, dir, ModelFormat.SafeTensors);
+    }
+
+    [Fact]
+    public void ColdOrphanSweep_OldUnreferencedPack_IsRemovedOnNextConstruction()
+    {
+        string dir = NewOrphanTestDirectory("old");
+        try
+        {
+            string orphan = SegmentPackStore.GetPackPath(dir, $"kv_{Guid.NewGuid():N}_{Guid.NewGuid():N}_00000");
+            File.WriteAllBytes(orphan, [1, 2, 3]);
+            AgeFiles([orphan]);
+
+            _ = ColdRuntimeOver(dir, out var engine);
+            using (engine)
+                Assert.False(File.Exists(orphan), "an old unreferenced pack survived the startup sweep.");
+        }
+        finally { DeleteDirectory(dir); }
+    }
+
+    [Fact]
+    public void ColdOrphanSweep_RecentUnreferencedPack_IsKept()
+    {
+        string dir = NewOrphanTestDirectory("recent");
+        try
+        {
+            // Stands in for an EvictToDisk that has written its packs but not yet published its manifest.
+            string inFlight = SegmentPackStore.GetPackPath(dir, $"cur_{Guid.NewGuid():N}_{Guid.NewGuid():N}");
+            File.WriteAllBytes(inFlight, [1, 2, 3]);
+
+            _ = ColdRuntimeOver(dir, out var engine);
+            using (engine)
+                Assert.True(File.Exists(inFlight), "a pack inside the grace period was deleted.");
+        }
+        finally { DeleteDirectory(dir); }
+    }
+
+    [Fact]
+    public async Task ColdOrphanSweep_PacksNamedByAValidManifest_SurviveEvenWhenOld_AndSessionRestores()
+    {
+        string dir = NewOrphanTestDirectory("referenced");
+        try
+        {
+            var (sessionId, packs) = await EvictSessionWithRealPacksAsync(dir);
+            AgeFiles(packs);
+
+            var cold = ColdRuntimeOver(dir, out var engine);
+            using (engine)
+            {
+                foreach (string pack in packs)
+                    Assert.True(File.Exists(pack), $"a pack named by a valid manifest was swept: {Path.GetFileName(pack)}");
+
+                using var restored = cold.Open(sessionId);
+                Assert.NotNull(restored);
+            }
+        }
+        finally { DeleteDirectory(dir); }
+    }
+
+    [Fact]
+    public async Task ColdOrphanSweep_CorruptManifest_KeepsThatSessionsOldPacks()
+    {
+        string dir = NewOrphanTestDirectory("corrupt");
+        try
+        {
+            var (sessionId, packs) = await EvictSessionWithRealPacksAsync(dir);
+            AgeFiles(packs);
+            File.WriteAllBytes(Path.Combine(dir, $"{sessionId.Value:N}.manifest"), [0xDE, 0xAD, 0xBE, 0xEF]);
+
+            _ = ColdRuntimeOver(dir, out var engine);
+            using (engine)
+                foreach (string pack in packs)
+                    Assert.True(File.Exists(pack), $"the sweep deleted a pack whose manifest is corrupt: {Path.GetFileName(pack)}");
+        }
+        finally { DeleteDirectory(dir); }
+    }
+
+    [Fact]
+    public async Task ColdOrphanSweep_UnrelatedFileAndAnotherSessionsPack_AreKept()
+    {
+        string dir = NewOrphanTestDirectory("unrelated");
+        try
+        {
+            string notes = Path.Combine(dir, "notes.txt");
+            File.WriteAllText(notes, "not a pack");
+            // Matches the pack search pattern but its middle is not a session id, so it is not this runtime's file.
+            string odd = SegmentPackStore.GetPackPath(dir, "kv_not-a-session_00000");
+            File.WriteAllBytes(odd, [9, 9]);
+
+            var (_, otherPacks) = await EvictSessionWithRealPacksAsync(dir);
+            AgeFiles(otherPacks);
+            AgeFiles([notes, odd]);
+
+            _ = ColdRuntimeOver(dir, out var engine);
+            using (engine)
+            {
+                Assert.True(File.Exists(notes), "the sweep deleted an unrelated file.");
+                Assert.True(File.Exists(odd), "the sweep deleted a file whose name is not a session pack.");
+                foreach (string pack in otherPacks)
+                    Assert.True(File.Exists(pack), $"the sweep deleted another session's referenced pack: {Path.GetFileName(pack)}");
+            }
+        }
+        finally { DeleteDirectory(dir); }
+    }
 }

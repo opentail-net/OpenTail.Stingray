@@ -54,6 +54,7 @@ public sealed class ColdSessionRuntime
 
         // Cleanup stale orphaned temp files from prior crashed runs (#8)
         SweepStaleTempFiles(_storageDirectory);
+        SweepOrphanPacks(_storageDirectory);
     }
 
     public HotSessionRuntime HotRuntime => _hotRuntime;
@@ -356,6 +357,122 @@ public sealed class ColdSessionRuntime
         catch
         {
             // Ignore directory enumeration failures during startup sweep
+        }
+    }
+
+    /// <summary>
+    /// Deletes pack files that no manifest in this directory references, once they are older than the grace period.
+    /// </summary>
+    /// <remarks>
+    /// Covers two crash windows that <see cref="PruneUnreferencedPacks"/> cannot reach: packs written by an eviction that
+    /// never published its manifest, and the previous generation left behind when a crash interrupted pruning. A pack is
+    /// a candidate only if its name is one of this runtime's block prefixes, then a session id, then a generation (both
+    /// 32 lowercase hex digits), with an optional five-digit KV index. A session whose manifest exists but cannot be loaded
+    /// keeps all of its packs. A missing manifest means nothing is referenced, so only the grace period protects its packs.
+    /// Best effort: a failure on one file, or on the directory, never makes construction throw.
+    /// </remarks>
+    private static void SweepOrphanPacks(string directory)
+    {
+        // Same window as SweepStaleTempFiles. An EvictToDisk in another thread or runtime may have written packs
+        // whose manifest is not yet published; those are younger than this window and are never candidates.
+        var cutoff = DateTime.UtcNow - TimeSpan.FromMinutes(5);
+        var referencedBySession = new Dictionary<string, HashSet<string>?>(StringComparer.Ordinal);
+        try
+        {
+            foreach (string prefix in new[] { CursorBlockPrefix, OperationBlockPrefix, KvBlockPrefix })
+            {
+                string[] candidates = Directory.GetFiles(directory, SegmentPackStore.GetPackSearchPattern(prefix));
+                foreach (string path in candidates)
+                {
+                    try
+                    {
+                        string blockId = Path.GetFileNameWithoutExtension(path);
+                        if (!TryReadSessionId(blockId, prefix, out string sid)) continue;
+
+                        if (!referencedBySession.TryGetValue(sid, out var referenced))
+                        {
+                            referenced = LoadReferencedPackNames(directory, sid);
+                            referencedBySession[sid] = referenced;
+                        }
+                        if (referenced is null) continue; // manifest unreadable: this session's packs are unprovable, keep them
+                        if (referenced.Contains(Path.GetFileName(path))) continue;
+                        if (File.GetLastWriteTimeUtc(path) > cutoff) continue;
+
+                        File.Delete(path); // orphan sweep
+                    }
+                    catch (IOException)
+                    {
+                        // Best effort: a stale pack costs disk, never correctness.
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // Best effort: the directory listing failed; nothing is deleted.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>True when <paramref name="blockId"/> is <paramref name="prefix"/> + 32 lowercase hex (session) + "_" + 32 lowercase hex (generation) + optional "_" + 5 digits.</summary>
+    private static bool TryReadSessionId(string blockId, string prefix, out string sid)
+    {
+        const int Hex = 32;
+        sid = string.Empty;
+        if (!blockId.StartsWith(prefix, StringComparison.Ordinal)) return false;
+
+        string rest = blockId[prefix.Length..];
+        if (rest.Length < Hex + 1 + Hex || rest[Hex] != '_') return false;
+        if (!IsLowerHex(rest, 0, Hex) || !IsLowerHex(rest, Hex + 1, Hex)) return false;
+
+        string tail = rest[(Hex + 1 + Hex)..];
+        if (tail.Length != 0 && !(tail.Length == 6 && tail[0] == '_' && IsDigits(tail, 1, 5))) return false;
+
+        sid = rest[..Hex];
+        return true;
+    }
+
+    private static bool IsLowerHex(string s, int start, int count)
+    {
+        for (int i = start; i < start + count; i++)
+        {
+            char c = s[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        }
+        return true;
+    }
+
+    private static bool IsDigits(string s, int start, int count)
+    {
+        for (int i = start; i < start + count; i++)
+            if (s[i] < '0' || s[i] > '9') return false;
+        return true;
+    }
+
+    /// <returns>The pack file names this session's manifest references. An empty set when there is no manifest;
+    /// <c>null</c> when a manifest exists but cannot be read, which means nothing about its packs can be proven.</returns>
+    private static HashSet<string>? LoadReferencedPackNames(string directory, string sid)
+    {
+        string manifestPath = Path.Combine(directory, $"{sid}.manifest");
+        if (!File.Exists(manifestPath)) return new HashSet<string>(StringComparer.Ordinal);
+
+        try
+        {
+            var manifest = FileSessionManifest.Load(manifestPath);
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var block in manifest.Blocks)
+                names.Add(Path.GetFileName(SegmentPackStore.GetPackPath(directory, block.BlockId)));
+            return names;
+        }
+        catch (Exception)
+        {
+            // Corrupt, truncated, unreadable, or replaced while being read: prove nothing, delete nothing.
+            return null;
         }
     }
 }
