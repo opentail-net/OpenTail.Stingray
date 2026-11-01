@@ -25,7 +25,7 @@ These models replace most full-attention layers with **Gated DeltaNet**, a linea
 * **MoE variants:** `Qwen3.6-35B-A3B` runs with Q8_K routed-expert kernels.
 * **MTP layer:** the checkpoint's multi-token-prediction layer is loaded and used for `--spec-type mtp` self-speculation (draft depth 1).
 
-Prefill speed against llama.cpp is recorded in STATUS as about 0.96x for Qwen3.6-35B-A3B after the GDN/MoE parallelisation, with a Phase 8 note of 0.63x on the Q6_K file. Source plan: [02-qwen35moe-plan](../done/02-qwen35moe-plan.md).
+Prefill speed against llama.cpp is recorded in STATUS as about 0.96x for Qwen3.6-35B-A3B after the GDN/MoE parallelisation, with a Phase 8 note of 0.63x on the Q6_K file that is stale: re-measured 2026-11-01 on the same Q6_K file at 0.97x (61.45 against 63.45 t/s, CPU, 550 tokens, 4 interleaved rounds, llama.cpp b11556). Source plan: [02-qwen35moe-plan](../done/02-qwen35moe-plan.md).
 
 ---
 
