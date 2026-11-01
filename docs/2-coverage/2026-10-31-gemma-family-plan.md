@@ -1,5 +1,7 @@
 # Gemma family coverage
 
+> Completed items moved to [../done/2026-10-31-gemma-family-plan-completed-items-2026-10.md](../done/2026-10-31-gemma-family-plan-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 > This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
 
 **Owner:** this file (moved from docs/workstreams on 2026-10-31). **Last verified:** 2026-10-30.
@@ -13,8 +15,6 @@
 
 ## Open items
 
-- [x] *(done 2026-11-01: gemma-1.1-2b-it Q8_0 pulled to F:\_models; the first golden run showed every position predicting BOS because the descriptor had no model semantics; `FamilyModelSemantics.Gemma1` added; golden `gemma.golden.json` now 22/24, near-tie; STATUS row added.)* Gemma 1: obtain a checkpoint (download is authorised for `models/_models/`), capture a golden against llama-server, and add a STATUS row or a dated "not verified" note
-- [x] *(decided 2026-11-01: no. Gemma 2 stays CPU only; the limitation is in STATUS.)* Gemma 2 on Vulkan and CUDA: needs an attention-logit softcap kernel there (currently refused, not supported)
 - [ ] Gemma 2 beyond the 2B file: the record has no evidence for other sizes
 
 ## Decisions for the owner

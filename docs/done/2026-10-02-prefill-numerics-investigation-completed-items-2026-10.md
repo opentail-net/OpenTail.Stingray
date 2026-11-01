@@ -35,3 +35,14 @@ Finished items moved verbatim out of [../1-correctness/2026-10-02-prefill-numeri
 > from: ## Checklist
 - [x] 11. ggml cross-check on identical rows (done 2026-10-02)
 
+
+---
+
+## More completed items moved from 2026-10-02-prefill-numerics-investigation.md on 2026-11-01
+
+Finished items moved verbatim out of [../1-correctness/2026-10-02-prefill-numerics-investigation.md](../1-correctness/2026-10-02-prefill-numerics-investigation.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ### Follow-ups from the MoE audit (moved from docs/todo.md, 2026-10-30)
+- [x] *(closed 2026-11-01: confirmed in `TryResolveQ8Dispatch` and measured harmless, ADR-0003 addendum; both formats kept.)* Q3_K batched path uses Q8_KS while decode uses Q8_K (claimed; verify in
+      `TryResolveQ8Dispatch`). Unifying on Q8_K would make Q3_K prefill match decode and ggml
+
