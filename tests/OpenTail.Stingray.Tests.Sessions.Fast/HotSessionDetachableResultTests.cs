@@ -128,6 +128,79 @@ public sealed class HotSessionDetachableResultTests
         Assert.Equal(operationId, snapshot.Operations.First().OperationId);
     }
 
+    /// <summary>
+    /// G6 (plan 6): a queued turn whose token is cancelled while the batcher is admitting it. The batcher saw the cancellation, completed the request's output
+    /// channel with no chunk and no exception, and only then published the rolled-back turn; the caller, parked on the channel, woke to a NORMAL end and found no
+    /// retained turn outcome, so the operation was recorded as Failed ("The retained engine completed without a retained turn outcome") instead of Cancelled.
+    /// It showed up as about 1 failure in 4,000 randomly timed cancels and once on the Windows CI runner.
+    /// A token runs its callbacks one after another after it is marked cancelled, and the caller's wake-up is one of them; holding callbacks registered from many
+    /// live threads (one lands in every callback partition) keep <c>Cancel()</c> inside that window so the batcher gets there first. If the callback order ever
+    /// changed, the test would pass without exercising the race: it can under-detect, never false-fail.
+    /// </summary>
+    [Fact]
+    public async Task HotSession_QueuedTurnCancelledWhileTheBatcherAdmitsIt_IsRecordedAsCancelled()
+    {
+        using var ctsB = new CancellationTokenSource();
+        using var inDecode = new ManualResetEventSlim(false);
+        using var proceed = new ManualResetEventSlim(false);
+        using var cancelCallbackRunning = new ManualResetEventSlim(false);
+        using var releaseCancel = new ManualResetEventSlim(false);
+        int steps = 0;
+        var fwd = new FakeForwardPass
+        {
+            EmitNonStopOnPrefill = true,
+            OnDecodeStep = () => { if (Interlocked.Increment(ref steps) == 1) { inDecode.Set(); proceed.Wait(); } },
+        };
+        using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);   // one slot: B queues behind A
+        var runtime = new HotSessionRuntime(engine, new Tokenizer());
+        using var sessionA = runtime.Create();
+        using var sessionB = runtime.Create();
+        var sampling = new SamplingParams { Temperature = 0f, MaxNewTokens = 2 };
+        var operationA = SessionOperationId.New();
+        var operationB = SessionOperationId.New();
+
+        var turnA = Task.Run(() => sessionA.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationA, Digest("hello")));
+        Assert.True(inDecode.Wait(TimeSpan.FromSeconds(10)), "turn A never reached its first decode step");
+        var turnB = Task.Run(async () =>
+        {
+            try { await sessionB.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationB, Digest("hello"), ctsB.Token); }
+            catch (OperationCanceledException) { }
+        });
+        await Task.Delay(200);   // B is queued behind A and its caller is parked on its output channel
+
+        var holders = new List<Thread>();
+        var registrations = new List<CancellationTokenRegistration>();
+        using var holdersDone = new ManualResetEventSlim(false);
+        for (int i = 0; i < 64; i++)
+        {
+            var holder = new Thread(() =>
+            {
+                var registration = ctsB.Token.Register(() => { cancelCallbackRunning.Set(); releaseCancel.Wait(); });
+                lock (registrations) registrations.Add(registration);
+                holdersDone.Wait();
+            }) { IsBackground = true };
+            holders.Add(holder);
+            holder.Start();
+        }
+        SpinWait.SpinUntil(() => { lock (registrations) return registrations.Count == holders.Count; }, TimeSpan.FromSeconds(10));
+        var canceller = Task.Run(() => ctsB.Cancel());
+        Assert.True(cancelCallbackRunning.Wait(TimeSpan.FromSeconds(10)), "Cancel() never reached the holding callback");
+        Assert.True(ctsB.IsCancellationRequested);
+
+        proceed.Set();   // A finishes, the slot frees, and the batcher admits (and finds cancelled) B while B's caller has not been woken by its token
+        await turnA.WaitAsync(TimeSpan.FromSeconds(10));
+        await turnB.WaitAsync(TimeSpan.FromSeconds(10));
+        releaseCancel.Set();
+        await canceller;
+        holdersDone.Set();
+        foreach (var holder in holders) holder.Join();
+        foreach (var registration in registrations) registration.Dispose();
+
+        var retrieved = runtime.GetOperation(sessionB.SessionId, operationB);
+        Assert.Equal(SessionOperationState.Cancelled, retrieved.State);
+        Assert.Null(retrieved.CommittedRevision);
+    }
+
     [Fact]
     public async Task HotSession_GetOperation_ReturnsCancelledOperation_OnCancellation()
     {

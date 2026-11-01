@@ -66,6 +66,7 @@ Ported from the upstream SharpInference snapshot in `examples/SharpInference0808
 
 ### Fixed
 
+- **A retained turn cancelled while queued or between prefill chunks could be recorded as Failed instead of Cancelled.** The engine completed the request's output with no exception before publishing the rolled-back turn, so a caller that woke on the completion before its own cancellation callback saw a clean end and no turn outcome ("completed without a retained turn outcome"). The channel now completes with an `OperationCanceledException` for retained requests, after their state is settled. Seen once on CI and about once in 4,000 randomly timed cancels locally.
 - **Prefix-cache reuse could rewind into compressed or overwritten KV.** Two distinct defects, both
   producing silent corruption or a crash:
   - TurboQuant compresses KV in place once it leaves the FP32 recent window, so those positions
