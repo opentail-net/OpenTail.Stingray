@@ -20,9 +20,9 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 /// <see cref="TelemetryAttributePolicy"/> (plan section 7).</item>
 /// <item>Not vacuous: the capture holds the server's request metrics and its chat spans.</item>
 /// </list>
-/// <para>Limit: the fake engine emits text, not tool calls, so tool-call ARGUMENTS are not produced here. The tool
-/// canary sits in the tool DEFINITION, which the server does echo into request handling. A tool-call output canary
-/// needs an engine that emits tool calls, and is a follow-up.</para>
+/// <para>The first test's fake engine emits plain text, so the tool canary there sits in the tool DEFINITION. Tool-call ARGUMENTS
+/// are covered by <see cref="ToolCallArgumentCanary_NeverAppearsInAnyServerTelemetry"/>, whose engine emits a Qwen-style tool call
+/// that the server parses and returns to the client (asserted, so the test is not vacuous).</para>
 /// </summary>
 public sealed class ServerTelemetryCanaryTests
 {
@@ -30,6 +30,7 @@ public sealed class ServerTelemetryCanaryTests
     private const string PromptCanary = "CANARY-PROMPT-7f3a91";
     private const string ToolCanary = "CANARY-TOOL-7f3a91";
     private const string CompletionCanary = "CANARY-COMPLETION-7f3a91";
+    private const string ArgsCanary = "CANARY-ARGS-7f3a91";
     private const string PathCanary = @"C:\Users\canary-user\secret-project\model.gguf";
     private const string Model = "test-model";
 
@@ -82,6 +83,49 @@ public sealed class ServerTelemetryCanaryTests
         string[] unexpected = keys.Where(k => !TelemetryAttributePolicy.AllowedAttributeKeys.Contains(k)).Order(StringComparer.Ordinal).ToArray();
         Assert.True(unexpected.Length == 0,
             "attribute keys outside the section 7 allow-list (review, then add to TelemetryAttributePolicy): " + string.Join(", ", unexpected));
+    }
+
+    [Fact]
+    public async Task ToolCallArgumentCanary_NeverAppearsInAnyServerTelemetry()
+    {
+        var captured = new List<string>();
+        using var meters = ListenToServerMeters(captured);
+        using var spans = ListenToServerSpans(captured);
+
+        // The model answers with a tool call whose ARGUMENT carries the canary (Qwen-style, the default test architecture).
+        string toolCall = "<tool_call>\n{\"name\":\"lookup\",\"arguments\":{\"q\":\"" + ArgsCanary + "\"}}\n</tool_call>";
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+            b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(
+                new FakeInferenceEngine(Model, [(GenerateChunkKind.Text, toolCall)]))));
+        using var client = factory.CreateClient();
+
+        string plainBody;
+        using (var plain = await client.PostAsJsonAsync("/v1/chat/completions", ChatWithCanaries(stream: false)))
+        {
+            Assert.Equal(HttpStatusCode.OK, plain.StatusCode);
+            plainBody = await plain.Content.ReadAsStringAsync();
+        }
+        string streamBody;
+        using (var streamed = await client.PostAsJsonAsync("/v1/chat/completions", ChatWithCanaries(stream: true)))
+        {
+            Assert.Equal(HttpStatusCode.OK, streamed.StatusCode);
+            streamBody = await streamed.Content.ReadAsStringAsync();
+        }
+
+        // Not vacuous: the server parsed the call and returned it to the client, argument included, in both modes. If it had not, the
+        // telemetry assertion below would pass for the wrong reason.
+        Assert.Contains("tool_calls", plainBody, StringComparison.Ordinal);
+        Assert.Contains(ArgsCanary, plainBody, StringComparison.Ordinal);
+        Assert.Contains("tool_calls", streamBody, StringComparison.Ordinal);
+        Assert.Contains(ArgsCanary, streamBody, StringComparison.Ordinal);
+
+        string[] seen;
+        lock (captured) seen = [.. captured];
+        Assert.True(seen.Length > 20, $"only {seen.Length} telemetry strings captured");
+        Assert.Contains(seen, s => s.StartsWith("span name=chat ", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(seen, s => s.Contains(ArgsCanary, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(seen, s => s.Contains("canary", StringComparison.OrdinalIgnoreCase));
     }
 
     private static object ChatWithCanaries(bool stream) => new

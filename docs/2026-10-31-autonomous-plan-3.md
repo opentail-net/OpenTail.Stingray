@@ -22,7 +22,7 @@ Contracts this must satisfy: `PrefillHandoffFamilies.Receipts` (admission by evi
   - [x] `/v1/responses` reported 0 input tokens in both modes (it read the text-only stream, which drops the engine's usage chunk). Fixed 2026-11-01: it now reads the chunk stream, so `input_tokens`, `output_tokens` and `total_tokens` are real; two tests, mutation checked (found by the external review)
   - [ ] The audit has not covered `/v1/audio/transcriptions` and `/translations` beyond their form fields, `/v1/sessions/*`, `/tokenize`, `/detokenize`, `/props`, `/status` and `/api/embed`; and `/v1/rerank` `top_n` has no endpoint range check (F5)
   - [ ] The stale `stop_sequences` snippet in the design doc
-  - [ ] A fake engine that emits tool calls so the telemetry canary covers tool-call argument leakage
+  - [x] A fake engine that emits tool calls so the telemetry canary covers tool-call argument leakage (2026-11-01: `ToolCallArgumentCanary_NeverAppearsInAnyServerTelemetry`, with a positive control that the call is parsed and returned in both modes; a mutation that puts the arguments on a span fails it and does not fail the older test)
   - [ ] Tests that each accepted sampling field reaches the engine
 - [ ] **Q7** Connect the HTTP image API to the real diffusion pipelines (the ones `stingray image` runs), so `/v1/images/generations` and `/edits` can stop answering 501. Needs model selection, weights, timing and memory handling; own plan
 - [ ] **Q6** Release verification (the release workflow already runs `scripts/verify-nuget-package.ps1`, so the claim that nothing proves installation was too strong; what is missing is a machine that is not this one)
