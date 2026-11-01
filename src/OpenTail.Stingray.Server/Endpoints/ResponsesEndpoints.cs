@@ -29,13 +29,18 @@ public static class ResponsesEndpoints
         }
         catch
         {
-            ctx.Response.StatusCode = 400;
+            await WriteBadRequestAsync(ctx, "The request body is not valid JSON.");
             return;
         }
 
         if (req is null)
         {
-            ctx.Response.StatusCode = 400;
+            await WriteBadRequestAsync(ctx, "The request body must be a JSON object.");
+            return;
+        }
+        if (RequestParameterValidation.ValidateResponses(req) is { } invalid)
+        {
+            await WriteBadRequestAsync(ctx, invalid);
             return;
         }
 
@@ -96,10 +101,8 @@ public static class ResponsesEndpoints
         }
         catch (ChatTemplateException)
         {
-            // The template rejected the message list (e.g. non-alternating roles) — bad input,
-            // not a server fault. This endpoint reports plain status codes, matching the JSON
-            // handling directly above.
-            ctx.Response.StatusCode = 400;
+            // The template rejected the message list (e.g. non-alternating roles) — bad input, not a server fault.
+            await WriteBadRequestAsync(ctx, "The chat template rejected the message list (for example roles that do not alternate).");
             return;
         }
 
@@ -264,6 +267,16 @@ public static class ResponsesEndpoints
         return list;
     }
 
+    /// <summary>A 400 with the same error body the chat endpoints send (the flat type and message fields plus the nested error object), so a client can read why.</summary>
+    private static async Task WriteBadRequestAsync(HttpContext ctx, string message)
+    {
+        ctx.Response.StatusCode = 400;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+            ctx.RequestAborted);
+    }
+
     private static async Task WriteEvent(HttpResponse response, string eventType, string data)
     {
         await response.WriteAsync($"event: {eventType}\ndata: {data}\n\n",
@@ -282,7 +295,9 @@ public sealed record ResponsesRequest(
     float? Temperature,
     float? TopP,
     bool? Stream,
-    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] bool? OpentailTiming = null);
+    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] bool? OpentailTiming = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("tools")] JsonElement? Tools = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("previous_response_id")] string? PreviousResponseId = null);
 
 public sealed record RespObject(
     string Id,
