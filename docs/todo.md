@@ -1,5 +1,7 @@
 > Finished items moved to [done/todo-done-2026-10.md](done/todo-done-2026-10.md) on 2026-10-30. This file keeps only the open work.
 
+> Completed items moved to [done/todo-completed-items-2026-11.md](done/todo-completed-items-2026-11.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## SCOUT / HUGGING FACE: IDEAS AND TODO (written 2026-10-09)
 
 Built and committed so far (details: `docs/3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md`, `docs/reference/061-coverage-tooling.md`):
@@ -22,7 +24,6 @@ one external-access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed, deny win
 - [ ] **Estimator**: MLA (DeepSeek2), hybrid/GDN and RWKV are Unknown (blocked); other MoE families unmeasured (only Phi-3.5-MoE: experts not repacked); only one machine calibrated; GPU placement deliberately not estimated (CLAUDE.md rule 13). Re-measure when the engine changes (the Q4_K repack copy is why a Q4_K_M file costs ~1.8x its size).
 - [ ] **Leave-one-out** (`scripts/scout-leave-one-out.ps1`) again whenever signatures grow; still n=12. Observed split: <=11 differences = real near-relative, >=14 = nothing close.
 - [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
-- [x] Unrelated finding (resolved: CLAUDE.md rule 8 now says they are git-ignored local checkouts): `CLAUDE.md` said `examples/*.cpp` and `tools/llama.cpp` were "checked into this repo". They are git-ignored (0 tracked files), so other contributors do not have them. Decide the wording.
 - [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
 
 ## Idea from chat: known-good checkpoints, favourites, local availability (2026-10-09)
@@ -107,35 +108,15 @@ Rule: document, document, document.
         (cancellation rows).
 
 ## Code (CPU only; Vulkan/CUDA never had the gate)
-- [ ] Revert the experiment code in `HybridGdnForwardPass.cs`
-- [x] Remove `!_hasMtp` from the `Prefill` gate (verified 2026-10-31: the gate is `GdnChunkedPrefillEnabled` only)
-- [x] Rewrite the comments on `GdnChunkedPrefillEnabled`, the `Prefill` gate and `PrefillChunked`
-      (decision, evidence, rollback switch; drop the stale "byte-identical" / "only the recurrence
-      differs" claims)
-- [ ] Build, Fast tests
 
 ## Tests (`HybridGdnForwardPassTests.cs`)
 - [ ] `MtpDecoder_GreedyParity_LlamaCpp` doc: already diverges from llama.cpp at token 1 on the
       exact path; re-baseline on the fast path when `Qwen3.6-27B-MTP-Q4_K_M.gguf` is available
-- [ ] `HybridGdnChunkedPrefill_MatchesSequentialPrefill` doc: 0.9995 cosine floor was calibrated on
-      one model; point to the margin certificate (m > 2δ) as the principled criterion
 
 ## Docs
-- [x] `docs/reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md`: context, evidence (matrix +
-      probe + row-check tables), decision, rollback switch `STINGRAY_GDN_CHUNKED_PREFILL=0`
-      (strict sequential control), the "really bad turn" criteria, open follow-ups.
-      Terminology: retire "exact". Use StrictSequential (A, deterministic control path, not ground
-      truth), ChunkedRecurrence (R), Optimized (E, production), DoubleGdnReference (D, FP64
-      recurrence only, int8 projections). "Numerical operation reference" = FP64 dot over
-      dequantized weights x supplied FP32 activations, per operation only. "A reproducible
-      computation is not necessarily a more accurate one."
-- [x] `docs/reference/env-var-inventory.md`: real entry for `STINGRAY_GDN_CHUNKED_PREFILL`
-- [x] `docs/4-performance/perf-sweep-plan.md` Phase 2: replace "numerics decision for the user"
-      with the decision + ADR link
 - [ ] Re-measure Qwen3.8-27B (and Qwen3.6-27B) prefill, uncontended; dated `PerformanceLeague.md` rows
 - [ ] `docs/RUNNING.md` 27B rows (measured speed, dated)
 - [ ] `docs/STATUS.md` if a hybrid-GDN row is affected
-- [ ] Commit only these hunks (other agents may have work in the tree)
 
 ## TODO: int8 prompt processing on by default (Option A)
 
@@ -143,25 +124,9 @@ User decision 2026-10-02: `STINGRAY_CPU_PREFILL_Q8` defaults ON for dense models
 experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollback:
 `STINGRAY_CPU_PREFILL_Q8=0`.
 
-- [x] Flip the default in `SimdKernels.Q8PrefillEnabled` (`!= "0"`); rewrite its doc comment (and
-      move it onto the property: it was attached to `BatchedMatVecTierCalls`)
-- [x] Build clean; ForwardPass.Fast 748 passed / 0 failed (1 skip: `MatVecThroughput_ByDType`,
-      a throughput benchmark); Server.Fast 429/429
-- [x] `docs/reference/adr-0003-cpu-int8-prefill-default.md` written (evidence, 2026-10-01 history,
-      MoE scope, hybrid/RWKV guard note, rollback criteria)
-- [x] `docs/reference/env-var-inventory.md`: `STINGRAY_CPU_PREFILL_Q8` default on, `=0` rollback
-- [x] `perf-sweep-plan.md` 10.2 (decision + follow-up list) and Phase 6 (decision, re-measure pending)
-- [x] `docs/WHAT-YOU-CAN-DO.md`: stale DeepSeek/int8 sentence fixed
-- [x] Checked old int8 defects: the 2026-08-07 repeated-token collapse is fixed by
-      `ForwardPass.IsSingleDistinctTokenPrompt`. The hybrid path has no such guard but measured no
-      collapse. RWKV is unverified (no checkpoint on disk), noted in ADR-0003
-- [x] Heavy suite with int8 on: 166/1/58, the only failure being known item 24. Committed `d7fcf135`
-- [x] `docs/done/13-granite4-h-small-moe-ppl-parity-plan.md`: note
-      dense on, MoE still off
 - [ ] Re-measure prefill with the new default **uncontended, one run at a time**: SmolLM2-1.7B,
       Qwen2.5-0.5B, Gemma-3-4B, Gemma-4-12B; dated League rows; fill ADR-0003's speed table
 - [ ] `docs/RUNNING.md`: note rows measured 2026-10-01..02 used the F32 default
-- [ ] Commit only these hunks
 
 ## Follow-ups: closing the remaining gaps
 - [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
