@@ -145,11 +145,15 @@ public sealed class HotSessionDetachableResultTests
         using var proceed = new ManualResetEventSlim(false);
         using var cancelCallbackRunning = new ManualResetEventSlim(false);
         using var releaseCancel = new ManualResetEventSlim(false);
+        using var holdersDone = new ManualResetEventSlim(false);
+        var holders = new List<Thread>();
+        var registrations = new List<CancellationTokenRegistration>();
+        var bound = TimeSpan.FromSeconds(30);   // nothing here may wait forever: an assertion that fails early must not leave the batcher blocked in the decode hook
         int steps = 0;
         var fwd = new FakeForwardPass
         {
             EmitNonStopOnPrefill = true,
-            OnDecodeStep = () => { if (Interlocked.Increment(ref steps) == 1) { inDecode.Set(); proceed.Wait(); } },
+            OnDecodeStep = () => { if (Interlocked.Increment(ref steps) == 1) { inDecode.Set(); proceed.Wait(bound); } },
         };
         using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);   // one slot: B queues behind A
         var runtime = new HotSessionRuntime(engine, new Tokenizer());
@@ -159,6 +163,8 @@ public sealed class HotSessionDetachableResultTests
         var operationA = SessionOperationId.New();
         var operationB = SessionOperationId.New();
 
+        try
+        {
         var turnA = Task.Run(() => sessionA.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationA, Digest("hello")));
         Assert.True(inDecode.Wait(TimeSpan.FromSeconds(10)), "turn A never reached its first decode step");
         var turnB = Task.Run(async () =>
@@ -168,16 +174,13 @@ public sealed class HotSessionDetachableResultTests
         });
         await Task.Delay(200);   // B is queued behind A and its caller is parked on its output channel
 
-        var holders = new List<Thread>();
-        var registrations = new List<CancellationTokenRegistration>();
-        using var holdersDone = new ManualResetEventSlim(false);
         for (int i = 0; i < 64; i++)
         {
             var holder = new Thread(() =>
             {
-                var registration = ctsB.Token.Register(() => { cancelCallbackRunning.Set(); releaseCancel.Wait(); });
+                var registration = ctsB.Token.Register(() => { cancelCallbackRunning.Set(); releaseCancel.Wait(bound); });
                 lock (registrations) registrations.Add(registration);
-                holdersDone.Wait();
+                holdersDone.Wait(bound);
             }) { IsBackground = true };
             holders.Add(holder);
             holder.Start();
@@ -199,6 +202,15 @@ public sealed class HotSessionDetachableResultTests
         var retrieved = runtime.GetOperation(sessionB.SessionId, operationB);
         Assert.Equal(SessionOperationState.Cancelled, retrieved.State);
         Assert.Null(retrieved.CommittedRevision);
+        }
+        finally
+        {
+            // On any early exit the batcher may still be blocked in the decode hook and the holders in their callbacks: release them, or disposing the
+            // sessions (which waits for the batcher) hangs the whole test run instead of failing this one test.
+            proceed.Set();
+            releaseCancel.Set();
+            holdersDone.Set();
+        }
     }
 
     [Fact]
