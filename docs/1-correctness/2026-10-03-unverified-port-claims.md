@@ -164,3 +164,24 @@ to 64 in the GGUF header (restored afterwards) three ~300-token prompts agreed f
 0.05 nat). Speed against llama.cpp on the same CPU: prefill 1.4-1.7 vs 15.2 t/s, decode 1.1-1.7 vs 2.4-2.5 t/s. Still unchecked:
 the near-tie margins of the other two patched-window prompts, the vision tower, DFlash, any GPU path, and the checkpoint's license
 bucket (so no real-weight parity test is committed).
+
+## Scout dossiers, 2026-11-01 (plan 5 B1): which families fit this machine
+
+`stingray scout -r <repo> --quants --budget 60GB -c 4096 --format json` (scout build 1.0.9+8eb7c90b), one dossier per family, no checkpoint downloaded. Host: 63.3 GiB RAM; scout reserves 8 GiB, so a file fits when its estimated peak is about 52 GiB or less. Scout answers "Unsupported" for every row of a NotAdmitted family whatever its size, so the verdict column below is read from the size and the peak, not from scout's word. MiniMax-H3 is SafeTensors, outside scout's GGUF scope (plan 5 B3).
+
+| Family | Repo @ revision | Smallest quant | Size | Estimated peak | Fits 63.3 GiB? |
+|---|---|---|---|---|---|
+| Qwen 3.8 Flash Next | `unsloth/Qwen3.8-Flash-Next-GGUF` @ 766911a6 | UD-IQ1_S (3 shards) | 67.6 GiB | 70.5 GiB | **No** |
+| GLM-5.x (`glm-dsa`) | `unsloth/GLM-5.3-GGUF` @ 346b3591 | UD-IQ1_S (6 shards) | 201.8 GiB | 245.1 GiB | **No** (the Q2_K_XL on `E:\_models\glm-5.3` is 236.4 GiB, peak 279.2 GiB, complete but cannot be run) |
+| DiffusionGemma | `unsloth/diffusiongemma-26B-A4B-it-GGUF` @ f4183a2c | Q4_K_M | 15.7 GiB | 21.5 GiB | **Yes** (needs `DiffusionGemmaPipeline`, not the autoregressive path) |
+| DeepSeek V4 Flash | `unsloth/DeepSeek-V4-Flash-0731-GGUF` @ fbbb5b93; `antirez/deepseek-v4-gguf` @ f71f23d5 | UD-IQ1_S (3 shards); IQ2XXS-w2Q2K | 76.9 GiB; 80.8 GiB | 80.4 GiB; 83.7 GiB | **No** |
+| DeepSeek V4.1 Flash | `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` @ 8a6ec9cf; `antirez/deepseek-v4.1-flash-gguf` @ 9dcee516 | UD-IQ1_S (5 shards); Q2 | 217.0 GiB; 340.6 GiB | 220.3 GiB; not estimated | **No** |
+| Bonsai2 PRISM | `prism-ml/Ternary-Bonsai-2-27B-gguf-dev` @ 1dc2d993 | Q2_0 (`...-prism-fork-required.gguf`) | 7.1 GiB | 9.8 GiB | **Yes**; a copy (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.9 GB) is already on `F:\_models\bonsai2` |
+| MiniMax-H3 | not GGUF | n/a | n/a | n/a | not scouted (B3) |
+
+Corrections this scouting made to earlier statements:
+- "V4 (98.6 GB) can be paged from disk and checked against b10306" (table in the tensorsharp plan): the smallest V4 Flash files are 76.9 and 80.8 GiB, over the 63.3 GiB host, so by CLAUDE.md rule 15 the run is not made. No 98.6 GB file exists in the two repos scouted.
+- Qwen 3.8 Flash Next "smallest quant ~72.5 GB" is the decimal size of UD-IQ1_S (67.6 GiB); it does not fit either way.
+- V4.1: three of the unsloth quants (Q8_K_XL, Q4_K_XL, Q3_K_XL) carry `per_layer_token_embd.weight` with GGML type id 43, which this build does not support; the smaller IQ quants do not and are 217 GiB or more.
+- The `Q2_0` in the Bonsai2 dev repo is the only file listed; scout reads `general.architecture` (`qwen35`, admitted) and cannot see the `STINGRAY_EXPERIMENTAL_PRISM` gate, so its "Fits" is about size only.
+- The dossiers (JSON) are in the 2026-11-01 session scratchpad, not in the repository.
