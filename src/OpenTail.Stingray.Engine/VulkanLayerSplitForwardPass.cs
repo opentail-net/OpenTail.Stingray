@@ -88,9 +88,9 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     {
         if (!CpuPrefillEnabled) return "disabled (STINGRAY_HYBRID_CPU_PREFILL=0)";
         if (_cpuPrefillBroken) return "the CPU pass refused batched prefill";
-        if (startPos != 0) return "startPos != 0 (the CPU pass would not hold the earlier turns' K/V on the GPU layers)";
+        if (startPos < 0 || startPos > _gpuPart.KvLength) return $"startPos {startPos} is beyond the {_gpuPart.KvLength} K/V rows the GPU layers hold";
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
-        if (n > MaxSeqLen) return "prompt longer than the context";
+        if (startPos + n > MaxSeqLen) return "prompt longer than the context";
         if (_hp.LayerHeadDim is not null) return "per-layer head dimensions";
         if (_settings.Kv.RoundBf16 || _settings.Kv.Store != KvStoreMode.Fp32)
             return "bf16 KV store requested: exact F32 K/V cannot be guaranteed";
@@ -103,7 +103,7 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     /// Compared with the per-token split prefill (one GPU round trip per token plus the MoE router per layer) this is a batched
     /// CPU prefill; the contract is tested on a real checkpoint before a family is admitted (receipts, per path).
     /// </summary>
-    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, out ReadOnlySpan<float> logits)
+    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, int startPos, out ReadOnlySpan<float> logits)
     {
         logits = default;
         // Models with the attention output gate (afmoe) have no batched CPU trunk: their CPU Prefill is the per-token trunk, which is exactly the
@@ -115,18 +115,34 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
             LastCpuPrefillRefusal = "CPU batched prefill unavailable: " + capability.Detail;
             return false;
         }
-        _cpuPart.TruncateTo(0);
+        // A later turn: the CPU part already holds rows [0, startPos) for its own layers (decode wrote them); the GPU layers' rows are read
+        // back into the same cache so the CPU pass prefills the new tokens against the full history. Whole-model cache, F32 on both sides.
+        if (startPos > 0) SeedGpuLayerRows(_cpuPart.KvCacheForHandoff, startPos);
+        else _cpuPart.TruncateTo(0);
         ReadOnlySpan<float> cpuLogits;
-        try { cpuLogits = _cpuPart.Prefill(tokens, 0); }
+        try { cpuLogits = _cpuPart.Prefill(tokens, startPos); }
         catch (NotSupportedException ex) { _cpuPrefillBroken = true; LastCpuPrefillRefusal = "CPU pass refused: " + ex.Message; return false; }
-        if (_gpuPart.ImportSplitKv(_cpuPart.KvCacheForHandoff, tokens.Count) is { } why)
+        if (_gpuPart.ImportSplitKv(_cpuPart.KvCacheForHandoff, startPos + tokens.Count) is { } why)
         {
             LastCpuPrefillRefusal = "GPU side: " + why;
-            _cpuPart.TruncateTo(0);
+            _cpuPart.TruncateTo(startPos);
             return false;
         }
         logits = cpuLogits;
         return true;
+    }
+
+    private void SeedGpuLayerRows(PagedKvCache cache, int count)
+    {
+        int kvDim = _hp.NumKvHeads * _hp.HeadDim;
+        var k = new float[(long)count * kvDim];
+        var v = new float[(long)count * kvDim];
+        for (int layer = 0; layer < _split; layer++)
+        {
+            _gpuPart.ReadKvRows(layer, count, k, v);
+            for (int pos = 0; pos < count; pos++)
+                cache.AppendAt(layer, pos, k.AsSpan(pos * kvDim, kvDim), v.AsSpan(pos * kvDim, kvDim));
+        }
     }
 
     /// <summary>The dtype the GPU layers store KV in (tests pick the comparison from it).</summary>
@@ -139,7 +155,7 @@ public sealed class VulkanLayerSplitForwardPass : IForwardPass
     {
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(tokens.Count, startPos);
-        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, out var handed))
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, startPos, out var handed))
         {
             LastPrefillUsedCpuHandoff = true;
             return handed;
