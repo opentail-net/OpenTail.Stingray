@@ -55,6 +55,10 @@ The models in this section run entirely on CPU cores using Stingray's AVX2/AVX-5
 
 Commands are CPU runs of the exact file listed. Decode is generation speed after the prompt.
 
+**Prefill rows dated 2026-10-01 and 2026-10-02 used the F32 prefill default.** Since 2026-10-02 dense models prefill with int8 activations by default
+([ADR-0003](reference/adr-0003-cpu-int8-prefill-default.md)); the 2026-11-01 re-measure in PerformanceLeague.md (Qwen2.5-0.5B 437 t/s, SmolLM2-1.7B 202, Gemma-3-4B 97,
+Gemma-4-12B 33 at 700 to 770 tokens) is the current figure.
+
 ### 1. Large Language Models (Text Generation)
 
 | Model and file | Command | RAM needed | Speed on the reference machine | Notes |
@@ -110,7 +114,7 @@ Commands are CPU runs of the exact file listed. Decode is generation speed after
 | Cohere Command R7B, `c4ai-command-r7b-12-2024-Q4_K_M.gguf` | `stingray -m models/_models/c4ai-command-r7b-12-2024-Q4_K_M.gguf -p "Write a short paragraph about the ocean." -n 128 --temp 0` | about 5.1 GB (peak) | Decode 5.7-7.0 tok/s over 113 tokens (2026-10-01) | Context defaults to 8192. |
 | [Ornith 1.0 9B (Qwen3.5 hybrid Gated DeltaNet)](models/qwen35.md), `deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf` | `stingray -m models/_models/deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf -p "Write a short paragraph about the ocean." -n 128 --temp 0` | about 5.9 GB (peak) | Decode 4.8-6.3 tok/s over 128 tokens (2026-10-01) | Reasoning model: the first tokens are a thinking trace, so raise `-n` to see the answer. |
 | [Qwen3-Coder 30B-A3B Instruct (MoE)](models/qwen.md#qwen3-coder-30b-a3b), `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf` | `stingray -m models/_models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf -p "Write a short paragraph about the ocean." -n 128 --temp 0` | about 17.6 GB (peak) | Decode 8.1-15.4 tok/s over 108 tokens (2026-10-01; large spread across passes) | Load takes about 35 s. |
-| [Qwen3.8 27B (hybrid Gated DeltaNet)](models/qwen35.md), `Qwen3.8-27B-UD-Q3_K_XL.gguf` | `stingray -m models/_models/Qwen3.8-27B-UD-Q3_K_XL.gguf -p "Write a short paragraph about the ocean." -n 128 --temp 0` | about 13 GB (peak) | Decode 1.6-2.1 tok/s over 122 tokens (2026-10-01), 2.3-2.4 tok/s re-measured 2026-10-08; prefill 8.8 tok/s on a 620-token prompt, was 2.1 before ADR-0002 (2026-10-02), 9.1 re-measured 2026-10-08. **Faster: add `--spec-type mtp --no-thinking` (greedy) for 2.7 tok/s (+12%, 2026-10-08, MTP self-speculation, draft depth 1).** | Reasoning model. Load takes about 25 s. |
+| [Qwen3.8 27B (hybrid Gated DeltaNet)](models/qwen35.md), `Qwen3.8-27B-UD-Q3_K_XL.gguf` | `stingray -m models/_models/Qwen3.8-27B-UD-Q3_K_XL.gguf -p "Write a short paragraph about the ocean." -n 128 --temp 0` | about 13 GB (peak) | Decode 1.6-2.1 tok/s over 122 tokens (2026-10-01), 2.3-2.4 tok/s re-measured 2026-10-08; prefill 8.8 tok/s on a 620-token prompt, was 2.1 before ADR-0002 (2026-10-02), 9.1 re-measured 2026-10-08, 8.1 re-measured 2026-11-01 on a 744-token prompt (three runs 7.5 to 8.2; Qwen3.6-27B 8.4 on 702 tokens). **Faster: add `--spec-type mtp --no-thinking` (greedy) for 2.7 tok/s (+12%, 2026-10-08, MTP self-speculation, draft depth 1).** | Reasoning model. Load takes about 25 s. |
 
 ### 2. Multimodal Vision Understanding (VLM)
 

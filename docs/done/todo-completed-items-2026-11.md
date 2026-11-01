@@ -78,3 +78,25 @@ Finished items moved verbatim out of [../todo.md](../todo.md). Open items stay t
 
 > from: ## TODO: int8 prompt processing on by default (Option A)
 - [x] *(closed 2026-11-01: committed; the changes are on `main`)* Commit only these hunks
+
+---
+
+## More completed items moved from todo.md on 2026-11-01
+
+Finished items moved verbatim out of [../todo.md](../todo.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Docs
+- [x] *(done 2026-11-01: 8.1 and 8.4 t/s medians, about 10 percent background load; League section `CPU prefill at the int8 default`)* Re-measure Qwen3.8-27B (and Qwen3.6-27B) prefill, uncontended; dated `PerformanceLeague.md` rows
+
+> from: ## Docs
+- [x] *(done 2026-11-01)* `docs/RUNNING.md` 27B rows (measured speed, dated)
+
+> from: ## Docs
+- [x] *(checked 2026-11-01: the hybrid-GDN STATUS row states no 27B prefill figure, so nothing to change)* `docs/STATUS.md` if a hybrid-GDN row is affected
+
+> from: ## TODO: int8 prompt processing on by default (Option A)
+- [x] *(done 2026-11-01, with about 10 percent background CPU load, so not perfectly uncontended; League section and ADR-0003 updated)* Re-measure prefill with the new default **uncontended, one run at a time**: SmolLM2-1.7B,
+      Qwen2.5-0.5B, Gemma-3-4B, Gemma-4-12B; dated League rows; fill ADR-0003's speed table
+
+> from: ## TODO: int8 prompt processing on by default (Option A)
+- [x] *(done 2026-11-01)* `docs/RUNNING.md`: note rows measured 2026-10-01..02 used the F32 default

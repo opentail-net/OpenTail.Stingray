@@ -44,6 +44,9 @@ History:
 | Gemma-4-12B Q4_K_M | - | - | - | 14.5 -> 36.4 (0.39x -> 0.97x of llama.cpp) | PerformanceLeague 2026-10-02 |
 | Granite-4-H-Small (MoE) | 26.1080 | 26.5483 | 26.4155 | - | granite plan 13 (MoE int8 at the time) |
 
+Re-measured 2026-11-01 at the int8 default (703 to 774-token prompt, three interleaved runs, about 10 percent background CPU load; see
+[PerformanceLeague.md](../../PerformanceLeague.md), section *CPU prefill at the int8 default*): Qwen2.5-0.5B 436.8 t/s, SmolLM2-1.7B 201.6, Gemma-3-4B 97.3, Gemma-4-12B 32.6
+(medians), which is 2.4x to 3.1x the F32 defaults above and 0.95x to 1.01x of the stored llama.cpp rates for the three models that have one.
 PPL: wiki.test.raw, `stingray perplexity --batched -g 0 -c 2048`, `[1024,+)` bucket, against
 `llama-perplexity -c 2048 --chunks 1`.
 
