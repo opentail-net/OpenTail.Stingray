@@ -175,7 +175,7 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
 - [ ] Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
       0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
       ggml Q8_K (1 scale/256) per weight type; align where it differs
-- [ ] Q3_K batched path uses Q8_KS while decode uses Q8_K (claimed; verify in
+- [x] *(closed 2026-11-01: confirmed in `TryResolveQ8Dispatch` and measured harmless, ADR-0003 addendum; both formats kept.)* Q3_K batched path uses Q8_KS while decode uses Q8_K (claimed; verify in
       `TryResolveQ8Dispatch`). Unifying on Q8_K would make Q3_K prefill match decode and ggml
 - [ ] MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
       instead of per expert bucket: k-fold less quantize work, identical activations per token
