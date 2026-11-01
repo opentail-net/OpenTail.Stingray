@@ -121,6 +121,15 @@ Follow-ups:
 The follow-up list (quantize-once MoE dispatch, Q8_K alignment, then re-deciding
 `STINGRAY_MOE_PREFILL_Q8`) is tracked in `docs/4-performance/perf-sweep-plan.md`.
 
+## Addendum 2026-11-01: Q3_K activation format (plan 4 A1)
+
+The Q3_K batched path quantises activations to Q8_KS (eight scales per 256 values) while the single-token decode dot uses Q8_K (one scale). This is deliberate and
+harmless: the kernel test `DotQ3K_Q8KS non-uniform` measures the Q8_KS error at 0.66 to 0.77 of the Q8_K error on non-uniform rows (and 0.71 to 0.91 for Q8_0 weights), so the
+batched format is the more precise one, and the Q4_K batched path already uses it. Perplexity on Granite-Vision-3.2-2B Q3_K_S (wiki.test.raw, `perplexity --batched -g 0 -c 2048`,
+`[1024,+)` bucket, 2026-11-01, Ryzen 7 5700G): int8 prefill 605.7, F32 prefill 546.8, llama-perplexity 617.1 ± 75.5. The checkpoint is a degenerate language model (PPL near 600), so
+the perplexity gate has a spread of about ±75 and cannot separate the two formats; the kernel-level error is the evidence. Decision: keep both formats; moving decode to Q8_KS
+would be a decode-kernel change with no measured benefit and is not planned.
+
 ## Rollback
 
 `STINGRAY_CPU_PREFILL_Q8=0` restores the per-token prefill (bit-identical to decode) for the whole
