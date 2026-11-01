@@ -1,4 +1,4 @@
-﻿# PerformanceLeague
+# PerformanceLeague
 
 > **Purpose:** C# vs C++ inference comparison, by model. The **Ratio** column is the primary
 > signal — it shows how close this engine is to its llama.cpp / C++ reference equivalent for each scenario.
@@ -136,6 +136,26 @@ Performance Check: 2026-10-11 for every row above.
 
 ---
 
+## CPU prefill at the int8 default, re-measured 2026-11-01
+
+Since 2026-10-02 the CPU batched prefill uses int8 activations by default for dense models ([ADR-0003](docs/reference/adr-0003-cpu-int8-prefill-default.md)); the rows
+measured on 2026-10-01 and 2026-10-02 below this section used the F32 default. Re-measured here with the current build, `-g 0`, greedy, `-n 4`,
+one process per run, models interleaved across three rounds, prompt = the first 2,800 characters of `wiki.test.raw` (so 703 to 774 tokens depending on the tokenizer).
+**Not a fully idle machine:** the CPU showed about 10 percent background load before the run (another process on the desktop), and the checkpoints are
+on three different drives. The older llama.cpp numbers are the stored ones from 2026-09/10 (different prompt lengths, 495 to 503 tokens), so the ratios are estimates, not a new C++ measurement.
+
+| Model (Q4_K_M) | Prompt tok | Prefill t/s, 3 runs | Median | F32 default before | Stored llama.cpp | Ratio (estimate) |
+|---|---:|---|---:|---:|---:|---:|
+| Qwen2.5-0.5B-Instruct | 735 | 453.7 / 436.8 / 432.8 | 436.8 | 142 (2026-10-01) | 455.6 | 0.96x |
+| SmolLM2-1.7B-Instruct | 774 | 201.6 / 199.2 / 204.0 | 201.6 | 77.5 (perf-sweep 10.2) | not stored | - |
+| Gemma-3-4B-it | 703 | 97.3 / 93.3 / 100.5 | 97.3 | 44 (2026-10-02) | 96.6 | 1.01x |
+| Gemma-4-12B-it | 707 | 30.7 / 32.6 / 33.3 | 32.6 | 14.5 (2026-10-02) | 34.3 | 0.95x |
+| Qwen3.6-27B UD-Q3_K_XL (hybrid GDN) | 702 | 8.4 / 8.3 / 8.5 | 8.4 | 1.0 (2026-09-10) | 6.15 (2026-09-10) | 1.37x |
+| Qwen3.8-27B UD-Q3_K_XL (hybrid GDN) | 744 | 7.5 / 8.2 / 8.1 | 8.1 | 2.1 (2026-10-02, before ADR-0002) | 8.2 | 0.99x |
+
+Reading: 2.4x to 3.1x the F32 default on the four dense models, close to the stored llama.cpp rate on three. The two 27B hybrid-GDN rows are the ADR-0002 chunked prefill (about 4x the 2.1 t/s before it); the Qwen3.6-27B reference was measured on a different quant and prompt, so its ratio is the weakest number in the table. SmolLM2 is lower than the 2026-10-11 recheck of the same file
+(227.7 and 232.9 t/s at 555 tokens) and lower than the 2026-10-02 figure of 227; a longer prompt and the background load both push in that direction, so treat it as
+about 10 percent noisy, not as a regression. Decode with `-n 4` is not a valid decode measurement and is not reported.
 <!-- league-findings:begin -->
 ## Findings from the 2026-10-11 sweep (hand-written; the generated tables follow)
 

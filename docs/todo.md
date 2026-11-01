@@ -114,19 +114,12 @@ Rule: document, document, document.
       exact path; re-baseline on the fast path when `Qwen3.6-27B-MTP-Q4_K_M.gguf` is available
 
 ## Docs
-- [ ] Re-measure Qwen3.8-27B (and Qwen3.6-27B) prefill, uncontended; dated `PerformanceLeague.md` rows
-- [ ] `docs/RUNNING.md` 27B rows (measured speed, dated)
-- [ ] `docs/STATUS.md` if a hybrid-GDN row is affected
 
 ## TODO: int8 prompt processing on by default (Option A)
 
 User decision 2026-10-02: `STINGRAY_CPU_PREFILL_Q8` defaults ON for dense models; routed MoE
 experts stay F32 (separate gate `STINGRAY_MOE_PREFILL_Q8`, default off). Rollback:
 `STINGRAY_CPU_PREFILL_Q8=0`.
-
-- [ ] Re-measure prefill with the new default **uncontended, one run at a time**: SmolLM2-1.7B,
-      Qwen2.5-0.5B, Gemma-3-4B, Gemma-4-12B; dated League rows; fill ADR-0003's speed table
-- [ ] `docs/RUNNING.md`: note rows measured 2026-10-01..02 used the F32 default
 
 ## Follow-ups: closing the remaining gaps
 - [ ] MoE audit and int8 follow-ups: see [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md) (section "Follow-ups from the MoE audit").
