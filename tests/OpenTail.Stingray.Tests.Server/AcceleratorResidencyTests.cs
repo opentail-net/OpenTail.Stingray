@@ -170,13 +170,17 @@ public sealed class AcceleratorResidencyTests
     /// Plan 6 C1: the production wiring hands the manager a candidate accelerator estimate BEFORE it loads, and that figure is what the loaded runtime records
     /// afterwards (both are the weights the execution plan places on the GPU). Before this, <c>AddOpenTailStingray</c> built the manager without an estimator,
     /// so every candidate counted as 0 and accelerator-aware admission could never run in a real server. The unit tests (Tests.Server.Fast) pass a fake estimator;
-    /// this goes through the real DI wiring, the real planner and a real model.
+    /// this goes through the real DI wiring, the real planner and a real model. The equality proves the wiring and that both numbers come from the same plan (the dense
+    /// and the hybrid-GDN full-offload branch both pass), NOT that the figure matches device memory: both are the planner's weight figure, which is a lower bound
+    /// (plan 6 F2 holds the measurement).
     /// </summary>
-    [Fact]
-    public async Task RealVulkanModel_ProductionWiring_PassesTheCandidateEstimate_ThatEqualsTheLoadedResidentFigure()
+    [Theory]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf")]        // dense: the forward pass the figure was first checked on
+    [InlineData("Qwen3.5-0.8B-Q8_0.gguf")]      // hybrid Gated-DeltaNet (qwen35): full offload runs HybridGdnForwardPass, whose placement is not TierPlanner-driven
+    public async Task RealVulkanModel_ProductionWiring_PassesTheCandidateEstimate_ThatEqualsTheLoadedResidentFigure(string modelFile)
     {
-        string? modelPath = FindModelAnywhere("Qwen3-0.6B-Q8_0.gguf");
-        Assert.SkipUnless(modelPath is not null, "Qwen3-0.6B-Q8_0.gguf is required for this test.");
+        string? modelPath = FindModelAnywhere(modelFile);
+        Assert.SkipUnless(modelPath is not null, $"{modelFile} is required for this test.");
         SkipUnlessVulkanAvailable();
 
         var services = new ServiceCollection();
@@ -223,8 +227,15 @@ public sealed class AcceleratorResidencyTests
                 if (File.Exists(candidate)) return candidate;
         foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
         {
-            string candidate = Path.Combine(drive.RootDirectory.FullName, "_models", fileName);
+            string root = Path.Combine(drive.RootDirectory.FullName, "_models");
+            string candidate = Path.Combine(root, fileName);
             if (File.Exists(candidate)) return candidate;
+            if (!Directory.Exists(root)) continue;
+            foreach (string folder in Directory.EnumerateDirectories(root))   // checkpoints are often kept one folder down (E:\_models\qwen35-0.8b\...)
+            {
+                candidate = Path.Combine(folder, fileName);
+                if (File.Exists(candidate)) return candidate;
+            }
         }
         return null;
     }
