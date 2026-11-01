@@ -57,7 +57,7 @@ builder.Services.AddOpenTailStingray(builder.Configuration);
 | Endpoint | Wire-compatible with | Capabilities |
 |---|---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions | Streaming SSE, Tool Calling, Structured JSON, Multimodal Vision |
-| `POST /v1/audio/transcriptions` | OpenAI Audio Transcriptions | SRT, VTT, verbose_json; `model` is validated (`whisper-base`, `whisper-1`, `transcribe`). **The route currently runs a placeholder Whisper without weights**, see the parameter audit F7 |
+| `POST /v1/audio/transcriptions` | OpenAI Audio Transcriptions | SRT, VTT, verbose_json; Runs the installed catalog model with real weights (`model`: `whisper-base`, `whisper-1`, `transcribe` or omitted). A model that is not installed answers 503 and says to run `stingray setup transcribe`; see the parameter audit F8 |
 | `POST /v1/audio/translations` | OpenAI Audio Translations | Whisper Speech Translation |
 | `POST /v1/audio/speech` | OpenAI Audio Speech | Kokoro, Piper, MeloTTS, Chatterbox, F5-TTS with clause streaming |
 | `POST /v1/images/generations` | OpenAI Image Generations | **Not implemented: answers 501.** The route validates the request, then says to use `stingray image`. (Before 2026-11-01 it returned a placeholder gradient with a 200; it never called a diffusion pipeline.) Connecting the real pipelines is open work. |
