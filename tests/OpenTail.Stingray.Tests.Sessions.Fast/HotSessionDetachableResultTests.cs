@@ -172,7 +172,9 @@ public sealed class HotSessionDetachableResultTests
             try { await sessionB.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationB, Digest("hello"), ctsB.Token); }
             catch (OperationCanceledException) { }
         });
-        await Task.Delay(200);   // B is queued behind A and its caller is parked on its output channel
+        // B is queued behind A and its caller is parked on its output channel. Waited for, not slept for: a fixed 200 ms was not always enough on a loaded
+        // 2-CPU machine for B's turn to start, and GetOperation below then threw KeyNotFoundException (2 runs in 40). B is queued only after its operation exists.
+        Assert.True(SpinWait.SpinUntil(() => engine.QueueDepth > 0, TimeSpan.FromSeconds(10)), "turn B was never queued behind turn A");
 
         for (int i = 0; i < 64; i++)
         {
