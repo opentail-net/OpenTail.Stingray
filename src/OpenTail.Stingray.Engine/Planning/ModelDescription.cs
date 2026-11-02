@@ -130,6 +130,7 @@ public sealed record ModelDescription(
         }
 
         long moeRoutedExpertGpuBytes = hp.IsMoE ? MeasureMoeRoutedExpertsGpuBytes(gguf, hp) : 0;
+        long mtpHeadGpuBytes = MeasureMtpHeadGpuBytes(gguf, hp);
 
         int headDim = hp.HeadDim;
         long scratchBytes = (long)(hp.EmbeddingDim * 3 + hp.NumHeads * headDim
@@ -184,6 +185,7 @@ public sealed record ModelDescription(
             TotalCpuWeightBytes = totalCpuWeightBytes,
             ScratchBytes = scratchBytes,
             MoeRoutedExpertGpuBytes = moeRoutedExpertGpuBytes,
+            MtpHeadGpuBytes = mtpHeadGpuBytes,
             TensorNames = tensorNames,
             SwaWindowSizes = hp.IsSwaLayer != null ? ImmutableArray.CreateRange(hp.IsSwaLayer.Select(b => b ? 1 : 0)) : null,
             KvSourceLayers = hp.KvSourceLayer != null ? ImmutableArray.CreateRange(hp.KvSourceLayer) : null,
@@ -388,6 +390,26 @@ public sealed record ModelDescription(
         if (dt == DType.Q4_K || dt == DType.Q8_0 || dt == DType.Q6_K)
             return (info.Value.ByteSize + 3) & ~3L;
         return info.Value.ElementCount * sizeof(float);
+    }
+
+    /// <summary>
+    /// Weight bytes of the MTP/NEXTN head the Vulkan hybrid-GDN pass uploads whenever the checkpoint carries one: the tensors of block
+    /// <c>NumLayers</c>, found by <c>blk.{NumLayers}.nextn.eh_proj.weight</c> like the pass does. Routed experts and the routers stay on the
+    /// CPU for an MoE head (VulkanHybridGdnForwardPass.LoadMtpHead), so <c>_exps</c> and <c>ffn_gate_inp*</c> tensors are left out. 0 when
+    /// there is no head. The head's KV cache is context-dependent and is added by the execution planner.
+    /// </summary>
+    private static long MeasureMtpHeadGpuBytes(GgufModel gguf, ModelHyperparams hp)
+    {
+        if (hp.NumMtpLayers <= 0 || gguf.FindTensor($"blk.{hp.NumLayers}.nextn.eh_proj.weight") is null) return 0;
+        string prefix = $"blk.{hp.NumLayers}.";
+        long total = 0;
+        foreach (var tensor in gguf.Tensors)
+        {
+            if (!tensor.Name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (tensor.Name.Contains("_exps", StringComparison.Ordinal) || tensor.Name.Contains("ffn_gate_inp", StringComparison.Ordinal)) continue;
+            total += EstimateGpuTensorBytes(tensor);
+        }
+        return total;
     }
 
     private static long EstimateGpuTensorBytes(GgufTensorInfo tensor)
@@ -656,6 +678,8 @@ public sealed record ModelPlanningFacts
     public long TotalCpuWeightBytes { get; init; }
     public long ScratchBytes { get; init; }
     public long MoeRoutedExpertGpuBytes { get; init; }
+    /// <summary>GPU weight bytes of the MTP/NEXTN head (block NumLayers), 0 when the checkpoint has none. See <c>MeasureMtpHeadGpuBytes</c>.</summary>
+    public long MtpHeadGpuBytes { get; init; }
     public ImmutableArray<string> TensorNames { get; init; } = [];
     public ImmutableArray<int>? SwaWindowSizes { get; init; }
     public ImmutableArray<int>? KvSourceLayers { get; init; }
