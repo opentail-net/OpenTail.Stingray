@@ -8,6 +8,28 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class HybridForwardPass : IForwardPass
 {
+    /// <summary>
+    /// Slots for the routed-expert cache. An explicit <paramref name="requested"/> count wins (capped at the total). Otherwise the
+    /// planner's <see cref="LayerPlacement.ExpertCacheBudgetBytes"/> (VRAM left after trunk weights and KV) is divided by what an
+    /// expert really costs once uploaded, so the lazily filled cache cannot outgrow the plan. A placement that carries no MoE sizing
+    /// at all (budget and routed-expert bytes both zero) or an unknown expert size keeps the whole expert set cacheable.
+    /// <paramref name="sizing"/> is null when the budget was not consulted.
+    /// </summary>
+    internal static int ResolveExpertSlotCapacity(int requested, LayerPlacement placement, long perExpertBytes,
+        int gpuLayers, int numExperts, int numActiveExperts, out MoeCachePlan? sizing)
+    {
+        long total = (long)gpuLayers * numExperts;
+        sizing = null;
+        if (requested > 0)
+            return (int)Math.Min(requested, total);
+        if (placement.ExpertCacheBudgetBytes <= 0 && placement.MoeRoutedExpertBytes <= 0)
+            return (int)total;
+        var plan = MoeCacheSizing.Plan(gpuLayers, numExperts, numActiveExperts,
+            placement.ExpertCacheBudgetBytes, perExpertBytes, reserveBytes: 0);
+        sizing = plan;
+        return plan.Slots;
+    }
+
     private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly VulkanBackend _gpu;
@@ -437,9 +459,19 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             if (expertSlotCapacity <= 0
                 && int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_MOE_SLOTS"), out int envSlots) && envSlots > 0)
                 expertSlotCapacity = envSlots;
-            int capacity = expertSlotCapacity > 0
-                ? Math.Min(expertSlotCapacity, totalExperts)
-                : totalExperts;
+            long perExpertBytes = ExpertSlotManager.PerExpertGpuBytes(model, _nGpuLayers, _expertDim, _embDim);
+            int capacity = ResolveExpertSlotCapacity(expertSlotCapacity, placement, perExpertBytes,
+                _nGpuLayers, hp.NumExperts, hp.NumActiveExperts, out var sizing);
+            if (sizing is { } plan)
+            {
+                Console.Error.WriteLine(
+                    $"[HybridForwardPass] MoE expert-cache budget {placement.ExpertCacheBudgetBytes / (1024 * 1024)} MiB, " +
+                    $"per-expert ≈ {perExpertBytes / 1024} KiB → {plan.Slots} of {totalExperts} slots ({plan.Status}).");
+                if (plan.Status == MoeCacheSizingStatus.BudgetExhausted)
+                    Console.Error.WriteLine(
+                        "[HybridForwardPass] WARNING: the expert-cache budget cannot fit a single expert; cache clamped to 1 slot " +
+                        "and almost every routed expert will miss. Use fewer GPU layers (-g) or a smaller context.");
+            }
             _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes, _settings.Moe);
             _prefetcher = new MoEPrefetcher(_expertSlotManager);
             if (_predictPrefetch)
