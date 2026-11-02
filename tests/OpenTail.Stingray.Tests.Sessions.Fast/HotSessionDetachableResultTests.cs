@@ -186,7 +186,11 @@ public sealed class HotSessionDetachableResultTests
             holder.Start();
         }
         SpinWait.SpinUntil(() => { lock (registrations) return registrations.Count == holders.Count; }, TimeSpan.FromSeconds(10));
-        var canceller = Task.Run(() => ctsB.Cancel());
+        // A dedicated thread, not Task.Run: Cancel() blocks inside the holding callback, and on a pool that starts with two threads (a small CI runner,
+        // or DOTNET_PROCESSOR_COUNT=2) the batcher, the blocked cancel and the continuations of both turns compete for them, so the cancel could wait for
+        // thread injection (about 500 ms each) and "Cancel() never reached the holding callback" failed 2 runs in 40.
+        var canceller = new Thread(() => ctsB.Cancel()) { IsBackground = true };
+        canceller.Start();
         Assert.True(cancelCallbackRunning.Wait(TimeSpan.FromSeconds(10)), "Cancel() never reached the holding callback");
         Assert.True(ctsB.IsCancellationRequested);
 
@@ -194,7 +198,7 @@ public sealed class HotSessionDetachableResultTests
         await turnA.WaitAsync(TimeSpan.FromSeconds(10));
         await turnB.WaitAsync(TimeSpan.FromSeconds(10));
         releaseCancel.Set();
-        await canceller;
+        Assert.True(canceller.Join(bound), "the cancelling thread never returned from Cancel()");
         holdersDone.Set();
         foreach (var holder in holders) holder.Join();
         foreach (var registration in registrations) registration.Dispose();
