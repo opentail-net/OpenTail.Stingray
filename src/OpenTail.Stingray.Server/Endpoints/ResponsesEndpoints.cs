@@ -73,6 +73,15 @@ public static class ResponsesEndpoints
                 ctx.Response.StatusCode = 503;
                 return;
             }
+            catch (NotSupportedException ex)
+            {
+                ctx.Response.StatusCode = ModelLoadRefusal.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
 
             engine = handle.Runtime.Loaded.Engine;
             chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);

@@ -100,6 +100,15 @@ public static class AnthropicEndpoints
                         OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
                 return;
             }
+            catch (NotSupportedException ex)
+            {
+                ctx.Response.StatusCode = ModelLoadRefusal.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new AErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
+                        OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
+                return;
+            }
 
             engine = handle.Runtime.Loaded.Engine;
             chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);
