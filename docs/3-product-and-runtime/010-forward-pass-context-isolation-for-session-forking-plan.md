@@ -113,13 +113,13 @@ needs a decision before implementation starts, not during it.
 
 ## Per-backend scope, in rollout order (least to most unknown)
 
-- [ ] 1. **`ForwardPass` (CPU dense).** Fully scoped above. A `CreateContext()` here is a
+- [x] *(superseded 2026-11-01: `CreateContext()` removed on the owner's decision, forking does not use it)* 1. **`ForwardPass` (CPU dense).** Fully scoped above. A `CreateContext()` here is a
    constructor overload that takes the existing `_model`/`_hp`/weight-cache references
    from the parent and allocates fresh scratch buffers + a fresh `PagedKvCache`. Lowest
    risk, do this one first and validate the pattern against real Golden-style fork tests
    with a real model before touching anything else.
 
-- [ ] 2. **`GpuForwardPass` (Vulkan)** and **`CudaForwardPass`.** Same shape as #1 but the
+- [x] *(superseded 2026-11-01, as 1)* 2. **`GpuForwardPass` (Vulkan)** and **`CudaForwardPass`.** Same shape as #1 but the
    "cheap to duplicate" scratch buffers are GPU-resident (device memory allocations,
    possibly through `GpuBufferPool`), and `CudaForwardPass` additionally implements
    `IMultiSlotKvCache` and is thread-affine (`IThreadAffineBackend` — see
@@ -128,13 +128,13 @@ needs a decision before implementation starts, not during it.
    (device memory budget, allocation latency), and does context creation need to happen
    on a specific thread/stream.
 
-- [ ] 3. **`HybridForwardPass` / `CudaHybridForwardPass`** (MoE expert offload). These
+- [x] *(superseded 2026-11-01, as 1)* 3. **`HybridForwardPass` / `CudaHybridForwardPass`** (MoE expert offload). These
    additionally own expert-slot cache state (`ExpertSlotManager`/`CudaExpertSlotManager`
    per the MoE offloading design in the top-level design doc). Need to determine whether
    expert slot caches are safe to share (likely yes — they're an LRU cache over static
    expert weights, analogous to `_dequantWeightCache`) or need their own isolation.
 
-- [ ] 4. **`HybridGdnForwardPass` / `CudaHybridGdnForwardPass`** (qwen35moe hybrid
+- [x] *(superseded 2026-11-01, as 1)* 4. **`HybridGdnForwardPass` / `CudaHybridGdnForwardPass`** (qwen35moe hybrid
    Gated-DeltaNet). Highest unknown: GDN state is described elsewhere in this codebase
    (`GdnStateCache`, `SupportsPartialRewind => false` by default) as destructively
    updated per token and NOT arbitrarily rewindable — which is exactly the kind of state
@@ -144,16 +144,16 @@ needs a decision before implementation starts, not during it.
 
 ## Testing plan (once implementation starts)
 
-- [ ] Extend `GoldenArchitectureTests`-style coverage with a REAL-model variant of
+- [ ] *(still open for GPU, hybrid and GDN passes; the CPU dense real-model fork test exists)* Extend `GoldenArchitectureTests`-style coverage with a REAL-model variant of
   `GoldenTest2`/`GoldenTest9`/`GoldenTest10` per backend (currently these only run
   against `StatefulTestForwardPass`, which is why the production gap was invisible —
   see the prior bug-fix pass's verification section for the same lesson applied to bug
   #1).
-- [ ] A concurrency test: fork a session bound to a real model, drive parent and child
+- [x] *(done for CPU dense: `HotSessionForkRealModelTests` forks on a real model, sequentially and with both branches generating concurrently; GPU, hybrid and Gated-DeltaNet forking stays unverified, see the Status section)* A concurrency test: fork a session bound to a real model, drive parent and child
   generation concurrently, assert neither's token history/logits are affected by the
   other. This is the actual failure mode `CreateContext() => this` produces today and is
   the test that should have existed from the start.
-- [ ] Remove the `ThrowIfForwardPassNotIsolated` guard's `NotSupportedException` path for
+- [x] *(not applicable: `ThrowIfForwardPassNotIsolated` is not in the repository, checked 2026-10-30)* Remove the `ThrowIfForwardPassNotIsolated` guard's `NotSupportedException` path for
   each backend only once that backend's `CreateContext()` is implemented and covered by
   the above — the guard should fail closed per-backend as this rolls out, not open all
   at once.
