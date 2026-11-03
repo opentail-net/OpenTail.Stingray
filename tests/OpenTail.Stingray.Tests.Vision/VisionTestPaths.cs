@@ -17,24 +17,57 @@ internal static class VisionTestPaths
     public const string MimoVlMmprojFile = "mmproj-mimovl-7b-q8_0.gguf";
     public const string HunyuanVlMmprojFile = "mmproj-hunyuanocr-q8_0.gguf";
 
-    private static string? FindModel(string file)
-    {
-        string[] candidates = { $@"E:\models\{file}", $@"C:\p\opentail-llm\models\{file}" };
-        foreach (var p in candidates)
-            if (File.Exists(p)) return p;
+    private static string? FindModel(string file) => FindAnywhere(file);
 
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
+    /// <summary>
+    /// One lookup for every vision test, so a checkpoint that exists on this machine is never skipped as "not present" just because one test searched fewer places than
+    /// another (seven copies of this search existed, most of them with hard-coded paths of old machines, and 15 mmproj files on F:\_models were skipped by tests that only
+    /// looked in the repo's models folder). Order: STINGRAY_TEST_MODEL_DIRS (';'-separated), the repo's models and models\_models walking up from the current directory,
+    /// then every ready drive's _models and _other_models, one sub-folder level deep.
+    /// </summary>
+    public static string? FindAnywhere(string file)
+    {
+        var dirs = new List<string>();
+        if (Environment.GetEnvironmentVariable("STINGRAY_TEST_MODEL_DIRS") is { Length: > 0 } extra)
+            dirs.AddRange(extra.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
         {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
+            var d = start;
+            for (int i = 0; i < 10 && d is not null; i++)
+            {
+                dirs.Add(Path.Combine(d, "models"));
+                dirs.Add(Path.Combine(d, "models", "_models"));
+                d = Directory.GetParent(d)?.FullName;
+            }
+        }
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (!drive.IsReady) continue;
+                dirs.Add(Path.Combine(drive.Name, "_models"));
+                dirs.Add(Path.Combine(drive.Name, "_other_models"));
+                dirs.Add(Path.Combine(drive.Name, "models"));
+            }
+        }
+        catch (IOException) { }
+        foreach (var d in dirs.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (!Directory.Exists(d)) continue;
+                var direct = Path.Combine(d, file);
+                if (File.Exists(direct)) return direct;
+                foreach (var sub in Directory.EnumerateDirectories(d))
+                {
+                    var nested = Path.Combine(sub, file);
+                    if (File.Exists(nested)) return nested;
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
         return null;
     }
-
     public static string? FindMmproj() => FindModel(MmprojFile);
     public static string? FindE4BMmproj() => FindModel(E4BMmprojFile);
     public static string? FindTextModel() => FindModel(TextModelFile);
