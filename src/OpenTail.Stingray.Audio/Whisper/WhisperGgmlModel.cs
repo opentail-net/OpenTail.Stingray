@@ -125,14 +125,15 @@ public sealed class WhisperGgmlModel
         for (int i = 0; i < vocabCount; i++)
         {
             uint len = br.ReadUInt32();
-            tokens[i] = len == 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(br.ReadBytes((int)len));
+            tokens[i] = len == 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(ReadExact(br, len, "vocabulary entry"));
         }
         model.TokenById = tokens;
 
         // Tensor stream: (n_dims, name_len, ggml_type) then n_dims x int32 ne[], then name bytes, then raw data.
         while (fs.Position < fs.Length)
         {
-            if (fs.Position + 12 > fs.Length) break;
+            if (fs.Position + 12 > fs.Length)
+                throw new InvalidDataException($"Truncated tensor header at offset {fs.Position}: {fs.Length - fs.Position} byte(s) left, 12 needed.");
 
             int nDims = br.ReadInt32();
             int nameLen = br.ReadInt32();
@@ -146,10 +147,12 @@ public sealed class WhisperGgmlModel
             for (int d = 0; d < nDims; d++)
             {
                 ne[d] = br.ReadInt32();
+                if (ne[d] < 0)
+                    throw new InvalidDataException($"Invalid tensor dimension {ne[d]} at offset {fs.Position}.");
                 nElements *= ne[d];
             }
 
-            string name = System.Text.Encoding.UTF8.GetString(br.ReadBytes(nameLen));
+            string name = System.Text.Encoding.UTF8.GetString(ReadExact(br, nameLen, "tensor name"));
 
             float[] data = ReadTensorData(br, ggmlType, nElements, out short[]? rawF16);
             model._tensors[name] = new WhisperGgmlTensor(ne[..nDims], data, rawF16);
@@ -348,6 +351,16 @@ public sealed class WhisperGgmlModel
         return model;
     }
 
+    /// <summary>Reads exactly <paramref name="count"/> bytes or throws; <c>BinaryReader.ReadBytes</c> returns a short array at end of file,
+    /// which would leave a truncated tensor silently zero-filled.</summary>
+    private static byte[] ReadExact(BinaryReader br, long count, string what)
+    {
+        long remaining = br.BaseStream.Length - br.BaseStream.Position;
+        if (count < 0 || count > remaining)
+            throw new InvalidDataException($"Truncated whisper ggml file: {what} needs {count} byte(s), {remaining} left.");
+        return br.ReadBytes(checked((int)count));
+    }
+
     private static float[] ReadTensorData(BinaryReader br, int ggmlType, long nElements, out short[]? rawF16)
     {
         // ggml_type enum: 0=F32, 1=F16, 6=Q5_0, 7=Q5_1, 8=Q8_0, ... (Whisper ggml releases use F16 or F32 only).
@@ -355,7 +368,7 @@ public sealed class WhisperGgmlModel
         {
             case 0: // F32
             {
-                var raw = br.ReadBytes(checked((int)(nElements * sizeof(float))));
+                var raw = ReadExact(br, nElements * sizeof(float), "F32 tensor data");
                 var f32 = new float[nElements];
                 Buffer.BlockCopy(raw, 0, f32, 0, raw.Length);
                 rawF16 = null;
@@ -363,7 +376,7 @@ public sealed class WhisperGgmlModel
             }
             case 1: // F16
             {
-                var raw = br.ReadBytes(checked((int)(nElements * 2)));
+                var raw = ReadExact(br, nElements * 2, "F16 tensor data");
                 var f32 = new float[nElements];
                 var halves = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(raw);
                 for (int i = 0; i < f32.Length; i++) f32[i] = (float)halves[i];

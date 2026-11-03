@@ -15,11 +15,35 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("qwen3moe")]
     [InlineData("qwen3")]
     [InlineData("llama4")]
+    [InlineData("qwen2")]   // dense Qwen2.5 on the Vulkan hybrid (2026-10-31)
     public void ReceiptedFamilies_AreAdmitted(string arch)
     {
         var c = PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid);
         Assert.Equal(HandoffStatus.Admitted, c.Status);
         Assert.Null(PrefillHandoffFamilies.Refusal(c, null));
+    }
+
+    [Fact]
+    public void DenseQwen2_IsAdmittedOnTheVulkanHybridOnly()
+    {
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.VulkanLayerSplit).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("qwen2"), HandoffPath.CudaHybrid).Status);
+    }
+
+    /// <summary>
+    /// Families that were tried on the Vulkan hybrid on 2026-10-31 and did not pass (docs/2026-10-31-autonomous-plan-2.md, P2): gemma2 and
+    /// granite disagree with the CPU pass before any handoff is involved (sequential hybrid against CPU, min cosine about 0.80); phi3 has a
+    /// fused attn_qkv the hybrid cannot run. They must not become Admitted by accident.
+    /// </summary>
+    [Theory]
+    [InlineData("gemma2")]
+    [InlineData("granite")]
+    [InlineData("phi3")]
+    public void FamiliesThatFailedTheVulkanHybridParityRun_StayUnverified(string arch)
+    {
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md(arch), HandoffPath.VulkanHybrid).Status);
     }
 
     [Theory]
@@ -31,6 +55,16 @@ public sealed class PrefillHandoffFamiliesTests
         Assert.Contains("no parity receipt for this path", PrefillHandoffFamilies.Refusal(c, null));
         Assert.Contains("no parity receipt for this path", PrefillHandoffFamilies.Refusal(c, "1"));
         Assert.Null(PrefillHandoffFamilies.Refusal(c, "all"));
+    }
+
+    /// <summary>hunyuan-moe earned a receipt on the Vulkan layer split only (LayerSplitCpuPrefillHandoffTests, 2026-11-01); every other path stays unverified.</summary>
+    [Fact]
+    public void HunyuanMoe_IsAdmittedOnTheVulkanLayerSplitOnly()
+    {
+        Assert.Equal(HandoffStatus.Admitted, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanLayerSplit).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanHybrid).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.VulkanFullGpu).Status);
+        Assert.Equal(HandoffStatus.Unverified, PrefillHandoffFamilies.Classify(Md("hunyuan-moe"), HandoffPath.CudaHybrid).Status);
     }
 
     [Fact]
@@ -96,6 +130,17 @@ public sealed class PrefillHandoffFamiliesTests
         }
     }
 
+    /// <summary>A receipt keyed by a misspelled or retired architecture id would never match a real checkpoint and would read as evidence anyway.</summary>
+    [Fact]
+    public void EveryReceiptKey_NamesARegisteredArchitecture()
+    {
+        foreach (var (family, path) in PrefillHandoffFamilies.Receipts.Keys)
+        {
+            string architecture = family == "llama+experts" ? "llama" : family;   // Mixtral-style llama is its own family key, not an architecture id
+            Assert.True(ArchitectureRegistry.TryGet(architecture, out _), $"receipt on {path} names '{family}', which is not a registered architecture");
+        }
+    }
+
     [Fact]
     public void Receipts_AreForOnePath_AndDoNotAuthorizeAnother()
     {
@@ -136,16 +181,8 @@ public sealed class PrefillHandoffFamiliesTests
     [InlineData("gpt-oss-20b-MXFP4.gguf", HandoffStatus.Incompatible)]                // own forward pass
     public void RealHeaders_ClassifyAsExpected(string file, HandoffStatus expected)
     {
-        string? path = null;
-        var external = Path.Combine(@"H:\_models", file);
-        if (File.Exists(external)) path = external;
-        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null && path is null; dir = dir.Parent)
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var candidate = Path.Combine(dir.FullName, sub, file);
-                if (File.Exists(candidate)) { path = candidate; break; }
-            }
-        Assert.SkipUnless(path is not null, $"{file} is not in models/ or models/_models/");
+        string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
+        Assert.SkipUnless(path is not null, $"{file} was not found by ModelLocator (STINGRAY_MODEL_DIRS, models/, the _models folders on each drive)");
         using var model = GgufModel.Open(path!);
         var c = PrefillHandoffFamilies.Classify(model.Metadata, HandoffPath.VulkanHybrid, model.FindTensor("rope_factors_short.weight") is not null);
         Assert.True(expected == c.Status, $"{file}: {c.Family} classified {c.Status} ({c.Reason}), expected {expected}");

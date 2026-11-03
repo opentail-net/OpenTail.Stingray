@@ -59,8 +59,11 @@ internal static unsafe class MoeBatchedExperts
         byte* gateBase, DType gateDt, int bprGate,
         byte* upBase, DType upDt, int bprUp,
         byte* downBase, DType downDt, int bprDown,
-        float* inputScale, float* partialOut)
+        float* inputScale, float* partialOut, int gateUpExpertRows = 0, bool gelu = false)
     {
+        // gateUpExpertRows: rows one expert occupies in the tensor holding gate and up (0 = expertDim, separate tensors). Gemma 4 fuses both in one tensor,
+        // so gateBase is the fused base, upBase is the fused base plus expertDim rows, and the per-expert stride is 2 * expertDim rows.
+        int gateUpRows = gateUpExpertRows > 0 ? gateUpExpertRows : expertDim;
         int maxCnt = 0;
         for (int x = 0; x < numExperts; x++) maxCnt = Math.Max(maxCnt, expStart[x + 1] - expStart[x]);
         if (maxCnt == 0) return;
@@ -95,10 +98,10 @@ internal static unsafe class MoeBatchedExperts
                 // batched/per-token parity. Set STINGRAY_MOE_PREFILL_Q8=1 to measure the MoE
                 // speed/quality tradeoff (the general CPU prefill Q8 speed receipt is not MoE-
                 // specific; see docs/1-correctness/13-granite4-h-small-moe-ppl-parity-plan.md).
-                SimdKernels.MatMulBatched(gate, gateBase + (long)x * expertDim * bprGate, gathered,
+                SimdKernels.MatMulBatched(gate, gateBase + (long)x * gateUpRows * bprGate, gathered,
                     cnt, expertDim, embDim, gateDt, allowQ8: Q8PrefillEnabled);
                 if (s_profile) { long d = System.Diagnostics.Stopwatch.GetTimestamp() - t0; Interlocked.Add(ref s_tGate, d); Interlocked.Add(ref s_tByDtype[(int)gateDt], d); t0 = System.Diagnostics.Stopwatch.GetTimestamp(); }
-                SimdKernels.MatMulBatched(up, upBase + (long)x * expertDim * bprUp, gathered,
+                SimdKernels.MatMulBatched(up, upBase + (long)x * gateUpRows * bprUp, gathered,
                     cnt, expertDim, embDim, upDt, allowQ8: Q8PrefillEnabled);
                 if (s_profile) { long d = System.Diagnostics.Stopwatch.GetTimestamp() - t0; Interlocked.Add(ref s_tUp, d); Interlocked.Add(ref s_tByDtype[(int)upDt], d); t0 = System.Diagnostics.Stopwatch.GetTimestamp(); }
 
@@ -111,7 +114,8 @@ internal static unsafe class MoeBatchedExperts
                     }
 
                 // The bucket's rows are contiguous, so one SiLuMul covers the whole batch.
-                SimdKernels.SiLuMul(gate, up, cnt * expertDim);
+                if (gelu) SimdKernels.GeluTanhMul(gate, up, gate, cnt * expertDim);
+                else SimdKernels.SiLuMul(gate, up, cnt * expertDim);
                 if (s_profile) { AddTicks(ref s_tAct, t0); t0 = System.Diagnostics.Stopwatch.GetTimestamp(); }
                 SimdKernels.MatMulBatched(down, downBase + (long)x * embDim * bprDown, gate,
                     cnt, embDim, expertDim, downDt, allowQ8: Q8PrefillEnabled);

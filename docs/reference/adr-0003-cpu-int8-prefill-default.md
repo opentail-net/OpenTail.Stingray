@@ -44,6 +44,9 @@ History:
 | Gemma-4-12B Q4_K_M | - | - | - | 14.5 -> 36.4 (0.39x -> 0.97x of llama.cpp) | PerformanceLeague 2026-10-02 |
 | Granite-4-H-Small (MoE) | 26.1080 | 26.5483 | 26.4155 | - | granite plan 13 (MoE int8 at the time) |
 
+Re-measured 2026-11-01 at the int8 default (703 to 774-token prompt, three interleaved runs, about 10 percent background CPU load; see
+[PerformanceLeague.md](../../PerformanceLeague.md), section *CPU prefill at the int8 default*): Qwen2.5-0.5B 436.8 t/s, SmolLM2-1.7B 201.6, Gemma-3-4B 97.3, Gemma-4-12B 32.6
+(medians), which is 2.4x to 3.1x the F32 defaults above and 0.95x to 1.01x of the stored llama.cpp rates for the three models that have one.
 PPL: wiki.test.raw, `stingray perplexity --batched -g 0 -c 2048`, `[1024,+)` bucket, against
 `llama-perplexity -c 2048 --chunks 1`.
 
@@ -117,6 +120,15 @@ Follow-ups:
 
 The follow-up list (quantize-once MoE dispatch, Q8_K alignment, then re-deciding
 `STINGRAY_MOE_PREFILL_Q8`) is tracked in `docs/4-performance/perf-sweep-plan.md`.
+
+## Addendum 2026-11-01: Q3_K activation format (plan 4 A1)
+
+The Q3_K batched path quantises activations to Q8_KS (eight scales per 256 values) while the single-token decode dot uses Q8_K (one scale). This is deliberate and
+harmless: the kernel test `DotQ3K_Q8KS non-uniform` measures the Q8_KS error at 0.66 to 0.77 of the Q8_K error on non-uniform rows (and 0.71 to 0.91 for Q8_0 weights), so the
+batched format is the more precise one, and the Q4_K batched path already uses it. Perplexity on Granite-Vision-3.2-2B Q3_K_S (wiki.test.raw, `perplexity --batched -g 0 -c 2048`,
+`[1024,+)` bucket, 2026-11-01, Ryzen 7 5700G): int8 prefill 605.7, F32 prefill 546.8, llama-perplexity 617.1 ± 75.5. The checkpoint is a degenerate language model (PPL near 600), so
+the perplexity gate has a spread of about ±75 and cannot separate the two formats; the kernel-level error is the evidence. Decision: keep both formats; moving decode to Q8_KS
+would be a decode-kernel change with no measured benefit and is not planned.
 
 ## Rollback
 

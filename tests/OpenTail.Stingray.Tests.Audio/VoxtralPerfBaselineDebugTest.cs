@@ -8,19 +8,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class VoxtralPerfBaselineDebugTest : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     [Fact]
     public void Bench_Transcribe_BWav_RealWeights()

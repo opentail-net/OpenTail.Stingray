@@ -214,27 +214,7 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
     /// is a different architecture (dense FFN + MTP head, not MoE) and (b) the
     /// file lives in <c>C:\p\opentail-llm\models</c> (17 GB), not <c>E:\models</c>.
     /// </summary>
-    private static string? FindMtpModelPath()
-    {
-        string[] absoluteCandidates =
-        {
-            @"C:\p\opentail-llm\models\Qwen3.6-27B-MTP-Q4_K_M.gguf",
-            @"E:\models\Qwen3.6-27B-MTP-Q4_K_M.gguf",
-        };
-        foreach (var p in absoluteCandidates)
-            if (File.Exists(p)) return p;
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", "Qwen3.6-27B-MTP-Q4_K_M.gguf");
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindMtpModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("Qwen3.6-27B-MTP-Q4_K_M.gguf");
 
     /// <summary>
     /// Smoke test for the MTP / NEXTN head on CPU <see cref="HybridGdnForwardPass"/>

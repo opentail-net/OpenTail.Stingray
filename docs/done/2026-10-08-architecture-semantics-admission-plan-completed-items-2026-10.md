@@ -81,3 +81,14 @@ Finished items moved verbatim out of [../2-coverage/2026-10-08-architecture-sema
   - [x] 9.4 Per-pilot/per-migrated-arch real-weight receipt re-run; list archs with no checkpoint on disk as UNVERIFIED rather than green
     - FINAL 2026-10-08 (ForwardPass heavy classes, one per process, real weights): **PASS** SmolLm3 1/1, Gemma4PrefillConsistency 3/3, Olmoe 2/3 (1 skip), Qwen2Moe 2/2, Afmoe 2/2, Lfm2 3/3, NemotronH 2/2, GraniteHybrid 5/5, Mixtral 2/2, GlmMoe 2/2, PhiMoe 2/2 (544 s), Exaone45 2/2 (870 s), HunyuanMoe 2/2 (627 s), GptNeox 2/2 (after fixing the pythia filename lookup; it had been skipping silently). **KNOWN FAIL (pre-existing, bugstofix #24):** DeepSeek2 greedy parity 1/2. **DEFERRED by the user:** LlamaFour (Llama 4, ~44 GB mapped vs ~23 GB free RAM; cancelled after ~5 min, not a result). **UNVERIFIED (no checkpoint or reference on disk, tests skip):** Gpt2, Glm4, Apertus, Granite, Maincoder, Falcon, Olmo, Olmo2, GraniteMoe, 3 of 4 Gemma4Cpu tests. Not run: Cuda, Vulkan, Sessions, Server heavy projects, and the other heavy ForwardPass classes outside the migrated architectures. Qwen3.8/Qwen3.6/Ornith (qwen35 family) additionally run end to end on CPU after the factory fix (and Qwen3.8 with MTP).
 
+---
+
+## More completed items moved from 2026-10-08-architecture-semantics-admission-plan.md on 2026-11-01
+
+Finished items moved verbatim out of [../2-coverage/2026-10-08-architecture-semantics-admission-plan.md](../2-coverage/2026-10-08-architecture-semantics-admission-plan.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+
+> from: ## Open items moved from 2026-10-08-architecture-capabilities-plan.md (2026-10-30)
+- [x] 0.3 *(done 2026-11-01: `PrefillHandoffFamiliesTests.EveryReceiptKey_NamesARegisteredArchitecture`; the table is public, and a misspelled key makes it fail)* Test that every key in `PrefillHandoffFamilies` names a registered architecture. Checked 2026-10-30: `PrefillHandoffFamiliesTests` covers receipted families (`ReceiptedFamilies_AreAdmitted`), not every key.
+
+> from: ## Open items moved from 2026-10-08-architecture-capabilities-plan.md (2026-10-30)
+- [x] 3.1 Decide D1 (done, confirmed 2026-10-30): may Core accept a traits input from Engine (recommended yes, via `ModelArchitectureSemanticsContext`). Checked 2026-10-30: the context type lives in Core and is used from `ModelGraph.cs`, which suggests D1 is already implemented. Confirm and tick, or record the alternative.

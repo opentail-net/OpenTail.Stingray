@@ -15,19 +15,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class VoxCpm2LlmTensorSourceRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     // Real lm_config from the checkpoint's embedded config.json.
     private const int NumLayers = 28, HiddenDim = 2048, NumHeads = 16, NumKvHeads = 2, HeadDim = 128;

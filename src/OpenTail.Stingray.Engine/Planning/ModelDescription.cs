@@ -130,6 +130,7 @@ public sealed record ModelDescription(
         }
 
         long moeRoutedExpertGpuBytes = hp.IsMoE ? MeasureMoeRoutedExpertsGpuBytes(gguf, hp) : 0;
+        long mtpHeadGpuBytes = MeasureMtpHeadGpuBytes(gguf, hp);
 
         int headDim = hp.HeadDim;
         long scratchBytes = (long)(hp.EmbeddingDim * 3 + hp.NumHeads * headDim
@@ -168,6 +169,7 @@ public sealed record ModelDescription(
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
             IsGemma4 = hp.LayerHeadDim is not null,
+            CpuOnlyReason = hp.ParallelDenseMoe ? "the Gemma 4 mixture-of-experts layers (dense FFN plus fused-expert FFN in parallel) are implemented on the CPU forward pass only" : null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,
@@ -184,6 +186,7 @@ public sealed record ModelDescription(
             TotalCpuWeightBytes = totalCpuWeightBytes,
             ScratchBytes = scratchBytes,
             MoeRoutedExpertGpuBytes = moeRoutedExpertGpuBytes,
+            MtpHeadGpuBytes = mtpHeadGpuBytes,
             TensorNames = tensorNames,
             SwaWindowSizes = hp.IsSwaLayer != null ? ImmutableArray.CreateRange(hp.IsSwaLayer.Select(b => b ? 1 : 0)) : null,
             KvSourceLayers = hp.KvSourceLayer != null ? ImmutableArray.CreateRange(hp.KvSourceLayer) : null,
@@ -239,6 +242,7 @@ public sealed record ModelDescription(
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
             IsGemma4 = hp.LayerHeadDim is not null,
+            CpuOnlyReason = hp.ParallelDenseMoe ? "the Gemma 4 mixture-of-experts layers (dense FFN plus fused-expert FFN in parallel) are implemented on the CPU forward pass only" : null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,
@@ -390,6 +394,26 @@ public sealed record ModelDescription(
         return info.Value.ElementCount * sizeof(float);
     }
 
+    /// <summary>
+    /// Weight bytes of the MTP/NEXTN head the Vulkan hybrid-GDN pass uploads whenever the checkpoint carries one: the tensors of block
+    /// <c>NumLayers</c>, found by <c>blk.{NumLayers}.nextn.eh_proj.weight</c> like the pass does. Routed experts and the routers stay on the
+    /// CPU for an MoE head (VulkanHybridGdnForwardPass.LoadMtpHead), so <c>_exps</c> and <c>ffn_gate_inp*</c> tensors are left out. 0 when
+    /// there is no head. The head's KV cache is context-dependent and is added by the execution planner.
+    /// </summary>
+    private static long MeasureMtpHeadGpuBytes(GgufModel gguf, ModelHyperparams hp)
+    {
+        if (hp.NumMtpLayers <= 0 || gguf.FindTensor($"blk.{hp.NumLayers}.nextn.eh_proj.weight") is null) return 0;
+        string prefix = $"blk.{hp.NumLayers}.";
+        long total = 0;
+        foreach (var tensor in gguf.Tensors)
+        {
+            if (!tensor.Name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (tensor.Name.Contains("_exps", StringComparison.Ordinal) || tensor.Name.Contains("ffn_gate_inp", StringComparison.Ordinal)) continue;
+            total += EstimateGpuTensorBytes(tensor);
+        }
+        return total;
+    }
+
     private static long EstimateGpuTensorBytes(GgufTensorInfo tensor)
     {
         switch (tensor.DType)
@@ -459,8 +483,26 @@ public sealed record ModelDescription(
             }
         }
 
+        // Tensors only some families carry, which the plain-transformer lists above do not name: a fused QKV, the Gated-DeltaNet and SSM projections of hybrid
+        // layers, post-norms. They are uploaded like the rest, so leaving them out made the weight figure too small (Qwen3.5-0.8B: attn_qkv, attn_gate and ssm_out
+        // were 195 MiB of the model, none of it counted). Counted only when present, so a family without them measures exactly what it did before.
+        foreach (var name in LayerFamilySpecificGpuTensors)
+        {
+            var info = model.FindTensor($"blk.{layer}.{name}");
+            if (info is not null)
+                total += EstimateGpuTensorBytes(info.Value);
+        }
+
         return total;
     }
+
+    private static readonly string[] LayerFamilySpecificGpuTensors =
+    [
+        "attn_qkv.weight", "attn_gate.weight",
+        "ssm_in.weight", "ssm_out.weight", "ssm_alpha.weight", "ssm_beta.weight", "ssm_conv1d.weight",
+        "ssm_a", "ssm_d", "ssm_dt.weight", "ssm_dt.bias", "ssm_norm.weight",
+        "post_attention_norm.weight"
+    ];
 
     private static long MeasureLayerCpuBytes(GgufModel model, ModelHyperparams hp, int layer)
     {
@@ -622,6 +664,9 @@ public sealed record ModelPlanningFacts
     public bool HasHybridGdnLayers { get; init; }
     public bool HasCpuHybridGdnPass { get; init; }
     public bool IsGemma4 { get; init; }
+
+    /// <summary>Why this particular checkpoint can only run on the CPU although its architecture has accelerator passes; null when there is no such limit.</summary>
+    public string? CpuOnlyReason { get; init; }
     public bool HasLayerHeadDim { get; init; }
     public bool HasAttnBias { get; init; }
     public bool HasQkNorm { get; init; }
@@ -638,6 +683,8 @@ public sealed record ModelPlanningFacts
     public long TotalCpuWeightBytes { get; init; }
     public long ScratchBytes { get; init; }
     public long MoeRoutedExpertGpuBytes { get; init; }
+    /// <summary>GPU weight bytes of the MTP/NEXTN head (block NumLayers), 0 when the checkpoint has none. See <c>MeasureMtpHeadGpuBytes</c>.</summary>
+    public long MtpHeadGpuBytes { get; init; }
     public ImmutableArray<string> TensorNames { get; init; } = [];
     public ImmutableArray<int>? SwaWindowSizes { get; init; }
     public ImmutableArray<int>? KvSourceLayers { get; init; }

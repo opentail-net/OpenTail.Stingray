@@ -136,7 +136,9 @@ public sealed class HotSessionMetricsMetadataTests
         fwd.ReleaseDecode.Set();
 
         var result = await turn;
-        Assert.Equal(FinishReason.Cancelled, result.FinishReason);
+        // The message names the stored failure: this has failed on CI as Failed after 10 s (plan 6 G10) and the log gave no reason.
+        Assert.True(result.FinishReason == FinishReason.Cancelled,
+            $"expected Cancelled, got {result.FinishReason}; operation state {result.Operation.State}, failure reason [{result.Operation.FailureReason}]");
     }
 
     private static SessionRequestDigest Digest(string value) => SessionRequestDigest.FromCanonicalValue(value);

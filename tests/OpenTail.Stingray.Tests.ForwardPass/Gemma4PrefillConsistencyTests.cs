@@ -57,15 +57,5 @@ public sealed class Gemma4PrefillConsistencyTests : HeavyTestBase
         Assert.True(cos > 0.998, $"N={prompt.Length}: prefill vs token-by-token cosine {cos:F6}");
     }
 
-    private static string? FindModelPath()
-    {
-        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", ModelFile), Path.Combine(dir.FullName, "models", "_models", ModelFile) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(ModelFile);
 }

@@ -10,19 +10,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// one live run.</summary>
 public sealed class PersonaPlexGeneratorRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     private const int NumLayers = 32, HiddenDim = 4096, NumHeads = 32, HeadDim = 128;
     private const int FfDim = 11264, TextVocabSize = 32000, LmCodebooks = 16, AudioCodebookSize = 2048;
