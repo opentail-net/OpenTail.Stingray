@@ -25,19 +25,7 @@ public sealed class ZImageGpuRealScaleBisectTests : HeavyTestBase
         _output = output;
     }
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\_models\{fileName}",
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void Block0Parity_RealScale()

@@ -1,8 +1,9 @@
 # OpenTail.Stingray Samples Expansion Plan
 
+> Completed items moved to [../done/2026-10-09-samples-expansion-plan-completed-items-2026-10.md](../done/2026-10-09-samples-expansion-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; checked against the repo)
 
-- [x] Phase 0: audit and choose (`samples/README.md` is the index, with its gaps listed)
 - [ ] Priority 1 samples from section 5, each checked against the evidence rules in section 3
 - [ ] Priority 2 samples (extra setup)
 - [ ] Section 7: automated verification for every sample and for package-consumer samples

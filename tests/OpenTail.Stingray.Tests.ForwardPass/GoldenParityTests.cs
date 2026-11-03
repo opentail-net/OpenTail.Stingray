@@ -39,7 +39,7 @@ public sealed class GoldenParityTests : HeavyTestBase
         Assert.SkipWhen(dir is null || goldenFile.StartsWith('(') || !File.Exists(Path.Combine(dir, goldenFile)), "no golden to run");
 
         var golden = GoldenFile.Load(Path.Combine(dir!, goldenFile));
-        var path = ModelLocator.Find(golden.Model.FileName);
+        var path = ModelLocator.FindDeep(golden.Model.FileName);
         Assert.SkipWhen(path is null,
             ModelLocator.DescribeMiss([golden.Model.FileName], ModelLocator.Roots())
             + (golden.Model.Source is { } src ? $" Obtain it from {src} (e.g. `stingray pull -r {src}`)." : ""));
@@ -76,7 +76,7 @@ public sealed class GoldenParityTests : HeavyTestBase
         var cases = golden.Cases.Where(c => c.PromptText is not null && c.TokenizerOracle == "llama-tokenize").ToList();
         Assert.SkipWhen(cases.Count == 0, "no case in this golden has oracle-tokenized prompt text");
 
-        var path = ModelLocator.Find(golden.Model.FileName);
+        var path = ModelLocator.FindDeep(golden.Model.FileName);
         Assert.SkipWhen(path is null, ModelLocator.DescribeMiss([golden.Model.FileName], ModelLocator.Roots()));
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);

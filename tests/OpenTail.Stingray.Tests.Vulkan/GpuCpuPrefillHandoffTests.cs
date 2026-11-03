@@ -185,6 +185,94 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
         Assert.True(failures.Count == 0, string.Join("; ", failures));
     }
 
+    /// <summary>
+    /// A later turn (<c>startPos &gt; 0</c>) takes the handoff on the full-offload pass too: the GPU's earlier K/V rows are read back, the CPU
+    /// pass prefills only the new tokens against them, and all rows are handed back. MoE, so the contract is the decode comparison against an
+    /// all-sequential GPU run of the same tokens (a router near-tie can move the logits under CPU thread scheduling), for both KV dtypes.
+    /// <c>firstLen</c> 20 is below the gate, so the earlier rows are GPU-kernel values.
+    /// </summary>
+    [Theory]
+    [InlineData(null, 48)]
+    [InlineData(DType.Float32, 48)]
+    [InlineData(null, 20)]
+    public void Handoff_LaterTurn_StartPosAboveZero_DecodeAgreesWithSequential(DType? kv, int firstLen)
+    {
+        using var s = Open();
+        int n = s.Prompt.Length;
+        Assert.True(n - firstLen >= 32, $"prompt too short for a second turn past the gate: {n - firstLen} new tokens");
+        var forced = new int[12];
+        var decodeFast = new List<float[]>();
+        using (var fast = new GpuForwardPass(s.Model, s.Gpu, s.Hp, maxContextLength: 1024, kvDtype: kv))
+        {
+            fast.Prefill(s.Prompt.AsSpan(0, firstLen).ToArray(), 0);
+            var l1 = fast.Prefill(s.Prompt.AsSpan(firstLen).ToArray(), firstLen).ToArray();
+            Assert.True(fast.LastPrefillUsedCpuHandoff, "the later turn did not take the handoff: " + fast.LastCpuPrefillRefusal);
+            var logits = l1;
+            for (int i = 0; i < forced.Length; i++)
+            {
+                forced[i] = Argmax(logits);
+                logits = fast.Forward(forced[i], n + i).ToArray();
+                decodeFast.Add(logits);
+            }
+        }
+        var decodeSeq = new List<float[]>();
+        using (var seq = new GpuForwardPass(s.Model, s.Gpu, s.Hp, maxContextLength: 1024, kvDtype: kv))
+        {
+            seq.CpuPrefillEnabled = false;
+            seq.Prefill(s.Prompt, 0);
+            for (int i = 0; i < forced.Length; i++) decodeSeq.Add(seq.Forward(forced[i], n + i).ToArray());
+        }
+        var cos = decodeFast.Select((d, i) => Cosine(d, decodeSeq[i])).OrderBy(x => x).ToArray();
+        Console.WriteLine($"[gpu-later-turn] kv={kv?.ToString() ?? "default"} first={firstLen}: min cosine {cos[0]:F5}, median {cos[cos.Length / 2]:F5}");
+        Assert.True(cos[0] > 0.99, $"decode after a later-turn handoff diverges from sequential: min cosine {cos[0]:F5}");
+    }
+
+    /// <summary>What the later-turn handoff buys on the full-offload pass: a ~400-token follow-up after a 48-token first turn, three interleaved repetitions each (machine not idle: read the ratio).</summary>
+    [Fact]
+    public void LaterTurn_Handoff_TimingAgainstSequential()
+    {
+        string text = string.Join(" ", Enumerable.Repeat(Text, 4));
+        using var s = Open();
+        var prompt = GgufTokenizer.FromGgufModel(s.Model).Encode(text).ToArray();
+        Assert.True(prompt.Length > 300, $"need a long follow-up: {prompt.Length} tokens");
+        var first = prompt.AsSpan(0, 48).ToArray();
+        var second = prompt.AsSpan(48, Math.Min(400, prompt.Length - 48)).ToArray();
+        using var g = new GpuForwardPass(s.Model, s.Gpu, s.Hp, maxContextLength: 2048);
+        g.Prefill(first, 0); g.Prefill(second, 48); g.ResetCache();   // warm both paths once
+        var viaHandoff = new List<double>(); var viaSequential = new List<double>();
+        for (int rep = 0; rep < 3; rep++)
+            foreach (bool handoff in new[] { true, false })
+            {
+                g.ResetCache();
+                g.CpuPrefillEnabled = true;
+                g.Prefill(first, 0);
+                g.CpuPrefillEnabled = handoff;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                g.Prefill(second, 48);
+                double ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                Assert.Equal(handoff, g.LastPrefillUsedCpuHandoff);
+                (handoff ? viaHandoff : viaSequential).Add(ms);
+            }
+        Console.WriteLine($"[gpu-later-turn-timing] OLMoE -g -1, {second.Length}-token follow-up: handoff {string.Join(" / ", viaHandoff.Select(x => x.ToString("F0")))} ms, sequential {string.Join(" / ", viaSequential.Select(x => x.ToString("F0")))} ms");
+    }
+
+    [Fact]
+    public void Handoff_ThreeTurnsInARow_EachTakesTheHandoff_AndAStartPosBeyondTheRowsIsRefused()
+    {
+        using var s = Open();
+        using var g = new GpuForwardPass(s.Model, s.Gpu, s.Hp, maxContextLength: 1024);
+        int a = 48, b = s.Prompt.Length - a;
+        g.Prefill(s.Prompt.AsSpan(0, a).ToArray(), 0);
+        Assert.True(g.LastPrefillUsedCpuHandoff, g.LastCpuPrefillRefusal);
+        g.Prefill(s.Prompt.AsSpan(a).ToArray(), a);
+        Assert.True(g.LastPrefillUsedCpuHandoff, g.LastCpuPrefillRefusal);
+        g.Prefill(s.Prompt.AsSpan(0, 32).ToArray(), a + b);
+        Assert.True(g.LastPrefillUsedCpuHandoff, "third turn: " + g.LastCpuPrefillRefusal);
+        g.Prefill(s.Prompt.AsSpan(0, 32).ToArray(), a + b + 33);
+        Assert.False(g.LastPrefillUsedCpuHandoff);
+        Assert.Contains("beyond", g.LastCpuPrefillRefusal);
+    }
+
     [Fact]
     public void ShortPrompts_StartPosAboveZero_AndDisabledSwitch_UseTheSequentialPath()
     {
@@ -205,14 +293,14 @@ public sealed unsafe class GpuCpuPrefillHandoffTests : HeavyTestBase
             Assert.True(g.LastPrefillUsedCpuHandoff, $"{len} tokens should take the handoff: {g.LastCpuPrefillRefusal}");
         }
 
-        // later turn: sequential, and it agrees with an all-sequential run of the same tokens
+        // a later turn that adds fewer tokens than the gate: sequential (the reason names the gate), and it agrees with an all-sequential run of the same tokens
         g.ResetCache();
         int first = 64, extra = 8;
         g.Prefill(s.Prompt.AsSpan(0, first).ToArray(), 0);
         Assert.True(g.LastPrefillUsedCpuHandoff);
         var continued = g.Prefill(s.Prompt.AsSpan(first, extra).ToArray(), first).ToArray();
         Assert.False(g.LastPrefillUsedCpuHandoff);
-        Assert.Contains("startPos", g.LastCpuPrefillRefusal);
+        Assert.Contains("shorter than", g.LastCpuPrefillRefusal);
 
         using var seq = new GpuForwardPass(s.Model, s.Gpu, s.Hp, maxContextLength: 1024);
         seq.CpuPrefillEnabled = false;

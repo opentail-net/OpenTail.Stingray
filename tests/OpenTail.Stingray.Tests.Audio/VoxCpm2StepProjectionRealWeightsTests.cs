@@ -6,19 +6,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// <summary>Real-weight smoke test for <see cref="VoxCpm2StepProjection"/>.</summary>
 public sealed class VoxCpm2StepProjectionRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     // Real config: lm.hidden_size=2048, dit hidden_dim (see dit_config, not yet fully dumped --
     // use a conservative real value confirmed via encoder_config's shared hidden_dim=256 pattern;

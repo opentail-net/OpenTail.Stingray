@@ -23,7 +23,7 @@ public interface IContextParams
     /// <summary>Optional TurboQuant KV cache compression mode (e.g. "auto", "kvarn", "lloydmax").</summary>
     string? TurboQuantMode { get; }
 
-    /// <summary>Optional head dimension override for TurboQuant validation.</summary>
+    /// <summary>Not supported: the head dimension always comes from the model, so <see cref="Model.CreateContext"/> refuses a value here instead of silently ignoring it.</summary>
     int? TurboQuantHeadDim { get; }
 
     /// <summary>Optional RoPE base frequency override (e.g. 10000.0 or 500000.0).</summary>
@@ -53,7 +53,7 @@ public record ContextParams : IContextParams
     /// <summary>Optional TurboQuant KV cache compression mode (e.g. "auto", "kvarn", "lloydmax").</summary>
     public string? TurboQuantMode { get; init; }
 
-    /// <summary>Optional head dimension override for TurboQuant validation.</summary>
+    /// <summary>Not supported: the head dimension always comes from the model, so <see cref="Model.CreateContext"/> refuses a value here instead of silently ignoring it.</summary>
     public int? TurboQuantHeadDim { get; init; }
 
     /// <summary>Optional RoPE base frequency override (e.g. 10000.0 or 500000.0).</summary>

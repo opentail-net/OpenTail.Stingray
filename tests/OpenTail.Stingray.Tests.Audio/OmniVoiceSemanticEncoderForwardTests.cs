@@ -6,19 +6,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// for OmniVoice yet), same first-step-only status HuBERT/RMVPE started at for RVC.</summary>
 public sealed class OmniVoiceSemanticEncoderForwardTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     [Fact]
     public void Forward_RealAudio_RealWeights_ProducesFiniteNonDegenerateHiddenStates()

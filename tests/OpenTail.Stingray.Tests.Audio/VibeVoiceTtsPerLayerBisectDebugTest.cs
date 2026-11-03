@@ -14,19 +14,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// decoder.cpp`, instrumented this session).</summary>
 public sealed class VibeVoiceTtsPerLayerBisectDebugTest : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     private const int NumLayers = 28, HiddenDim = 1536, NumHeads = 12, NumKvHeads = 2, HeadDim = 128;
     private const int FfDim = 8960, VocabSize = 151936;

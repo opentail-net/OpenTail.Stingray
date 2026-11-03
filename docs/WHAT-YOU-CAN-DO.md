@@ -25,7 +25,7 @@ client is the server.
 | **Make music and sound effects** | Audio from a text prompt | C# library (no CLI command yet) | ACE-Step 1.5, Stable Audio 3, MiniMax-Music3, MusicGen, AudioGen | Library-only today; [listen to samples](audio-samples/README.md); ACE-Step 2 s of audio takes 31 s on the CPU |
 | **Convert a voice** | Re-voice audio with a trained model | C# library | RVC | Library-only |
 | **Forecast time series, classify images** | Numeric forecasts, labels | C# library | Chronos, timm MobileNetV3/EfficientNet, CLIP | Library-only |
-| **Serve all of this over HTTP** | `/v1/chat/completions`, `/v1/audio/speech`, `/v1/images/generations`, `/v1/embeddings`, `/v1/messages`, `/v1/responses` and more | `OpenTail.Stingray.Server` | Any of the above | Endpoint list: [Server README](../src/OpenTail.Stingray.Server/README.md) |
+| **Serve all of this over HTTP** | `/v1/chat/completions`, `/v1/audio/speech`, `/v1/embeddings`, `/v1/messages`, `/v1/responses` and more | `OpenTail.Stingray.Server` | Any of the above | Endpoint list: [Server README](../src/OpenTail.Stingray.Server/README.md) |
 
 ## What do I need?
 
@@ -55,7 +55,7 @@ even if it happens to load.
 ## What does not work yet
 
 - **Some architectures are not supported or not verified:** Jamba, pure Mamba, Llama 4 vision and
-  DeepSeek-V3.2/V4 (alpha code, never run). Gemma 1 has no [STATUS.md](STATUS.md) row, so treat it as
+  DeepSeek-V3.2/V4 (alpha code, never run). Gemma 1 is checked on the CPU only (one 2B file, one golden case; see [STATUS.md](STATUS.md)), so treat the 7B and Vulkan as
   unverified; Gemma 2 is golden-checked on the CPU only (the 2B file; no Vulkan or CUDA). GLM-4.5-Air (`glm4moe`) is verified on the CPU and the Vulkan layer split
   (STATUS.md); full Vulkan offload of its 33-42 GB files ran out of host memory on the 63 GB test
   machine. See the open list in [00-current-work.md](00-current-work.md).

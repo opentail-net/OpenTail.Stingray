@@ -95,17 +95,5 @@ public sealed class Q8PrefillLowMagnitudeInputTests : HeavyTestBase
         return d / (Math.Sqrt(na) * Math.Sqrt(nb));
     }
 
-    private static string? FindModelPath()
-    {
-        string? dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            var p = Path.Combine(dir, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 }

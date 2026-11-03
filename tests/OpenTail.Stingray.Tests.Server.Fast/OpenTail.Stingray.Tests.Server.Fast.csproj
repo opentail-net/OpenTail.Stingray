@@ -30,6 +30,10 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Corpus\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!--
     Server explicitly hides Engine from package consumers (Engine.dll ships inside
     the OpenTail.Stingray meta-package, not Server's nupkg). Tests need Engine types
@@ -39,6 +43,7 @@
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Server\OpenTail.Stingray.Server.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Server.Host\OpenTail.Stingray.Server.Host.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" />
   </ItemGroup>
 

@@ -5,20 +5,7 @@ public sealed class MiniCpmVisionTests : HeavyTestBase
 {
     private const string ModelFileName = "mmproj-minicpm-v-2_6-f16.gguf";
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] candidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-            $@"C:\p\opentail-llm\models\{fileName}",
-            $@"E:\models\{fileName}",
-        };
-        foreach (var p in candidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => VisionTestPaths.FindAnywhere(fileName);
 
     [Fact]
     public void ImagePreprocessor_GeneratesThumbnailAndValidGrid()
