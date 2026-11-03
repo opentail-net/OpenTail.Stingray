@@ -62,13 +62,13 @@ workloads were present. A result from another machine is evidence only for that 
 
 Hardware-only verification items taken out of the plans so that the plans carry only work that can run here. Each entry names its source; the source keeps a pointer.
 
-> from: `docs/2026-10-31-autonomous-plan-2.md`
+> from: `docs/00-current-work.md#open-work-as-of-2026-11-03`
   - [ ] P2d (blocked: no NVIDIA hardware) The CUDA full and hybrid passes have no reference to the residual or logit scale either, and the new guard does not cover them; confirm on a machine with a CUDA GPU before relying on Granite or Gemma 3 there
 
-> from: `docs/2026-10-31-autonomous-plan-3.md`
+> from: `docs/00-current-work.md#open-work-as-of-2026-11-03`
   - [ ] `startPos > 0` on the CUDA hybrid (CUDA cannot be tested here; the code change would mirror the Vulkan hybrid one)
 
-> from: `docs/2026-10-31-autonomous-plan-3.md`
+> from: `docs/00-current-work.md#open-work-as-of-2026-11-03`
 - [ ] **P2d** CUDA passes have no scale references (blocked: no NVIDIA hardware)
 
 > from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`

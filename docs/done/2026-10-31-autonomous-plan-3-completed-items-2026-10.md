@@ -1,6 +1,6 @@
 # Completed items split from 2026-10-31-autonomous-plan-3.md (2026-11-01)
 
-Finished items moved verbatim out of [../2026-10-31-autonomous-plan-3.md](../2026-10-31-autonomous-plan-3.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+Finished items moved verbatim out of [../2026-10-31-autonomous-plan-3.md](../00-current-work.md#open-work-as-of-2026-11-03). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
 
 > from: ## Checklist
 - [x] **P1c** *(owner decided 2026-11-01 to stop the hunt; reopen only if the one-line canary in the Vulkan hybrid MoE test fires)* The NaN in hybrid MoE decode (Qwen3-Coder `-g 4`): 1 sighting in 18 control runs, then 0 in 12, then 0 in a 40-run hunt with the finiteness assertion (0 non-finite, 0 failed, min step cosine 0.9838 to 0.9979): 0 in 52 runs since the sighting. Not reproduced and not explained; open until reproduced or until the owner decides to stop hunting
@@ -13,4 +13,5 @@ Finished items moved verbatim out of [../2026-10-31-autonomous-plan-3.md](../202
 
 > from: ## Checklist
 - [x] **Q3** *(decided 2026-11-01 by the owner: no; gemma2 stays CPU only, the limitation is in STATUS)* GPU soft-capping for gemma2 (attention and final logits), so the dense GPU path matches the CPU (perplexity 15.38 against 12.58 today). Needs an owner decision
-
+
+

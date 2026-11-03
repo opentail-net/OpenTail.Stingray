@@ -1,6 +1,6 @@
 # Completed items split from 2026-11-01-plan-4.md (2026-11-01)
 
-Finished items moved verbatim out of [../2026-11-01-plan-4.md](../2026-11-01-plan-4.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
+Finished items moved verbatim out of [../2026-11-01-plan-4.md](../00-current-work.md#open-work-as-of-2026-11-03). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
 
 > from: ### A. Numerics and engine
 - [x] **A1** *(done 2026-11-01, measured harmless: Q8_KS is the more precise format, 0.66-0.77 of the Q8_K error; PPL 605.7 int8 vs 546.8 F32 vs llama.cpp 617.1 ± 75.5 on a degenerate LM, so the kernel error is the evidence; ADR-0003 addendum; decode kept on Q8_K)* Q3_K prefill and decode quantise activations differently. *Checked 2026-11-01:* `SimdKernels.TryResolveQ8Dispatch` maps `Q3_K` to `QuantizeRowToQ8KS`
@@ -36,4 +36,5 @@ Finished items moved verbatim out of [../2026-11-01-plan-4.md](../2026-11-01-pla
 - [x] **C1** `/v1/sessions/*` parameter audit, the last endpoint group the 2026-11-01 audit did not cover. **Done 2026-11-01:** the turn digest ignored `allowed_choices` (a retry with other choices came back as a replay) and `temperature` and `top_p` were unchecked; both fixed, see F7 in the audit. *Checked:* `/tokenize`, `/detokenize`, `/props`, `/status` and
   `/api/embed` were read the same day: missing payloads are 400 (tested), out-of-range token ids decode to empty (`GgufTokenizer.DecodeBytes`), the embedding alias shares the
   validated parser. No defect found there.
-
+
+

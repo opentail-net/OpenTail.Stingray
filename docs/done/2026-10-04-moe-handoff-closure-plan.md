@@ -1,8 +1,8 @@
 # Plan: close the CPU-prefill handoff, one model family at a time (2026-10-04)
 
-> Completed items moved to [done/2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md](../done/2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Completed items moved to [done/2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md](2026-10-04-moe-handoff-closure-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
-Status (2026-10-04, later): **steps 1-3 closed; step 4 (GLM-4.5-Air) closed on the Vulkan layer split: CPU path admitted, `-g 4` works, receipt `(glm4moe, VulkanLayerSplit)` from a CPU-prefill handoff test (more than 4 GPU layers still needs the expert slot cache: all 128 experts per resident layer are uploaded); step 5 (Llama 4) Vulkan-hybrid handoff receipt, closed past 8192 too (chunked attention and NoPE temperature tuning implemented d8ca10da; 9430-token CPU run matches llama-server, hybrid handoff at 9429 tokens passes, 2026-10-04); step 6 (speed league) done: ours is below llama.cpp on CPU for all five MoE models (0.21-0.84x), see PerformanceLeague.md.** 7 families now have path-specific receipts (6 MoE on the Vulkan hybrid). Context: [coverage matrix](#family-coverage-table-merged-2026-10-30-from-2026-10-04-moe-handoff-coveragemd), [batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md).
+Status (2026-10-04, later): **steps 1-3 closed; step 4 (GLM-4.5-Air) closed on the Vulkan layer split: CPU path admitted, `-g 4` works, receipt `(glm4moe, VulkanLayerSplit)` from a CPU-prefill handoff test (more than 4 GPU layers still needs the expert slot cache: all 128 experts per resident layer are uploaded); step 5 (Llama 4) Vulkan-hybrid handoff receipt, closed past 8192 too (chunked attention and NoPE temperature tuning implemented d8ca10da; 9430-token CPU run matches llama-server, hybrid handoff at 9429 tokens passes, 2026-10-04); step 6 (speed league) done: ours is below llama.cpp on CPU for all five MoE models (0.21-0.84x), see PerformanceLeague.md.** 7 families now have path-specific receipts (6 MoE on the Vulkan hybrid). Context: [coverage matrix](#family-coverage-table-merged-2026-10-30-from-2026-10-04-moe-handoff-coveragemd), [batched MoE prefill plan](../2-coverage/2026-10-03-batched-moe-prefill-plan.md).
 
 **End-of-day state (2026-10-04, ~20:40):** steps 1-6 closed (step 4 on the Vulkan layer split, step 5 including past 8192, step 6 speed league recorded: ours is 0.21-0.84x of llama.cpp on CPU for these MoE models). Extension wave: `hunyuan-moe` CPU-admitted (Stage A passed; **Stage B not run**: the harness stopped the first attempt for low memory, rerun `LayerSplitCpuPrefillHandoffTests.HunyuanA13B_Handoff_GpuKvEqualsCpuAndDecodeAgrees` alone on an idle machine); `afmoe` CPU-admitted and receipted on `VulkanLayerSplit` (attention output gate ported to the full Vulkan pass, runs full GPU); `cohere2moe` classified, no checkpoint small enough. Receipts now (family, path): olmoe/qwen3moe/qwen3/qwen2moe/llama+experts/phimoe/llama4 on `VulkanHybrid`; olmoe/qwen2moe/phimoe on `VulkanFullGpu`; glm4moe and afmoe on `VulkanLayerSplit`; none on `CudaHybrid` (no NVIDIA GPU here). Open: hunyuan Stage B, Stage A2 routing checks (parked), CUDA evidence, afmoe sliding window beyond 2048 tokens, GLM above 4 GPU layers (needs the expert slot cache).
 
@@ -174,12 +174,9 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 ## Open (checked 2026-10-30 against the status line)
 
-- [x] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome). Decided 2026-10-04; the record is the `cohere2moe` line above. Closed 2026-11-01.
-- [x] llama4: handoff receipt recorded in `PrefillHandoffFamilies.Receipts` (`llama4`, `VulkanHybrid`: `LlamaFourGreedyParityTests` and `HybridCpuPrefillHandoffTests`, incl. `Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu`; results in the Llama 4 entries above). Closed 2026-11-01: the box was stale; checked the receipt and both test names in the code, did not re-run the 4-layer Scout checkpoint.
-
 ## Family coverage table (merged 2026-10-30 from 2026-10-04-moe-handoff-coverage.md)
 
-Companion to [the batched MoE prefill plan](2026-10-03-batched-moe-prefill-plan.md). The handoff (CPU batched prefill, then copy K/V into the hybrid or GPU cache) turned OLMoE's 631-token prefill from about 24 into 130-140 tok/s. This page is about how far that spreads and how a family earns it.
+Companion to [the batched MoE prefill plan](../2-coverage/2026-10-03-batched-moe-prefill-plan.md). The handoff (CPU batched prefill, then copy K/V into the hybrid or GPU cache) turned OLMoE's 631-token prefill from about 24 into 130-140 tok/s. This page is about how far that spreads and how a family earns it.
 
 ## How others decide a MoE family is usable (read 2026-10-04)
 
@@ -239,7 +236,7 @@ Nothing here has been downloaded: the two ordinary-KV MoE checkpoints on disk ar
 
 ## Research findings (2026-10-31)
 
-Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+Facts are in [research/2026-10-31-coverage-facts.md](../2-coverage/research/2026-10-31-coverage-facts.md).
 
 - **Licences, checked:** Qwen1.5-MoE-A2.7B-Chat is `tongyi-qianwen-research` (the review's point is right). Hunyuan-A13B-Instruct is under the Tencent Hunyuan Community License, whose territory terms are not confirmed for A13B. Trinity-Mini is Apache 2.0. Phi-3.5-MoE is MIT. GLM-4.5-Air is MIT per secondary sources. Write these into the coverage table when a receipt is added.
 - **Llama 4 caveats, checked against the Transformers and vLLM configs:** chunk size 8192, NoPE every fourth layer, temperature tuning with floor 8192 and scale 0.1 on the NoPE layers. Those match the implementation notes above, so the Llama 4 caveat is consistent with the config defaults. Source: [vLLM llama4 docs](https://docs.vllm.ai/en/v0.11.1/api/vllm/model_executor/models/llama4/).

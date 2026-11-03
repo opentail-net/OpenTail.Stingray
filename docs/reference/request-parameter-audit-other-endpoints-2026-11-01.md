@@ -1,4 +1,4 @@
-# Request parameter audit of the other endpoints, 2026-11-01 ([plan 3, Q5](../2026-10-31-autonomous-plan-3.md))
+# Request parameter audit of the other endpoints, 2026-11-01 ([plan 3, Q5](../00-current-work.md#open-work-as-of-2026-11-03))
 
 Follows [the chat and messages audit](request-parameter-audit-2026-10-31.md). Same method and the same three outcomes: **implemented**
 (read, applied, with a test that sends it), **rejected** (refused with a stable error that names the field), **ignored** (read and dropped, or
@@ -20,7 +20,7 @@ digest already stored for an older turn (cold sessions persist them) is unchange
 fields with a 400 and need no change. Tests: `SessionEndpointTests` (five new); both mutations fail them.
 
 **Not covered, and so not claimed:** nothing else in the server's route list; the audit is now complete for the routes it names. Open from it: the audio `model` and `language` fields, the speech
-`speed` fallback and the rerank `top_n` range ([plan 4](../2026-11-01-plan-4.md), item C2).
+`speed` fallback and the rerank `top_n` range ([plan 4](../00-current-work.md#open-work-as-of-2026-11-03), item C2).
 
 ## Findings
 
