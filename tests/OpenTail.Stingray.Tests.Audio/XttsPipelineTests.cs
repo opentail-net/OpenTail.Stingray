@@ -9,19 +9,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// itself re-verify per-stage numerics (already covered by each stage's own golden test).</summary>
 public sealed class XttsPipelineTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relativePath);
+
 
     [Fact]
     public void Generate_RealWeightsRealReference_ProducesFiniteBoundedWaveform()
