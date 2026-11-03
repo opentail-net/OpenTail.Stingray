@@ -58,7 +58,7 @@ iGPU still do not describe a discrete GPU (CLAUDE.md rule 13).
 | One-row Q4_K kernel instead of the two-row kernel in `MatVecQ4K` decode (same pair-of-rows scheduling, two `DotQ4K_Q8KS` calls per work item) | **Loses 3% on both models, in all 6 interleaved pairs, with byte-identical output.** SmolLM2-1.7B Q4_K_M decode 30.7-31.2 t/s vs 31.5-31.9 for the two-row kernel; Qwen2.5-1.5B Q4_K_M 33.4 (all three runs) vs 34.3-34.6. 128 greedy tokens, `-g 0`, idle machine, 2026-10-31. Reverted. Only `MatVecQ4K` was tried; `MatVecDual` interleaves two different matrices and is a separate question. | this page |
 | Weight-stationary loop reorder for prefill | 4x slower | comment in `SimdKernels.MatMulBatched` |
 | OpenBLAS | Never faster than the in-house kernels | docs/done/openblas-elimination-findings-2026-08-20.md |
-| MTP self-speculation on Qwen3.6-27B UD-Q3_K_XL | **Loses**: 0.77-0.81x of plain decode at every draft depth (2026-10-08, "NEGATIVE RESULT" row). The Qwen3.8-27B file wins by +12% on the same engine. Cause not diagnosed. | PerformanceLeague MTP rows; [00-current-work](../00-current-work.md) item 20 |
+| MTP self-speculation on Qwen3.6-27B UD-Q3_K_XL | **Fixed 2026-11-03**: it lost (0.77-0.81x of plain, 2026-10-08) because Q3_K had no shared-decode multi-input kernel and was not width-independent in the batched verify; now MTP 2.7-2.8 t/s against plain 2.6 (about 1.05x), Qwen3.8 2.8 against 2.4 (1.17x). | PerformanceLeague MTP rows; [00-current-work](../00-current-work.md) item 20 |
 | Path 3 tiled quantised GEMM for Vulkan prefill | **Worked**, now the default (+86% on Qwen3-4B). Listed here so nobody re-proposes it as new. | [thread owner](gpu/vulkan-gemm/vulkan-gemm.md) |
 
 ## Untested leads (cheap first)
