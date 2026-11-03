@@ -9,19 +9,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// </summary>
 public sealed class Flux2EndToEndRealWeightsTests : HeavyTestBase
 {
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void Flux2Pipeline_RealWeights_EndToEndGenerateProducesFiniteImage()
