@@ -333,17 +333,6 @@ public static class ScoutAnalyzer
                 $"Registered as {d.Status}: {d.RefusalReason}",
                 [new EvidenceItem("descriptor", d.Id, d.EvidenceDoc)]));
 
-        else if (d.CheckpointRefusal is not null)
-        {
-            string? refusal = null;
-            try { refusal = d.CheckpointRefusal(new IndexOnlyTensorSource(input.Metadata, input.Tensors)); }
-            catch (InvalidOperationException) { /* a check that wants tensor values cannot run statically; the loader still applies it */ }
-            if (refusal is not null)
-                blockers.Add(new ScoutBlocker("scout.arch.checkpoint_unsupported", BlockerKind.Confirmed,
-                    $"The '{d.Id}' architecture is admitted, but this checkpoint is not runnable: {refusal}",
-                    [new EvidenceItem("descriptor", d.Id, d.EvidenceDoc)]));
-        }
-
         return new ArchitectureResolution(declared, true, d.Id, d.Status.ToString(), d.RefusalReason, d.EvidenceDoc,
             d.ForwardPassFamily.ToString(), d.SupportedBackends.ToString(), "not_computed", []);
     }
