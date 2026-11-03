@@ -166,15 +166,21 @@ public sealed class HotSessionDetachableResultTests
         try
         {
         var turnA = Task.Run(() => sessionA.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationA, Digest("hello")));
-        Assert.True(inDecode.Wait(TimeSpan.FromSeconds(10)), "turn A never reached its first decode step");
-        var turnB = Task.Run(async () =>
+        Assert.True(inDecode.Wait(bound), "turn A never reached its first decode step");
+        // A dedicated thread for B's synchronous start, and an awaiting poll below instead of SpinWait.SpinUntil: at this point the batcher is parked in the
+        // decode hook (one pool thread) and this method would park a second one in a spin, so on a 2-thread pool (the 2-core CI runners) B's Task.Run item
+        // waited for thread injection while sibling tests also held pool threads, and "turn B was never queued behind turn A" failed on a Linux CI run
+        // (PR 215, a docs-only change; the 10 s wait elapsed).
+        var turnB = Task.Factory.StartNew(async () =>
         {
             try { await sessionB.RunTurnAsync("hello", sampling, SessionRevision.Initial, operationB, Digest("hello"), ctsB.Token); }
             catch (OperationCanceledException) { }
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
         // B is queued behind A and its caller is parked on its output channel. Waited for, not slept for: a fixed 200 ms was not always enough on a loaded
         // 2-CPU machine for B's turn to start, and GetOperation below then threw KeyNotFoundException (2 runs in 40). B is queued only after its operation exists.
-        Assert.True(SpinWait.SpinUntil(() => engine.QueueDepth > 0, TimeSpan.FromSeconds(10)), "turn B was never queued behind turn A");
+        var queueWait = System.Diagnostics.Stopwatch.StartNew();
+        while (engine.QueueDepth == 0 && queueWait.Elapsed < bound) await Task.Delay(5);
+        Assert.True(engine.QueueDepth > 0, "turn B was never queued behind turn A");
 
         for (int i = 0; i < 64; i++)
         {
@@ -187,18 +193,18 @@ public sealed class HotSessionDetachableResultTests
             holders.Add(holder);
             holder.Start();
         }
-        SpinWait.SpinUntil(() => { lock (registrations) return registrations.Count == holders.Count; }, TimeSpan.FromSeconds(10));
+        SpinWait.SpinUntil(() => { lock (registrations) return registrations.Count == holders.Count; }, bound);
         // A dedicated thread, not Task.Run: Cancel() blocks inside the holding callback, and on a pool that starts with two threads (a small CI runner,
         // or DOTNET_PROCESSOR_COUNT=2) the batcher, the blocked cancel and the continuations of both turns compete for them, so the cancel could wait for
         // thread injection (about 500 ms each) and "Cancel() never reached the holding callback" failed 2 runs in 40.
         var canceller = new Thread(() => ctsB.Cancel()) { IsBackground = true };
         canceller.Start();
-        Assert.True(cancelCallbackRunning.Wait(TimeSpan.FromSeconds(10)), "Cancel() never reached the holding callback");
+        Assert.True(cancelCallbackRunning.Wait(bound), "Cancel() never reached the holding callback");
         Assert.True(ctsB.IsCancellationRequested);
 
         proceed.Set();   // A finishes, the slot frees, and the batcher admits (and finds cancelled) B while B's caller has not been woken by its token
-        await turnA.WaitAsync(TimeSpan.FromSeconds(10));
-        await turnB.WaitAsync(TimeSpan.FromSeconds(10));
+        await turnA.WaitAsync(bound);
+        await turnB.WaitAsync(bound);
         releaseCancel.Set();
         Assert.True(canceller.Join(bound), "the cancelling thread never returned from Cancel()");
         holdersDone.Set();
