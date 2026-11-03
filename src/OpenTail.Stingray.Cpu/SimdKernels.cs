@@ -5051,10 +5051,10 @@ public static unsafe class SimdKernels
     public static bool HasIqMultiInputKernel(DType dtype, int cols) => TryIqQ8KKernel(dtype, cols, out _, out _);
 
     /// <summary>True when a token's MatVec2In / MatVec4In result is bit-identical whichever width computed it (pinned by
-    /// <c>IqSharedDecodeMultiInputTests.TwoInput_Equals_FirstTwoLanesOfFourInput_Bitwise</c> for Q4_K, Q5_K, Q6_K and the IQ formats). The batched
+    /// <c>IqSharedDecodeMultiInputTests.TwoInput_Equals_FirstTwoLanesOfFourInput_Bitwise</c> for Q3_K, Q4_K, Q5_K, Q6_K and the IQ formats). The batched
     /// verify may then use the 2-input kernel for a group with at most two real tokens instead of a padded 4-input one.</summary>
     public static bool IsWidthIndependentMultiInput(DType dtype, int cols) =>
-        (cols % 256 == 0 && dtype is DType.Q4_K or DType.Q5_K or DType.Q6_K) || HasIqMultiInputKernel(dtype, cols);
+        (cols % 256 == 0 && dtype is DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K) || HasIqMultiInputKernel(dtype, cols);
 
     /// <summary>Two same-shape IQ matvecs over one input (FFN gate + up): the input is quantized to Q8_K once and both
     /// rows are dotted in one parallel sweep. Per-row arithmetic is that of <see cref="MatVecQ8KDispatch"/>.</summary>
