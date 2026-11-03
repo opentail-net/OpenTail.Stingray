@@ -77,9 +77,10 @@ public static class ServiceCollectionExtensions
                 ? (_ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp))
                 : (id => LoadNamedModel(opts, id, sp));
 
+            var estimators = CreateAcceleratorEstimators(opts);
             var manager = new ModelRuntimeManager(
                 loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment(),
-                estimateAcceleratorBytes: CreateAcceleratorEstimator(opts));
+                estimateAcceleratorBytes: estimators.Bytes, estimateAcceleratorTarget: estimators.Target);
 
             // Off unless explicitly opted into (see OpenTailStingrayServerOptions.EnableResourceAdmission
             // doc for why this isn't a new default) — leaving it null preserves today's exact behavior.
@@ -211,20 +212,29 @@ public static class ServiceCollectionExtensions
     /// A model's plan inputs are fixed for the life of the process, so each answer is computed once.
     /// </summary>
     internal static Func<ModelId, long> CreateAcceleratorEstimator(
-        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, long>? estimate = null)
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, long>? estimate = null) =>
+        CreateAcceleratorEstimators(opts, estimate is null ? null : o => (estimate(o), null)).Bytes;
+
+    /// <summary>
+    /// <see cref="CreateAcceleratorEstimator"/> plus the backend and device each model's plan puts its bytes on (plan 6 G2), from one plan per model.
+    /// The target is null wherever the bytes are 0.
+    /// </summary>
+    internal static (Func<ModelId, long> Bytes, Func<ModelId, AcceleratorTarget?> Target) CreateAcceleratorEstimators(
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, (long Bytes, AcceleratorTarget? Target)>? estimate = null)
     {
-        estimate ??= o => InferenceEngineLoader.EstimateAcceleratorBytes(o);
-        var known = new System.Collections.Concurrent.ConcurrentDictionary<ModelId, long>();
-        return id => known.GetOrAdd(id, _ =>
+        estimate ??= o => InferenceEngineLoader.EstimateAcceleratorPlacement(o);
+        var known = new System.Collections.Concurrent.ConcurrentDictionary<ModelId, (long Bytes, AcceleratorTarget? Target)>();
+        (long Bytes, AcceleratorTarget? Target) Lookup(ModelId id) => known.GetOrAdd(id, _ =>
         {
             if (opts.Models.Count == 0)
-                return opts.EngineFactory is not null ? 0 : estimate(opts);
+                return opts.EngineFactory is not null ? (0, null) : estimate(opts);
             NamedModelOptions? named = null;
             foreach (var candidate in opts.Models)
                 if (ModelId.Canonicalize(candidate.ModelPath).Equals(id)) { named = candidate; break; }
-            if (named is null || named.EngineFactory is not null || opts.EngineFactory is not null) return 0;
+            if (named is null || named.EngineFactory is not null || opts.EngineFactory is not null) return (0, null);
             return estimate(ForNamedModel(opts, named));
         });
+        return (id => Lookup(id).Bytes, id => Lookup(id).Target);
     }
 
     private static LoadedEngine LoadNamedModel(OpenTailStingrayServerOptions opts, ModelId id, IServiceProvider sp)

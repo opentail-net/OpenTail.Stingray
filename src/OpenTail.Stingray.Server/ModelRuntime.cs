@@ -97,7 +97,8 @@ public readonly record struct ModelRuntimeStats(
     bool Pinned,
     DateTimeOffset LastUsed,
     bool IsAcceleratorResident,
-    long AcceleratorResidentBytesEstimate);
+    long AcceleratorResidentBytesEstimate,
+    AcceleratorTarget? Accelerator = null);
 
 /// <summary>
 /// System-wide activity snapshot for <see cref="IModelRuntimeManager"/> (docs/032
@@ -181,6 +182,13 @@ public sealed class ModelRuntime : IDisposable
     /// </summary>
     public long AcceleratorResidentBytesEstimate =>
         IsAcceleratorResident ? Loaded.GpuWeightBytesExact ?? EstimatedModelBytes : 0;
+
+    /// <summary>
+    /// The backend and device this runtime's accelerator bytes are counted against; null when it is not <see cref="IsAcceleratorResident"/>.
+    /// Read from <see cref="LoadedEngine.RuntimeResolution"/> (the backend and the device index the execution plan selected).
+    /// </summary>
+    public AcceleratorTarget? Accelerator =>
+        IsAcceleratorResident ? AcceleratorTarget.From(Loaded.RuntimeResolution!.Backend, Loaded.RuntimeResolution.DeviceIndex) : null;
 
     public ModelRuntimeState State { get; internal set; }
 
