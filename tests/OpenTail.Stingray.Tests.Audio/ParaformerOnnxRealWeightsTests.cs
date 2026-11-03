@@ -15,33 +15,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class ParaformerOnnxRealWeightsTests
 {
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\_models\{fileName}",
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-            $@"C:\p\opentail-llm\models\{fileName}",
-            $@"E:\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var pModels = Path.Combine(dir, "models", fileName);
-            if (File.Exists(pModels)) return pModels;
-            var pModelsUnderscore = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pModelsUnderscore)) return pModelsUnderscore;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void Load_RealOnnxCheckpoint_ReadsRealCustomMetadata()

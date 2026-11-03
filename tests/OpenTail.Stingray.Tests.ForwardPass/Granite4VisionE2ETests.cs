@@ -21,21 +21,7 @@ public sealed class Granite4VisionE2ETests : HeavyTestBase
     private const string Mmproj = "mmproj-granite-4.0-3b-vision-f16.gguf";
     private const string SampleImage = "flux_apple_vulkan_512_4steps.png";
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { $@"E:\models\{file}", $@"C:\p\opentail-llm\models\{file}" })
-            if (File.Exists(p)) return p;
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? Find(string file) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     private static string? FindImage(string file)
     {

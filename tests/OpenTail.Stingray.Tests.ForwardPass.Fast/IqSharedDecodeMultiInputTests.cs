@@ -29,6 +29,8 @@ public sealed unsafe class IqSharedDecodeMultiInputTests
                     *(ushort*)b = Half01(); *(ushort*)(b + 2) = Half01(); break;   // d, dmin
                 case DType.Q6_K:
                     *(ushort*)(b + 208) = Half01(); break;                          // d is the last field
+                case DType.Q3_K:
+                    *(ushort*)(b + 108) = Half01(); break;                          // d is the last field
                 default:
                     *(ushort*)b = Half01(); break;                                   // IQ formats: d first
             }
@@ -75,6 +77,48 @@ public sealed unsafe class IqSharedDecodeMultiInputTests
         }
     }
 
+    /// <summary>
+    /// Q3_K had no shared-decode multi-input kernel on the CPU verify path (plan 8 / docs/00-current-work.md item 20: Qwen3.6-27B UD-Q3_K_XL has 110 Q3_K
+    /// FFN gate/up tensors and MTP lost to plain decode on it), so MatVec2In/MatVec4In fell back to one full weight pass per token. The new kernels must give
+    /// every token exactly the bits of the single-input MatVec plain decode uses, on the parallel row sweep (Rows) and on the serial one (few rows).
+    /// </summary>
+    [Theory]
+    [InlineData(96)]
+    [InlineData(5)]
+    public void Q3K_MatVec2In_And_MatVec4In_EqualIndependentMatVecs_Bitwise(int rows)
+    {
+        const DType dtype = DType.Q3_K;
+        const int bytesPerBlock = 110;
+        int nb = Cols / 256;
+        var rng = new Random(303 + rows);
+        byte* w = (byte*)NativeMemory.AlignedAlloc((nuint)(rows * nb * bytesPerBlock), 64);
+        float* x = (float*)NativeMemory.AlignedAlloc((nuint)(4 * Cols * sizeof(float)), 64);
+        float* want = (float*)NativeMemory.AlignedAlloc((nuint)(4 * rows * sizeof(float)), 64);
+        float* got = (float*)NativeMemory.AlignedAlloc((nuint)(4 * rows * sizeof(float)), 64);
+        try
+        {
+            FillWeights(w, rows, nb, bytesPerBlock, dtype, rng);
+            for (int i = 0; i < 4 * Cols; i++) x[i] = (float)(rng.NextDouble() * 2 - 1);
+            for (int t = 0; t < 4; t++)
+                SimdKernels.MatVec(want + t * rows, w, x + t * Cols, rows, Cols, dtype);
+
+            SimdKernels.MatVec2In(got, got + rows, w, x, x + Cols, rows, Cols, dtype);
+            for (int i = 0; i < 2 * rows; i++)
+                Assert.True(float.IsFinite(want[i]) && BitConverter.SingleToInt32Bits(want[i]) == BitConverter.SingleToInt32Bits(got[i]),
+                    $"Q3_K MatVec2In differs at {i}: {want[i]} vs {got[i]}");
+
+            SimdKernels.MatVec4In(got, got + rows, got + 2 * rows, got + 3 * rows, w,
+                x, x + Cols, x + 2 * Cols, x + 3 * Cols, rows, Cols, dtype);
+            for (int i = 0; i < 4 * rows; i++)
+                Assert.True(float.IsFinite(want[i]) && BitConverter.SingleToInt32Bits(want[i]) == BitConverter.SingleToInt32Bits(got[i]),
+                    $"Q3_K MatVec4In differs at {i}: {want[i]} vs {got[i]}");
+        }
+        finally
+        {
+            NativeMemory.AlignedFree(w); NativeMemory.AlignedFree(x);
+            NativeMemory.AlignedFree(want); NativeMemory.AlignedFree(got);
+        }
+    }
     [Theory]
     [InlineData(DType.Q4_K)]
     [InlineData(DType.Q8_0)]
@@ -89,6 +133,7 @@ public sealed unsafe class IqSharedDecodeMultiInputTests
     [InlineData(DType.Q4_K, 144)]
     [InlineData(DType.Q5_K, 176)]
     [InlineData(DType.Q6_K, 210)]
+    [InlineData(DType.Q3_K, 110)]
     [InlineData(DType.IQ3_S, 110)]
     [InlineData(DType.IQ4_XS, 136)]
     public void TwoInput_Equals_FirstTwoLanesOfFourInput_Bitwise(DType dtype, int bytesPerBlock)

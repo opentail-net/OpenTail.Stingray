@@ -31,7 +31,7 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
 - [ ] **13. MoE variants of the recurrent families**
   - [x] Admit Granite 4.0-H tiny/small (MoE) with PPL parity. Small DONE 2026-09-28 (top-k renormalisation fix; +1.2% residual at -c 2048 logged).
   - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity. No local checkpoint (2026-09-28); not downloaded (C: has no free space, K: ~10 GB).
-  - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
+  - [x] *(stale, closed 2026-11-03: `lfm2moe` was admitted 2026-10-01; the batched drift was flash-64 attention's online softmax, not a batched-path bug; see STATUS and [bugstofix item 12](done/bugstofix-resolved-2026-10.md))* Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
 
 ### 16. Product items
@@ -123,6 +123,7 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
     IQ2_XS/Q3_K/IQ2_XXS FFN tensors (~5% of FFN) have no shared-decode kernel. **Counter-example measured the same day: Qwen3.6-27B UD-Q3_K_XL is SLOWER with MTP (2.0-2.1 vs 2.6 t/s plain, all depths), see PerformanceLeague; cause not diagnosed (quant-mix coverage of the shared-decode kernels is the first suspect).** Evidence for depth 1 is Qwen3.8 only; other
     CPU hybrid-GDN MTP models are unmeasured. The `--spec-draft-n-max` help now states the real default (3, or 1 on the CPU hybrid-GDN pass; fixed 2026-10-29). Plain decode is at ~79% of the DRAM ceiling (~3 t/s), so +12% is most of what is available.
     Reference: llama.cpp k=2 batch costs 1.4 plain steps; ours is now in the same range.
+    **Re-measured 2026-11-03 (after the Q3_K shared-decode kernels and the Q3_K width-independence fix, plan 8 B7):** Qwen3.8-27B-UD-Q3_K_XL, CPU `-g 0`, 96-token request that stopped at 62 tokens, greedy, `--repeat-penalty 1.0 --no-thinking`, interleaved, 3 runs each, nothing else running: plain (`--spec-type none`) **2.4 t/s** in all runs, MTP at depth 1 **2.8 t/s** in all runs (88% of drafts accepted), about +17% (was 2.7 t/s, +12%, on 2026-10-08); text identical. The file has 12 Q3_K tensors, so it gained a little from the new kernels. The remaining tensors without a shared-decode kernel are the 4 IQ2_XS and 2 IQ2_XXS FFN tensors (a few percent of the FFN).
     **Output equality (resolved 2026-10-08): MTP is exact.** With `--repeat-penalty 1.0`, plain greedy and MTP greedy produce
     byte-identical text over 96 tokens (batched verify, depth 1). The earlier apparent divergence ("planet’s surface" vs "planet,
     serving") was the CLI's default repetition penalty 1.1 being applied by plain decoding only: **an explicit `--spec-type mtp`
@@ -176,6 +177,7 @@ text model wants 4096), Llama 4 vision (93 GB), MobileNetV5 (no checkpoint decla
 - [ ] 1. **Front door, steps 3-4** (steps 1-2 done: README, catalog, model home, `stingray setup`): starter manifest, README recipes
    around task commands. [3-product-and-runtime/2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30).
    2026-10-11 evidence: the README recipes around the task commands landed (root, package and CLI READMEs; their snippets build against the packed package), and `stingray setup chat` then `stingray chat` ran on a clean model home (5 to 6 s total). **Not yet run:** the CLI `speak` and `transcribe` recipes (`setup speak` asks the user to accept a voice data licence; the Speech and QuickStart samples exercised the same engines). Close this item once those two are run and recorded.
+   **Run 2026-11-03 (plan 8 B5): `transcribe` recipe.** With `STINGRAY_MODEL_HOME` pointing at an empty folder, `stingray setup transcribe -y` downloaded and verified Whisper base (141.1 MiB) in 8.4 s and printed `Ready: whisper-base (transcribe)`; `stingray transcribe docs/audio-samples/piper-lessac-sample.wav` returned "Hello from Piperon Penial Tingad." in 1.20 s for 2.39 s of audio (2.0x real time), the known mis-hearing of the coined word "OpenTail Stingray" described in the audio-samples README. **Still not run: `speak`**, because `stingray setup speak` asks the user to accept the Piper voice data licence and that acceptance is the owner's to give (`--accept-licence` exists for it). Close this item after the owner runs or waives `speak`.
 - [ ] 6. **Parked** (useful as is, does not move the goal): DSpark speculative decoding, SafeTensors
    Phases 4-6, the ONNX-runtime path for engines that already have native ports.
 
@@ -239,7 +241,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
     [done/053](done/053-vulkan-backend-audit-remaining-audio-engines.md)); Whisper, Parakeet and
     FunASR encoders are named future candidates there.
 
-- [ ] 20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
+- [x] 20. **Last in the queue: why MTP loses on Qwen3.6-27B (UD-Q3_K_XL).** Measured 2026-10-08, CPU, 96 tokens, greedy: plain
     **2.6 t/s**, MTP **2.0-2.1 t/s** at every draft depth (accept 76% / 62% / 45% at depth 1 / 2 / 3), i.e. 0.77-0.81x of plain.
     The same engine on Qwen3.8-27B (same `qwen35` architecture and MTP head, different quant mix) wins by +12% (2.7 vs 2.4); see
     item 17 and `PerformanceLeague.md`. Not diagnosed. First steps: (a) diff the tensor-dtype histograms of the two files, especially
@@ -248,6 +250,8 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
     were 0.92 s -> ~0.58 s vs 0.42 s plain); (c) if a missing kernel explains it, add it; if not, check the MTP head's own quant and
     the acceptance rate per position. Until this is understood the CPU MTP draft-depth default (1) is evidenced by Qwen3.8 only, and
     `--spec-type mtp` should be compared with plain on the user's own file.
+    **Update 2026-11-03 (plan 8 B7), steps (a) and (c) done, MTP still not a win on this file.** (a) Tensor-dtype histograms (`stingray list-tensors`): Qwen3.6-27B-UD-Q3_K_XL is a K-quant mix (Q4_K 185, Q3_K 136 tensors including 110 FFN gate/up, Q6_K 52, Q5_K 24, IQ3_S 10), Qwen3.8-27B-UD-Q3_K_XL an IQ mix (IQ4_XS 156, IQ3_S 111, Q8_0 98, IQ3_XXS 34, ...). `MatVec2In` and `MatVec4In` had no Q3_K case, so Q3_K fell back to one full weight pass per token (the first suspect above was right). (c) Added `DotQ3K_Q8K_2In`/`_4In` (weight block and scales loaded once, per-input arithmetic identical to `DotQ3K_Q8K`, so bit-identical to the single-input dot; `IqSharedDecodeMultiInputTests.Q3K_MatVec2In_And_MatVec4In_EqualIndependentMatVecs_Bitwise`, mutation-checked) and the two dispatch cases. **Measured** (CPU `-g 0`, 8 threads, Ryzen 7 5700G, 96-token request that stopped at 53 tokens, greedy, `--repeat-penalty 1.0 --no-thinking`, interleaved before/after, 3 runs each, nothing else running): plain decode (`--spec-type none`) **2.6 t/s** in all three runs; MTP before the change **2.0, 2.1, 2.1** t/s, after **2.3, 2.3, 2.3** t/s (about +12%), 83% of drafts accepted, generated text identical in all three configurations. So the shared-decode gap was real and is closed, but MTP is still about 0.88x of plain on this file: with 83% accepted a cycle yields 1.83 tokens, so it must cost under 1.83 plain steps (0.70 s) and costs about 0.80 s. Still open: where the remaining ~0.1 s per cycle goes (step (b), k=2 verify against a plain step per layer type: attention and GDN layers still run per token, the lm_head, Q4_K/Q5_K/Q6_K tensors already use the 2-input kernels). Note for later measurements: with `--repeat-penalty 1.0` the default `--spec-type auto` engages MTP on this model, so "plain" needs `--spec-type none`.
+    **Update 2 2026-11-03 (plan 8 B7): closed, MTP now beats plain on this file.** The batched verify only uses the cheaper 2-input FFN for a group of at most two real tokens when `IsWidthIndependentMultiInput` holds for the layer's gate, up and down types (otherwise it pads the group to four inputs and computes two duplicate lanes); Q3_K was not on that list, so every k=2 verify ran the padded 4-input FFN on the 110 Q3_K gate/up tensors. Q3_K is now on it (its 2-input result is bit-identical to a 4-input lane and to the single-input dot: `TwoInput_Equals_FirstTwoLanesOfFourInput_Bitwise` and `Q3K_MatVec2In_And_MatVec4In_EqualIndependentMatVecs_Bitwise`). **Measured** (same setup as above, interleaved, 3 runs each, nothing else running, generated text identical to plain): MTP after the first fix 2.3, 2.2, 2.3 t/s; MTP now **2.7, 2.8, 2.7 t/s**; plain 2.6 t/s. So MTP is about +4 to +8% over plain on Qwen3.6-27B-UD-Q3_K_XL at draft depth 1 (83% accepted), against 2.0-2.1 t/s (0.8x) before 2026-11-03. The default depth 1 is therefore now evidenced on two files (Qwen3.8 and Qwen3.6).
   - Folded from todo.md: 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 
 ## 5. Scout, admission tooling and MTP follow-ups (merged from todo.md, 2026-11-01)
@@ -280,7 +284,7 @@ Open items from the old `todo.md`, each kept once. Owners: the scout plan for 5a
 
 - [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
 
-- [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
+- [ ] Cap/expose index limits and rate behaviour for the Hub, and cache API responses by (repo, commit) if batch features arrive. *(Retries done 2026-11-03, plan 8 B4: `ExternalHttpClient.GetAsync` retries 429 and 503 up to three times, waiting for `Retry-After` (capped at 30 s) or 1, 2, 4 s, then hands the last response to the caller; `ExternalHttpClientRetryTests`, mutation checked. Still open: exposing the limits in scout output and the (repo, commit) response cache, both only if batch features arrive.)*
 
 ### 5b. MTP and numerics follow-ups
 

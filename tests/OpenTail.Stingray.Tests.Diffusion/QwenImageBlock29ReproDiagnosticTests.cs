@@ -24,19 +24,7 @@ public sealed class QwenImageBlock29ReproDiagnosticTests : HeavyTestBase
 {
     private const int BlockIndex = 29;
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\_models\{fileName}",
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     private static (double cosine, double maxDiff) Compare(float[] a, float[] b)
     {

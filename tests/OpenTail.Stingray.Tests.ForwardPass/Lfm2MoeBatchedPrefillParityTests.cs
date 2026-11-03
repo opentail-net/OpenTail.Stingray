@@ -135,11 +135,7 @@ public sealed class Lfm2MoeBatchedPrefillParityTests : HeavyTestBase
         }
     }
 
-    private static string? FindModel()
-    {
-        string path = Path.Combine(FindRepoRoot(), "models", "_models", "LFM2-8B-A1B-Q4_K_M.gguf");
-        return File.Exists(path) ? path : null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("LFM2-8B-A1B-Q4_K_M.gguf");
 
     private static string FindRepoRoot()
     {

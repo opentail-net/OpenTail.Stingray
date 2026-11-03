@@ -31,21 +31,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </remarks>
 public sealed class PrefillAttentionParityTests : HeavyTestBase
 {
-    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf") => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     /// <summary>Deterministic pseudo-prompt; content is irrelevant, length is the point.</summary>
     private static int[] MakeTokens(int count)

@@ -1,6 +1,6 @@
 # Start-up time for the same A/B: time from process start to the first /health 200, interleaved launches of the baseline and HEAD publishes
 # (the same <Root>/bin-A and <Root>/bin-B as telemetry-overhead-ab.ps1).  pwsh -File scripts/telemetry-overhead-startup.ps1 -Root <Root> -Model <model.gguf>
-param([string]$Root, [string]$Model, [int]$Runs = 12)
+param([string]$Root, [string]$Model, [int]$Runs = 12, [int]$StartupTimeoutSeconds = 120)
 $ErrorActionPreference = 'Stop'
 $http = [System.Net.Http.HttpClient]::new(); $http.Timeout = [TimeSpan]::FromSeconds(5)
 function Launch($bin, $port) {
@@ -10,9 +10,18 @@ function Launch($bin, $port) {
     $psi.Environment['STINGRAY_CONFIG_DIR'] = Join-Path $Root 'cfg-startup'; $psi.Environment['STINGRAY_MODEL_HOME'] = Join-Path $Root 'home-startup'
     $sw = [Diagnostics.Stopwatch]::StartNew(); $p = [System.Diagnostics.Process]::Start($psi)
     $null = $p.StandardOutput.BaseStream.CopyToAsync([System.IO.Stream]::Null); $null = $p.StandardError.BaseStream.CopyToAsync([System.IO.Stream]::Null)
-    $up = $false
-    while (-not $up) { try { $up = $http.GetAsync("http://127.0.0.1:$port/health").GetAwaiter().GetResult().IsSuccessStatusCode } catch { Start-Sleep -Milliseconds 20 } }
-    $ms = $sw.Elapsed.TotalMilliseconds; $p.Kill($true); $p.WaitForExit(); return $ms
+    try {
+        $up = $false
+        while (-not $up) {
+            if ($p.HasExited) { throw "server exited with code $($p.ExitCode) before /health answered ($bin)" }
+            if ($sw.Elapsed.TotalSeconds -gt $StartupTimeoutSeconds) { throw "no /health 200 within $StartupTimeoutSeconds s ($bin)" }
+            try { $up = $http.GetAsync("http://127.0.0.1:$port/health").GetAwaiter().GetResult().IsSuccessStatusCode } catch { Start-Sleep -Milliseconds 20 }
+        }
+        return $sw.Elapsed.TotalMilliseconds
+    } finally {
+        if (-not $p.HasExited) { $p.Kill($true) }
+        $p.WaitForExit()
+    }
 }
 $null = Launch (Join-Path $Root 'bin-A') 5201; $null = Launch (Join-Path $Root 'bin-B') 5202   # warm the disk cache
 $a = @(); $b = @()

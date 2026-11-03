@@ -139,6 +139,11 @@ public static partial class SessionEndpoints
                 return Results.Json(new ErrorResponse("server_error", ex.Message),
                     OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
+            catch (NotSupportedException ex)
+            {
+                return Results.Json(new ErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: ModelLoadRefusal.StatusCode);
+            }
 
             if (handle.Runtime.Loaded.SessionRuntime is not { } runtime)
             {

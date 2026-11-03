@@ -82,7 +82,7 @@ What remains for item 2, in the order it would be done: publish the plan''s reso
 ### Correct state
 
 - **Configuration (plan 04):** item 1 is done (the inventories are name-complete and classified row by row, dated 2026-08-15). Items 2 to 6 are open. The plan's status line says the planning and diagnostics baseline shipped.
-- **Session forking (plan 010):** planning only, as its status section says. Checked 2026-10-30: `IForwardPass.CreateContext()` still returns `this` (`src/OpenTail.Stingray.Core/IForwardPass.cs:14`), but nothing in `src/` calls it (checked 2026-10-31): sessions fork through `HotSessionRuntime.Fork` and the ref-counted KV cache, not through this method, so plan 010 as written is obsolete and its fate is an owner decision. The guard the plan cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale.
+- **Session forking (plan 010):** planning only, as its status section says. `IForwardPass.CreateContext()` returned `this` and nothing in `src/` called it (checked 2026-10-31); it was removed in PR 171 (2026-11-01, CHANGELOG). Sessions fork through `HotSessionRuntime.Fork` and the ref-counted KV cache, not through this method, so plan 010 as written is obsolete and its fate is an owner decision. The guard the plan cites, `ThrowIfForwardPassNotIsolated` in `InferenceSession.cs`, is not in the repository, so that reference is stale.
 - **Overlap:** plan 04's item 4 (server observability) is covered by the [observability plan](2026-10-12-opentelemetry-observability-plan.md). Its item 6 (sessions out of the product configuration) depends on plan 010's outcome.
 
 ### Open items

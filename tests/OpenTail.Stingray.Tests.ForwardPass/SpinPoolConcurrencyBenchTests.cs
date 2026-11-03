@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (<c>SimdKernels.SpinPoolBusyFallbacks</c>). This measures aggregate decode throughput with 1, 2 and 3 engines decoding at once, pool off against on,
 /// toggled in-process (<c>SimdKernels.SpinPoolEnabled</c>) so every pair is interleaved in the same run, and requires the generated tokens to be identical
 /// in every mode. It prints a table; the only assertion is equal output, because the verdict is a number to read, not a threshold to pass.
-/// Real weights, timed; needs a quiet machine (the interleaving removes drift, not a busy neighbour), so the background load is the reader's to check.
+/// Prefill runs before the clock starts and only the concurrent generation is timed. Real weights, timed; needs a quiet machine (the interleaving removes drift, not a busy neighbour), so the background load is the reader's to check.
 /// </summary>
 public sealed class SpinPoolConcurrencyBenchTests : HeavyTestBase
 {
@@ -18,20 +18,7 @@ public sealed class SpinPoolConcurrencyBenchTests : HeavyTestBase
     private const int Rounds = 5;
     private static readonly int[] EngineCounts = [1, 2, 3];
 
-    private static string? FindModel(string fileName)
-    {
-        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null; dir = dir.Parent)
-            foreach (string c in new[] { Path.Combine(dir.FullName, "models", fileName), Path.Combine(dir.FullName, "models", "_models", fileName) })
-                if (File.Exists(c)) return c;
-        string home = Path.Combine(OpenTail.Stingray.Core.Catalog.ModelHome.DefaultRoot(), fileName);
-        if (File.Exists(home)) return home;
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
-        {
-            string c = Path.Combine(drive.RootDirectory.FullName, "_models", fileName);
-            if (File.Exists(c)) return c;
-        }
-        return null;
-    }
+    private static string? FindModel(string fileName) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 
     [Theory]
     [InlineData("qwen2.5-0.5b-instruct-q4_k_m.gguf")]
@@ -53,31 +40,37 @@ public sealed class SpinPoolConcurrencyBenchTests : HeavyTestBase
         {
             for (int i = 0; i < EngineCounts.Max(); i++) engines.Add(new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp));
 
-            int[] Decode(OpenTail.Stingray.Engine.ForwardPass fwd)
+            // Prefill is set-up and stays outside the timer; the first token comes from the prefill logits, so the timed generation is NewTokens - 1 forward calls.
+            int StartDecode(OpenTail.Stingray.Engine.ForwardPass fwd)
             {
                 fwd.ResetCache();
                 var logits = fwd.Prefill(prompt);
                 int token = 0; float best = float.NegativeInfinity;
                 for (int i = 0; i < logits.Length; i++) if (logits[i] > best) { best = logits[i]; token = i; }
+                return token;
+            }
+
+            int[] Generate(OpenTail.Stingray.Engine.ForwardPass fwd, int token)
+            {
                 var generated = new int[NewTokens];
                 int pos = prompt.Length;
                 for (int n = 0; n < NewTokens; n++)
                 {
                     generated[n] = token;
-                    (token, _) = ((IForwardPass)fwd).ForwardArgmax(token, pos++);
+                    if (n < NewTokens - 1) (token, _) = ((IForwardPass)fwd).ForwardArgmax(token, pos++);
                 }
                 return generated;
             }
 
-            // One round: n engines each decode NewTokens in their own thread, released together. Returns the wall time and every engine's tokens.
+            // One round: n engines each prefill (untimed), then generate NewTokens - 1 forward calls in their own thread, released together. Returns the wall time of the generation only and every engine's tokens.
             (TimeSpan Elapsed, int[][] Tokens) Round(int n, bool pool)
             {
                 SimdKernels.SpinPoolEnabled = pool;
                 var results = new int[n][];
                 using var start = new Barrier(n + 1);
-                var threads = Enumerable.Range(0, n).Select(i => new Thread(() => { start.SignalAndWait(); results[i] = Decode(engines[i]); })).ToArray();
+                var threads = Enumerable.Range(0, n).Select(i => new Thread(() => { int first = StartDecode(engines[i]); start.SignalAndWait(); results[i] = Generate(engines[i], first); })).ToArray();
                 foreach (var t in threads) t.Start();
-                start.SignalAndWait();
+                start.SignalAndWait();   // every engine has prefilled
                 var clock = Stopwatch.StartNew();
                 foreach (var t in threads) t.Join();
                 return (clock.Elapsed, results);
@@ -99,11 +92,11 @@ public sealed class SpinPoolConcurrencyBenchTests : HeavyTestBase
                             var (elapsed, tokens) = Round(n, pool);
                             foreach (var t in tokens) Assert.Equal(reference, t);   // the same greedy text, with or without the pool, alone or concurrent
                             if (!samples.TryGetValue((n, pool), out var list)) samples[(n, pool)] = list = [];
-                            list.Add(n * NewTokens / elapsed.TotalSeconds);   // aggregate tokens per second
+                            list.Add(n * (NewTokens - 1) / elapsed.TotalSeconds);   // aggregate tokens per second, counting only the timed forward calls
                         }
 
                 double Median(List<double> v) { var s = v.OrderBy(x => x).ToList(); return s[s.Count / 2]; }
-                Console.Error.WriteLine($"[SpinPoolConcurrencyBench] {modelFile}, {NewTokens} greedy tokens per engine, {Rounds} interleaved rounds, {Environment.ProcessorCount} logical CPUs");
+                Console.Error.WriteLine($"[SpinPoolConcurrencyBench] {modelFile}, {NewTokens - 1} timed decode calls per engine (prefill untimed), {Rounds} interleaved rounds, {Environment.ProcessorCount} logical CPUs");
                 Console.Error.WriteLine("  engines | pool off (t/s, aggregate) | pool on | on / off | min..max on, off");
                 foreach (int n in EngineCounts)
                 {
