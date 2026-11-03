@@ -113,15 +113,5 @@ public sealed class Flash64KvOuterTests : HeavyTestBase
     private static int[] BuildTokens(int count) =>
         Enumerable.Range(0, count).Select(i => 1 + i * 17 % 997).ToArray();
 
-    private static string? FindModelPath()
-    {
-        string? directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && directory is not null; i++)
-        {
-            string candidate = Path.Combine(directory, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) return candidate;
-            directory = Directory.GetParent(directory)?.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 }

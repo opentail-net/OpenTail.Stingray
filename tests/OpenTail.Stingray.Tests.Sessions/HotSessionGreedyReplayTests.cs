@@ -57,21 +57,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
     private const string RestartPhaseEnvironment = "OPENTAIL_TEST_RESTART_PHASE";
     private const string RestartModelEnvironment = "OPENTAIL_TEST_RESTART_MODEL";
     private const string RestartStorageEnvironment = "OPENTAIL_TEST_RESTART_STORAGE";
-    private static string? FindModelPath()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 
     private const int MaxNewTokens = 6;
 
