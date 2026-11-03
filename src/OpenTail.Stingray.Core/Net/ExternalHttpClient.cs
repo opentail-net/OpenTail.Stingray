@@ -26,6 +26,11 @@ public sealed class ExternalAccessLog
 public sealed class ExternalHttpClient : IDisposable
 {
     private const int MaxRedirects = 5;
+    // The Hub answers 429 (rate limit) and sometimes 503 under load. A request is retried a few times, honouring Retry-After up to a cap, so a batch of
+    // remote scouts or a resumed download does not fail on a transient limit; after that the last response goes to the caller unchanged.
+    private const int MaxRetries = 3;
+    private static readonly TimeSpan MaxRetryWait = TimeSpan.FromSeconds(30);
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly HttpClient _http;
     private readonly Func<string, string?> _env;
 
@@ -33,8 +38,9 @@ public sealed class ExternalHttpClient : IDisposable
 
     /// <param name="inner">Test hook: replaces the real network handler. Redirect-following must be off in it.</param>
     public ExternalHttpClient(string userAgent = "OpenTail.Stingray", HttpMessageHandler? inner = null,
-        Func<string, string?>? env = null, TimeSpan? timeout = null)
+        Func<string, string?>? env = null, TimeSpan? timeout = null, Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
+        _delay = delay ?? ((d, ct) => Task.Delay(d, ct));
         _env = env ?? (n => Environment.GetEnvironmentVariable(n));
         _http = new HttpClient(inner ?? new SocketsHttpHandler { AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.None })
         {
@@ -56,6 +62,7 @@ public sealed class ExternalHttpClient : IDisposable
         EnsureAllowed();
         string? token = _env("HF_TOKEN");
         var current = url;
+        int retries = 0;
         for (int hop = 0; ; hop++)
         {
             if (!ExternalAccess.IsAllowedHost(current.Host) || current.Scheme != Uri.UriSchemeHttps)
@@ -69,6 +76,16 @@ public sealed class ExternalHttpClient : IDisposable
             Log.Request(current.Host.ToLowerInvariant());
             var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
+            if ((int)response.StatusCode is 429 or 503 && retries < MaxRetries)
+            {
+                var wait = RetryWait(response, retries);
+                response.Dispose();
+                retries++;
+                await _delay(wait, ct).ConfigureAwait(false);
+                hop--;   // a retry is not a redirect hop
+                continue;
+            }
+
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } loc)
             {
                 response.Dispose();
@@ -78,6 +95,18 @@ public sealed class ExternalHttpClient : IDisposable
             }
             return new CountingResponse(response, Log);
         }
+    }
+
+    /// <summary>Retry-After (seconds or a date) when the server sent one, else 1 s, 2 s, 4 s; never more than <see cref="MaxRetryWait"/>.</summary>
+    private static TimeSpan RetryWait(HttpResponseMessage response, int attempt)
+    {
+        TimeSpan wait;
+        var ra = response.Headers.RetryAfter;
+        if (ra?.Delta is { } delta) wait = delta;
+        else if (ra?.Date is { } date) wait = date - DateTimeOffset.UtcNow;
+        else wait = TimeSpan.FromSeconds(1 << attempt);
+        if (wait < TimeSpan.Zero) wait = TimeSpan.Zero;
+        return wait > MaxRetryWait ? MaxRetryWait : wait;
     }
 
     /// <summary>Reads a whole (small) JSON-sized body. Use <see cref="GetAsync"/> for anything large.</summary>
