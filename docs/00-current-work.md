@@ -284,7 +284,7 @@ Open items from the old `todo.md`, each kept once. Owners: the scout plan for 5a
 
 - [ ] **Pretest script gaps**: Ctrl+C mid-run and a hard kill of PowerShell untested (child would survive a hard kill); stage 4 has no command; `admit-arch` exit 1 = fail OR tool error (script classifies by verdict line); split exit codes if other callers allow.
 
-- [ ] Cap/expose index limits and rate behaviour for the Hub (retries, 429), and cache API responses by (repo, commit) if batch features arrive.
+- [ ] Cap/expose index limits and rate behaviour for the Hub, and cache API responses by (repo, commit) if batch features arrive. *(Retries done 2026-11-03, plan 8 B4: `ExternalHttpClient.GetAsync` retries 429 and 503 up to three times, waiting for `Retry-After` (capped at 30 s) or 1, 2, 4 s, then hands the last response to the caller; `ExternalHttpClientRetryTests`, mutation checked. Still open: exposing the limits in scout output and the (repo, commit) response cache, both only if batch features arrive.)*
 
 ### 5b. MTP and numerics follow-ups
 
