@@ -29,6 +29,22 @@ public sealed class ModelLocatorTests : IDisposable
     }
 
     [Fact]
+    public void FindDeep_FindsAFileOneFolderDown_ButADirectHitInAnyRootWins()
+    {
+        string a = Make("a");
+        string nested = Make(Path.Combine("a", "own-folder"), "model.gguf");
+        string b = Make("b", "model.gguf");
+        // Only nested: found one level down.
+        Assert.Null(ModelLocator.Find([a], ["model.gguf"]));
+        Assert.Equal(Path.Combine(nested, "model.gguf"), ModelLocator.FindDeep([a], ["model.gguf"]));
+        // A direct hit in a later root beats the nested one in an earlier root.
+        Assert.Equal(Path.Combine(b, "model.gguf"), ModelLocator.FindDeep([a, b], ["model.gguf"]));
+        // Two levels down is out of scope.
+        string deeper = Make(Path.Combine("c", "x", "y"), "deep.gguf");
+        Assert.Null(ModelLocator.FindDeep([Path.Combine(_root, "c")], ["deep.gguf"]));
+        Assert.True(File.Exists(Path.Combine(deeper, "deep.gguf")));
+    }
+    [Fact]
     public void Find_ReturnsNull_WhenNothingMatches_AndTheMissNamesWhatWasWantedAndWhereItLooked()
     {
         string a = Make("a");
