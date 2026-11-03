@@ -1341,6 +1341,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // and _weightDTypes is populated.
         _canBatchedTrunk = ComputeCanBatchedTrunk();
 
+        // The upload staging buffer grew to the largest weight (the F32 output head); nothing uploads that much again.
+        gpu.TrimUploadStaging();
+
         Console.Error.WriteLine(" done.");
     }
 
