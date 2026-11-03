@@ -33,29 +33,7 @@ public sealed class DSparkE2ETests : HeavyTestBase
     // CudaSpecBatchVerifyTests.Prompt (Qwen3-4B shares the Qwen3-8B vocab).
     private static readonly int[] Prompt = { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13 };
 
-    private static string? FindModelPath(string file)
-    {
-        string[] absolute =
-        {
-            $@"C:\models\{file}",
-            $@"E:\models\{file}",
-            $@"C:\p\opentail-llm\models\{file}",
-        };
-        foreach (var p in absolute)
-            if (File.Exists(p)) return p;
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string file) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     private static string? FindTargetGguf()
     {

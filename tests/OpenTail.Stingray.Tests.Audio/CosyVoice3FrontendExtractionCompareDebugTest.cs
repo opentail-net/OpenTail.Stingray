@@ -9,19 +9,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// proven correct (see CosyVoice3FullChainFromRefInputsDebugTest).</summary>
 public sealed class CosyVoice3FrontendExtractionCompareDebugTest : HeavyTestBase
 {
-    private static string? FindModelPath(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(relPath);
 
     private static int[] ReadInts(string path)
     {

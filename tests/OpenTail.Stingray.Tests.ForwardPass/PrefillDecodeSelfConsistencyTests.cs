@@ -35,21 +35,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
         base.Dispose();
     }
 
-    private static string? FindModelPath(string filename)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     /// <summary>Ordinary mid-vocabulary ids — a stand-in for real prose, not special tokens.</summary>
     private static int[] OrdinaryTokens(int count, int seed)

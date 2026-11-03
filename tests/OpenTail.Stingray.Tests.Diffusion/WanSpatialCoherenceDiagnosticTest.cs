@@ -16,22 +16,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// </summary>
 public sealed class WanSpatialCoherenceDiagnosticTest
 {
-    private static string? FindModelPath(string relativePath)
-    {
-        var candidates = new[]
-        {
-            Path.Combine("..", "..", "..", "..", "..", relativePath),
-            Path.Combine("..", "..", "..", relativePath),
-            relativePath,
-            Path.Combine(AppContext.BaseDirectory, relativePath),
-            Path.Combine(@"c:\Git-Public\OpenTail.Stingray", relativePath)
-        };
-        foreach (var c in candidates)
-        {
-            if (File.Exists(c)) return Path.GetFullPath(c);
-        }
-        return relativePath;
-    }
+    private static string? FindModelPath(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(relativePath);
 
     /// <summary>Pearson correlation between each pixel and the pixel `offset` to its right,
     /// averaged over R/G/B channels. IMPORTANT: Wan's VAE upsamples 8x via nearest-neighbor

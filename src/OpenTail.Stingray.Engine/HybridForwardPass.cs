@@ -8,6 +8,28 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public sealed unsafe partial class HybridForwardPass : IForwardPass
 {
+    /// <summary>
+    /// Slots for the routed-expert cache. An explicit <paramref name="requested"/> count wins (capped at the total). Otherwise the
+    /// planner's <see cref="LayerPlacement.ExpertCacheBudgetBytes"/> (VRAM left after trunk weights and KV) is divided by what an
+    /// expert really costs once uploaded, so the lazily filled cache cannot outgrow the plan. A placement that carries no MoE sizing
+    /// at all (budget and routed-expert bytes both zero) or an unknown expert size keeps the whole expert set cacheable.
+    /// <paramref name="sizing"/> is null when the budget was not consulted.
+    /// </summary>
+    internal static int ResolveExpertSlotCapacity(int requested, LayerPlacement placement, long perExpertBytes,
+        int gpuLayers, int numExperts, int numActiveExperts, out MoeCachePlan? sizing)
+    {
+        long total = (long)gpuLayers * numExperts;
+        sizing = null;
+        if (requested > 0)
+            return (int)Math.Min(requested, total);
+        if (placement.ExpertCacheBudgetBytes <= 0 && placement.MoeRoutedExpertBytes <= 0)
+            return (int)total;
+        var plan = MoeCacheSizing.Plan(gpuLayers, numExperts, numActiveExperts,
+            placement.ExpertCacheBudgetBytes, perExpertBytes, reserveBytes: 0);
+        sizing = plan;
+        return plan.Slots;
+    }
+
     private readonly EngineSettings _settings;
     private readonly GgufModel _model;
     private readonly VulkanBackend _gpu;
@@ -109,6 +131,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     // Precomputed RoPE cos/sin tables for CPU layers [maxSeqLen * halfDim]
     private readonly float* _ropeCosTable;
     private readonly float* _ropeSinTable;
+    // Second table for sliding-window layers (Gemma 2/3: theta = RopeThetaSwa, 10K against the global 1M). Null when the model has one theta.
+    private readonly float* _ropeCosTableSwa;
+    private readonly float* _ropeSinTableSwa;
     private readonly int _ropeHalfDim;
 
     // ── Expert slot cache (for MoE GPU layers with lazy/evictable expert loading) ──
@@ -171,12 +196,13 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     public HybridForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
         int expertSlotCapacity = -1,
-        EngineSettings? settings = null)
+        EngineSettings? settings = null,
+        bool forceCpuEmbeddingOutput = false)
     {
         _settings = settings ?? EngineSettings.FromEnvironment();
         InitCpuPrefillHandoff();
         _predictPrefetch = _settings.Moe.PredictPrefetch ?? true;
-        if (GpuForwardPass.PartialOffloadUnsupportedReason(model, hp) is { } gpuGap)
+        if (GpuForwardPass.VulkanHybridUnsupportedReason(model, hp) is { } gpuGap)
             throw new NotSupportedException($"HybridForwardPass has no path for {gpuGap}; use the CPU pass (-g 0).");
         // Gemma 4 has no Vulkan implementation (no SWA / PLE / per-layer head_dim / softcap);
         // a hybrid Vulkan split would silently produce garbage. hp.LayerHeadDim is the gemma4
@@ -223,7 +249,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _shexpGate = new CpuWeightRef[hp.NumLayers];
             for (int li = 0; li < hp.NumLayers; li++) _shexpGate[li] = ResolveCpuWeightFor(model, $"blk.{li}.ffn_gate_inp_shexp.weight");
         }
-        bool cpuEmbeddingOutputOnly = ShouldKeepFixedWeightsOnCpu(
+        // forceCpuEmbeddingOutput exists so tests can exercise the CPU-resident embedding and output branch on a checkpoint small enough to fit the GPU.
+        bool cpuEmbeddingOutputOnly = forceCpuEmbeddingOutput || ShouldKeepFixedWeightsOnCpu(
             model.FindTensor("token_embd.weight")!.Value,
             model.FindTensor("output.weight"));
         _tqEnabled = enableTq;
@@ -432,9 +459,19 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             if (expertSlotCapacity <= 0
                 && int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_MOE_SLOTS"), out int envSlots) && envSlots > 0)
                 expertSlotCapacity = envSlots;
-            int capacity = expertSlotCapacity > 0
-                ? Math.Min(expertSlotCapacity, totalExperts)
-                : totalExperts;
+            long perExpertBytes = ExpertSlotManager.PerExpertGpuBytes(model, _nGpuLayers, _expertDim, _embDim);
+            int capacity = ResolveExpertSlotCapacity(expertSlotCapacity, placement, perExpertBytes,
+                _nGpuLayers, hp.NumExperts, hp.NumActiveExperts, out var sizing);
+            if (sizing is { } plan)
+            {
+                Console.Error.WriteLine(
+                    $"[HybridForwardPass] MoE expert-cache budget {placement.ExpertCacheBudgetBytes / (1024 * 1024)} MiB, " +
+                    $"per-expert ≈ {perExpertBytes / 1024} KiB → {plan.Slots} of {totalExperts} slots ({plan.Status}).");
+                if (plan.Status == MoeCacheSizingStatus.BudgetExhausted)
+                    Console.Error.WriteLine(
+                        "[HybridForwardPass] WARNING: the expert-cache budget cannot fit a single expert; cache clamped to 1 slot " +
+                        "and almost every routed expert will miss. Use fewer GPU layers (-g) or a smaller context.");
+            }
             _expertSlotManager = new ExpertSlotManager(gpu, model, hp, capacity, _gpuWeightDTypes, _settings.Moe);
             _prefetcher = new MoEPrefetcher(_expertSlotManager);
             if (_predictPrefetch)
@@ -477,6 +514,12 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             ropeFreqs = MemoryMarshal.Cast<byte, float>(model.GetTensorData(cpuLr)).Slice(0, _ropeHalfDim).ToArray();
         fixed (float* rf = ropeFreqs)
             SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, _maxSeqLen, _headDim, hp.RopeTheta, rf);
+        if (hp.RopeThetaSwa > 0f && hp.IsSwaLayer is not null)
+        {
+            _ropeCosTableSwa = (float*)NativeMemory.Alloc((nuint)((long)_maxSeqLen * _ropeHalfDim * sizeof(float)));
+            _ropeSinTableSwa = (float*)NativeMemory.Alloc((nuint)((long)_maxSeqLen * _ropeHalfDim * sizeof(float)));
+            SimdKernels.BuildRopeTable(_ropeCosTableSwa, _ropeSinTableSwa, _maxSeqLen, _headDim, hp.RopeThetaSwa);
+        }
         if (hp.RopeAttnFactor != 1f)
         {
             int tableElems = _maxSeqLen * _ropeHalfDim;
@@ -624,6 +667,13 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _gpu.RecordBarrier();
         }
 
+        // Gemma / Granite embedding scale. Mirrors GpuForwardPass.Forward.
+        if (_hp.EmbeddingScale != 1f)
+        {
+            _gpu.ScaleInPlace(_gpuHidden, _hp.EmbeddingScale);
+            _gpu.RecordBarrier();
+        }
+
         for (int i = 0; i < _nGpuLayers; i++)
         {
             GpuLayer(i, position);
@@ -718,6 +768,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         _gpu.EndRecordAndSubmit();
         _gpu.ReadFromStaging(_logitsBuf);
         AddOutputBias();
+        ApplyLogitScale();
 
         _kvLength = position + 1;
         return _logitsBuf;
@@ -743,7 +794,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         // every case the handoff refuses, runs the sequential per-token loop below.
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(tokens.Count, startPos);
-        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, startPos))
             return _logitsBuf;
 
         long t0 = s_prefillTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -828,8 +879,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
                 }
                 else
                 {
-                    _gpu.RoPE(_gpuQ, position, _headDim, _hp.RopeTheta, _hp.IsNeoxRope);
-                    _gpu.RoPE(_gpuK, position, _headDim, _hp.RopeTheta, _hp.IsNeoxRope);
+                    float layerRopeTheta = isSwa && _hp.RopeThetaSwa > 0f ? _hp.RopeThetaSwa : _hp.RopeTheta;
+                    _gpu.RoPE(_gpuQ, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
+                    _gpu.RoPE(_gpuK, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                 }
                 _gpu.RecordBarrier();
             }
@@ -845,6 +897,14 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
                 _gpu.HeadNormPure(_gpuK, (uint)_numKvHeads, (uint)_headDim, _hp.RmsNormEps);
                 _gpu.RecordBarrier();
             }
+        }
+
+        // AttentionScaleOverride (Granite, Gemma 3): the attention shaders hardcode 1/sqrt(head_dim), so pre-scale Q until
+        // that cancels down to the override. Mirrors GpuForwardPass.
+        if (_hp.AttentionScaleOverride != 0f)
+        {
+            _gpu.ScaleInPlace(_gpuQ, _hp.AttentionScaleOverride * MathF.Sqrt(_headDim));
+            _gpu.RecordBarrier();
         }
 
         if (_tqEnabled)
@@ -905,6 +965,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             _gpu.RmsNorm(_gpuHidden, _gpuHidden, _gpuPostAttnNorm[i], _hp.RmsNormEps);
             _gpu.RecordBarrier();
         }
+        if (_hp.ResidualScale != 1f)   // Granite / MiniCPM: scale the sublayer output before it joins the residual stream
+        {
+            _gpu.ScaleInPlace(_gpuHidden, _hp.ResidualScale);
+            _gpu.RecordBarrier();
+        }
         _gpu.AddInPlace(_gpuHidden, _gpuResidual);
         _gpu.RecordBarrier();
 
@@ -929,6 +994,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         if (_gpuPostFfwNorm is not null)
         {
             _gpu.RmsNorm(_gpuHidden, _gpuHidden, _gpuPostFfwNorm[i], _hp.RmsNormEps);
+            _gpu.RecordBarrier();
+        }
+        if (_hp.ResidualScale != 1f)
+        {
+            _gpu.ScaleInPlace(_gpuHidden, _hp.ResidualScale);
             _gpu.RecordBarrier();
         }
         _gpu.AddInPlace(_gpuHidden, _gpuResidual);
@@ -991,8 +1061,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         if (useRoPE)
         {
-            var cos = _ropeCosTable + (long)position * _ropeHalfDim;
-            var sin = _ropeSinTable + (long)position * _ropeHalfDim;
+            bool swaTable = isSwa && _ropeCosTableSwa != null;
+            var cos = (swaTable ? _ropeCosTableSwa : _ropeCosTable) + (long)position * _ropeHalfDim;
+            var sin = (swaTable ? _ropeSinTableSwa : _ropeSinTable) + (long)position * _ropeHalfDim;
             if (_hp.IsNeoxRope)
             {
                 SimdKernels.ApplyRoPECachedNeox(_cpuQ, cos, sin, _numHeads, _headDim);
@@ -1041,6 +1112,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             SimdKernels.AddInPlace(_cpuHidden, _cpuBo[ci], _embDim);
         if (_cpuPostAttnNorm is not null)
             SimdKernels.RmsNorm(_cpuHidden, _cpuHidden, GetCpuNormWeight(_cpuPostAttnNorm[ci]), _embDim, _hp.RmsNormEps);
+        if (_hp.ResidualScale != 1f)
+            SimdKernels.ScaleInPlace(_cpuHidden, _hp.ResidualScale, _embDim);
 
         // Residual
         SimdKernels.AddInPlace(_cpuHidden, _cpuResidual, _embDim);
@@ -1064,6 +1137,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         if (_cpuPostFfwNorm is not null)
             SimdKernels.RmsNorm(_cpuHidden, _cpuHidden, GetCpuNormWeight(_cpuPostFfwNorm[ci]), _embDim, _hp.RmsNormEps);
+        if (_hp.ResidualScale != 1f)
+            SimdKernels.ScaleInPlace(_cpuHidden, _hp.ResidualScale, _embDim);
 
         // Residual
         SimdKernels.AddInPlace(_cpuHidden, _cpuResidual, _embDim);
@@ -1140,7 +1215,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     {
         int start = ForwardPass.AttnStart(position + 1, window);   // window: > 0 sliding, < -1 Llama 4 chunk (see AttnStart)
         int seqLen = position + 1 - start;
-        float scale = 1.0f / MathF.Sqrt(_headDim);
+        float scale = _hp.AttentionScaleOverride != 0f ? _hp.AttentionScaleOverride : 1.0f / MathF.Sqrt(_headDim);
         int maxSeqLen = _maxSeqLen; int hd = _headDim; int hpkg = _headsPerKvGroup;
         var q = _cpuQ; var attnOut = _cpuAttnOut; var scores = _cpuAttnScores;
         var kvCache = _cpuKvCache;
@@ -1194,7 +1269,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         int seqLen = position + 1;
         int tqLen = tq.GetTqLength(ci);
         int fp32Start = tqLen;
-        float scale = 1.0f / MathF.Sqrt(_headDim);
+        float scale = _hp.AttentionScaleOverride != 0f ? _hp.AttentionScaleOverride : 1.0f / MathF.Sqrt(_headDim);
         int maxSeqLen = _maxSeqLen; int hd = _headDim; int hpkg = _headsPerKvGroup;
         int tqBlkSz = tq.TqBlockSize;
         var q = _cpuQ; var attnOut = _cpuAttnOut; var scores = _cpuAttnScores;
@@ -1487,6 +1562,14 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         fixed (float* logits = _logitsBuf)
             SimdKernels.MatVec(logits, _cpuOutputWeight.DataPtr, _cpuNormBuf, _hp.VocabSize, _embDim, _cpuOutputWeight.DType);
         AddOutputBias();
+        ApplyLogitScale();   // the GPU output branch applies it too: both placements must agree (Granite / MiniCPM)
+    }
+
+    /// <summary>Granite / MiniCPM final-logit scale (already the reciprocal, see <c>ModelHyperparams.LogitScale</c>), applied to the host logits.</summary>
+    private void ApplyLogitScale()
+    {
+        if (_hp.LogitScale != 1f)
+            System.Numerics.Tensors.TensorPrimitives.Multiply(_logitsBuf.AsSpan(0, _hp.VocabSize), _hp.LogitScale, _logitsBuf.AsSpan(0, _hp.VocabSize));
     }
 
     private void AddOutputBias()
@@ -2060,6 +2143,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         NativeMemory.Free(_cpuQ); NativeMemory.Free(_cpuK); NativeMemory.Free(_cpuV); NativeMemory.Free(_cpuAttnOut);
         NativeMemory.Free(_cpuFfnGate); NativeMemory.Free(_cpuFfnUp); NativeMemory.Free(_cpuAttnScores);
         NativeMemory.Free(_ropeCosTable); NativeMemory.Free(_ropeSinTable);
+        if (_ropeCosTableSwa != null) { NativeMemory.Free(_ropeCosTableSwa); NativeMemory.Free(_ropeSinTableSwa); }
         if (_cpuRouterLogits != null) NativeMemory.Free(_cpuRouterLogits);
         if (_cpuSharedOut != null) NativeMemory.Free(_cpuSharedOut);
         if (_cpuExpertGate != null) NativeMemory.Free(_cpuExpertGate);

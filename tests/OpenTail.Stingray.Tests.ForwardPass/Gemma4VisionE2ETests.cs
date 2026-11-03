@@ -18,21 +18,7 @@ public sealed class Gemma4VisionE2ETests : HeavyTestBase
     private const string TextModel = "gemma-4-12b-it-qat-q4_0.gguf";
     private const string Mmproj = "mmproj-gemma-4-12b-it-qat-q4_0.gguf";
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { $@"E:\models\{file}", $@"C:\p\opentail-llm\models\{file}" })
-            if (File.Exists(p)) return p;
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? Find(string file) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     [Fact]
     public void Gemma4_12B_Image_SplicesAndSteersDecode()

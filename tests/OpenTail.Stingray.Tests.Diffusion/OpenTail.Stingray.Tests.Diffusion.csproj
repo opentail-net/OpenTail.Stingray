@@ -29,6 +29,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- One model lookup for the audio and diffusion tests (shared locator, every drive): the file lives in the Audio test project. -->
+    <Compile Include="..\OpenTail.Stingray.Tests.Audio\AudioTestPaths.cs" Link="Shared\AudioTestPaths.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

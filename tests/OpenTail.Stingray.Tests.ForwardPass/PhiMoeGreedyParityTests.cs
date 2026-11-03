@@ -12,6 +12,12 @@ public sealed class PhiMoeGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "Phi-3.5-MoE-instruct-Q3_K_M.gguf";
 
+    // The expected tokens below hold for ONE checkpoint: the copy that lived in K:\_other_models when they were captured with llama-server (2026-09-26). A second copy of the same name
+    // and size (20,032,718,688 bytes) sits on H:\_models with sha256 f18a387d39b0fe47...; it differs from this one inside the file (first difference at byte 11,648,045,057) and the engine's greedy
+    // output on it diverges from these tokens at position 2 (" Paris. The capital of ..." instead of " Paris. Paris is the capital of ..."). Which copy is the authoritative download is the owner's
+    // call; until then the receipt is pinned to the copy it was captured on and any other copy is reported, not compared.
+    private const string ReceiptSha256 = "720f81aa62e296c23990448bf026381983c82c4564fe360efb88506e658f51d0";
+
     private const string LongPrompt =
         "The history of the city of Paris stretches back more than two thousand years. It began as a small settlement of a Celtic tribe known as the Parisii on an island in the Seine river. The Romans conquered the area in 52 BC and built a town called Lutetia, with a forum, baths, temples and an amphitheatre. During the Middle Ages, Paris became one of the largest and most important cities in Europe, a centre of learning with its famous university, and home to the royal court of the kings of France. The construction of the cathedral of Notre-Dame began in 1163 and continued for almost two centuries. In the following centuries the city grew rapidly, and in 1789 it became the stage of the French Revolution, which changed the course of European history. In the nineteenth century, under Napoleon III, the prefect Baron Haussmann rebuilt much of the city, creating wide boulevards, parks and";
 
@@ -40,8 +46,11 @@ public sealed class PhiMoeGreedyParityTests : HeavyTestBase
 
     private static void AssertGreedy(string prompt, int ctx, int expectedPromptLen, int[] expected)
     {
-        var path = FindModel();
-        Assert.SkipWhen(path is null, $"{ModelFile} is required for this parity receipt.");
+        var copies = OpenTail.Stingray.Engine.Verification.ModelLocator.FindAll(ModelFile);
+        Assert.SkipWhen(copies.Count == 0, $"{ModelFile} is required for this parity receipt.");
+        string? path = copies.FirstOrDefault(c => ModelFileIdentity.Sha256(c) == ReceiptSha256);
+        Assert.SkipWhen(path is null,
+            $"no copy of {ModelFile} matches the receipt's sha256 {ReceiptSha256[..16]}...; copies found: " + string.Join("; ", copies.Select(c => $"{c} ({ModelFileIdentity.Sha256(c)[..16]}...)")));
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
@@ -68,5 +77,4 @@ public sealed class PhiMoeGreedyParityTests : HeavyTestBase
         Assert.Equal(expected, generated);
     }
 
-    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindOrReport(ModelFile);
 }

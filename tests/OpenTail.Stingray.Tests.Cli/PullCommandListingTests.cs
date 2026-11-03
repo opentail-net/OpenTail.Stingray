@@ -122,5 +122,64 @@ public sealed class PullCommandListingTests
         Assert.Equal("valid.gguf", files[0].Name);
         Assert.Equal(2048L, files[0].Size);
     }
-}
 
+    // ── The listing goes through the shared ExternalHttpClient (HTTPS to Hugging Face hosts only, HF_TOKEN to the Hub only) ──
+
+    private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> handle) : HttpMessageHandler
+    {
+        public List<HttpRequestMessage> Requests { get; } = [];
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(handle(request));
+        }
+    }
+
+    private static OpenTail.Stingray.Core.Net.ExternalHttpClient Client(FakeHandler handler, string? token = null)
+        => new(userAgent: "test", inner: handler, env: key => key switch { "STINGRAY_ALLOW_EXTERNAL" => "1", "HF_TOKEN" => token, _ => null });
+
+    [Fact]
+    public void ListGgufFiles_ReadsTheListingThroughTheSharedClient_WithSizesHashesAndTheResolvedCommit()
+    {
+        string withSha = WithBlobs.Replace("{\"id\":\"owner/repo\",", "{\"id\":\"owner/repo\",\"sha\":\"0123456789abcdef0123456789abcdef01234567\",");
+        var handler = new FakeHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(withSha) });
+        using var http = Client(handler);
+        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var files = PullCommand.ListGgufFiles(http, "owner/repo", null, CancellationToken.None, hashes, out string? revision);
+
+        Assert.Equal("0123456789abcdef0123456789abcdef01234567", revision);
+        Assert.Equal(["Model-Q4_K_M.gguf", "Model-Q8_0.gguf", "tiny.gguf"], files.Select(f => f.Name).Order(StringComparer.Ordinal).ToArray());
+        Assert.Contains("Model-Q4_K_M.gguf", hashes.Keys);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://huggingface.co/api/models/owner/repo?blobs=true", request.RequestUri!.ToString());
+    }
+
+    [Fact]
+    public void ListGgufFiles_SendsTheTokenToTheHub_AndAPinnedRevisionUsesTheRevisionRoute()
+    {
+        var handler = new FakeHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(WithBlobs) });
+        using var http = Client(handler, token: "hf_test_token");
+
+        PullCommand.ListGgufFiles(http, "owner/repo", "abc1234", CancellationToken.None, null, out _);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://huggingface.co/api/models/owner/repo/revision/abc1234?blobs=true", request.RequestUri!.ToString());
+        Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+        Assert.Equal("hf_test_token", request.Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public void ListGgufFiles_RefusesToFollowARedirectToAHostThatIsNotHuggingFace_AndNeverSendsItTheToken()
+    {
+        var handler = new FakeHandler(r => r.RequestUri!.Host == "huggingface.co"
+            ? new HttpResponseMessage(System.Net.HttpStatusCode.Redirect) { Headers = { Location = new Uri("https://evil.example.com/steal") } }
+            : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(WithBlobs) });
+        using var http = Client(handler, token: "hf_test_token");
+
+        Assert.Throws<OpenTail.Stingray.Core.Net.ExternalAccessDeniedException>(() =>
+            PullCommand.ListGgufFiles(http, "owner/repo", null, CancellationToken.None, null, out _));
+
+        Assert.DoesNotContain(handler.Requests, r => r.RequestUri!.Host == "evil.example.com");   // the hop was refused before any request was made
+    }
+}

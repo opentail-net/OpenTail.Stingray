@@ -77,8 +77,10 @@ public static class ServiceCollectionExtensions
                 ? (_ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp))
                 : (id => LoadNamedModel(opts, id, sp));
 
+            var estimators = CreateAcceleratorEstimators(opts);
             var manager = new ModelRuntimeManager(
-                loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
+                loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment(),
+                estimateAcceleratorBytes: estimators.Bytes, estimateAcceleratorTarget: estimators.Target);
 
             // Off unless explicitly opted into (see OpenTailStingrayServerOptions.EnableResourceAdmission
             // doc for why this isn't a new default) — leaving it null preserves today's exact behavior.
@@ -92,6 +94,9 @@ public static class ServiceCollectionExtensions
         // endpoints. Cheap to construct (no loading); safe to register unconditionally even in
         // single-model deployments, where it's a thin, side-effect-free wrapper.
         services.TryAddSingleton<IInferenceService, InferenceService>();
+
+        // The Whisper pipeline behind /v1/audio/transcriptions and /translations: the installed catalog model, loaded on first use.
+        services.TryAddSingleton<IWhisperPipelineProvider>(_ => new InstalledWhisperPipelineProvider());
 
         services.TryAddSingleton<IInferenceEngine>(sp =>
         {
@@ -199,6 +204,39 @@ public static class ServiceCollectionExtensions
     /// per-model options surface, matching the scope <see cref="NamedModelOptions"/>'s own doc
     /// comment states.
     /// </summary>
+    /// <summary>
+    /// What the manager expects a model to put on an accelerator, asked before it loads (accelerator-aware admission, docs/032 Phase 3). Without this the
+    /// manager treats every candidate as 0 accelerator bytes and the accelerator branch of <see cref="IResourceBudget"/> is never consulted in a real server.
+    /// The figure is the weights the execution plan would place on the GPU (<see cref="InferenceEngineLoader.EstimateAcceleratorBytes"/>), computed from the same
+    /// plan the load itself runs. 0 when a custom engine factory loads the model (the server cannot know what it builds) or when no estimate can be made.
+    /// A model's plan inputs are fixed for the life of the process, so each answer is computed once.
+    /// </summary>
+    internal static Func<ModelId, long> CreateAcceleratorEstimator(
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, long>? estimate = null) =>
+        CreateAcceleratorEstimators(opts, estimate is null ? null : o => (estimate(o), null)).Bytes;
+
+    /// <summary>
+    /// <see cref="CreateAcceleratorEstimator"/> plus the backend and device each model's plan puts its bytes on (plan 6 G2), from one plan per model.
+    /// The target is null wherever the bytes are 0.
+    /// </summary>
+    internal static (Func<ModelId, long> Bytes, Func<ModelId, AcceleratorTarget?> Target) CreateAcceleratorEstimators(
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, (long Bytes, AcceleratorTarget? Target)>? estimate = null)
+    {
+        estimate ??= o => InferenceEngineLoader.EstimateAcceleratorPlacement(o);
+        var known = new System.Collections.Concurrent.ConcurrentDictionary<ModelId, (long Bytes, AcceleratorTarget? Target)>();
+        (long Bytes, AcceleratorTarget? Target) Lookup(ModelId id) => known.GetOrAdd(id, _ =>
+        {
+            if (opts.Models.Count == 0)
+                return opts.EngineFactory is not null ? (0, null) : estimate(opts);
+            NamedModelOptions? named = null;
+            foreach (var candidate in opts.Models)
+                if (ModelId.Canonicalize(candidate.ModelPath).Equals(id)) { named = candidate; break; }
+            if (named is null || named.EngineFactory is not null || opts.EngineFactory is not null) return (0, null);
+            return estimate(ForNamedModel(opts, named));
+        });
+        return (id => Lookup(id).Bytes, id => Lookup(id).Target);
+    }
+
     private static LoadedEngine LoadNamedModel(OpenTailStingrayServerOptions opts, ModelId id, IServiceProvider sp)
     {
         NamedModelOptions? named = null;
