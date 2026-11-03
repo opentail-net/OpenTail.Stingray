@@ -132,7 +132,7 @@ public static class ModelLocator
     public static string? FindOrReport(params string[] fileNames)
     {
         var roots = Roots();
-        string? path = Find(roots, fileNames);
+        string? path = FindDeep(roots, fileNames);
         if (path is null) Console.Error.WriteLine(DescribeMiss(fileNames, roots));
         return path;
     }
