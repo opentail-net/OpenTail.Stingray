@@ -45,6 +45,15 @@ public sealed class ModelLocatorTests : IDisposable
         Assert.True(File.Exists(Path.Combine(deeper, "deep.gguf")));
     }
     [Fact]
+    public void FindAll_ReturnsEveryCopyInSearchOrder_OncePerPath()
+    {
+        string a = Make("a", "m.gguf");
+        string b = Make("b", "m.gguf");
+        string c = Make("c");
+        Assert.Equal([Path.Combine(a, "m.gguf"), Path.Combine(b, "m.gguf")], ModelLocator.FindAll([a, b, c, a], ["m.gguf"]));
+        Assert.Empty(ModelLocator.FindAll([c], ["m.gguf"]));
+    }
+    [Fact]
     public void Find_ReturnsNull_WhenNothingMatches_AndTheMissNamesWhatWasWantedAndWhereItLooked()
     {
         string a = Make("a");

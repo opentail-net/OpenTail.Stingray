@@ -80,6 +80,26 @@ public static class ModelLocator
     }
 
     /// <summary>
+    /// Every existing copy of the named files across all roots, in search order, one entry per distinct path. For callers that must tell copies of the
+    /// same file name apart (two checkpoints can share a name and a size on different drives and still differ).
+    /// </summary>
+    public static IReadOnlyList<string> FindAll(params string[] fileNames) => FindAll(Roots(), fileNames);
+
+    /// <summary>As <see cref="FindAll(string[])"/> over an explicit root list.</summary>
+    public static IReadOnlyList<string> FindAll(IEnumerable<string> roots, IEnumerable<string> fileNames)
+    {
+        var found = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rootList = roots as IReadOnlyList<string> ?? roots.ToList();
+        foreach (var name in fileNames)
+            foreach (var root in rootList)
+            {
+                string candidate = Path.Combine(root, name);
+                if (File.Exists(candidate) && seen.Add(Path.GetFullPath(candidate))) found.Add(candidate);
+            }
+        return found;
+    }
+    /// <summary>
     /// <see cref="Find(string[])"/>, then one sub-folder level under every root: checkpoints are often kept in a folder of their own
     /// (<c>_models\lfm2-8b-a1b\LFM2-8B-A1B-Q4_K_M.gguf</c>). A direct hit in any root always wins over a nested one.
     /// </summary>
