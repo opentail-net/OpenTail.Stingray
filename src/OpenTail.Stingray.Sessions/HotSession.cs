@@ -81,6 +81,9 @@ public sealed class HotSession : IDisposable
     private readonly int _maxSequenceLength;
     private readonly int _maxCapturedOutputChunks;
     private readonly string _modelKey;
+
+    /// <summary>The key this session's residency and reservations are accounted under; forks inherit it.</summary>
+    internal string ModelKey => _modelKey;
     private readonly Action<SessionId, HotSession>? _onDisposed;
     private readonly Func<SessionId, long, long>? _reclaimIdleBytes;
     private readonly RetainedSequenceState _state = new();
@@ -319,12 +322,17 @@ public sealed class HotSession : IDisposable
     /// </summary>
     internal void SeedFromSharedPrefix(ImmutableArray<int> prefixTokens, ISequenceKvCache forkedCache)
     {
+        // Admission first, before any state is touched: a refusal leaves the forked cache with the caller to dispose.
+        // Each session is charged its full prefix even though pages are shared (the conservative policy the rest of
+        // the accounting already uses), against the aggregate, per-session and per-model limits.
+        long prefixBytes = checked((long)prefixTokens.Length * _kvBytesPerToken);
+        using var reservation = _resources.Reserve(SessionId, prefixBytes, _modelKey);
         _state.SeedWithForkedCache(forkedCache, prefixTokens.Length);
         var log = ImmutableArray.Create<ExecutionSegment>(new TokenSegment(prefixTokens));
         var seededCursor = new SessionCursor(log, prefixTokens.Length, prefixTokens.Length,
             prefixTokens.Length, prefixTokens.Length, StateCoverage.Full);
         lock (_cursorGate) _cursor = seededCursor;
-        _resources.SetResidentBytes(SessionId, checked((long)prefixTokens.Length * _kvBytesPerToken));
+        reservation.Complete(prefixBytes);
     }
 
     /// <summary>
@@ -532,11 +540,6 @@ public sealed class HotSession : IDisposable
 
                     var outcome = _state.LastTurn
                         ?? throw new InvalidOperationException("The retained engine completed without a retained turn outcome.");
-                    // Only successfully committed turns count toward ISessionMetrics (its own doc
-                    // says "successfully committed") -- the cancel/fail branches below deliberately
-                    // do not record partial metrics.
-                    _metrics.AddPromptTokens(appendTokens.Length, prefillElapsed);
-                    _metrics.AddGeneratedTokens(outcome.GeneratedTokenIds.Length, generationElapsed);
                     var nextCursor = BuildNextCursor(appendTokens, outcome);
                     _store.Transition(lease, operationId, SessionOperationState.Generating, SessionOperationState.CommitPrepared);
                     var resultChunks = chunks.ToImmutable();
@@ -561,6 +564,10 @@ public sealed class HotSession : IDisposable
                     // faults, the catch path can still restore cache, cursor and accounting.
                     var completed = _store.Complete(lease, operationId, resultChunks);
                     operationCommitted = true;
+                    // Only after the store commit: a turn that fails anywhere before it is compensated (cursor, cache, accounting) and must not
+                    // leave its tokens in counters whose contract is "successfully committed".
+                    _metrics.AddPromptTokens(appendTokens.Length, prefillElapsed);
+                    _metrics.AddGeneratedTokens(outcome.GeneratedTokenIds.Length, generationElapsed);
                     var (reason, toolCalls) = HotSessionTurnResult.DescribeOutcome(resultChunks, cancelled: false, failed: false);
                     NotifyTokenListeners(outcome.GeneratedTokenIds);
                     return new HotSessionTurnResult(completed, nextCursor, resultChunks, IsIdempotentReplay: false, reason, toolCalls);
@@ -660,7 +667,12 @@ public sealed class HotSession : IDisposable
             if (_disposed) return;
             _disposed = true;
         }
-        _turnGate.WaitAsync().GetAwaiter().GetResult();
+        // The holder of an exclusive lease (see TryAcquireExclusive) already owns the turn gate; waiting for it here would deadlock.
+        // The holder is on this thread because eviction is synchronous. This dispose consumes the lease, so its release is a no-op.
+        if (Volatile.Read(ref _exclusiveThread) == Environment.CurrentManagedThreadId)
+            Volatile.Write(ref _exclusiveThread, 0);
+        else
+            _turnGate.WaitAsync().GetAwaiter().GetResult();
         try
         {
             _state.Dispose();
@@ -712,6 +724,45 @@ public sealed class HotSession : IDisposable
 
     /// <summary>True while a turn holds this session's retained state.</summary>
     internal bool IsInUse => _state.IsInUse;
+
+    // Managed thread id of the holder of the exclusive lease, 0 when none. Only read to let that holder dispose the session.
+    private int _exclusiveThread;
+
+    /// <summary>
+    /// Takes the session's turn gate without waiting, or returns null when a turn is running, committing or queued ahead of us, or the session is
+    /// disposed. <see cref="IsInUse"/> is not enough for this: it clears when the engine finishes, while the turn still publishes its cursor and commits
+    /// its revision and operation record under the gate. While the lease is held no turn can start, so the cursor, revision, ledger and KV are one
+    /// consistent state. Disposing the session on the same thread while holding the lease is allowed and consumes it.
+    /// </summary>
+    internal IDisposable? TryAcquireExclusive()
+    {
+        lock (_lifecycleGate)
+            if (_disposed) return null;
+        try
+        {
+            if (!_turnGate.Wait(0)) return null;
+        }
+        catch (ObjectDisposedException) { return null; }
+        if (_state.IsInUse)
+        {
+            _turnGate.Release();
+            return null;
+        }
+        Volatile.Write(ref _exclusiveThread, Environment.CurrentManagedThreadId);
+        return new ExclusiveLease(this);
+    }
+
+    private sealed class ExclusiveLease(HotSession owner) : IDisposable
+    {
+        private int _released;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            // Zero means a same-thread Dispose already consumed the lease and released and disposed the gate.
+            if (Interlocked.Exchange(ref owner._exclusiveThread, 0) == 0) return;
+            owner._turnGate.Release();
+        }
+    }
 
     /// <summary>
     /// Restores cursor state and seeds the store's revision.
@@ -965,7 +1016,7 @@ public sealed class HotSessionRuntime
             ImmutableArray<int>? sharedTokens = null;
             for (int i = 0; i < count; i++)
             {
-                var branch = Create(sessionId: null, modelKey: null, parentSessionId: parent.SessionId);
+                var branch = Create(sessionId: null, modelKey: parent.ModelKey, parentSessionId: parent.SessionId);
                 branches.Add(branch);
                 foreach (var kv in parent.Metadata.GetEntries()) branch.Metadata.Set(kv.Key, kv.Value);
                 if (tokenOnlyLength == 0) continue;
@@ -974,7 +1025,8 @@ public sealed class HotSessionRuntime
                     ?? throw new InvalidOperationException(
                         "Cannot fork session: it is not idle, or the active backend does not support prefix forking.");
                 sharedTokens ??= tokens[..forked.Length];
-                branch.SeedFromSharedPrefix(sharedTokens.Value, forked.Cache);
+                try { branch.SeedFromSharedPrefix(sharedTokens.Value, forked.Cache); }
+                catch { forked.Cache.Dispose(); throw; }
             }
             return branches;
         }

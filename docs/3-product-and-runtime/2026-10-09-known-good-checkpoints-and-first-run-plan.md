@@ -1,17 +1,13 @@
 # Known-good checkpoints, favourites and first-run: plan
 
+> Completed items moved to [../done/2026-10-09-known-good-checkpoints-and-first-run-plan-completed-items-2026-10.md](../done/2026-10-09-known-good-checkpoints-and-first-run-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; code checked)
 
-- [x] P0 first-run seam (`src/OpenTail.Stingray.Cli/SetupFlow.cs`)
-- [ ] P0 leftover: `pull`'s download and listing parser still use their own client and parser
-- [x] P1 shared preflight for `chat` and `setup`
-- [x] P1 leftover: `run` and `serve` call `LoadPreflight` (`RunCommand.cs:228`, `InferenceEngineLoader.cs:35`; checked 2026-10-30). Estimator location not re-checked. No test run recorded for this item.
-- [x] P2 variants and qualification scope (Qwen2.5 0.5B, 1.5B, 7B goldens under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`)
-- [ ] P3 favourites: `Favourites.cs` and `ModelsCommand.cs` exist; end-to-end `models use` not re-checked
-- [x] P4 inventory and verify: `-l|--local` and `--verify` both exist (`ModelsCommand.cs`; checked 2026-10-30, the earlier "not found" was a search miss on the short alias). No test run recorded for this item.
-- [ ] P5 docs as tests: a test that fails when a cited file, hash or evidence disappears
+- [x] P0 leftover: `pull`'s download and listing parser still use their own client and parser *(done, checked 2026-11-01 against the code: `PullCommand` downloads through `ModelDownloader.DownloadAsync`, the same code `setup` uses, and lists through `ExternalHttpClient`, `PullCommand.cs` lines 61 and 171)*
+- [x] P5 docs as tests: a test that fails when a cited file, hash or evidence disappears *(done for the catalogue, checked 2026-11-01: `CatalogGuardTests` pins every entry's hash, revision, size and evidence and that each qualification cites a golden that exists and pins the same file; `StatusMatrixCitationTests` covers STATUS. README commands being run, not just compiled, is not covered: `verify-package-consumers.ps1` compiles the marked snippets and runs in CI since plan 6 B1.)*
 
-**Status:** In progress (2026-10-09). **P0 first-run seam DONE** (`SetupFlow`; `chat`/`speak`/`transcribe` offer to install a missing model, interactive only; `pull --revision` and default commit pin). P0 leftovers: `pull`'s download and listing parser still use their own client/parser instead of the gateway/`HubClient`. **P1 shared preflight DONE for `chat` and `setup`** (see 061; Unknown warns rather than blocks; `run`/`serve` wired to the preflight since 2026-10-30, see the checklist above; estimator location not re-checked). **P2 DONE (2026-10-10):** `FamilyId` + `Qualifications` on `CatalogEntry`; three Qwen2.5 chat entries (0.5b default Exact 32/32, 1.5b and 7b NearTie 31/32, each pinned to a llama-server 10306 golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`); `setup` offers the largest smaller qualified same-family model that fits when the chosen one does not; `models <task>` and the setup summary print a scoped "Qualified" row (unqualified entries say so). **P3 favourites implemented (`models use`, `--clear`; end-to-end run not recorded), P4 `models --local [--verify]` implemented** (cards F, E). **P5 partly done:** catalogue guards plus a test that every cited golden exists and pins the entry's file name, size and SHA-256; README/STATUS rows citing catalogue ids not yet covered. Speeds on the 1.5b/7b rows are single golden runs (33.3 and 8.0 tok/s decode), not rule-7 measurements. Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.
+**Status:** In progress (2026-10-09). **P0 first-run seam DONE** (`SetupFlow`; `chat`/`speak`/`transcribe` offer to install a missing model, interactive only; `pull --revision` and default commit pin). P0 leftovers: done, checked 2026-11-01 (the listing goes through `ExternalHttpClient`; the download through the shared `ModelDownloader`, see the checklist above and 061). **P1 shared preflight DONE for `chat` and `setup`** (see 061; Unknown warns rather than blocks; `run`/`serve` wired to the preflight since 2026-10-30, see the checklist above; estimator location not re-checked). **P2 DONE (2026-10-10):** `FamilyId` + `Qualifications` on `CatalogEntry`; three Qwen2.5 chat entries (0.5b default Exact 32/32, 1.5b and 7b NearTie 31/32, each pinned to a llama-server 10306 golden under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`); `setup` offers the largest smaller qualified same-family model that fits when the chosen one does not; `models <task>` and the setup summary print a scoped "Qualified" row (unqualified entries say so). **P3 favourites implemented (`models use`, `--clear`; end-to-end run not recorded), P4 `models --local [--verify]` implemented** (cards F, E). **P5 partly done:** catalogue guards plus a test that every cited golden exists and pins the entry's file name, size and SHA-256; README/STATUS rows citing catalogue ids not yet covered. Speeds on the 1.5b/7b rows are single golden runs (33.3 and 8.0 tok/s decode), not rule-7 measurements. Reviews an outside proposal (a ChatGPT conversation shared by the user) against the code as it is today.
 **Related:** [front-door design](2026-10-09-public-developer-surface-and-front-door-plan.md#front-door-design-merged-2026-10-30) (catalog rules), [scout plan](2026-10-09-checkpoint-scout-and-ai-admission-plan.md), `docs/reference/061-coverage-tooling.md` (scout, external access), `docs/todo.md` (top section).
 **2026-10-11:** the `setup` flow was run on a clean model home (qwen2.5-0.5b: pinned download, "fits this machine" check, recorded qualification, "Run it: stingray chat"). Found and fixed: the `models` tables told the user to run `stingray setup chat` for the non-default 1.5B and 7B entries, which would install the 0.5B default; they now name the entry's id (see the 2026-10-11 note in the front-door plan).
 
@@ -193,14 +189,9 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 ### Open items
 
-- [ ] Run the `speak` and `transcribe` recipes and record the result (open item in the public-surface plan, B3/B4 recipes, added 2026-10-31)
 - [ ] Front door step 3: starter manifest and README recipes around the task commands
-- [x] Front door step 4 is superseded in the plan: `chat`, `speak` and `transcribe` are implemented; `describe` and `image` are out of scope. The one-line missing-model fix was not re-checked.
-- [ ] Known-good P0 leftover: `pull`'s download and listing parser still use their own client
-- [x] Known-good P1 leftover: `run` and `serve` call `LoadPreflight` (checked 2026-10-30)
-- [ ] Known-good P3: re-check `models use` end to end
-- [x] Known-good P4: `models --local` and `--verify` implemented (checked 2026-10-30)
-- [ ] Known-good P5: docs-as-tests
+- [x] Known-good P0 leftover: `pull`'s download and listing parser still use their own client *(done, checked 2026-11-01 against the code: `PullCommand` downloads through `ModelDownloader.DownloadAsync`, the same code `setup` uses, and lists through `ExternalHttpClient`, `PullCommand.cs` lines 61 and 171)* (the item is closed: only a note remains, in 061)
+- [x] Known-good P5: docs-as-tests *(see the checklist at the top: done for the catalogue and STATUS; README commands are compiled in CI, not run)*
 - [ ] Public surface: A2 to A4, B5 (application-name item), C2, D2, D3, E
 
 ### Decisions for the owner

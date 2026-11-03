@@ -773,6 +773,9 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         // are decided above; this loads the actual head weights + flips the public gates.
         LoadMtpHead(gpu);
 
+        // The upload staging buffer grew to the largest weight (the F32 output head); later expert-slot uploads allocate what they need.
+        gpu.TrimUploadStaging();
+
         // Pre-fault the CPU-resident mmap FFN weight pages (issue #221). Mirrors the CUDA
         // pass + HybridForwardPass.cs:473.
         MmapPrefault.Run("VulkanHybridGdnForwardPass", BuildCpuPrefaultRegions());

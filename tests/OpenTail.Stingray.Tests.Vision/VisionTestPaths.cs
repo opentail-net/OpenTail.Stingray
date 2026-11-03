@@ -17,24 +17,14 @@ internal static class VisionTestPaths
     public const string MimoVlMmprojFile = "mmproj-mimovl-7b-q8_0.gguf";
     public const string HunyuanVlMmprojFile = "mmproj-hunyuanocr-q8_0.gguf";
 
-    private static string? FindModel(string file)
-    {
-        string[] candidates = { $@"E:\models\{file}", $@"C:\p\opentail-llm\models\{file}" };
-        foreach (var p in candidates)
-            if (File.Exists(p)) return p;
+    private static string? FindModel(string file) => FindAnywhere(file);
 
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
-
+    /// <summary>
+    /// Every vision test finds checkpoints through the shared <see cref="OpenTail.Stingray.Engine.Verification.ModelLocator"/> (STINGRAY_MODEL_DIRS, the repo's models folders,
+    /// the conventional folders at the root of every drive), plus one sub-folder level under each. Seven private copies of this search used to exist, most with hard-coded
+    /// paths of old machines, and 15 mmproj files on F:\_models were skipped as "not present" because of it.
+    /// </summary>
+    public static string? FindAnywhere(string file) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
     public static string? FindMmproj() => FindModel(MmprojFile);
     public static string? FindE4BMmproj() => FindModel(E4BMmprojFile);
     public static string? FindTextModel() => FindModel(TextModelFile);

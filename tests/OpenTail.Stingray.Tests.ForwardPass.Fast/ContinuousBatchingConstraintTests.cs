@@ -135,8 +135,18 @@ public sealed class ContinuousBatchingConstraintTests
             return outp;
         }
 
+        /// <summary>When set, the FIRST batched decode step blocks (30 s at most) until it is signalled, so a test can make sure every request it wants in that step is already known to the engine.</summary>
+        public ManualResetEventSlim? FirstDecodeGate { get; set; }
+        private int _gateTaken;
+        private void WaitFirstDecodeGate()
+        {
+            var g = FirstDecodeGate;
+            if (g is not null && Interlocked.Exchange(ref _gateTaken, 1) == 0) g.Wait(TimeSpan.FromSeconds(30));
+        }
+
         public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
+            WaitFirstDecodeGate();
             FullLogitsCalls++;
             RecordWidth(tokens.Length);
             var outp = new float[tokens.Length][];
@@ -146,6 +156,7 @@ public sealed class ContinuousBatchingConstraintTests
 
         public (int Token, float Logit)[] BatchForwardMultiArgmax(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
+            WaitFirstDecodeGate();
             ArgmaxCalls++;
             RecordWidth(tokens.Length);
             var outp = new (int, float)[tokens.Length];
@@ -321,7 +332,19 @@ public sealed class ContinuousBatchingConstraintTests
         };
         var spPlain = new SamplingParams { Temperature = 0f, MaxNewTokens = 12 };
 
+        // Hold the first batched decode step until the engine knows about both requests. Without this the batcher could run all of A's steps before B was enqueued
+        // (a loaded Windows runner did: MaxBatchWidth was 1), because the fake forward pass is instant. A dedicated thread, not a pool item, does the release.
+        using var gate = new ManualResetEventSlim(false);
+        fake.FirstDecodeGate = gate;
+        var releaser = new Thread(() =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (engine.ActiveRequests + engine.QueueDepth < 2 && sw.Elapsed < TimeSpan.FromSeconds(25)) Thread.Sleep(1);
+            gate.Set();
+        }) { IsBackground = true };
+        releaser.Start();
         var (a, b) = await RunBoth(engine, ("alpha", spConstrained), ("beta", spPlain));
+        releaser.Join();
 
         // The constrained request is masked only in its engaged span; the co-tenant sharing the batch
         // is byte-identical to the no-constraint path — proof the mask is applied per logits row.

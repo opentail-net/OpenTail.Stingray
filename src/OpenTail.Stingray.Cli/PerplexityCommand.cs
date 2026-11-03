@@ -338,6 +338,12 @@ public sealed class PerplexityCommand : Command<PerplexityCommand.Settings>
         VulkanBackend? vulkanBackend = null;
         IForwardPass fwd;
         string backendLabel;
+        if (settings.NGpuLayers == -1 && ArchitectureRegistry.Find(model.Metadata.TryGetValue("general.architecture", out var archValue) ? Convert.ToString(archValue) ?? "" : "") is { } cpuOnlyArch
+            && (cpuOnlyArch.Capabilities.Backends & (SupportedBackends.Cuda | SupportedBackends.Vulkan)) == 0)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] '{Markup.Escape(cpuOnlyArch.Id)}' runs on the CPU only: {Markup.Escape(cpuOnlyArch.BackendLimitation ?? "no GPU backend")} Use [yellow]-g 0[/]; a GPU perplexity would not measure this model.");
+            return 1;
+        }
         if (settings.NGpuLayers == -1)
         {
             bool wantVulkan = settings.Backend?.Trim().ToLowerInvariant() is "vulkan";

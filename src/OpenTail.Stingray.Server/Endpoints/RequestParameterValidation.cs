@@ -21,6 +21,24 @@ internal static class RequestParameterValidation
         ?? (r.N is { } n && n != 1 ? $"n must be 1: this server returns exactly one choice (got {n})" : null)
         ?? ParseOpenAiStops(r.Stop, out _);
 
+    /// <summary>
+    /// <c>/v1/responses</c>: ranges for the three sampling fields it reads, and the two request features it does not implement, refused with a
+    /// 400 that names them instead of being dropped (docs/reference/request-parameter-audit-other-endpoints-2026-11-01.md). An empty tools array is accepted.
+    /// </summary>
+    public static string? ValidateResponses(ResponsesRequest r) =>
+        PositiveInt("max_output_tokens", r.MaxOutputTokens)
+        ?? Range("temperature", r.Temperature, 0f, 2f)
+        ?? Range("top_p", r.TopP, 0f, 1f)
+        ?? (r.Tools is { ValueKind: System.Text.Json.JsonValueKind.Array } tools && tools.GetArrayLength() > 0
+            ? "tools are not supported on /v1/responses: this endpoint answers with text only (use /v1/chat/completions for tool calls)" : null)
+        ?? (!string.IsNullOrEmpty(r.PreviousResponseId)
+            ? "previous_response_id is not supported: /v1/responses is stateless here, send the whole conversation in 'input'" : null);
+
+    /// <summary>A session turn's sampling fields, with the same ranges as the chat endpoints (the session route accepted any value before).</summary>
+    public static string? ValidateSessionTurn(SessionTurnRequest r) =>
+        Range("temperature", r.Temperature, 0f, 2f)
+        ?? Range("top_p", r.TopP, 0f, 1f);
+
     public static string? ValidateAnthropic(AnthropicMessageRequest r) =>
         PositiveInt("max_tokens", r.MaxTokens)
         ?? Range("temperature", r.Temperature, 0f, 1f)
@@ -85,6 +103,18 @@ internal static class RequestParameterValidation
             if (string.IsNullOrEmpty(s)) return $"{name} must not contain an empty string";
         return null;
     }
+
+    /// <summary>`/v1/audio/speech` `speed`: OpenAI's documented range; a non-positive or NaN value used to be replaced by 1.0 silently.</summary>
+    public static string? ValidateSpeechSpeed(float speed) => Range("speed", speed, 0.25f, 4.0f);
+
+    /// <summary>`/v1/rerank` `top_n` must be at least 1 when given.</summary>
+    public static string? ValidateRerankTopN(int? topN) => PositiveInt("top_n", topN);
+
+    /// <summary>Spoken-language code for transcription: two or three letters (en, de, haw); not checked against Whisper's list.</summary>
+    public static string? ValidateLanguageCode(string? language) =>
+        string.IsNullOrEmpty(language) || (language.Length is 2 or 3 && language.All(char.IsAsciiLetter))
+            ? null
+            : $"language must be a two or three letter code such as 'en' (got '{language}')";
 
     private static string? PositiveInt(string name, int? value) =>
         value is { } v && v < 1 ? $"{name} must be at least 1 (got {v})" : null;

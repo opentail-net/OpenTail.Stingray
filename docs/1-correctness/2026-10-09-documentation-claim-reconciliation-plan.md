@@ -1,14 +1,10 @@
 # Documentation Claim Reconciliation Plan
 
+> Completed items moved to [../done/2026-10-09-documentation-claim-reconciliation-plan-completed-items-2026-10.md](../done/2026-10-09-documentation-claim-reconciliation-plan-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist
 
-- [ ] R1. Public C# example: model-home resolution
 - [ ] R2. Diffusion claims: HunyuanVideo and Wan 2.2
-- [ ] R3. AVX-512: implemented path versus verified execution
-- [ ] R4. Environment registry: source-of-truth filename and drift checks
-- [ ] R5. TurboQuant KV-cache modes and the guide's scope
-- [ ] Audit report with an evidence row per disagreement (none found in `docs/` on 2026-10-30)
-- [ ] Targeted plan and document edits applied (only the evidence-backed ones)
 
 > **Status:** Proposed — evidence-gathering pass, not an implementation verdict  
 > **Date:** October 9, 2026  

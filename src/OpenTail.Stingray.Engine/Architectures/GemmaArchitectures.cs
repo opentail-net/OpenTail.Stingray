@@ -2,13 +2,15 @@ namespace OpenTail.Stingray.Engine;
 
 internal static class GemmaArchitectures
 {
+    // gemma — verified 2026-11-01 against golden gemma.golden.json: llama-server 10306 (6b5c2efb4), sha256 769d716580c94c874864da0991e54a53d27ead0760b419e38a2d56bcfc4d4f8d, NearTie. CPU run only (gemma-1.1-2b-it Q8_0).
     public static readonly ArchitectureDescriptor Gemma = new()
     {
         Id = "gemma",
         ChatProtocolId = "gemma",
         UsesNeoxRope = true,
+        ApplyModelSemantics = FamilyModelSemantics.Gemma1,
         Status = AdmissionStatus.Admitted,
-        StatusExemption = "Covered by the generic 'LLM inference (GGUF)' row; STATUS.md is a capability matrix, not an architecture catalog.",
+        StatusAnchor = "Gemma 1 text (`gemma`)",
         EvidenceDoc = "docs/STATUS.md",
         CreateForwardPass = CommonForwardPassFactory.CreateDense,
     };

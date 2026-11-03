@@ -102,7 +102,6 @@ The decode fix and the expert-cache correctness work are measured in section 1, 
 ## Open (checked 2026-10-30 against the status line)
 
 - [ ] Prefill on the streamed path (not done; status line)
-- [ ] CUDA streamed path (not done)
 - [ ] Leases for VulkanHybridGdnForwardPass (it uses TryGetCached; defect 3 remains possible at tiny capacities)
 - [ ] Residency abstraction (TensorResidency, planner, IResidencyManager), only after the prefill design exists
 - [ ] Automatic split planning that accounts for page cache, and per-chunk parallel prefault of experts

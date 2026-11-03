@@ -172,7 +172,6 @@ public sealed class SpeculativeCascadeTests
         public int ForwardCallCount { get; private set; }
         public int TruncateCallCount { get; private set; }
 
-        public IForwardPass CreateContext() => new TrackingForwardPass();
         public ReadOnlySpan<float> Forward(int token, int position)
         {
             ForwardCallCount++;

@@ -26,19 +26,7 @@ public sealed class QwenImageBlockSweepIsolationTests : HeavyTestBase
 {
     private static readonly int[] TargetBlocks = { 10, 20, 28, 29, 30, 50 };
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\_models\{fileName}",
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     private static (double cosine, double relL2, double rmse, double maxDiff) Compare(float[] cpu, float[] gpu)
     {
