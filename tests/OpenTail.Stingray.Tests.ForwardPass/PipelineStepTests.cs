@@ -304,21 +304,7 @@ public sealed class PipelineStepTests : HeavyTestBase
     //  Llama-4 model-dependent tests
     // ================================================================
 
-    private static string? FindModelPath(string filename)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     private static string? FindLlama4Path() =>
         FindModelPath("Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00001-of-00002.gguf");

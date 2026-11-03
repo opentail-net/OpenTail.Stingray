@@ -8,6 +8,10 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 /// spans. Listeners run synchronously inside the instrumented call, so one that throws must not fail the request it observes. The
 /// listeners here throw on every event and count how often they fired, so a pass cannot be vacuous.
 /// </summary>
+// Its listeners are process-wide and THROW. A throwing meter callback stops the later listeners from receiving that measurement, and a throwing
+// ActivityStarted makes the server serve the request without a span, so any telemetry test running at the same time loses its measurement or its span (run
+// together with ServingRequestTimingTests it failed 19 times in 20). The non-parallel collection runs it on its own, after the parallel ones.
+[Collection(ModelLoadWaitTelemetryCollection.Name)]
 public sealed class ServerTelemetryFailureTests
 {
     private sealed class Fired { public int Metrics; public int Activities; }

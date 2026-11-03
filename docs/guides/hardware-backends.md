@@ -12,7 +12,7 @@ Stingray provides three hardware execution backends:
 
 | Backend | Flag | Hardware Supported | Key Mechanics | Current Status |
 |---|---|---|---|---|
-| **CPU** | `--backend cpu` | x64 (AVX-512, AVX2) & ARM64 | Pure managed SIMD, fused quantized GEMM | 🔬 Primary verified baseline |
+| **CPU** | `--backend cpu` | x64 (AVX2 verified; AVX-512 implemented but never run on AVX-512 hardware) & ARM64 (implemented, not run: needs an ARM64 device) | Pure managed SIMD, fused quantized GEMM | 🔬 Primary verified baseline on AVX2 |
 | **Vulkan** | `--backend vulkan` | AMD, Intel, NVIDIA, Apple (MoltenVK) | SPIR-V compute shaders, shared-memory FlashAttention | 🔬 Verified on integrated/discrete GPUs |
 | **CUDA** | `--backend cuda` | NVIDIA (Compute Capability 7.0+) | Managed CUDA driver interop, cuBLAS GEMM | ⚪ Implemented; hardware validation in `docs/9/` |
 

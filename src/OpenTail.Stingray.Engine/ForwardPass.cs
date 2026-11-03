@@ -382,6 +382,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // Gemma 4 per-layer norms + scale (null/empty on non-Gemma 4 models).
     private readonly TensorRef[]? _postAttnNorm;
     private readonly TensorRef[]? _postFfwNorm;
+
+    // Gemma 4 parallel dense + MoE layers (hp.ParallelDenseMoe), see Gemma4ParallelFfn in ForwardPass.Moe.cs.
+    private readonly TensorRef[]? _wGateUpExps, _preFfwNorm2, _postFfwNorm1, _postFfwNorm2;
+    private readonly float*[]? _routerScale, _expertDownScale;
+    private readonly float* _g4Dense, _g4RouterIn, _g4GateUp;
     // Muse-Glimmer: per-layer attention output gate (ModelHyperparams.AttentionOutputGate) and its
     // [numHeads*headDim] scratch. Gated / embedding-normed models run the per-token trunk only.
     private readonly TensorRef[]? _attnGate;
@@ -714,6 +719,16 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _expertGateAll = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _expertUpAll   = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _moeDownTemp   = Alloc(_embDim);
+
+            if (hp.ParallelDenseMoe)
+            {
+                _wGateUpExps = new TensorRef[L]; _preFfwNorm2 = new TensorRef[L];
+                _postFfwNorm1 = new TensorRef[L]; _postFfwNorm2 = new TensorRef[L];
+                _routerScale = new float*[L]; _expertDownScale = new float*[L];
+                _g4Dense = Alloc(_embDim);
+                _g4RouterIn = Alloc(_embDim);
+                _g4GateUp = Alloc(2 * hp.ExpertIntermediateDim);
+            }
         }
 
         if (hp.HasPostAttnNorm) _postAttnNorm = new TensorRef[L];
@@ -850,7 +865,19 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             // somewhere"); every other MoE architecture this engine supports (Qwen3-MoE,
             // OLMoE, Mixtral, ...) has NO leading dense layers, so LeadingDenseBlockCount is 0
             // and this collapses to the original "IsMoE ⇒ every layer" check for them.
-            if (hp.IsMoE && i >= hp.LeadingDenseBlockCount)
+            if (hp.ParallelDenseMoe)
+            {
+                // Gemma 4 26B-A4B: the dense FFN tensors (loaded in the branch below) AND the routed experts, per layer.
+                _wGateInp![i] = ResolveTensor($"blk.{i}.ffn_gate_inp.weight");
+                _routerScale![i] = LoadBias($"blk.{i}.ffn_gate_inp.scale", _embDim);
+                _wGateUpExps![i] = ResolveTensor($"blk.{i}.ffn_gate_up_exps.weight");
+                _wDownExps![i] = ResolveTensor($"blk.{i}.ffn_down_exps.weight");
+                _expertDownScale![i] = LoadBias($"blk.{i}.ffn_down_exps.scale", hp.NumExperts);
+                _preFfwNorm2![i] = ResolveTensor($"blk.{i}.pre_ffw_norm_2.weight");
+                _postFfwNorm1![i] = ResolveTensor($"blk.{i}.post_ffw_norm_1.weight");
+                _postFfwNorm2![i] = ResolveTensor($"blk.{i}.post_ffw_norm_2.weight");
+            }
+            if (hp.IsMoE && !hp.ParallelDenseMoe && i >= hp.LeadingDenseBlockCount)
             {
                 _wGateInp![i] = ResolveTensor($"blk.{i}.ffn_gate_inp.weight");
                 _wGateExps![i] = ResolveTensor($"blk.{i}.ffn_gate_exps.weight");
@@ -1138,7 +1165,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (_postAttnNorm is not null) Add(_postAttnNorm[i]);
             if (_postFfwNorm is not null) Add(_postFfwNorm[i]);
 
-            if (IsMoeLayer(i))
+            if (_hp.ParallelDenseMoe)
+            {
+                Add(_wGateInp![i]); Add(_wGate[i]); Add(_wUp[i]); Add(_wDown[i]);
+                AddExperts(_wGateUpExps![i]); AddExperts(_wDownExps![i]);
+            }
+            else if (IsMoeLayer(i))
             {
                 Add(_wGateInp![i]);
                 AddExperts(_wGateExps![i]); AddExperts(_wUpExps![i]); AddExperts(_wDownExps![i]);

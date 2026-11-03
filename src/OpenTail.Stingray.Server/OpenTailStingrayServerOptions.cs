@@ -143,8 +143,9 @@ public sealed class OpenTailStingrayServerOptions
     public ModelResidencyMode? ModelResidencyMode { get; set; }
 
     /// <summary>
-    /// Enables host-memory admission checking (<see cref="HostResourceBudget"/>) on the
-    /// <see cref="IModelRuntimeManager"/> this server registers (docs/032 §"Resource admission").
+    /// Enables host-memory and accelerator admission checking (<see cref="HostResourceBudget"/>) on the
+    /// <see cref="IModelRuntimeManager"/> this server registers (docs/032 §"Resource admission"). The accelerator figure a candidate is judged by is the
+    /// weights its execution plan places on the GPU, worked out before the load; a custom engine factory is judged as 0, because the server cannot know what it builds.
     /// <c>null</c> (default) resolves to the <c>STINGRAY_ENABLE_RESOURCE_ADMISSION</c> environment
     /// variable (<c>1</c>/<c>true</c>, case-insensitive) when set, otherwise <b>off</b>. Off means
     /// exactly today's behavior: a cold model load is never rejected or made to wait on memory
@@ -297,11 +298,11 @@ public sealed class OpenTailStingrayServerOptions
     /// <summary>
     /// Prompt tokens prefilled per batcher iteration under continuous batching
     /// (issue #183 Gap 1). Active sequences advance one decode step between chunks, so
-    /// a long inbound prompt no longer freezes every in-flight generation. <c>0</c>
-    /// disables chunking (each prompt prefills in one blocking call). <c>-1</c> = auto
-    /// (currently <c>256</c>; the legacy dequant cache is dormant). Only consulted when
-    /// <see cref="MaxBatchSize"/> &gt; 1. Mirrors
-    /// <c>STINGRAY_PREFILL_CHUNK</c>.
+    /// a long inbound prompt no longer freezes every in-flight generation. A positive value
+    /// sets the chunk; <c>0</c> and <c>-1</c> both mean automatic (currently <c>256</c>; the legacy
+    /// dequant cache is dormant). The plan cannot express "chunking off" (0 is "not specified"); a very large
+    /// value has that effect. Only consulted when <see cref="MaxBatchSize"/> &gt; 1. Mirrors
+    /// <c>STINGRAY_PREFILL_CHUNK</c>. Until 2026-10-31 this option, and the variable, never reached the batching engine.
     /// </summary>
     public int PrefillChunkTokens { get; set; } = -1;
 
@@ -587,14 +588,11 @@ public sealed class NamedModelOptions
 /// unavailable for that engine).
 /// </param>
 /// <param name="GpuWeightBytesExact">
-/// Precise accelerator-resident weight-byte figure (docs/032 Phase 3 Slice 8 follow-up), when the
-/// loader dispatch branch that built this engine had one genuinely available — currently only the
-/// CUDA/Vulkan <em>partial</em>-offload hybrid paths, which already compute a real per-layer
-/// placement via <c>TierPlanner</c>. Null everywhere else (CPU-only; full dense GPU offload,
-/// where <c>ModelRuntime.EstimatedModelBytes</c> is already exact; hybrid-GDN, whose placement
-/// isn't <c>TierPlanner</c>-driven) — <see cref="ModelRuntime.AcceleratorResidentBytesEstimate"/>
-/// falls back to that same file-size estimate when this is null, exactly as before this field
-/// existed. A custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> leaves this null.
+/// What the execution plan expects this engine to hold on an accelerator: the weights placed there plus the KV
+/// cache and scratch for the configured context (<c>InferenceEngineLoader.PlannedAcceleratorBytes</c>, the same
+/// figure the model manager is given before loading). A lower bound, not an exact count. Null when the plan has no
+/// placement (CPU-only) — <see cref="ModelRuntime.AcceleratorResidentBytesEstimate"/> then falls back to the file-size
+/// estimate. A custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> leaves this null.
 /// </param>
 public sealed record LoadedEngine(
     IInferenceEngine Engine,

@@ -523,6 +523,13 @@ public sealed record ModelHyperparams
     public bool HasLayerOutputScale { get; init; }
 
     /// <summary>
+    /// Gemma 4 mixture-of-experts layers (26B-A4B): a dense FFN and a routed-expert FFN run side by side on the same post-attention residual and their
+    /// separately normalised outputs are summed (fused <c>ffn_gate_up_exps</c>, router scale, per-expert down scale, <c>pre_ffw_norm_2</c>,
+    /// <c>post_ffw_norm_1</c>/<c>_2</c>). CPU forward pass only.
+    /// </summary>
+    public bool ParallelDenseMoe { get; init; }
+
+    /// <summary>
     /// FFN activation function. <see cref="FfnActivation.Silu"/> for the vast majority of
     /// architectures (LLaMA/Mistral/Qwen/etc); <see cref="FfnActivation.GeluApprox"/> for Gemma 4.
     /// </summary>

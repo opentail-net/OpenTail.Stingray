@@ -26,7 +26,7 @@ Never: prompt or completion text, tool data, image or audio bytes, request/sessi
 
 | Meter | Name | Type | Unit | Tier | Standard or Stingray | Attributes | Definition |
 |---|---|---|---|---|---|---|---|
-| `OpenTail.Stingray.Server` | `gen_ai.server.request.duration` | histogram | s | 1 | Standard (Development) | operation, model, endpoint, outcome | Start of serving (after parsing and template rendering) to response complete; non-chat endpoints use their own start/finish around the handler |
+| `OpenTail.Stingray.Server` | `gen_ai.server.request.duration` | histogram | s | 1 | Standard (Development) | operation, model, endpoint, outcome, error.type | Start of serving (after parsing and template rendering) to response complete; non-chat endpoints use their own start/finish around the handler. `error.type` (the exception type name only, never its message) is present only on a non-chat operation whose handler threw |
 | `OpenTail.Stingray.Server` | `gen_ai.server.time_to_first_token` | histogram | s | 1 | Standard (Development) | operation, model, endpoint | Start of serving to first generated text or reasoning token; a cold model load happens before this timer starts |
 | `OpenTail.Stingray.Server` | `gen_ai.server.time_per_output_token` | histogram | s | 1 | Standard (Development) | operation, model, endpoint | Decode time (first token to generation end, delivery excluded) over (output tokens - 1); one sample per request |
 | `OpenTail.Stingray.Server` | `opentail.queue.wait` | histogram | s | 1 | Stingray | operation, model, endpoint | Start of serving to engine admission |

@@ -322,6 +322,63 @@ public sealed class ModelDescriptionTests : IDisposable
         Assert.Equal(ForwardPassKind.DeepSeek2Vulkan, decision.Kind);
     }
 
+    private static Dictionary<string, (GgufValueType, object)> MtpMetadata(uint nextnLayers) => new()
+    {
+        ["general.architecture"] = (GgufValueType.String, "llama"),
+        ["llama.block_count"] = (GgufValueType.UInt32, 3u), // two trunk layers plus one NEXTN block
+        ["llama.nextn_predict_layers"] = (GgufValueType.UInt32, nextnLayers),
+        ["llama.context_length"] = (GgufValueType.UInt32, 512u),
+        ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+        ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+        ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+        ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+        ["llama.vocab_size"] = (GgufValueType.UInt32, 100u),
+    };
+
+    private static (string name, long[] dims, DType dtype, byte[] data) F32(string name, params long[] dims) =>
+        (name, dims, DType.Float32, new byte[dims.Aggregate(4L, (a, d) => a * d)]);
+
+    private static IEnumerable<(string name, long[] dims, DType dtype, byte[] data)> MtpTensors(bool withHeadMarker)
+    {
+        yield return F32("token_embd.weight", 64, 100);
+        yield return F32("output.weight", 64, 100);
+        for (int l = 0; l < 2; l++)
+        {
+            yield return F32($"blk.{l}.attn_q.weight", 64, 64);
+            yield return F32($"blk.{l}.ffn_gate.weight", 64, 128);
+        }
+        // The NEXTN block: its weights count, the routed experts and routers (CPU-resident) do not.
+        yield return F32("blk.2.attn_q.weight", 64, 64);          // 16384 bytes
+        yield return F32("blk.2.ffn_gate_shexp.weight", 64, 128); // 32768
+        yield return F32("blk.2.ffn_gate_exps.weight", 64, 128, 4);
+        yield return F32("blk.2.ffn_gate_inp.weight", 64, 4);
+        yield return F32("blk.2.ffn_gate_inp_shexp.weight", 64);
+        if (withHeadMarker) yield return F32("blk.2.nextn.eh_proj.weight", 128, 64); // 32768
+    }
+
+    [Fact]
+    public void FromPackage_MtpHead_CountsItsGpuWeights_WithoutRoutedExpertsOrRouters()
+    {
+        var path = CreateGguf(MtpMetadata(1), MtpTensors(withHeadMarker: true).ToArray());
+
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(path));
+
+        Assert.Equal(16384 + 32768 + 32768, desc.PlanningFacts.MtpHeadGpuBytes);
+        Assert.Equal(2, desc.PlanningFacts.NumLayers); // the head is not a trunk layer
+    }
+
+    [Fact]
+    public void FromPackage_NoMtpHead_WhenTheMarkerTensorOrTheMetadataIsMissing()
+    {
+        var noMarker = ModelDescription.FromPackage(LooseGgufModelPackage.Open(
+            CreateGguf(MtpMetadata(1), MtpTensors(withHeadMarker: false).ToArray())));
+        var noMetadata = ModelDescription.FromPackage(LooseGgufModelPackage.Open(
+            CreateGguf(MtpMetadata(0), MtpTensors(withHeadMarker: true).ToArray())));
+
+        Assert.Equal(0, noMarker.PlanningFacts.MtpHeadGpuBytes);
+        Assert.Equal(0, noMetadata.PlanningFacts.MtpHeadGpuBytes);
+    }
+
     private string CreateGguf(
         Dictionary<string, (GgufValueType type, object value)> metadata,
         (string name, long[] dims, DType dtype, byte[] data)[] tensors)

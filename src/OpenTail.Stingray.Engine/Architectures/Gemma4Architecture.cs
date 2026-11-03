@@ -1,5 +1,7 @@
 namespace OpenTail.Stingray.Engine;
 
+using OpenTail.Stingray.Core;
+
 internal static class Gemma4Architecture
 {
     public static readonly ArchitectureDescriptor Descriptor = new()
@@ -14,7 +16,16 @@ internal static class Gemma4Architecture
         SupportsImageInput = true,
         ProjectorFileHints = ["*mmproj*.gguf", "*vision*.gguf"],
         CanBatchPredicate = (hp, tq) => !hp.IsMoE && !tq && hp.LayerHeadDim is null,
-        CreateForwardPass = CommonForwardPassFactory.CreateDense,
+        CreateForwardPass = CreateForwardPass,
         ApplyModelSemantics = Gemma4ModelSemantics.Apply,
     };
+
+    /// <summary>The expert tensor the Gemma 4 mixture-of-experts checkpoints (26B-A4B and the DiffusionGemma backbone) carry: gate and up fused in one tensor. Its presence selects the parallel dense+MoE layer (CPU only, <see cref="ModelHyperparams.ParallelDenseMoe"/>).</summary>
+    internal const string FusedExpertTensor = "blk.0.ffn_gate_up_exps.weight";
+
+    internal static IForwardPass CreateForwardPass(ArchitectureLoadContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        return CommonForwardPassFactory.CreateDense(ctx);
+    }
 }
