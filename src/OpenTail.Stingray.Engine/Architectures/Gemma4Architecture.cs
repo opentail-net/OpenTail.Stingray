@@ -15,6 +15,7 @@ internal static class Gemma4Architecture
         ThinkingDefaultOff = true,
         SupportsImageInput = true,
         ProjectorFileHints = ["*mmproj*.gguf", "*vision*.gguf"],
+        CheckpointRefusal = FusedExpertRefusal,
         CanBatchPredicate = (hp, tq) => !hp.IsMoE && !tq && hp.LayerHeadDim is null,
         CreateForwardPass = CreateForwardPass,
         ApplyModelSemantics = Gemma4ModelSemantics.Apply,
@@ -32,13 +33,16 @@ internal static class Gemma4Architecture
 
     /// <summary>
     /// The dense forward pass expects separate <c>ffn_gate_exps</c> / <c>ffn_up_exps</c> tensors and fails on the fused layout with a bare
-    /// "Missing tensor"; say what is actually unsupported (the admitted evidence is Gemma 4 E4B text, which is dense).
+    /// "Missing tensor"; say what is actually unsupported (the admitted evidence is Gemma 4 E4B text, which is dense). The loader and
+    /// static scout both go through this, so neither reports a different answer.
     /// </summary>
+    internal static string? FusedExpertRefusal(IModelTensorSource source) =>
+        source.FindTensor(FusedExpertTensor) is null ? null :
+            "This Gemma 4 checkpoint is a mixture-of-experts model with fused expert tensors (" + FusedExpertTensor + ", as in the 26B-A4B); " +
+            "the gemma4 path only runs the dense Gemma 4 text models. See docs/2026-11-01-plan-6.md (Gemma 4 26B-A4B).";
+
     internal static void RejectFusedExpertLayout(IModelTensorSource source)
     {
-        if (source.FindTensor(FusedExpertTensor) is not null)
-            throw new NotSupportedException(
-                "This Gemma 4 checkpoint is a mixture-of-experts model with fused expert tensors (" + FusedExpertTensor + ", as in the 26B-A4B); " +
-                "the gemma4 path only runs the dense Gemma 4 text models. See docs/2026-11-01-plan-6.md (Gemma 4 26B-A4B).");
+        if (FusedExpertRefusal(source) is { } reason) throw new NotSupportedException(reason);
     }
 }

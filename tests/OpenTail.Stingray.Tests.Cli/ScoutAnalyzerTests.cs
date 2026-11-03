@@ -51,6 +51,25 @@ public sealed class ScoutAnalyzerTests
     }
 
     [Fact]
+    public void Gemma4_with_fused_expert_tensors_is_a_confirmed_blocker_though_the_architecture_is_admitted()
+    {
+        var tensors = Enumerable.Range(0, 2).SelectMany(i => Layer(i)).Append(T("blk.0.ffn_gate_up_exps.weight", DType.Q4_K, 64, 256, 8));
+        var r = Run(Input("gemma4", tensors));
+        Assert.Equal("Admitted", r.Architecture!.Status);   // the architecture id stays admitted for the dense models
+        var blocker = Assert.Single(r.Blockers, b => b.Id == "scout.arch.checkpoint_unsupported");
+        Assert.Equal(BlockerKind.Confirmed, blocker.Kind);
+        Assert.Contains("fused expert tensors", blocker.Summary);
+        Assert.Equal(StageState.Failed, r.Stages.Single(s => s.Stage == "1_static_contract").State);
+    }
+
+    [Fact]
+    public void Gemma4_dense_checkpoint_has_no_checkpoint_blocker()
+    {
+        var r = Run(Input("gemma4", Enumerable.Range(0, 2).SelectMany(i => Layer(i))));
+        Assert.DoesNotContain(r.Blockers, b => b.Id == "scout.arch.checkpoint_unsupported");
+    }
+
+    [Fact]
     public void Bytes_by_dtype_sum_to_total()
     {
         var r = Run(Input("llama", Enumerable.Range(0, 2).SelectMany(i => Layer(i))));
