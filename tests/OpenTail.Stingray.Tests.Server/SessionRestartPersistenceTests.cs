@@ -156,17 +156,5 @@ public sealed class SessionRestartPersistenceTests
                 options.SessionStorageDirectory = storage;
             })));
 
-    private static string? FindSessionReferenceModel()
-    {
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindSessionReferenceModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 }

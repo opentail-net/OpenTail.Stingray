@@ -1638,6 +1638,9 @@ internal sealed class FakeInferenceEngine : IInferenceEngine
     /// <summary>The rendered prompt handed to the most recent generation call.</summary>
     public string? LastPrompt { get; private set; }
 
+    /// <summary>The ambient activity at the most recent text generation call: the span a real engine's own span would be parented to.</summary>
+    public System.Diagnostics.Activity? LastActivityAtGenerate { get; private set; }
+
     /// <summary>Image-input support flag (issue #253) and capture of the most recent image
     /// dispatch, so wire-level tests can confirm image content reached the engine.</summary>
     public bool SupportsImages { get; init; }
@@ -1653,6 +1656,7 @@ internal sealed class FakeInferenceEngine : IInferenceEngine
         LastSamplingParams = sp;
         LastCanonicalHistoryPrefix = canonicalHistoryPrefix;
         LastPrompt = prompt;
+        LastActivityAtGenerate = System.Diagnostics.Activity.Current;
         Interlocked.Increment(ref _enteredCount);
         Entered.Set();
         if (Hold is not null)

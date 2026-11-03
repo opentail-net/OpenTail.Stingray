@@ -115,17 +115,5 @@ public sealed class ExecutionTurnGateRealModelTests
         public void Dispose() => ((IDisposable?)Loaded.Instance ?? Loaded.Engine as IDisposable)?.Dispose();
     }
 
-    private static string? FindModel(string fileName)
-    {
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", fileName);
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModel(string fileName) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 }

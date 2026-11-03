@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// <see cref="VoxCpm2CfmSolver"/>.</summary>
 public sealed class VoxCpm2DiTEstimatorRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     private static (VoxCpm2DiTEstimatorWeights, RvcPackedTensorSource, GgufModel)? LoadReal()
     {

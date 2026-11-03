@@ -11,17 +11,7 @@ public sealed class GgufTokenizerByteLevelTests
 {
     private const string Text = "Chéngjì (jídàchéng-) soft­hyphen";
 
-    private static string? FindModel(string file)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", file), Path.Combine(dir.FullName, "models", "_models", file) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? FindModel(string file) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     [Fact]
     public void Qwen25_SoftHyphenBytes_MatchLlamaTokenize()

@@ -76,6 +76,36 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
             diagnostic => diagnostic.Field == "tool_grammar" && diagnostic.Kind == "inapplicable");
     }
 
+    [Fact]
+    public void CpuOnlyArchitecture_WithGpuLayersRequested_ReportsCpuAndSaysWhy()
+    {
+        var report = CreateReport(new StaticPlanCommand.Settings { GpuLayers = -1 }, headDim: 64,
+            runtimeFacts: VulkanRuntimeFacts(), architecture: "gemma2");
+
+        AssertDecision(report, "backend", true, "Selected cpu");
+        Assert.Contains(report.EffectiveConfiguration.Diagnostics,
+            d => d.Field == "gpu_layers" && d.Kind == "ignored" && d.Message.Contains("softcapping", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CpuOnlyArchitecture_WithVulkanPinned_RejectsItWithTheArchitectureReason()
+    {
+        var report = CreateReport(new StaticPlanCommand.Settings { Backend = "vulkan", GpuLayers = -1 }, headDim: 64,
+            runtimeFacts: VulkanRuntimeFacts(), architecture: "gemma2");
+
+        AssertDecision(report, "architecture_backend", false, "does not support the vulkan backend");
+    }
+
+    [Fact]
+    public void GpuCapableArchitecture_WithGpuLayersRequested_StillSelectsVulkan()
+    {
+        var report = CreateReport(new StaticPlanCommand.Settings { GpuLayers = -1 }, headDim: 64,
+            runtimeFacts: VulkanRuntimeFacts(), architecture: "llama");
+
+        AssertDecision(report, "backend", true, "Selected vulkan");
+        Assert.DoesNotContain(report.EffectiveConfiguration.Diagnostics, d => d.Field == "gpu_layers" && d.Kind == "ignored");
+    }
+
     public void Dispose()
     {
         foreach (string path in _files)
@@ -83,9 +113,9 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
     }
 
     private StaticPlanReport CreateReport(StaticPlanCommand.Settings settings, int headDim,
-        int snapKvBudget = -1, int mtpLayers = 0, StaticPlanRuntimeFacts? runtimeFacts = null)
+        int snapKvBudget = -1, int mtpLayers = 0, StaticPlanRuntimeFacts? runtimeFacts = null, string architecture = "llama")
     {
-        string path = WriteMetadataOnlyLlamaGguf(headDim, mtpLayers);
+        string path = WriteMetadataOnlyLlamaGguf(headDim, mtpLayers, architecture);
         var profile = new StaticPlanProfile(SnapKvBudget: snapKvBudget < 0 ? null : snapKvBudget);
         var config = StaticPlanConfiguration.Resolve(settings, profile, _ => null);
         using var model = GgufModel.Open(path);
@@ -101,7 +131,15 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
     ], new StaticPlanHardware(64L << 30, 16, false, "fixture"),
         new HardwareProfile(16L << 30, 64L << 30, 16, 0, false));
 
-    private string WriteMetadataOnlyLlamaGguf(int headDim, int mtpLayers)
+    private static StaticPlanRuntimeFacts VulkanRuntimeFacts() => new(
+    [
+        new StaticPlanBackend("cpu", "available", null, null, "fixture"),
+        new StaticPlanBackend("cuda", "unavailable", null, null, "fixture"),
+        new StaticPlanBackend("vulkan", "available", 8L << 30, null, "fixture"),
+    ], new StaticPlanHardware(64L << 30, 16, false, "fixture"),
+        new HardwareProfile(8L << 30, 64L << 30, 16, 0, false));
+
+    private string WriteMetadataOnlyLlamaGguf(int headDim, int mtpLayers, string architecture = "llama")
     {
         string path = Path.Combine(Path.GetTempPath(), $"opentail-stingray-plan-{Guid.NewGuid():N}.gguf");
         _files.Add(path);
@@ -109,16 +147,16 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
         var metadata = new (string Key, GgufValueType Type, object Value)[]
         {
-            ("general.architecture", GgufValueType.String, "llama"),
-            ("llama.block_count", GgufValueType.Int32, 2 + mtpLayers),
-            ("llama.nextn_predict_layers", GgufValueType.Int32, mtpLayers),
-            ("llama.context_length", GgufValueType.Int32, 128),
-            ("llama.embedding_length", GgufValueType.Int32, headDim * 2),
-            ("llama.feed_forward_length", GgufValueType.Int32, headDim * 8),
-            ("llama.vocab_size", GgufValueType.Int32, 256),
-            ("llama.attention.head_count", GgufValueType.Int32, 2),
-            ("llama.attention.head_count_kv", GgufValueType.Int32, 1),
-            ("llama.attention.key_length", GgufValueType.Int32, headDim),
+            ("general.architecture", GgufValueType.String, architecture),
+            ($"{architecture}.block_count", GgufValueType.Int32, 2 + mtpLayers),
+            ($"{architecture}.nextn_predict_layers", GgufValueType.Int32, mtpLayers),
+            ($"{architecture}.context_length", GgufValueType.Int32, 128),
+            ($"{architecture}.embedding_length", GgufValueType.Int32, headDim * 2),
+            ($"{architecture}.feed_forward_length", GgufValueType.Int32, headDim * 8),
+            ($"{architecture}.vocab_size", GgufValueType.Int32, 256),
+            ($"{architecture}.attention.head_count", GgufValueType.Int32, 2),
+            ($"{architecture}.attention.head_count_kv", GgufValueType.Int32, 1),
+            ($"{architecture}.attention.key_length", GgufValueType.Int32, headDim),
         };
         writer.Write(0x46554747u); // GGUF
         writer.Write(3u);

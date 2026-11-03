@@ -9,19 +9,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// CLAUDE.md). Not a golden/parity test.</summary>
 public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     private static GgufTokenizer LoadTokenizerFromPackedGguf(GgufModel model)
     {

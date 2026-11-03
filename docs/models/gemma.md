@@ -1,6 +1,6 @@
 # Gemma Family (Gemma 1, 2, 3, Gemma 4 / E4B)
 
-> **Verification:** [docs/STATUS.md](../STATUS.md) has verified rows for Gemma 2 (CPU only, 2B checked), Gemma 3 and Gemma 4 E4B. Gemma 1 has no row, so treat it as unverified.
+> **Verification:** [docs/STATUS.md](../STATUS.md) has verified rows for Gemma 2 (CPU only, 2B checked), Gemma 3 and Gemma 4 E4B. Gemma 1 has a row (2026-11-01, CPU, one 2B file, one golden case); the 7B and Vulkan are unverified.
 
 [← Back to Architecture Cards](README.md)
 

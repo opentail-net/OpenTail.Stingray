@@ -3,20 +3,7 @@ namespace OpenTail.Stingray.Tests.Vision;
 
 public sealed class MultimodalRealWeightsTests : HeavyTestBase
 {
-    private static string? FindModelPath(string fileName)
-    {
-        string[] candidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-            $@"C:\p\opentail-llm\models\{fileName}",
-            $@"E:\models\{fileName}",
-        };
-        foreach (var p in candidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => VisionTestPaths.FindAnywhere(fileName);
 
     private static void ValidateEmbeddingRigorously(
         float[] tokensA, float[] tokensB,
