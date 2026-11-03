@@ -17,20 +17,7 @@ public sealed class TelemetryListenerOverheadBenchTests : HeavyTestBase
     private const int NewTokens = 64;
     private const int Rounds = 100;
 
-    private static string? FindModel(string fileName)
-    {
-        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null; dir = dir.Parent)
-            foreach (string c in new[] { Path.Combine(dir.FullName, "models", fileName), Path.Combine(dir.FullName, "models", "_models", fileName) })
-                if (File.Exists(c)) return c;
-        string home = Path.Combine(OpenTail.Stingray.Core.Catalog.ModelHome.DefaultRoot(), fileName);
-        if (File.Exists(home)) return home;
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
-        {
-            string c = Path.Combine(drive.RootDirectory.FullName, "_models", fileName);
-            if (File.Exists(c)) return c;
-        }
-        return null;
-    }
+    private static string? FindModel(string fileName) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 
     [Fact]
     public async Task InProcessListener_CostOnARealModel_IsMeasuredInterleavedAgainstNoListener()

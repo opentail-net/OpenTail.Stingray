@@ -151,22 +151,5 @@ public sealed class FairGateMeasurementTests
         await foreach (var _ in engine.GenerateChunksAsync(prompt, sp)) { }
     }
 
-    private static string? FindModel(string fileName)
-    {
-        foreach (string root in new[] { @"F:\_models", @"E:\_models", @"H:\_models" })
-        {
-            string candidate = Path.Combine(root, fileName);
-            if (File.Exists(candidate)) return candidate;
-        }
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", fileName);
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModel(string fileName) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 }

@@ -60,19 +60,5 @@ internal static class TeacherForcedParity
         return ids;
     }
 
-    public static string? FindModel(string modelFile)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var candidate = Path.Combine(dir, sub, modelFile);
-                if (File.Exists(candidate)) return candidate;
-            }
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    public static string? FindModel(string modelFile) => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
 }
