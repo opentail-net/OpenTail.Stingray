@@ -30,6 +30,11 @@ or only partly answered stays unticked, with a note. Last checked 2026-11-01 aga
   - [ ] Capture the NaN: 1 in 18 control runs, not reproduced in 12 later runs; the control test now asserts finite logits and names the run and step
   - [x] Test the slot-cache candidates: placement timing confirmed (8 of 8 runs bit-identical with prefetcher and warm-up off); expert warm-up alone and predictive prefetch alone are not the cause
   - [x] Record a decision about the bar: 0.97 per-step floor plus a median above 0.999 for this row only (PR 83)
+
+- [x] **P6** `Audio.Fast` and `Vulkan.Fast` in CI
+  - [x] `ci.yml` (floors 70 and 38) (PR 74)
+  - [x] `release.yml` (PR 74)
+  - [x] Whisper+VAD test skips visibly without `silero_vad.onnx` (PR 74)
 - [x] **P2** Handoff receipts on the Vulkan hybrid (Qwen2.5 admitted; Phi-3, gemma-2 and Granite recorded as not admissible, with the reasons; P2b and P2c fixed; P2d blocked on hardware) (one passing permanent row each; a failing family stays Unverified with its cosine recorded)
   - [x] Qwen2.5 (receipt on the Vulkan hybrid; three permanent rows)
   - [x] Phi-3: tried, cannot run on the hybrid (fused `attn_qkv`, full offload only), stays Unverified; the full-GPU handoff path for it is untested
@@ -38,6 +43,30 @@ or only partly answered stays unticked, with a note. Last checked 2026-11-01 aga
   - [x] **P2c** The Vulkan hybrid applies none of the model scale fields (embedding, residual, logit, attention-scale override). Found with the dense Granite: `-g 8` answered `C. to - > and \ C、` instead of `Paris` (sequential hybrid against CPU: min cosine -0.36; CPU perplexity 7.81, full GPU 7.77); gemma-3-4b the same (0.47); ERNIE-0.3B (no scales) 0.998. **Superseded the same day by [plan 3, Q2](2026-10-31-autonomous-plan-3.md): the hybrid now applies the scale fields and the guard covers soft-capping only.** Original fix: Fixed: `GpuForwardPass.VulkanHybridUnsupportedReason` refuses such models, and `run` prints a clear error with exit code 1 instead of a stack trace. Tests: 6 unit tests, 2 real-model refusals, a 13-checkpoint guard that no receipt checkpoint is caught; three production mutations each fail tests. The clean CLI error was verified by hand only
   - [x] **P2b** Silent GPU degradation for CPU-only architectures. Found: real runs were already safe (the gemma2 descriptor declares `SupportedBackends = Cpu` and the planner falls back to the CPU for `-g 8` and `-g -1`), but the override was silent, `stingray plan` reported 26 GPU layers (it did not consult the descriptor), and `perplexity -g -1` built the GPU pass directly and measured a 22 percent worse gemma-2 without saying so. Fixed: the planner raises a `cpu_only_architecture` warning when explicit GPU layers are overridden, `run` prints it as one note, `plan` consults the descriptor (and shows the reason), and `perplexity -g -1` refuses a CPU-only architecture. Tests: 3 planner and 3 plan tests, four production mutations each fail tests; the `run` note and the perplexity refusal were checked by hand only. Not changed: code that constructs the GPU passes directly (tests, library users) still accepts gemma2, and the dense GPU path still lacks soft-capping
   - Note: SmolLM2 and Mistral-7B were no longer in `models/` at 17:27 and are on no `_models` drive; re-pull before A/B work that needs them
+- [ ] **P3** Close the llama receipt gaps
+  - [ ] Context above 1024 (`STINGRAY_HANDOFF_TEST_CTX`)
+  - [ ] A prompt at the 32-token minimum
+  - [ ] Measure the `startPos > 0` cost before building anything
+  - [ ] Receipt text updated
+- [x] **P7** Documented request parameters audited (unknown JSON properties stay accepted); findings F1 to F4 of the audit are resolved (PRs 82, 84, 85 and 86); F5 (request-level tests for supported fields such as top_p and the Anthropic sampling fields reaching the engine) is only partly covered, since the range tests send them but do not assert they arrive
+  - [x] Audit of every field the chat and messages endpoints read, with its tests and classification (PR 82)
+  - [x] P7b: `max_completion_tokens`, `seed`, `top_k` implemented; `n` other than 1 and out-of-range sampling values refused with a 400 naming the field; `parallel_tool_calls`, `user` and `metadata` documented as intentionally ignored (30 tests, mutation-checked)
+  - [x] P7c: `stop` and `stop_sequences` (one filter around the engine stream in all four handlers; generation is cancelled, not just the text hidden). 35 tests: 19 on the filter including 400 random inputs against a character-level reference, 16 through the endpoints; five production mutations each fail tests (the endpoint stream not filtered 4, no `stop_sequence` reason 2, no cancellation 7, no holdback 3, no validation 6)
+  - [x] P7d: `stream_options.include_usage` (final usage chunk) and Anthropic `tool_choice` (auto and none honoured; any and tool refused with a 400). Limit: the `none` wiring has no failing endpoint test
+  - [x] P7e: error bodies now also carry the nested `error` object on both APIs, additively (the flat fields stay; Anthropic's top-level `type` is not changed to `error`)
+- [ ] **P8** HTTP-disconnect cancellation, end to end (PR 81 is open and partial: disconnect, cancellation reaching the engine, slot freed and three mutation checks are covered; releasing the runtime handle is not)
+  - [x] Check which existing tests already cover it (done in PR 81)
+  - [ ] Test: generation started, client disconnects, cancellation reaches the engine, slot released, next request completes, no leaked handle
+  - [ ] Mutation-checked
+- [ ] **P4** Fair gate measured (two resident models, interleaved, 3 runs; idle machine, so not while another agent is running)
+- [x] **P5** OpenTelemetry acceptance (PR 80; limit: the fake engine emits no tool calls, so tool-call arguments are not covered)
+  - [x] Allow-list test over every instrument and span
+  - [x] Server-side prompt canary through the HTTP endpoints
+- [x] **P9** Reproducibility helper used by the benchmark scripts (PR 78; self-test run again here: all checks pass)
+- [x] **P10** `stingray config --show` (narrow), with a redaction test (PR 79; source is environment only and the output says so)
+- [ ] Plan 3 written and a final report listing only owner decisions and blocked items
+- [ ] Memory note `project_session_2026_10_31_loop_state.md` updated to the final state
+
 
 ## Progress
 
