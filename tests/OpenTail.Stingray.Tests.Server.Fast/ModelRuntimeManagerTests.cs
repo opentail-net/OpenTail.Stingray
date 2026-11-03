@@ -901,7 +901,7 @@ public sealed class ModelRuntimeManagerTests
             : ResourceAdmission.Allowed);
 
         var acquireB = manager.AcquireAsync(Id("b")).AsTask();
-        await Task.Delay(50); // let it genuinely enter the queue wait
+        await WaitUntilQueuedAsync(manager, 1);
 
         var early = await Task.WhenAny(acquireB, Task.Delay(200));
         Assert.NotSame(acquireB, early); // still queued, not already resolved
@@ -968,7 +968,7 @@ public sealed class ModelRuntimeManagerTests
 
         using var cts = new CancellationTokenSource();
         var firstQueued = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
-        await Task.Delay(50); // let it genuinely occupy the one queue slot
+        await WaitUntilQueuedAsync(manager, 1);
 
         var sw = Stopwatch.StartNew();
         await Assert.ThrowsAsync<InsufficientResourcesException>(async () => await manager.AcquireAsync(Id("b")));
@@ -1030,9 +1030,9 @@ public sealed class ModelRuntimeManagerTests
             _ => freedUp ? ResourceAdmission.Allowed : ResourceAdmission.InsufficientHostMemory);
 
         var older = manager.AcquireAsync(Id("older")).AsTask();
-        await Task.Delay(60); // "older" genuinely queues first
+        await WaitUntilQueuedAsync(manager, 1);
         var newer = manager.AcquireAsync(Id("newer")).AsTask();
-        await Task.Delay(60); // "newer" queues second, strictly after "older"
+        await WaitUntilQueuedAsync(manager, 2);
 
         freedUp = true;
         handle.Dispose(); // triggers the fairness scan — both are now admissible; only one is woken
@@ -1078,9 +1078,9 @@ public sealed class ModelRuntimeManagerTests
 
         using var bigCts = new CancellationTokenSource();
         var big = manager.AcquireAsync(Id("big"), bigCts.Token).AsTask();
-        await Task.Delay(60); // "big" genuinely queues first — it's the oldest
+        await WaitUntilQueuedAsync(manager, 1);
         var small = manager.AcquireAsync(Id("small")).AsTask();
-        await Task.Delay(60); // "small" queues second, strictly newer than "big"
+        await WaitUntilQueuedAsync(manager, 2);
 
         freedUp = true;
         var sw = Stopwatch.StartNew();
@@ -1097,6 +1097,22 @@ public sealed class ModelRuntimeManagerTests
 
         bigCts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await big);
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="count"/> acquisitions sit in the manager's admission queue, as the manager itself reports it, instead of assuming a fixed
+    /// delay was long enough (a slow runner proved it was not). The short sleep after it keeps consecutive waiters' enqueue timestamps apart on a coarse clock.
+    /// </summary>
+    private static async Task WaitUntilQueuedAsync(ModelRuntimeManager manager, int count)
+    {
+        var waited = Stopwatch.StartNew();
+        while (manager.GetStats().QueuedAdmissions < count)
+        {
+            if (waited.Elapsed > TimeSpan.FromSeconds(30))
+                throw new TimeoutException($"{count} acquisition(s) never reached the admission queue.");
+            await Task.Delay(1);
+        }
+        await Task.Delay(20);
     }
 
     [Fact]
@@ -1120,7 +1136,7 @@ public sealed class ModelRuntimeManagerTests
         var holder = await manager.AcquireAsync(Id("holder")); // takes the one slot
 
         var older = manager.AcquireAsync(Id("older")).AsTask();
-        await Task.Delay(60); // "older" genuinely queues first — the one slot is taken
+        await WaitUntilQueuedAsync(manager, 1);
 
         // Freeing the slot wakes "older" as the winner. With the fix, "older"'s load is reserved
         // synchronously inside this call, before it returns — closing the window a fresh caller

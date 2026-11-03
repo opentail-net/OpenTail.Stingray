@@ -202,6 +202,73 @@ public sealed class ExecutionPlannerTests : IDisposable
         return ExecutionPlanner.Plan(desc, request, caps);
     }
 
+    private ModelDescription TinyGemma4(bool fusedExperts)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "gemma4"),
+            ["gemma4.block_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["gemma4.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["gemma4.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["gemma4.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.vocab_size"] = (GgufValueType.UInt32, 100u),
+            ["gemma4.expert_count"] = (GgufValueType.UInt32, 4u),
+            ["gemma4.expert_used_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.expert_feed_forward_length"] = (GgufValueType.UInt32, 16u),
+        };
+        var tensors = new List<(string name, long[] dims, DType dtype, byte[] data)>
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        if (fusedExperts) tensors.Add(("blk.0.ffn_gate_up_exps.weight", [64, 32, 4], DType.Float32, new byte[64 * 32 * 4 * 4]));
+        return ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors.ToArray())));
+    }
+
+    private static BackendCapabilities WithVulkan() => new(
+        CudaAvailable: false,
+        VulkanAvailable: true,
+        HardwareProfile: new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false),
+        VulkanDeviceName: "Simulated Vulkan GPU",
+        RecommendedThreadCount: 8);
+
+    /// <summary>
+    /// Plan 6 F1: the Gemma 4 mixture-of-experts layers (fused <c>ffn_gate_up_exps</c>, dense FFN in parallel) exist on the CPU forward pass only. A checkpoint that
+    /// carries them plans on the CPU even when a GPU is available, and a pinned accelerator is refused with the reason; the dense checkpoints of the same
+    /// architecture keep using the GPU.
+    /// </summary>
+    [Fact]
+    public void Plan_Gemma4WithFusedExperts_RunsOnCpuEvenWhenAGpuIsAvailable()
+    {
+        var plan = ExecutionPlanner.Plan(TinyGemma4(fusedExperts: true), new ExecutionRequest { PinnedContextSize = 512 }, WithVulkan());
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
+        Assert.Equal(0, plan.GpuLayers);
+        Assert.Contains(plan.Decisions, d => d.Code == "BACKEND" && d.Reason.Contains("CPU only"));
+    }
+
+    [Fact]
+    public void Plan_Gemma4WithFusedExperts_RefusesAPinnedAccelerator()
+    {
+        var ex = Assert.Throws<NotSupportedException>(() => ExecutionPlanner.Plan(
+            TinyGemma4(fusedExperts: true), new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "vulkan" }, WithVulkan()));
+        Assert.Contains("vulkan", ex.Message);
+        Assert.Contains("CPU forward pass only", ex.Message);
+    }
+
+    [Fact]
+    public void Plan_Gemma4WithoutFusedExperts_StillUsesTheGpu()
+    {
+        var plan = ExecutionPlanner.Plan(TinyGemma4(fusedExperts: false), new ExecutionRequest { PinnedContextSize = 512 }, WithVulkan());
+
+        Assert.Equal("vulkan", plan.Backend);
+    }
+
     /// <summary>
     /// Plan 6 F2: the planner's per-layer weight figure summed a fixed list of plain-transformer tensor names, so the fused QKV, Gated-DeltaNet and SSM
     /// projections of a hybrid layer were uploaded but never counted (Qwen3.5-0.8B: 195 MiB of 795). Each such tensor present in a layer now adds exactly its

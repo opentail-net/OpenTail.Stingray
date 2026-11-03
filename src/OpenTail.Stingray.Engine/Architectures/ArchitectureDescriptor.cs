@@ -132,13 +132,6 @@ public sealed class ArchitectureDescriptor
 
     public bool SupportsContinuousBatching { get; init; } = true;
 
-    /// <summary>
-    /// Optional checkpoint-level support check: returns why this particular checkpoint cannot run although the architecture id is admitted
-    /// (for example a layout the forward pass does not implement), or null when it can. Reads tensor names and shapes only, so the loader
-    /// and static scout call the same code and cannot disagree about what is supported.
-    /// </summary>
-    public Func<IModelTensorSource, string?>? CheckpointRefusal { get; init; }
-
     /// <summary>Optional fine-grained predicate checking (hyperparams, turboQuant) -> canBatch.</summary>
     public Func<ModelHyperparams, bool, bool>? CanBatchPredicate { get; init; }
 
