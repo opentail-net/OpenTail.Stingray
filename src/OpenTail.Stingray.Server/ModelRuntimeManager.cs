@@ -105,6 +105,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         public required ModelId Model { get; init; }
         public required long CandidateBytes { get; init; }
         public required long CandidateAcceleratorBytes { get; init; }
+        public required AcceleratorTarget? CandidateAcceleratorTarget { get; init; }
         public required DateTimeOffset EnqueuedAt { get; init; }
         public TaskCompletionSource WakeSignal { get; set; } = null!;
     }
@@ -112,6 +113,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     private readonly Func<ModelId, LoadedEngine> _loader;
     private readonly Func<ModelId, long> _estimateBytes;
     private readonly Func<ModelId, long> _estimateAcceleratorBytes;
+    private readonly Func<ModelId, AcceleratorTarget?> _estimateAcceleratorTarget;
     private readonly object _lock = new();
     private readonly Dictionary<ModelId, ModelRuntime> _resident = new();
     private readonly Dictionary<ModelId, PendingLoad> _pendingLoads = new();
@@ -165,7 +167,8 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         Func<ModelId, LoadedEngine> loader,
         ModelResidencyMode residencyMode = ModelResidencyMode.MultiSlot,
         Func<ModelId, long>? estimateBytes = null,
-        Func<ModelId, long>? estimateAcceleratorBytes = null)
+        Func<ModelId, long>? estimateAcceleratorBytes = null,
+        Func<ModelId, AcceleratorTarget?>? estimateAcceleratorTarget = null)
     {
         _loader = loader ?? throw new ArgumentNullException(nameof(loader));
         _estimateBytes = estimateBytes ?? DefaultEstimateBytes;
@@ -175,6 +178,8 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         // estimator, every candidate is treated as 0 accelerator bytes — i.e. accelerator admission
         // is never consulted, exactly matching behavior before this parameter existed.
         _estimateAcceleratorBytes = estimateAcceleratorBytes ?? (_ => 0);
+        // Absent a target the candidate's bytes are compared with the legacy single (Vulkan) capacity, as before per-device accounting existed.
+        _estimateAcceleratorTarget = estimateAcceleratorTarget ?? (_ => null);
         _residencyMode = residencyMode;
     }
 
@@ -191,7 +196,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             foreach (var rt in _resident.Values)
                 list.Add(new ModelRuntimeStats(rt.Id, rt.State, rt.EstimatedModelBytes, rt.HandleCount,
                     rt.ActiveRequests, rt.IsPinned, rt.LastUsed, rt.IsAcceleratorResident,
-                    rt.AcceleratorResidentBytesEstimate));
+                    rt.AcceleratorResidentBytesEstimate, rt.Accelerator));
             // A model mid-load has no ModelRuntime yet (that's only created once RunLoad
             // succeeds) — without this, it's invisible to every observer between "acquisition
             // started" and "acquisition finished", which for a large GGUF can be a long window.
@@ -319,6 +324,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                             Model = model,
                             CandidateBytes = _estimateBytes(model),
                             CandidateAcceleratorBytes = _estimateAcceleratorBytes(model),
+                            CandidateAcceleratorTarget = _estimateAcceleratorTarget(model),
                             EnqueuedAt = DateTimeOffset.UtcNow,
                         };
                         myWaiter.WakeSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -473,7 +479,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             foreach (var candidate in _admissionQueue)
             {
                 if (winner is not null && candidate.EnqueuedAt >= winner.EnqueuedAt) continue;
-                if (budget.EstimateAdmission(candidate.CandidateBytes, candidate.CandidateAcceleratorBytes)
+                if (budget.EstimateAdmission(candidate.CandidateBytes, candidate.CandidateAcceleratorBytes, candidate.CandidateAcceleratorTarget)
                     == ResourceAdmission.Allowed)
                 {
                     winner = candidate;
@@ -557,8 +563,9 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     {
         long candidateBytes = _estimateBytes(model);
         long candidateAcceleratorBytes = _estimateAcceleratorBytes(model);
+        var candidateTarget = _estimateAcceleratorTarget(model);
 
-        var admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes);
+        var admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes, candidateTarget);
         if (admission == ResourceAdmission.Allowed)
         {
             failure = null;
@@ -573,7 +580,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         // Free whatever's safely reclaimable (idle, non-pinned, never the candidate itself) and
         // re-check once before giving up.
         EvictIdleOthersLocked(keep: model);
-        admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes);
+        admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes, candidateTarget);
         if (admission == ResourceAdmission.Allowed)
         {
             failure = null;
@@ -581,7 +588,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         }
 
         failure = new InsufficientResourcesException(
-            model, candidateBytes, candidateAcceleratorBytes, admission, budget.GetCurrent());
+            model, candidateBytes, candidateAcceleratorBytes, admission, budget.GetCurrent(), candidateTarget);
         return false;
     }
 
