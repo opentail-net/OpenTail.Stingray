@@ -6,7 +6,7 @@
 
 This document records the master optimization plan targeting C++ reference performance parity (`examples/stable-diffusion.cpp` / `sd-cli.exe`) across all active diffusion pipelines in `OpenTail.Stingray`.
 
-All target figures, measured baselines, and comparative ratios are sourced directly from [PerformanceLeague.md](../../PerformanceLeague.md#L932-L1001).
+All target figures, measured baselines, and comparative ratios are sourced directly from [PerformanceLeague.md](../../PerformanceLeague.md#image--video-diffusion-cpu-and-vulkan-igpu) (full history in [PerformanceLeague-LOG.md](../4-performance/PerformanceLeague-LOG.md)).
 
 ---
 
