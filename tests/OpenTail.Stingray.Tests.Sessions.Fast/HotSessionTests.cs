@@ -89,7 +89,9 @@ public sealed class HotSessionTests
         fwd.ReleaseDecode.Set();
         var cancelled = await cancelledTurn;
 
-        Assert.Equal(SessionOperationState.Cancelled, cancelled.Operation.State);
+        // The message names the stored reason: this assertion failed once in 40 loops at 2 CPUs with a cause nobody captured (plan 6 G10).
+        Assert.True(cancelled.Operation.State == SessionOperationState.Cancelled,
+            $"expected Cancelled, got {cancelled.Operation.State}; failure reason [{cancelled.Operation.FailureReason}]");
         Assert.Null(cancelled.Operation.CommittedRevision);
         Assert.Equal(0, cancelled.Cursor.MaterializedPositionCount);
 
@@ -119,7 +121,8 @@ public sealed class HotSessionTests
 
         var cancelled = await turn;
 
-        Assert.Equal(SessionOperationState.Cancelled, cancelled.Operation.State);
+        Assert.True(cancelled.Operation.State == SessionOperationState.Cancelled,
+            $"expected Cancelled, got {cancelled.Operation.State}; failure reason [{cancelled.Operation.FailureReason}]");
         Assert.Null(cancelled.Operation.CommittedRevision);
         Assert.Equal(0, cancelled.Cursor.AcceptedPositionCount);
         Assert.Equal(0, cancelled.Cursor.MaterializedPositionCount);
