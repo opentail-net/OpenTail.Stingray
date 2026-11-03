@@ -1,0 +1,31 @@
+# OpenTelemetry Observability for Stingray - completed items
+
+Ticked items moved from [docs/3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](../3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md) on 2026-11-03. Each keeps its section heading and nested lines.
+
+## 12. Acceptance checklist
+
+- [x] For the phase being delivered, every instrument has the documented name, unit and attribute set, and an entry in the mapping table, asserted by tests. *Mapped 2026-11-01 (plan 5 C1), partly met:* names, types and units are asserted against the checked-in table for all three meters (`EngineTelemetryContractTests.EngineMeterInstruments_MatchTheCheckedInTable`, `ServerTelemetryContractTests.ServerMeterInstruments_MatchTheCheckedInTable`, `DiffusionTelemetryTests.DiffusionMeterInstruments_MatchTheCheckedInTable`), and tags per instrument by `EngineTelemetryTests.Success_RecordsExpectedInstrumentsUnitsAndTags` and `ServingRequestTimingTests.GenAiServerMetrics_AreRecordedWithTimePerOutputToken`. The engine meter's attribute sets are compared with the table row by row (`EngineTelemetryAttributeSetTests.EveryEmittedTag_IsDocumentedForThatInstrument`, plan 5 C2, 2026-11-01, emitted is a subset of documented). The server and diffusion meters have the same check (`ServerTelemetryAttributeSetTests`, `DiffusionTelemetryAttributeSetTests`, 2026-11-01), so names, types, units and attribute sets are asserted for every meter in the table (Engine, Server, Diffusion). **Met 2026-11-01 (plan 5 C2).**
+
+- [x] The measurements correspond to the documented timing boundaries, including streaming, cancellation and cold model acquisition (tests). *Mapped 2026-11-01, met:* streaming and boundaries `ServingRequestTimingTests` (`MarkGenerationComplete_ExcludesTimeSpentAfterItFromGenerationDuration`, `GenAiServerMetrics_AreRecordedWithTimePerOutputToken`), cancellation `EngineTelemetryTests.Cancelled_RecordsCancelledOutcome` and `ServingRequestTimingTests.RequestDuration_OutcomeReflectsHowTheRequestEnded`, cold model acquisition `EngineTelemetryTests.ModelLoad_RecordsDurationWithAllowListedTags` and `ModelLoadWaitTelemetryTests.SharedLoadWaiters_EachRecordTheWait_AndLinkToTheLoadSpan_WhichIsNotTheirChild`.
+
+- [x] No instrument or span carries an attribute outside the §7 allow-list, and no content appears anywhere in telemetry (tests). **Half done 2026-10-31:** no content: `EngineTelemetryPrivacyTests` pushes a unique canary prompt through `InferenceEngine` and `ContinuousBatchingEngine` and searches every captured metric name, unit, tag, span name, event, link and baggage value for it and for any path (none found). The allow-list half is still per instrument (`EngineTelemetryTests`, `ServerTelemetryContractTests`); there is no single test that enumerates every key on every instrument and span against the §7 list, and the server-side canary (prompt text through the HTTP endpoints) is not written. **Met 2026-11-01 (plan 5 C1); the "half done" note above is stale:** the allow-list is asserted over every metric, span, event and link key of both engines by `EngineTelemetryPrivacyTests.EveryEmittedAttributeKey_IsOnTheSection7AllowList` (added in plan 2 P5, 2026-10-31), and the server canary exists: `ServerTelemetryCanaryTests.CanaryTextAndUnlistedKeys_NeverAppearInAnyServerTelemetry` (prompt, system, tool and completion canaries, paths, allow-listed keys, streaming, non-streaming and malformed requests) and `ToolCallArgumentCanary_NeverAppearsInAnyServerTelemetry` (#121). Audio, diffusion and embedding endpoints are not covered by a canary.
+
+- [x] Time per output token is a true per-token figure; the old `itl_ms` meaning is documented as changed (Phase 2). **Met 2026-11-01:** `ServingRequestTimingTests.GenAiServerMetrics_AreRecordedWithTimePerOutputToken` (decode time over tokens - 1, delivery time excluded: about 100 ms over 10 intervals, not 400 ms); the `itl_ms` change is documented in `docs/guides/observability.md` and `docs/reference/telemetry-instruments.md`.
+
+- [x] `/metrics`, the `Meter` instruments and `stingray status` agree on request counts and latency, and existing public behaviour is unchanged (Phase 2). *Mapped 2026-11-01, partly met:* counts agree between the Meter and the summaries behind `/metrics` and `stingray status` in `ServingRequestTimingTests.MeterInstrumentsAndMetricsSummaries_AgreeOnCounts`. **Met 2026-11-01 (plan 5 C2):** `ServerMetricsAgreementTests` serves real chat requests and reads request duration and time to first token three ways, the Meter measurements, the rendered `/metrics` text and the `/status` JSON, and asserts equal counts and equal totals.
+
+- [x] Overhead is reported with no listener, an in-process listener and an OTLP exporter, using the §8 procedure, and is within the agreed thresholds. *Done 2026-11-01 (plan 5 C3), see the progress log: in-process listener 0.9985x (met), OTLP exporter +2.8% against a 3% threshold (met, narrowly), no listener: no regression observed but not isolable by a baseline build (HEAD is 3.9% faster than the pre-instrumentation commit for unrelated reasons); the NativeAOT CLI size and start-up effect is not measured.*
+
+## Open items
+
+- [x] Acceptance: every instrument's name, unit and attributes asserted by tests (plan line 289)
+
+- [x] Acceptance: measurement boundaries (streaming, cancellation, cold model load) covered by tests (line 290)
+
+- [x] Acceptance: no attribute outside the §7 allow-list, and no content in telemetry (test, line 291): met, see §12 (engine allow-list test and server canary exist)
+
+- [x] Time per output token is a true per-token figure; the old `itl_ms` meaning documented as changed (line 294)
+
+- [x] `/metrics`, the `Meter` instruments and `stingray status` agree on counts and latency (line 298)
+
+- [x] Overhead reported with no listener, in-process listener and OTLP exporter, within agreed thresholds (line 299)

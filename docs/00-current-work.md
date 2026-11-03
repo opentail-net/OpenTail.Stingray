@@ -2,6 +2,67 @@
 
 Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quickest-first-plan-merged-2026-11-01.md` (the quick-first working order, now the order of this file). The order is the quick-first order below. Each item appears once. Items from the themed backlog that have no quick-list entry follow in section order under "Remaining backlog". Completed items are in [done/](done) and their evidence is in each model's STATUS row.
 
+## Open work (as of 2026-11-03)
+
+As of 2026-11-03. Start with **Start here**: nothing in it waits on the owner. Items under **Needs a decision** need a scope call first. **Owner action** is separate and gates nothing above it. Evidence for finished items is in [done/open-work-evidence-2026-10-31-to-11-01.md](done/open-work-evidence-2026-10-31-to-11-01.md).
+**Working rules:** one merged PR per item; `Tests.Core` before every merge; a perf claim needs a quiet machine, interleaved A/B, 3+ runs and equal output; a new item must name a failure, a user-visible limit, a measurable gain or a recurring cost. A stalled item is documented and the next one starts.
+
+## Start here (no owner input needed)
+
+- [ ] **1. Transcription `model` field** (decided 2026-11-01: yes, minimal). The audio route always builds a `WhisperPipeline` and ignores `model`. Done when `model` selects an installed ASR pipeline, or an unknown name returns 400 that names the field. Test and mutation-check it.
+  First step: `src/OpenTail.Stingray.Cli/SttCommand.cs` and the server audio route that builds `WhisperPipeline`. Make `model` resolve against the installed ASR catalog; an unknown name gets a 400 that names the field.
+
+- [ ] **2. Gemma 4 26B-A4B port, fused experts** (`ffn_gate_up_exps`, parallel dense FFN plus 128 experts). Stingray refuses it cleanly today. Reuse `Diffusion/DiffusionGemma/DiffusionGemmaForwardPass.cs`, which already implements the layer. References on `E:\_models`: the stock bartowski Q4_K_M in `gemma4-26b-a4b` (stock llama.cpp b11556 runs it), and `diffusiongemma\dg-backbone-as-gemma4.gguf`. Done when a real-weight greedy and logit comparison against llama.cpp passes, timed, with a STATUS row. Not admitted before that.
+  First step: read `src/OpenTail.Stingray.Engine/Architectures/Gemma4Architecture.cs` (where the fused-expert refusal is) and `src/OpenTail.Stingray.Diffusion/DiffusionGemma/DiffusionGemmaForwardPass.cs` (the layer to reuse). Map `ffn_gate_up_exps` first, then compare the first layer against llama.cpp before the full model.
+
+## Needs a decision before work
+
+- [ ] **6. Handoff gaps, Vulkan hybrid:** LongRoPE, sliding-window llama, contexts above 4096, Qwen2.5-7B / Coder / VL. No owner decision recorded. Each needs a passing parity row or a recorded refusal.
+- [ ] **7. Handoff receipts, remaining families:** Phi-3 has no path for fused `attn_qkv` in the hybrid, so it is refused. Granite fails because the hybrid ignores the model scale fields (P2c, finished). Gemma 2 stays Unverified because soft-capping is not on GPU (owner: no). Decide per family: add the path, or keep the refusal and record it.
+
+## Owner action (does not block the list above)
+
+- [ ] **Run once:** `pwsh scripts/qualify-tasks.ps1 -AcceptLicence`. It accepts the research-only Piper voice licence. Until then the speak and transcribe tasks show SKIP. The assistant cannot accept a licence for the owner.
+- [ ] **Release 1.0.10:** not ready. No tag, no version bump, no pack for publication. Everything since 1.0.9 stays unpublished until the owner says otherwise.
+
+## Pointers to work owned elsewhere
+
+- **3. DiffusionGemma and Bonsai2 verdicts** (after item 2). Owned by [unverified-port-claims](1-correctness/2026-10-03-unverified-port-claims.md) (DiffusionGemma parity ladder, Bonsai2 PRISM) and [ported-families-todo](2-coverage/ported-families-todo.md). Stays internal (rule 14).
+- **4. HunyuanVideo and Wan 2.2 findings.** Owned by [reconciliation plan, R2](1-correctness/2026-10-09-documentation-claim-reconciliation-plan.md) (owner decision: duplicate first). Per-variant boxes also in [diffusion-performance](4-performance/diffusion/diffusion-performance.md).
+- **5. Gemma 2 beyond the 2B file.** Owned by [gemma family plan](2-coverage/2026-10-31-gemma-family-plan.md). Gemma 1 is done (STATUS row). Gemma 2 9B needs a download to E: or H:, never F:.
+- **8. OpenTelemetry acceptance.** Owned by [OpenTelemetry plan](3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md) (its open acceptance boxes). Test files exist; map each box to a test, tick it, or write why it is not met.
+
+## Blocked or parked
+
+- **Release verification on a clean machine** (Q6): needs a second machine. The NativeAOT self-test in CI covers the AOT binary only.
+- **CUDA and discrete-GPU work** (P2d, CUDA receipts, discrete-GPU measurements, the external-hardware queue): no NVIDIA hardware here. All CUDA items are out of scope for this file.
+- **AVX-512 and ARM64 execution receipts:** no such machine. The claim is corrected in the docs instead.
+- **TTS/ASR GPU residency and diffusion GPU performance:** every number is an iGPU measurement, and rule 13 forbids generalising it. They wait for a discrete GPU.
+- **Ported-but-unverified families** (DeepSeek-V4, GLM-5.x, MiniMax-H3, DiffusionGemma, Qwen3.8-Flash-Next, the rest of `ported-families-todo.md`): they need checkpoints of 70 GB or more, or none exists here. Rule 14 keeps them internal.
+- **Parked by owner decision:** the HTTP image endpoints stay 501 (`/v1/images/generations` and `/edits` are not connected to the real pipelines); Gemma 2 GPU soft-capping (no; Gemma 2 is CPU only); the Qwen3-Coder NaN hunt (canary only).
+- **Qwen3-Coder NaN canary** (owner: stop hunting): keep one canary line in the Vulkan hybrid MoE test; confirm it exists, add it if not. Reopen the investigation only if the canary fires.
+
+## Open boxes in other docs
+
+These are not restated here. Each file is the owner of its list.
+
+| Document | Open boxes | Note |
+|---|---:|---|
+| `docs/00-current-work.md` (this file) | 64 | the active backlog, including the open-work list above |
+| `docs/4-performance/audio/080-tts-asr-gpu-residency-checklist.md` | 31 | rule 13: needs a discrete GPU |
+| `docs/9-external-hardware/90-external-hardware-work.md` | 20 | no hardware here |
+| `docs/4-performance/diffusion/diffusion-performance.md` | 19 | rule 13 |
+| `docs/4-performance/perf-sweep-plan.md` | 16 | CPU items need a quiet machine |
+| `docs/2-coverage/ported-families-todo.md` | 14 | rule 14 |
+| `docs/4-performance/gpu/vulkan-gemm/vulkan-gemm.md` | 11 | rule 13 |
+| `docs/4-performance/2026-10-10-inference-improvement-leads-plan.md` | 11 | |
+| `docs/2-coverage/2026-10-03-deepseek-v4-review-plan.md` | 11 | no checkpoint fits |
+| `docs/3-product-and-runtime/04-quality-of-life-improvements-plan.md` | 10 | |
+| `docs/reference/nuget-release-checklist.md` | 9 | publishing is the owner's call |
+
+The rest have 9 or fewer each. Find them with: `grep -rc "^\s*[-*+] \[ \]" docs`.
+
+
 ## Rules
 
 1. **Order.** Take items in this order. Do not reorder because another view ranks something higher.
@@ -29,7 +90,6 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
 
 ### 13. MoE variants of the recurrent families
 - [ ] **13. MoE variants of the recurrent families**
-  - [x] Admit Granite 4.0-H tiny/small (MoE) with PPL parity. Small DONE 2026-09-28 (top-k renormalisation fix; +1.2% residual at -c 2048 logged).
   - [ ] Admit Nemotron-H MoE (latent MoE, sigmoid gating) with PPL parity. No local checkpoint (2026-09-28); not downloaded (C: has no free space, K: ~10 GB).
   - [ ] Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.
   - [ ] **Done when:** each variant admitted with PPL parity against reference.
@@ -195,8 +255,6 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
 1. SmolLM2 prefill at ~0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE
    (scalar, ~3%) and attention (~6%). History: "SmolLM2 prefill" in
    [done/101](done/101-work-queue-after-coverage-plan.md).
-- [x] 2. **Stale: re-measured 2026-11-01 at 0.97x** (61.45 against 63.45 t/s, medians of 4 interleaved rounds, Q6_K, 550 tokens, CPU; detail in [plan 6 D2](2026-11-01-plan-6.md)). Qwen3.6-35B-A3B prefill was 0.63x of llama.cpp (Phase 8 of
-   [done/2026-09-25-hf-top-downloads-coverage-plan.md](done/2026-09-25-hf-top-downloads-coverage-plan.md)).
 - [ ] 3. Image-token prefill in VLMs. **Partly done; the "runs per token (about 9 t/s)" wording was stale** (rechecked in code 2026-10-31, not re-measured). The CPU `ForwardPass.PrefillEmbeddings` batches a whole image through the `PrefillCore` trunk, and the CLI's main image path (`RunCommand.Image.cs`) and two tests (`Granite4VisionE2ETests`, `Qwen3VlVulkanMRopeParityTests`) use it. Still per token: (a) the CLI's segment path (`segs`, the LLaVA-NeXT-style per-view layout); (b) the server's Gemma 4 path (`InferenceEngine`), where batching would change nothing today because the batched trunk excludes models with per-layer head dimensions (`_layerHeadDim is null`) and falls back to per-row `ForwardEmbedding`; (c) the Vulkan and CUDA passes, which have no batched embedding entry point (they loop `ForwardEmbedding`). A batched path is not numerically identical to the per-token one (batched prefill quantises activations differently, see [done/029](done/029-prefill-batch-composition-numerics-bug.md)), so any new caller needs a real-checkpoint output comparison, not just a speed number.
 - [ ] 4b. int8 alignment with ggml Q8_K (ADR-0003 known gap; per-token int8 matvec 1.2e-2 rel error per
    projection; the Q3_K activation-format question is closed 2026-11-01, see the ADR-0003 addendum: Q8_KS in the batched path is deliberate and more precise; still open: a Q8_KS variant of the repacked Q4_Kx8 GEMM and the MoE activation items), with TensorSharp's managed Q8_K kernels as a second reference. Follow-ups under 10.2
@@ -233,7 +291,7 @@ sweep is [4-performance/perf-sweep-plan.md](4-performance/perf-sweep-plan.md).
     the default is still 10. Item 2 of [done/tts-performance-baseline-and-plan.md](done/tts-performance-baseline-and-plan.md).
 - [ ] 16. Stable Audio 3: `IStableAudio3Engine` consolidation now that three variants exist (Sprint 3 of
     [done/065](done/065-stable-audio-3-medium-smallsfx-future-plan.md)).
-- [ ] 17. TTS/ASR GPU residency, one engine at a time:
+- 17. TTS/ASR GPU residency, one engine at a time (boxes live in the checklist, not here):
     [080](4-performance/audio/080-tts-asr-gpu-residency-checklist.md). The Vulkan `--backend`
     audits are closed ([done/052](done/052-vulkan-backend-for-tts-engines-plan.md),
     [done/053](done/053-vulkan-backend-audit-remaining-audio-engines.md)); Whisper, Parakeet and
