@@ -77,7 +77,8 @@ public static class PrefillHandoffFamilies
                 "HybridCpuPrefillHandoffTests, dense Qwen2.5 (Q/K/V biases, GQA with 2 KV heads) on the Vulkan hybrid (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
                 "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992), " +
                 "Qwen2.5-3B-Instruct Q4_K_M (-g 12: >= 0.9985). Sequential hybrid prefill against the all-CPU pass stays >= 0.998 on the same prompt, so the handoff adds no drift. " +
-                "Not exercised: Qwen2.5-7B (sharded) and 0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",
+                "Qwen2.5-7B-Instruct Q4_K_M (sharded, 4 KV heads, 28 layers; 2026-11-03, -g 4, context 1024, 50 s on real weights): prefill cosine 0.998803, 40 decode steps >= 0.99689 (lowest at step 19; the bar is 0.99). " +
+                "Not exercised: Qwen2.5-0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",
                 $"{QwenArchitectures.Qwen2.Id}|attention.head_count_kv=2"),
             [("qwen2moe", HandoffPath.VulkanHybrid)] = new(
                 "Goldens/qwen2moe.golden.json (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
