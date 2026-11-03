@@ -175,9 +175,9 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
 - [ ] Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
       0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
       ggml Q8_K (1 scale/256) per weight type; align where it differs
-- [ ] MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
+- [x] *(closed 2026-11-03, read in `MoeBatchedExperts.cs`: the default MoE prefill path passes F32 activations to `MatMulBatched` with `allowQ8: Q8PrefillEnabled`, which is false unless `STINGRAY_MOE_PREFILL_Q8=1`, so there is no per-bucket quantisation to hoist; it would only speed the opt-in Q8 path, which was not adopted, see the batched MoE prefill plan.)* MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
       instead of per expert bucket: k-fold less quantize work, identical activations per token
-- [ ] MoE: keep router and SiLU*up in F32, quantize only at GEMM inputs (check current code)
+- [x] *(closed 2026-11-03, read in code: gate and up outputs are F32 and `SiLuMul` runs on them (`MoeBatchedExperts.cs`); activations are quantised only inside `MatMulBatched`, and only when Q8 is enabled; the router is `FusedMatVec` -> `SimdKernels.MatVec` by the router tensor's own dtype (F32 in the checkpoints read, `HybridGdnForwardPass.cs:209`), and the int8-activation branch of `FusedMatVec` is taken only for Q4_K or Q6_K weights with the Q8 prefill gate on. Not checked: a checkpoint with a quantised `ffn_gate_inp`.)* MoE: keep router and SiLU*up in F32, quantize only at GEMM inputs
 - [ ] MoE: small prompts (N <= 32) through the folded decode-style dispatch (bit-identical to
       decode, fewer tiny GEMMs); measure
-- [ ] Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`
+- [x] *(decided: `STINGRAY_MOE_PREFILL_Q8` stays off and experimental; the batched MoE prefill plan measured +11% (153 to 171 tok/s) with identical text and kept exactness as the policy. No re-run needed for a path that is not enabled.)* Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`
