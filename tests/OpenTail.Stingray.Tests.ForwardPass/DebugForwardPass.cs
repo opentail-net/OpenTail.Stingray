@@ -3,21 +3,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 
 public sealed class DebugForwardPass : HeavyTestBase
 {
-    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf") => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     private static string? FindQwen3Path() => FindModelPath("Qwen3-8B-Q4_K_M.gguf");
     private static string? FindQwen3CoderPath() => FindModelPath("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf");

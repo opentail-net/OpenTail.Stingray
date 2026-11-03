@@ -25,29 +25,7 @@ public sealed class GpuForwardPassSnapKvTests : HeavyTestBase
         catch { return null; }
     }
 
-    private static string? FindModelPath()
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\p\opentail-llm\models\{ModelFile}",
-            $@"E:\models\{ModelFile}",
-        };
-        foreach (var p in absoluteCandidates)
-            if (File.Exists(p)) return p;
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", ModelFile);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", ModelFile);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(ModelFile);
 
     /// <summary>
     /// Repeat a few sentences until the tokenizer encodes at least

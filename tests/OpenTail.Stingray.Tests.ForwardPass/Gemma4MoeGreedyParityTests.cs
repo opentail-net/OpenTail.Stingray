@@ -11,17 +11,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class Gemma4MoeGreedyParityTests : HeavyTestBase
 {
-    private static string? FindModel()
-    {
-        const string File = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf";
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
-            foreach (string c in new[] { Path.Combine(drive.RootDirectory.FullName, "_models", "gemma4-26b-a4b", File), Path.Combine(drive.RootDirectory.FullName, "_models", File) })
-                if (System.IO.File.Exists(c)) return c;
-        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null; dir = dir.Parent)
-            foreach (string c in new[] { Path.Combine(dir.FullName, "models", File), Path.Combine(dir.FullName, "models", "_models", File) })
-                if (System.IO.File.Exists(c)) return c;
-        return null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("google_gemma-4-26B-A4B-it-Q4_K_M.gguf");
 
     [Theory]
     [InlineData("What is the capital of France? Answer in one short sentence.", "The capital of France is Paris.")]
