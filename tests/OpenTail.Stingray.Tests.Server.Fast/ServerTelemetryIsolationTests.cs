@@ -81,4 +81,47 @@ public sealed class ServerTelemetryIsolationTests
         Assert.Equal(Requests, durations.Count);
         Assert.All(durations, outcome => Assert.Equal("success", outcome));
     }
+
+    /// <summary>
+    /// The hinge of "one chat request is one connected trace": the engine parents its own span to <c>Activity.Current</c> at the moment the
+    /// server calls it (EngineTelemetryTests.EngineSpan_IsParentedToTheCallersActivity...). So the server must call the engine while its
+    /// <c>chat</c> span is the current activity, for both the streaming and the plain response. With that, the chain
+    /// HTTP request -> chat -> engine generate shares the request's trace id and no real engine is needed in this project.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TheEngineIsCalledInsideTheChatSpan_SoItsSpanJoinsTheRequestsTrace(bool stream)
+    {
+        var stopped = new ConcurrentBag<Activity>();
+        using var spans = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == ServerMetrics.ActivitySourceName || s.Name == "Microsoft.AspNetCore",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = stopped.Add,
+        };
+        ActivitySource.AddActivityListener(spans);
+
+        var fake = new FakeInferenceEngine(Model, [(GenerateChunkKind.Text, "ok")]);
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+            b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
+        using var client = factory.CreateClient();
+
+        var traceId = ActivityTraceId.CreateRandom();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new { model = Model, stream, max_tokens = 4, messages = new[] { new { role = "user", content = "hi" } } }),
+        };
+        request.Headers.Add("traceparent", $"00-{traceId}-{ActivitySpanId.CreateRandom()}-01");
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await response.Content.ReadAsStringAsync();   // drain: a streamed chat span stops only when the body is done
+
+        var atEngine = fake.LastActivityAtGenerate;
+        Assert.NotNull(atEngine);
+        Assert.Equal(traceId, atEngine!.TraceId);
+        var chat = Assert.Single(stopped, a => a.Source.Name == ServerMetrics.ActivitySourceName
+            && a.OperationName.StartsWith("chat", StringComparison.Ordinal) && a.TraceId == traceId);
+        Assert.Equal(chat.SpanId, atEngine.SpanId);
+    }
 }
