@@ -161,18 +161,18 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
    Those were the predefined "really bad turn" criteria, and none was met.
 
 ## Open / follow-up
-- [ ] ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
+- [x] *(closed 2026-11-03 by `Q8ActivationQuantizationTests`: the in-test port of `quantize_row_q8_K_ref` is bit-identical (scale and all 256 int8 values, 50 outlier rows) to the real function exported by the vendored b10306 `ggml-base.dll`, and on outlier rows with amax/rms of 25, 50 and 90 Stingray's Q8_KS (a scale per 32 values) reconstructs the row with no more error than ggml's Q8_K (a scale per 256), on average at least 10% less. So the activation quantiser is not a defect and is finer than the one llama.cpp uses; the weight-side dots (`vec_dot_*_q8_K`) are not compared.)* ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
   vendored `ggml-base.dll`): is 1e-2 per projection normal int8 noise or a defect?
 - [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 - [ ] Re-baseline `MtpDecoder_GreedyParity_LlamaCpp`: see ADR-0002 (open follow-ups).
 
 ### Follow-ups from the MoE audit (moved from docs/00-current-work.md, 2026-10-30)
 
-- [ ] NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
+- [x] *(closed 2026-11-03 by `Q8ActivationQuantizationTests`: the in-test port of `quantize_row_q8_K_ref` is bit-identical (scale and all 256 int8 values, 50 outlier rows) to the real function exported by the vendored b10306 `ggml-base.dll`, and on outlier rows with amax/rms of 25, 50 and 90 Stingray's Q8_KS (a scale per 32 values) reconstructs the row with no more error than ggml's Q8_K (a scale per 256), on average at least 10% less. So the activation quantiser is not a defect and is finer than the one llama.cpp uses; the weight-side dots (`vec_dot_*_q8_K`) are not compared.)* NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
       rel-RMS per projection (vs 9e-7 for the F32 GEMM). Compare our `QuantizeRowToQ8KS` + dot
       against ggml's `quantize_row_q8_K` + `vec_dot_q4_K_q8_K` on the same rows, to tell normal
       int8 noise (activation amax/rms 25-90 here) from a defect
-- [ ] Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
+- [ ] *(narrowed 2026-11-03: Q8_KS is finer than ggml's Q8_K by design, so aligning would make Stingray's activations coarser; the 0.69% gap to llama.cpp PPL is not explained by the activation quantiser alone, the per-weight-type dot comparison is still open.)* Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
       0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
       ggml Q8_K (1 scale/256) per weight type; align where it differs
 - [x] *(closed 2026-11-03, read in `MoeBatchedExperts.cs`: the default MoE prefill path passes F32 activations to `MatMulBatched` with `allowQ8: Q8PrefillEnabled`, which is false unless `STINGRAY_MOE_PREFILL_Q8=1`, so there is no per-bucket quantisation to hoist; it would only speed the opt-in Q8 path, which was not adopted, see the batched MoE prefill plan.)* MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
