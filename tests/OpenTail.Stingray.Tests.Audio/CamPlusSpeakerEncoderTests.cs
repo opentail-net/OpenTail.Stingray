@@ -9,19 +9,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class CamPlusSpeakerEncoderTests : HeavyTestBase
 {
-    private static string? FindModelPath(string relative)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relative);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string relative) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(relative);
 
     [Fact]
     public void Extract_RealAudio_ProducesNonDegenerateEmbedding()

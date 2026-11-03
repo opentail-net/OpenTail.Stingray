@@ -30,19 +30,8 @@ public sealed class MusicGenEndToEndGoldenParityTests : HeavyTestBase
     private const string Prompt = "electronic dance music";
     private static readonly int[] ExpectedPromptIds = [3031, 2595, 723, 1];
 
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relativePath);
+
 
     [Fact]
     public void Generate_RealWeights_MatchesGoldenChainedOutput()

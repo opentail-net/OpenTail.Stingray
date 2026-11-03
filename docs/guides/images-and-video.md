@@ -65,5 +65,4 @@ To integrate text-to-image generation directly into a .NET application, see the 
 
 ## Over HTTP
 
-`POST /v1/images/generations`, `/v1/images/edits` and `/v1/images/variations`. See the
-[serving guide](serve-an-api.md).
+The HTTP image routes (`POST /v1/images/generations` and `/v1/images/edits`) are **not implemented**: they answer `501` and point here. Generate images with `stingray image` or from .NET with the diffusion pipelines above. (Until 2026-11-01 they returned a placeholder gradient with a 200; that was removed because it was not a generated image.) There is no `/v1/images/variations` route.

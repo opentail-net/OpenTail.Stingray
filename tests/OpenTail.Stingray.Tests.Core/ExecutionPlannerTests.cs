@@ -171,7 +171,7 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
     }
 
-    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true)
+    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true, (string name, long[] dims, DType dtype, byte[] data)[]? extraTensors = null)
     {
         var metadata = new Dictionary<string, (GgufValueType, object)>
         {
@@ -191,6 +191,7 @@ public sealed class ExecutionPlannerTests : IDisposable
             ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
             ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
         };
+        if (extraTensors is not null) tensors = [.. tensors, .. extraTensors];
         var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
         var caps = new BackendCapabilities(
             CudaAvailable: false,
@@ -199,6 +200,98 @@ public sealed class ExecutionPlannerTests : IDisposable
             VulkanDeviceName: vulkan ? "Simulated Vulkan GPU" : null,
             RecommendedThreadCount: 8);
         return ExecutionPlanner.Plan(desc, request, caps);
+    }
+
+    private ModelDescription TinyGemma4(bool fusedExperts)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "gemma4"),
+            ["gemma4.block_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["gemma4.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["gemma4.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["gemma4.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.vocab_size"] = (GgufValueType.UInt32, 100u),
+            ["gemma4.expert_count"] = (GgufValueType.UInt32, 4u),
+            ["gemma4.expert_used_count"] = (GgufValueType.UInt32, 2u),
+            ["gemma4.expert_feed_forward_length"] = (GgufValueType.UInt32, 16u),
+        };
+        var tensors = new List<(string name, long[] dims, DType dtype, byte[] data)>
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        if (fusedExperts) tensors.Add(("blk.0.ffn_gate_up_exps.weight", [64, 32, 4], DType.Float32, new byte[64 * 32 * 4 * 4]));
+        return ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors.ToArray())));
+    }
+
+    private static BackendCapabilities WithVulkan() => new(
+        CudaAvailable: false,
+        VulkanAvailable: true,
+        HardwareProfile: new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false),
+        VulkanDeviceName: "Simulated Vulkan GPU",
+        RecommendedThreadCount: 8);
+
+    /// <summary>
+    /// Plan 6 F1: the Gemma 4 mixture-of-experts layers (fused <c>ffn_gate_up_exps</c>, dense FFN in parallel) exist on the CPU forward pass only. A checkpoint that
+    /// carries them plans on the CPU even when a GPU is available, and a pinned accelerator is refused with the reason; the dense checkpoints of the same
+    /// architecture keep using the GPU.
+    /// </summary>
+    [Fact]
+    public void Plan_Gemma4WithFusedExperts_RunsOnCpuEvenWhenAGpuIsAvailable()
+    {
+        var plan = ExecutionPlanner.Plan(TinyGemma4(fusedExperts: true), new ExecutionRequest { PinnedContextSize = 512 }, WithVulkan());
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
+        Assert.Equal(0, plan.GpuLayers);
+        Assert.Contains(plan.Decisions, d => d.Code == "BACKEND" && d.Reason.Contains("CPU only"));
+    }
+
+    [Fact]
+    public void Plan_Gemma4WithFusedExperts_RefusesAPinnedAccelerator()
+    {
+        var ex = Assert.Throws<NotSupportedException>(() => ExecutionPlanner.Plan(
+            TinyGemma4(fusedExperts: true), new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "vulkan" }, WithVulkan()));
+        Assert.Contains("vulkan", ex.Message);
+        Assert.Contains("CPU forward pass only", ex.Message);
+    }
+
+    [Fact]
+    public void Plan_Gemma4WithoutFusedExperts_StillUsesTheGpu()
+    {
+        var plan = ExecutionPlanner.Plan(TinyGemma4(fusedExperts: false), new ExecutionRequest { PinnedContextSize = 512 }, WithVulkan());
+
+        Assert.Equal("vulkan", plan.Backend);
+    }
+
+    /// <summary>
+    /// Plan 6 F2: the planner's per-layer weight figure summed a fixed list of plain-transformer tensor names, so the fused QKV, Gated-DeltaNet and SSM
+    /// projections of a hybrid layer were uploaded but never counted (Qwen3.5-0.8B: 195 MiB of 795). Each such tensor present in a layer now adds exactly its
+    /// bytes; a tensor the list does not name still adds nothing, so a family without them measures what it always did.
+    /// </summary>
+    [Fact]
+    public void Plan_GpuWeightBytes_CountsTheFamilySpecificTensorsOfALayer()
+    {
+        var request = new ExecutionRequest { PinnedContextSize = 512 };
+        long baseline = PlanTinyModel(request).Placement!.GpuWeightBytes;
+
+        var hybridTensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("blk.0.attn_qkv.weight", [64, 192], DType.Float32, new byte[64 * 192 * 4]),
+            ("blk.0.ssm_out.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_gate.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.ssm_conv1d.weight", [4, 64], DType.Float32, new byte[4 * 64 * 4]),
+        };
+        long withHybrid = PlanTinyModel(request, extraTensors: hybridTensors).Placement!.GpuWeightBytes;
+        Assert.Equal(64 * 192 * 4 + 64 * 64 * 4 + 64 * 64 * 4 + 4 * 64 * 4, withHybrid - baseline);
+
+        var unnamed = new (string name, long[] dims, DType dtype, byte[] data)[] { ("blk.0.unlisted_extra.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]) };
+        Assert.Equal(baseline, PlanTinyModel(request, extraTensors: unnamed).Placement!.GpuWeightBytes);
     }
 
     [Fact]
@@ -429,6 +522,82 @@ public sealed class ExecutionPlannerTests : IDisposable
     }
 
     // Execution-affecting settings the runtime must receive through EngineSettings, never from the process environment.
+    private ExecutionPlan PlanTinyModel(string arch, int? pinnedGpuLayers)
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, arch),
+            [$"{arch}.block_count"] = (GgufValueType.UInt32, 4u),
+            [$"{arch}.context_length"] = (GgufValueType.UInt32, 2048u),
+            [$"{arch}.embedding_length"] = (GgufValueType.UInt32, 64u),
+            [$"{arch}.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            [$"{arch}.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            [$"{arch}.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            [$"{arch}.vocab_size"] = (GgufValueType.UInt32, 100u),
+        };
+        if (arch == "gemma2")
+        {
+            metadata["gemma2.attn_logit_softcapping"] = (GgufValueType.Float32, 50f);
+            metadata["gemma2.final_logit_softcapping"] = (GgufValueType.Float32, 30f);
+            metadata["gemma2.attention.sliding_window"] = (GgufValueType.UInt32, 4096u);
+        }
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.2.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.3.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
+        var capabilities = new BackendCapabilities(
+            CudaAvailable: false,
+            VulkanAvailable: true,
+            HardwareProfile: new HardwareProfile(VramBytes: 8L * 1024 * 1024 * 1024, RamBytes: 32L * 1024 * 1024 * 1024, CpuCores: 8,
+                EstPcieBandwidthGBps: 16.0, HasAvx512: false),
+            VulkanDeviceName: "Simulated Vulkan GPU",
+            RecommendedThreadCount: 8);
+        return ExecutionPlanner.Plan(desc, new ExecutionRequest
+        {
+            Goal = "balanced", PinnedContextSize = 1024, PinnedKvDtype = "fp32", PinnedGpuLayers = pinnedGpuLayers,
+        }, capabilities);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public void CpuOnlyArchitecture_WithGpuLayersRequested_RunsOnTheCpu_AndTheWarningSaysWhy(int pinnedLayers)
+    {
+        var plan = PlanTinyModel("gemma2", pinnedLayers);
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.Equal(0, plan.GpuLayers);
+        string warning = Assert.Single(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+        Assert.Contains("gemma2", warning);
+        Assert.Contains("softcapping", warning);
+        Assert.Contains($"({pinnedLayers})", warning);
+    }
+
+    [Fact]
+    public void CpuOnlyArchitecture_WithoutAGpuRequest_RunsOnTheCpuWithoutAWarning()
+    {
+        var plan = PlanTinyModel("gemma2", pinnedGpuLayers: null);
+
+        Assert.Equal("cpu", plan.Backend);
+        Assert.DoesNotContain(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GpuCapableArchitecture_WithGpuLayersRequested_StillUsesTheGpu_WithoutThatWarning()
+    {
+        var plan = PlanTinyModel("llama", pinnedGpuLayers: -1);
+
+        Assert.Equal("vulkan", plan.Backend);
+        Assert.Equal(4, plan.GpuLayers);
+        Assert.DoesNotContain(plan.Warnings, w => w.StartsWith(ExecutionPlanner.CpuOnlyArchitectureWarningPrefix, StringComparison.Ordinal));
+    }
+
     private static readonly string[] PolicyEnvVars =
     [
         "STINGRAY_KV_DTYPE", "STINGRAY_KV_STORE", "STINGRAY_KV_BF16_MIN_TOKENS",

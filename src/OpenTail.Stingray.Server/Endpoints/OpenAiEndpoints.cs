@@ -51,6 +51,11 @@ public static class OpenAiEndpoints
                     OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
+        if (RequestParameterValidation.ValidateOpenAi(req) is { } invalid)
+        {
+            await WriteBadRequestAsync(ctx, invalid);
+            return;
+        }
         req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
@@ -90,6 +95,15 @@ public static class OpenAiEndpoints
                 ctx.Response.ContentType = "application/json";
                 await ctx.Response.WriteAsync(
                     JsonSerializer.Serialize(new ErrorResponse("server_error", ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
+            catch (NotSupportedException ex)
+            {
+                ctx.Response.StatusCode = ModelLoadRefusal.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
                         OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
@@ -216,12 +230,14 @@ public static class OpenAiEndpoints
         var sp = SamplingParamsBuilder.Build(opts,
             temperature: req.Temperature,
             topP:        req.TopP,
-            maxTokens:   req.MaxTokens,
+            topK:        req.TopK,
+            maxTokens:   req.MaxCompletionTokens ?? req.MaxTokens,
             maxThinking: req.MaxThinkingTokens,
             presencePenalty: req.PresencePenalty,
             frequencyPenalty: req.FrequencyPenalty,
             logitBias:   logitBias,
-            thinkingDisabled: !enableThinking);
+            thinkingDisabled: !enableThinking,
+            seed:        req.Seed);
 
         // Tool-active agentic turn: add the model family's tool-boundary stop (Gemma 4:
         // <|tool_response>) so generation halts the instant the tool calls finish rather than
@@ -405,22 +421,24 @@ public static class OpenAiEndpoints
         var requestId = $"chatcmpl-{Guid.NewGuid():N}";
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+        RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created);
+            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true);
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true, stops);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
-        bool includeTiming = false)
+        bool includeTiming = false, string[]? stops = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         var textSb = new StringBuilder();
         var reasoningSb = new StringBuilder();
         int textTokens = 0;
@@ -430,7 +448,7 @@ public static class OpenAiEndpoints
 
         try
         {
-            await foreach (var c in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 if (c.Kind == GenerateChunkKind.Usage)
                 {
@@ -537,9 +555,10 @@ public static class OpenAiEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created)
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
+        var stopMatch = new StopSequenceMatch();
         ctx.Response.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers.Connection = "keep-alive";
@@ -558,6 +577,7 @@ public static class OpenAiEndpoints
         int toolCallIndex = 0;       // monotonic index into delta.tool_calls
         bool hasToolCalls = false;
         long tokenCount = 0;
+        int streamPromptTokens = 0;
 
         async Task WriteContentDelta(string text)
         {
@@ -643,12 +663,12 @@ public static class OpenAiEndpoints
         bool truncatedByMaxTokens = false;
         try
         {
-            await foreach (var c in ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 // Out-of-band usage chunk (issue #150): not a generated token and carries no
                 // text. The streaming response doesn't emit a usage object (OpenAI gates that
                 // behind stream_options.include_usage, unsupported here), so just skip it.
-                if (c.Kind == GenerateChunkKind.Usage) { timing.MarkAdmitted(); continue; }
+                if (c.Kind == GenerateChunkKind.Usage) { timing.MarkAdmitted(); streamPromptTokens = c.PromptTokens; continue; }
                 if (c.Kind == GenerateChunkKind.Stop)
                 {
                     truncatedByMaxTokens = c.TruncatedByMaxTokens;
@@ -721,6 +741,14 @@ public static class OpenAiEndpoints
             requestId, "chat.completion.chunk", created, engine.ModelId,
             [new ChunkChoice(0, new ChunkDelta(null, null), finishReason)]);
         await WriteEvent(ctx.Response, JsonSerializer.Serialize(finalChunk, OpenTailStingrayJsonContext.Default.ChatCompletionChunk));
+        if (includeUsage)
+        {
+            int completion = (int)Math.Min(tokenCount, int.MaxValue);
+            var usageChunk = new ChatCompletionChunk(
+                requestId, "chat.completion.chunk", created, engine.ModelId, [],
+                new ChatUsage(streamPromptTokens, completion, streamPromptTokens + completion));
+            await WriteEvent(ctx.Response, JsonSerializer.Serialize(usageChunk, OpenTailStingrayJsonContext.Default.ChatCompletionChunk));
+        }
         await ctx.Response.WriteAsync("data: [DONE]\n\n", ctx.RequestAborted);
         await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
 
@@ -1010,7 +1038,22 @@ public sealed record ChatCompletionRequest(
     // request before rendering: each skill's Instructions become a prepended system-message
     // segment, and its Tools merge into the effective declared tools alongside `tools` — see
     // ApplySkills. docs/051.
-    [property: JsonPropertyName("skills")] WireSkill[]? Skills = null);
+    [property: JsonPropertyName("skills")] WireSkill[]? Skills = null,
+    // The newer name for max_tokens; wins when both are sent (OpenAI deprecates max_tokens).
+    [property: JsonPropertyName("max_completion_tokens")] int? MaxCompletionTokens = null,
+    // Seeds the sampler RNG (SamplingParams.Seed): the same seed and prompt give the same text at temperature > 0.
+    [property: JsonPropertyName("seed")] int? Seed = null,
+    // Not an OpenAI field, but common in clients that also talk to llama.cpp; SamplingParams.TopK.
+    [property: JsonPropertyName("top_k")] int? TopK = null,
+    // Number of choices. Only 1 is supported; any other value is a 400 (RequestParameterValidation).
+    [property: JsonPropertyName("n")] int? N = null,
+    // One stop string or an array of up to 4 (RequestParameterValidation.ParseOpenAiStops). Generation is cut before the first match
+    // and cancelled; finish_reason stays "stop".
+    [property: JsonPropertyName("stop")] JsonElement? Stop = null,
+    // {"include_usage": true} adds a final usage chunk (empty choices) to a streaming response, as OpenAI SDKs expect.
+    [property: JsonPropertyName("stream_options")] StreamOptions? StreamOptions = null);
+
+public sealed record StreamOptions([property: JsonPropertyName("include_usage")] bool? IncludeUsage = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string
@@ -1086,7 +1129,8 @@ public sealed record ChatCompletionChunk(
     string Object,
     long Created,
     string Model,
-    ChunkChoice[] Choices);
+    ChunkChoice[] Choices,
+    ChatUsage? Usage = null);
 
 public sealed record ChunkChoice(int Index, ChunkDelta Delta, string? FinishReason);
 public sealed record ChunkDelta(
@@ -1125,4 +1169,10 @@ public sealed record ResponseFormat(string? Type, JsonSchemaSpec? JsonSchema = n
 /// (matching llama.cpp's own server behavior).</summary>
 public sealed record JsonSchemaSpec(string? Name, JsonElement? Schema, bool? Strict = null, bool? Ordered = null);
 
-public sealed record ErrorResponse(string Type, string Message);
+public sealed record ErrorResponse(string Type, string Message)
+{
+    // The flat Type/Message fields stay (existing consumers read them); this adds the {"error": {...}} object OpenAI clients parse.
+    public ErrorDetail Error => new(Message, Type);
+}
+
+public sealed record ErrorDetail(string Message, string Type);

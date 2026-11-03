@@ -5,30 +5,7 @@ public sealed class RealEsrganRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "RealESRGAN_x4plus.safetensors";
 
-    private static string? FindModelPath(string modelFile)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\{modelFile}",
-            $@"C:\p\opentail-llm\models\{modelFile}",
-            $@"E:\models\{modelFile}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p) && CanOpenFile(p)) return p;
-        }
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", modelFile);
-            if (File.Exists(p) && CanOpenFile(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string modelFile) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(modelFile);
 
     private static bool CanOpenFile(string path)
     {

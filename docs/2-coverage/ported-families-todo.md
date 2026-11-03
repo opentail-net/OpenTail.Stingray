@@ -172,11 +172,11 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 
 ## Open items moved from 058-deepseek-full-lineage-implementation-plan.md (2026-10-30)
 
-- [ ] Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
+- [ ] *(blocked 2026-11-03: no DeepSeek V1 checkpoint on C, E, F or H; only DeepSeek-V2-Lite and deepseek-ocr-2 are present.)* Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
   dense-layer code path (`leading_dense_block_count` layers) is confirmed working, since V1 is
   architecturally a subset.
 
-- [ ] Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
+- [x] *(done 2026-11-03: the `deepseek2-ocr` descriptor (`DeepSeek2Architectures.cs`) and the vision encoder (`DeepSeekOcr2VisionEncoder`, `UnifiedVisionPipeline`) reference none of the `DeepSeek4`/`DeepSeek32`/`DeepSeek41` types, which live in their own forward-pass classes; and on current main the real-weight SAM parity tests against `llama-mtmd-debug` pass: `DeepSeekOcr2_Rainbow1024_SamMatchesLlamaMtmdDebug` 14.8 s and `DeepSeekOcr2_Rainbow768Tile_SamMatchesLlamaMtmdDebug` 5.5 s with `mmproj-deepseek-ocr-2-q8_0.gguf`.)* Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
   existing working vision branch. Not a rebuild.
 
 

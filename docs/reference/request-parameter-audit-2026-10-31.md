@@ -1,4 +1,4 @@
-# Request parameter audit, 2026-10-31 (plan 2, P7)
+# Request parameter audit, 2026-10-31 ([plan 2, P7](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md))
 
 **Scope.** The request fields that the OpenAI chat endpoint (`POST /v1/chat/completions`) and the Anthropic messages
 endpoint (`POST /v1/messages`) deserialise: the `ChatCompletionRequest` record in
@@ -8,7 +8,7 @@ it reads, so they are the surface this audit covers. Responses, embeddings, imag
 and need their own audit.
 
 **Method.** Read each record, grep every use of each field in its endpoint, and count the test files that send the JSON
-name (`grep` over `tests/OpenTail.Stingray.Tests.Server.Fast` and `tests/OpenTail.Stingray.Tests.Server`). Classification uses the three outcomes from plan 2 P7:
+name (`grep` over `tests/OpenTail.Stingray.Tests.Server.Fast` and `tests/OpenTail.Stingray.Tests.Server`). Classification uses the three outcomes from [plan 2 P7](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md):
 **implemented** (read and applied, with a test that sends it), **rejected** (refused with a stable error), or **ignored**
 (read and dropped, or never declared, with a stated reason). A field that is never declared is dropped by
 System.Text.Json without an error, so it is classed as **silently ignored**. That is the outcome the plan most wants to
@@ -116,3 +116,30 @@ Anthropic `temperature`/`top_p` are never sent by name in a test. They are imple
 
 Choose one of the three options for F1 per field, then add the test for each row in this table. That closes P7 for
 the chat and messages endpoints.
+
+## Resolution of F1 and F3 (P7b, 2026-10-31)
+
+Decisions taken under the plan's standing authority; each is reversible. Tests: `RequestParameterTests` (30 cases, mutation-checked:
+without the OpenAI validation 12 fail, without `max_completion_tokens` 2, without `seed` 1, without the Anthropic validation 5).
+
+| Field | Decision | Where |
+|---|---|---|
+| `max_completion_tokens` | implemented: sets the token budget and wins over `max_tokens` when both are sent | `OpenAiEndpoints` |
+| `seed` | implemented: `SamplingParams.Seed` seeds the sampler RNG | `SamplingParamsBuilder` |
+| `top_k` (OpenAI side) | implemented: `SamplingParams.TopK` | `OpenAiEndpoints` |
+| `n` | refused with a 400 unless it is 1: the server returns exactly one choice | `RequestParameterValidation` |
+| `max_tokens` / `max_completion_tokens` below 1 | refused with a 400 | `RequestParameterValidation` |
+| `temperature` | refused outside 0 to 2 (OpenAI) or 0 to 1 (Anthropic) | `RequestParameterValidation` |
+| `top_p` | refused outside 0 to 1 | `RequestParameterValidation` |
+| `top_k` | refused below 0 | `RequestParameterValidation` |
+| `presence_penalty`, `frequency_penalty` | refused outside -2 to 2 | `RequestParameterValidation` |
+| `parallel_tool_calls` | stays ignored on purpose: the server's tool-call behaviour is fixed, and the field is a hint | this table |
+| `user`, `metadata` | stay ignored on purpose (privacy, plan section 7); this row is the record of that (F4) | this table |
+| unknown JSON properties | still accepted and ignored: clients send vendor fields | `RequestParameterTests` |
+| `stop` (OpenAI), `stop_sequences` (Anthropic) | implemented (P7c): one filter, `StopSequences.Apply`, around the engine's chunk stream in all four handlers. Text that could still become a stop string is held back; the earliest match wins (longest when several end together); the engine is cancelled, not just hidden. OpenAI: a string or up to 4 strings, `finish_reason` stays `stop`. Anthropic: up to 16 strings, `stop_reason` becomes `stop_sequence` and `stop_sequence` carries the match. Empty strings and wrong types are a 400. Completion-token counts for a response cut by a stop string are approximate (held-back text is re-emitted in different pieces). Only answer text is searched, not thinking or tool-call content | `StopSequences`, `RequestParameterValidation` |
+| `stream_options` (`include_usage`) | implemented (P7d): a streaming request with `include_usage: true` gets a final chunk with empty `choices` and `usage` (prompt, completion, total tokens) after the `finish_reason` chunk and before `[DONE]`. Without it there is no usage chunk, as before. Completion tokens are the chunks the engine produced | `OpenAiEndpoints` |
+| Anthropic `tool_choice` | implemented as far as it can be honoured (P7d): `auto` is the default behaviour, `none` removes the declared tools so the model is not offered them, and `any` and `tool` (forced tool use) are refused with a 400 saying so, as are unknown types and non-object values. Forced tool use stays unimplemented: the OpenAI side does it with grammar-constrained decoding, which would need real-model testing to port. Limit: the endpoint tests cannot see the `none` wiring (the test host's template never renders tools into the prompt), so the drop is unit-tested directly but the call to it is not covered by a failing test | `RequestParameterValidation` |
+
+Finding while testing: the error body this server returns is flat, `{"type": "...", "message": "..."}`. The OpenAI API wraps it as
+`{"error": {"message": ..., "type": ...}}` and Anthropic as `{"type": "error", "error": {...}}`, so clients that parse the nested
+envelope got nothing useful from a 400. Fixed additively (P7e): both error records now also carry the nested `error` object (OpenAI: `message`, `type`; Anthropic: `type`, `message`) next to the flat fields, which stay for existing consumers. Not changed: Anthropic's top-level `type` is still the error type, not the literal `error`, because the flat field must keep its meaning; other endpoints (responses, sessions, embeddings) build their own error bodies and were not audited.
