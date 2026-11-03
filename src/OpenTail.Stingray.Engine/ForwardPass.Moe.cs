@@ -505,12 +505,14 @@ public sealed unsafe partial class ForwardPass
     private bool MoeBatchedPrefillSupported =>
         MoeBatchedPrefillEnabled
         && _hp.IsMoE
-        && _wGateInp is not null && _wGateExps is not null
-        && _wUpExps is not null && _wDownExps is not null
+        && _wGateInp is not null
+        && (_hp.ParallelDenseMoe ? _wGateUpExps is not null && _wDownExps is not null
+            : _wGateExps is not null && _wUpExps is not null && _wDownExps is not null)
         && _tqKvCache is null
         && !_traceRouters && !_traceNorms
-        && _postAttnNorm is null && _postFfwNorm is null
-        && _layerOutputScale is null && !_hp.HasPerLayerTokenEmbd;
+        && (_hp.ParallelDenseMoe   // Gemma 4 26B-A4B: PrefillCore applies its post norms and layer scale, see Gemma4MoeBatched
+            || (_postAttnNorm is null && _postFfwNorm is null
+                && _layerOutputScale is null && !_hp.HasPerLayerTokenEmbd));
 
     /// <summary>
     /// Grow the batched-MoE scratch to hold <paramref name="n"/> token rows. Buffers are kept
@@ -560,6 +562,29 @@ public sealed unsafe partial class ForwardPass
     }
 
     /// <summary>
+    /// Buckets the (token, slot) pairs routed in <c>_moeBatchSel</c> by expert in CSR order: <c>_moeExpStart</c> holds the offsets and
+    /// <c>_moeExpTokI</c> / <c>_moeExpTokK</c> the token and slot of each bucket entry.
+    /// </summary>
+    private void BucketRoutedPairs(int n, int na, int numExperts)
+    {
+        int* expStart = _moeExpStart;
+        int* cursor = _moeExpCursor;
+        long pairs = (long)n * na;
+        for (int e = 0; e <= numExperts; e++) expStart[e] = 0;
+        for (long s = 0; s < pairs; s++) expStart[_moeBatchSel[s] + 1]++;
+        for (int e = 0; e < numExperts; e++) expStart[e + 1] += expStart[e];
+        for (int e = 0; e < numExperts; e++) cursor[e] = expStart[e];
+        for (int t = 0; t < n; t++)
+            for (int k = 0; k < na; k++)
+            {
+                long s = (long)t * na + k;
+                int p = cursor[_moeBatchSel[s]]++;
+                _moeExpTokI[p] = t;
+                _moeExpTokK[p] = k;
+            }
+    }
+
+    /// <summary>
     /// Batched MoE FFN for one prefill layer: the MoE twin of the dense
     /// gate/up GEMM → SiLU → down GEMM sequence in <see cref="PrefillCore"/>.
     ///
@@ -591,6 +616,8 @@ public sealed unsafe partial class ForwardPass
     /// </summary>
     private void MoeFfnBatched(int layer, float* batchNorm, float* batchOut, int n)
     {
+        if (_hp.ParallelDenseMoe)
+            throw new InvalidOperationException("Gemma 4 parallel dense+MoE layers go through Gemma4MoeBatched, which also needs the raw residual rows.");
         int numExperts = _hp.NumExperts;
         int na = _hp.NumActiveExperts;
         int expertDim = _hp.ExpertIntermediateDim;
@@ -616,21 +643,9 @@ public sealed unsafe partial class ForwardPass
         }
 
         // ── 2. Bucket the (token, slot) pairs by expert, CSR-style ─────────────────────────
+        BucketRoutedPairs(n, na, numExperts);
         int* expStart = _moeExpStart;
-        int* cursor = _moeExpCursor;
         long pairs = (long)n * na;
-        for (int e = 0; e <= numExperts; e++) expStart[e] = 0;
-        for (long s = 0; s < pairs; s++) expStart[_moeBatchSel[s] + 1]++;
-        for (int e = 0; e < numExperts; e++) expStart[e + 1] += expStart[e];
-        for (int e = 0; e < numExperts; e++) cursor[e] = expStart[e];
-        for (int t = 0; t < n; t++)
-            for (int k = 0; k < na; k++)
-            {
-                long s = (long)t * na + k;
-                int p = cursor[_moeBatchSel[s]]++;
-                _moeExpTokI[p] = t;
-                _moeExpTokK[p] = k;
-            }
 
         // Optional routing statistics for callers that want to know which experts a prefill used (the hybrid's
         // post-handoff expert-cache warm-up); one small array per layer, and only when an observer is set.
@@ -691,6 +706,83 @@ public sealed unsafe partial class ForwardPass
                 SimdKernels.AddInPlace(batchOut + (long)t * _embDim,
                     _moeBatchDown + (long)t * _embDim, _embDim);
             }
+        }
+    }
+
+    /// <summary>
+    /// Batched twin of <see cref="Gemma4ParallelFfn"/> for one prefill layer. On entry <paramref name="denseOut"/> holds the dense FFN output rows
+    /// (the dense FFN run batched by the caller) and <paramref name="rawRows"/> the post-attention residual rows; <paramref name="batchOut"/> receives
+    /// <c>post_ffw_norm_1(dense) + post_ffw_norm_2(experts)</c> (the caller applies <c>post_ffw_norm</c>, the residual add and the layer scale). Same order of
+    /// operations per token as the single-token path: router in F32 per token, experts bucketed per expert and reduced in top-k slot order.
+    /// </summary>
+    private void Gemma4MoeBatched(int layer, float* rawRows, float* denseOut, float* batchOut, int n)
+    {
+        int numExperts = _hp.NumExperts;
+        int na = _hp.NumActiveExperts;
+        int expertDim = _hp.ExpertIntermediateDim;
+        EnsureMoeBatchScratch(n);
+
+        float* routerIn = (float*)NativeMemory.Alloc((nuint)((long)n * _embDim * sizeof(float)));
+        float* moeIn = (float*)NativeMemory.Alloc((nuint)((long)n * _embDim * sizeof(float)));
+        try
+        {
+            float* postNorm1 = GetNormWeight(_postFfwNorm1![layer]);
+            float* preNorm2 = GetNormWeight(_preFfwNorm2![layer]);
+            float* routerScale = _routerScale![layer];
+            float invSqrtD = 1f / MathF.Sqrt(_embDim);
+            float* routerRows = _moeBatchRouter;
+            float* wtsAll = _moeBatchWts;
+            int* selAll = _moeBatchSel;
+            TensorRef gateInp = _wGateInp![layer];
+
+            SimdKernels.ParallelForUncapped(0, n, t =>
+            {
+                float* raw = rawRows + (long)t * _embDim;
+                float* rin = routerIn + (long)t * _embDim;
+                SimdKernels.PureRmsNorm(rin, raw, _embDim, _hp.RmsNormEps);
+                for (int d = 0; d < _embDim; d++) rin[d] *= invSqrtD * routerScale[d];
+                float* logits = routerRows + (long)t * numExperts;
+                FusedMatVec(logits, gateInp, rin, numExperts, _embDim);
+                RouteExperts(layer, logits, numExperts, new Span<int>(selAll + (long)t * na, na), new Span<float>(wtsAll + (long)t * na, na));
+                FastRmsNorm(moeIn + (long)t * _embDim, raw, preNorm2, _embDim, _hp.RmsNormEps);
+                FastRmsNorm(denseOut + (long)t * _embDim, denseOut + (long)t * _embDim, postNorm1, _embDim, _postNormEps);
+            });
+
+            BucketRoutedPairs(n, na, numExperts);
+            long pairs = (long)n * na;
+            var pairOf = new int[pairs];
+            for (long p = 0; p < pairs; p++) pairOf[p] = _moeExpTokI[p] * na + _moeExpTokK[p];
+
+            ref readonly TensorRef fused = ref _wGateUpExps![layer];
+            ref readonly TensorRef downExps = ref _wDownExps![layer];
+            int bprFused = RowBytes(fused.DType, _embDim);
+            int bprDown = RowBytes(downExps.DType, expertDim);
+            fixed (int* pairP = pairOf)
+                MoeBatchedExperts.Run(numExperts, _moeExpStart, pairP, na, moeIn, _embDim, expertDim,
+                    fused.DataPtr, fused.DType, bprFused,
+                    fused.DataPtr + (long)expertDim * bprFused, fused.DType, bprFused,
+                    downExps.DataPtr, downExps.DType, bprDown,
+                    inputScale: null, _moeBatchDown, gateUpExpertRows: 2 * expertDim, gelu: true);
+
+            float* postNorm2 = GetNormWeight(_postFfwNorm2![layer]);
+            float* downScale = _expertDownScale![layer];
+            for (int t = 0; t < n; t++)
+            {
+                float* dst = batchOut + (long)t * _embDim;
+                new Span<float>(dst, _embDim).Clear();
+                for (int k = 0; k < na; k++)
+                {
+                    long slot = (long)t * na + k;
+                    SimdKernels.WeightedAddInPlace(dst, _moeBatchDown + slot * _embDim, wtsAll[slot] * downScale[selAll[slot]], _embDim);
+                }
+                FastRmsNorm(dst, dst, postNorm2, _embDim, _postNormEps);
+                SimdKernels.AddInPlace(dst, denseOut + (long)t * _embDim, _embDim);
+            }
+        }
+        finally
+        {
+            NativeMemory.Free(routerIn);
+            NativeMemory.Free(moeIn);
         }
     }
 

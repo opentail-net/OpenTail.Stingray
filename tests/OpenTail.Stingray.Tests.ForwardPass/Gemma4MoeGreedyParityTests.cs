@@ -60,4 +60,38 @@ public sealed class Gemma4MoeGreedyParityTests : HeavyTestBase
 
         Assert.Equal(expected, tokenizer.Decode(generated).Trim());
     }
+
+    /// <summary>
+    /// Plan 6 F3: batched prefill of the parallel dense+MoE layers (experts bucketed per expert, exact F32 batched GEMMs) must agree with the token-by-token
+    /// path on the next-token distribution: same argmax and a cosine similarity of the logits above 0.999. They are not bit-identical (the sequential path
+    /// quantises activations to Q8_K as ggml does, the batched expert GEMMs are F32), so a threshold, not equality.
+    /// </summary>
+    [Fact]
+    public void BatchedPrefill_AgreesWithTokenByTokenForward()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "gemma-4-26B-A4B-it-Q4_K_M.gguf is required");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        var ids = new List<int> { tokenizer.BosTokenId };
+        ids.AddRange(tokenizer.Encode(
+            "<|turn>user\nExplain in three sentences how a binary search works.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>" +
+            "Binary search begins by comparing the target value to the middle element of a sorted list. If the target is not the middle element, the algorithm"));
+
+        using var backend = new CpuBackend();
+        using var batched = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp);
+        float[] a = batched.Prefill(ids.ToArray()).ToArray();
+
+        using var sequential = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp);
+        float[] b = [];
+        for (int i = 0; i < ids.Count; i++) b = sequential.Forward(ids[i], i).ToArray();
+
+        Assert.Equal(Array.IndexOf(b, b.Max()), Array.IndexOf(a, a.Max()));
+        double dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.Length; i++) { dot += (double)a[i] * b[i]; na += (double)a[i] * a[i]; nb += (double)b[i] * b[i]; }
+        Assert.True(dot / Math.Sqrt(na * nb) > 0.999, $"cosine {dot / Math.Sqrt(na * nb):F5}");
+    }
 }
