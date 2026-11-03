@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// acoustic-latent-to-waveform decoder, distinct from the ASR-side encoder already verified).</summary>
 public sealed class VibeVoiceTokenizerDecoderRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     // Real config numbers dumped from the checkpoint's own config.json (2026-09-07, not
     // guessed): acoustic_tokenizer_config.decoder_depths is null, so the real reference falls

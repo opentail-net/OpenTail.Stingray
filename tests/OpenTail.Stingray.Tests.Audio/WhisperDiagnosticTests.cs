@@ -17,22 +17,7 @@ public sealed class WhisperDiagnosticTests : HeavyTestBase
         public override string ToString() => _sb.ToString();
     }
 
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var jfk = Path.Combine(dir, "examples", "whisper.cpp", "samples", "jfk.wav");
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     private static string? FindFile(string relativeFromRepoRoot)
     {
