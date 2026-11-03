@@ -98,7 +98,7 @@ public static class InferenceEngineLoader
             .Distinct()
             .ToArray();
 
-        var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat) with { GpuLayers = plan.GpuLayers };
+        var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat) with { GpuLayers = plan.GpuLayers, DeviceIndex = plan.BackendPlan?.DeviceIndex };
         long? gpuWeightBytes = plan.Placement is null ? null : PlannedAcceleratorBytes(plan);
         var engine = instance.Engine is ContinuousBatchingEngine cbe
             ? new OwnedDisposableEngine(cbe, instance)
@@ -227,12 +227,27 @@ public static class InferenceEngineLoader
     /// missing or unreadable): an unknown size is not grounds to refuse a model, and the load itself reports the real error. Same quantity the loaded
     /// runtime records afterwards, so the candidate and the resident figures are comparable.
     /// </summary>
-    internal static long EstimateAcceleratorBytes(OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, ExecutionPlan>? buildPlan = null)
+    internal static long EstimateAcceleratorBytes(OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, ExecutionPlan>? buildPlan = null) =>
+        EstimateAcceleratorPlacement(opts, buildPlan).Bytes;
+
+    /// <summary>
+    /// <see cref="EstimateAcceleratorBytes"/> together with the backend and device the plan puts those bytes on, so admission compares them with that
+    /// device's capacity and with what else already sits there. The target is null when the bytes are 0 (a CPU plan, or no estimate).
+    /// </summary>
+    internal static (long Bytes, AcceleratorTarget? Target) EstimateAcceleratorPlacement(
+        OpenTailStingrayServerOptions opts, Func<OpenTailStingrayServerOptions, ExecutionPlan>? buildPlan = null)
     {
-        try { return PlannedAcceleratorBytes(buildPlan is null ? BuildPlan(opts) : buildPlan(opts)); }
+        try
+        {
+            var plan = buildPlan is null ? BuildPlan(opts) : buildPlan(opts);
+            long bytes = PlannedAcceleratorBytes(plan);
+            if (bytes <= 0) return (0, null);
+            string? backend = plan.BackendPlan?.Backend switch { ForwardPassBackend.Cuda => "cuda", ForwardPassBackend.Vulkan => "vulkan", _ => null };
+            return (bytes, AcceleratorTarget.From(backend, plan.BackendPlan?.DeviceIndex));
+        }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or NotSupportedException or InvalidDataException)
         {
-            return 0;
+            return (0, null);
         }
     }
 
