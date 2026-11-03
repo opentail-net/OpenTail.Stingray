@@ -169,6 +169,7 @@ public sealed record ModelDescription(
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
             IsGemma4 = hp.LayerHeadDim is not null,
+            CpuOnlyReason = hp.ParallelDenseMoe ? "the Gemma 4 mixture-of-experts layers (dense FFN plus fused-expert FFN in parallel) are implemented on the CPU forward pass only" : null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,
@@ -241,6 +242,7 @@ public sealed record ModelDescription(
             HasHybridGdnLayers = hp.IsHybridSsm,
             HasCpuHybridGdnPass = hp.IsHybridSsm,
             IsGemma4 = hp.LayerHeadDim is not null,
+            CpuOnlyReason = hp.ParallelDenseMoe ? "the Gemma 4 mixture-of-experts layers (dense FFN plus fused-expert FFN in parallel) are implemented on the CPU forward pass only" : null,
             HasLayerHeadDim = hp.LayerHeadDim is not null,
             HasAttnBias = hp.HasAttnBias,
             HasQkNorm = hp.HasQkNorm,
@@ -662,6 +664,9 @@ public sealed record ModelPlanningFacts
     public bool HasHybridGdnLayers { get; init; }
     public bool HasCpuHybridGdnPass { get; init; }
     public bool IsGemma4 { get; init; }
+
+    /// <summary>Why this particular checkpoint can only run on the CPU although its architecture has accelerator passes; null when there is no such limit.</summary>
+    public string? CpuOnlyReason { get; init; }
     public bool HasLayerHeadDim { get; init; }
     public bool HasAttnBias { get; init; }
     public bool HasQkNorm { get; init; }

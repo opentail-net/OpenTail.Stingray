@@ -440,6 +440,18 @@ public static class ExecutionPlanner
         bool archSupportsCuda = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Cuda) != 0;
         bool archSupportsVulkan = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Vulkan) != 0;
 
+        // A checkpoint-level limit (the architecture's accelerator passes do not implement this checkpoint's layers).
+        if (model.PlanningFacts.CpuOnlyReason is { } cpuOnlyReason)
+        {
+            archSupportsCuda = false;
+            archSupportsVulkan = false;
+            if (!string.IsNullOrEmpty(request.PinnedBackend)
+                && request.PinnedBackend.Trim().ToLowerInvariant() is "cuda" or "vulkan")
+                throw new NotSupportedException($"This '{model.Semantics.Architecture}' checkpoint cannot run on the {request.PinnedBackend.Trim().ToLowerInvariant()} backend: {cpuOnlyReason}.");
+            decisions.Add(new("BACKEND", "cpu", "This checkpoint runs on the CPU only: " + cpuOnlyReason + ".", "auto_planner"));
+            return (ForwardPassBackend.Cpu, "CPU Host");
+        }
+
         if (!string.IsNullOrEmpty(request.PinnedBackend) &&
             !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
         {

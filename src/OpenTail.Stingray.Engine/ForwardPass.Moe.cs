@@ -66,6 +66,12 @@ public sealed unsafe partial class ForwardPass
 
     private void MoeFfn(int layer)
     {
+        if (_hp.ParallelDenseMoe)
+        {
+            Gemma4ParallelFfn(layer);
+            return;
+        }
+
         int numExperts = _hp.NumExperts;
         int numActive = _hp.NumActiveExperts;
         int expertDim = _hp.ExpertIntermediateDim;
@@ -174,6 +180,49 @@ public sealed unsafe partial class ForwardPass
                 MoePhaseTiming.Add(MoePhaseTiming.SequentialExperts, pt3 - pt2);
             MoePhaseTiming.Add(MoePhaseTiming.Total, pt4 - pt0);
         }
+    }
+
+    /// <summary>
+    /// Gemma 4 26B-A4B feed-forward for one token: the dense FFN and the routed experts both read the post-attention residual (<c>_residual</c>),
+    /// each output is normalised on its own, and the sum is left in <c>_hidden</c> for the caller's <c>post_ffw_norm</c>, residual add and layer
+    /// output scale. On entry <c>_normBuf</c> holds <c>ffn_norm(residual)</c>.
+    /// dense = post_ffw_norm_1(DenseFfn(ffn_norm(h)));
+    /// router = softmax(W_gate_inp * (PureRmsNorm(h) / sqrt(d) * ffn_gate_inp.scale)), top-k of the probabilities, NOT renormalised (renormalising
+    /// moved the per-token NLL away from llama.cpp b10306, 2026-11-03: correlation 0.976 to 0.869);
+    /// moe = post_ffw_norm_2(sum_k w_k * down_scale[e_k] * Down_e(GeluTanh(gate_e) * up_e) over pre_ffw_norm_2(h)), with gate and up the two halves of
+    /// the fused <c>ffn_gate_up_exps</c> row block.
+    /// </summary>
+    private void Gemma4ParallelFfn(int layer)
+    {
+        int numExperts = _hp.NumExperts;
+        int numActive = _hp.NumActiveExperts;
+        int expertDim = _hp.ExpertIntermediateDim;
+
+        DenseFfn(layer);
+        FastRmsNorm(_g4Dense, _hidden, GetNormWeight(_postFfwNorm1![layer]), _embDim, _postNormEps);
+
+        SimdKernels.PureRmsNorm(_g4RouterIn, _residual, _embDim, _hp.RmsNormEps);
+        float invSqrtD = 1f / MathF.Sqrt(_embDim);
+        float* routerScale = _routerScale![layer];
+        for (int d = 0; d < _embDim; d++) _g4RouterIn[d] *= invSqrtD * routerScale[d];
+        FusedMatVec(_routerLogits, _wGateInp![layer], _g4RouterIn, numExperts, _embDim);
+
+        Span<int> selected = stackalloc int[numActive];
+        Span<float> weights = stackalloc float[numActive];
+        RouteExperts(layer, _routerLogits, numExperts, selected, weights);
+
+        FastRmsNorm(_normBuf, _residual, GetNormWeight(_preFfwNorm2![layer]), _embDim, _hp.RmsNormEps);
+        new Span<float>(_hidden, _embDim).Clear();
+        float* downScale = _expertDownScale![layer];
+        for (int k = 0; k < numActive; k++)
+        {
+            int e = selected[k];
+            ExpertMatVec(_g4GateUp, _wGateUpExps![layer], e, 2 * expertDim, _embDim, _normBuf);
+            SimdKernels.GeluTanhMul(_g4GateUp, _g4GateUp + expertDim, _expertGate, expertDim);
+            ExpertMatVecDown(_hidden, _wDownExps![layer], e, _embDim, expertDim, _expertGate, weights[k] * downScale[e]);
+        }
+        FastRmsNorm(_hidden, _hidden, GetNormWeight(_postFfwNorm2![layer]), _embDim, _postNormEps);
+        SimdKernels.AddInPlace(_hidden, _g4Dense, _embDim);
     }
 
     /// <summary>
