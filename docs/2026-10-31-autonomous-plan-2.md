@@ -120,7 +120,7 @@ To see whether the two failures were the handoff, the three-way diagnostic compa
 | gemma-2-2b-it | min 0.78286, 40 of 40 below | min 0.79863, 40 of 40 | min 0.89898, 40 of 40 |
 | Granite vision 3.2 LM | min 0.69092, 40 of 40 | min 0.81136, 40 of 40 | min 0.69543, 40 of 40 |
 
-So for gemma-2 and Granite the hybrid itself disagrees with the CPU pass, before any handoff is involved. Perplexity of the full GPU pass against the CPU on 384 tokens
+So for gemma-2 and the Granite vision LM the hybrid itself disagrees with the CPU pass, before any handoff is involved. For gemma-2 the cause is the missing soft-capping; for the Granite checkpoint nothing is established (its CPU perplexity on plain text is 1,135, so the comparison says little). Perplexity of the full GPU pass against the CPU on 384 tokens
 of `scripts/kvarn-gate/wiki.test.raw` separates "different numbers" from "worse model": Qwen2.5-1.5B 11.07 against 11.19 (the control, bf16 KV), gemma-2 15.38
 against 12.58 (about 22 percent worse), Granite vision LM 1,172.7 against 1,135.7. With a 14-token prompt the greedy text is identical on the CPU, the hybrid and the
 full GPU, so the degradation is in the numbers, not visible in a short answer. Gemma 2 defines both an attention and a final-logit soft-cap; the dense GPU path applies neither.
