@@ -38,7 +38,11 @@ Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes
   | qwen2.5-1.5b (Q4_K_M, 1.07 GB file) | about 2.5 GiB | 2.04 GB | 512 |
   | qwen2.5-7b (Q4_K_M, first shard 3.8 GB) | about 9 GiB | 7.9 GB | 64 |
 
-  All three advertised figures are at or above the measured peak. Still open: speech models (piper-lessac, whisper-base), unloading and cancellation releasing memory in the multi-model server, and the 7B run across all shards.
+  All three chat figures are at or above the measured peak.
+
+  Speech, same method (2026-11-05): kokoro-82m (default) peaks at 1,075 MB, now stated in the catalog (it had said "RAM not measured"). piper-lessac peaks at 484-525 MB over 3 runs, so its catalog figure of about 200 MB was understated and is now about 600 MB. whisper-base is not on disk, so it is not measured.
+
+  Still open: (1) memory returned to the OS after unload or cancellation in the multi-model server. The existing tests (`SingleSlot_AcquiringNewModel_EvictsIdleOtherModel`, `ManagerDispose_*`, `Cancellation_OfOneWaiter_*` in `ModelRuntimeManagerTests`) check that the engine is disposed, not the bytes returned; a real measurement needs a two-model server run. (2) the 7B figure above is the first shard's run, not a run over all shards. (3) whisper-base.
 
 - [x] **E5. API compatibility corpus.** Done 2026-11-05: protocol-smoke now has 63 cases, including streaming, tool definitions, wrong shapes and malformed bodies on chat, messages and responses. Cancellation is not in the corpus (the harness reads whole bodies); `ClientDisconnectTests` covers it. Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
   First step: list the Anthropic and Chat Completions streaming cases not yet in the corpus.

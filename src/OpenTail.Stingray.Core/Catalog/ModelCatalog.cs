@@ -164,7 +164,7 @@ public static class ModelCatalog
             ],
             Licence: "Apache-2.0 (the Hexgrad Kokoro-82M weights; the two GGUF repositories above carry the same Apache-2.0 tag)",
             LicenceNeedsConsent: false,
-            Hardware: "CPU only; the model is 142 MB on disk (RAM not measured)",
+            Hardware: "about 1.1 GB RAM, CPU only (measured peak 1.08 GB, 2026-11-05; the model is 142 MB on disk)",
             Speed: "8.9 s of audio in 9.5 s on a Ryzen 7 5700G CPU (3 runs, 2026-11-05; 1.07x real time, so slower than real time on this CPU)",
             Evidence: "KokoroRealWeightsTests ran on these exact files (2026-11-03)",
             RunTemplate: "stingray speak \"Hello from Stingray.\"",
@@ -185,7 +185,7 @@ public static class ModelCatalog
                 + "and redistribution. The Piper code is MIT. Full terms: "
                 + "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",
             LicenceNeedsConsent: true,
-            Hardware: "about 200 MB RAM, CPU only",
+            Hardware: "about 600 MB RAM, CPU only (measured peak 484-525 MB over 3 runs, 2026-11-05)",
             Speed: "2.9 s of audio in 1.1-1.35 s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README 'Speak and listen'",
             RunTemplate: "stingray speak \"Hello from Stingray.\" -m piper-lessac",
