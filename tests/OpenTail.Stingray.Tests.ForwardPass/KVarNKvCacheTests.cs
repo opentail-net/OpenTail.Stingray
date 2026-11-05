@@ -508,21 +508,7 @@ public sealed class KVarNKvCacheTests(ITestOutputHelper output) : HeavyTestBase
         return denom > 0 ? (float)(dot / denom) : 0f;
     }
 
-    private static string? FindModelPath(string filename = "Qwen3-8B-Q4_K_M.gguf")
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename = "Qwen3-8B-Q4_K_M.gguf") => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     private static int[] LongPrompt(GgufTokenizer tokenizer, int approxTokenCount)
     {

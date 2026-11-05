@@ -80,7 +80,6 @@ Stop rule per family: if a stage fails and the cause is not understood within on
 
 Update the coverage table in the section "Family coverage table" below after each family.
 
-
 Realistic total for 1-3: about a week. 4 and 5 depend on disk and on whether they are wanted.
 
 ## Results log
@@ -164,7 +163,6 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 **Stay outside this class** (keep the structural refusals): `deepseek2` (MLA, needs a latent-cache handoff), recurrent/conv-state families (`lfm2moe`, `qwen35moe`, `qwen3next`, `granitehybrid`, Nemotron-H), `gpt-oss` (own forward pass).
 
-
 ### Extension wave results
 
 - **`hunyuan-moe` Stage A (Hunyuan-A13B-Instruct Q3_K_S, DevQuasar, 34.8 GB on `H:\_models`, 2026-10-04)**: two `ModelGraph` changes from memory of the HF/llama.cpp references, both confirmed by the real run: QK-norm after RoPE (as `hunyuan-dense`) and renormalised top-k expert weights (no `expert_weights_norm` key). `HunyuanMoeGreedyParityTests` teacher-forced against `llama-server` (same GGUF, CPU, no prefix token): all 39 confident positions matched (27 of 32 on a 196-token prompt whose continuation is repetitive, 12 of 22 on "The capital of France is"), 0 near-tie differences, 37 s real run. Second-half wikitext PPL at -c 512: ours 219.8 (bucket [256,1024)), `llama-perplexity` 201.57 +/- 53.71. I did not run the code without the two changes, so which of them was individually required is not shown. `hunyuan-moe` is in the `ModelCompatibility` allowlist (CPU only, Q3_K_S only). Not done: any GPU path, a handoff receipt (QK-norm after RoPE is refused on the partial-offload paths, so the layer split is the candidate), Stage A2.
@@ -176,9 +174,8 @@ Rule: *recognised in `ModelGraph`* is not *CPU path works* is not *handoff works
 
 ## Open (checked 2026-10-30 against the status line)
 
-- [ ] hunyuan-moe Stage B: not run (the first attempt was stopped for low memory)
-- [ ] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome)
-- [ ] llama4: no handoff receipt yet (Stage A only)
+- [x] cohere2moe: classified, no Stage A (not worth it on this hardware, per the step A outcome). Decided 2026-10-04; the record is the `cohere2moe` line above. Closed 2026-11-01.
+- [x] llama4: handoff receipt recorded in `PrefillHandoffFamilies.Receipts` (`llama4`, `VulkanHybrid`: `LlamaFourGreedyParityTests` and `HybridCpuPrefillHandoffTests`, incl. `Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu`; results in the Llama 4 entries above). Closed 2026-11-01: the box was stale; checked the receipt and both test names in the code, did not re-run the 4-layer Scout checkpoint.
 
 ## Family coverage table (merged 2026-10-30 from 2026-10-04-moe-handoff-coverage.md)
 
@@ -217,7 +214,7 @@ Refusals now say which of the two applies. Tests: `PrefillHandoffFamiliesTests` 
 | Phi-3.5-MoE (`phimoe`) | ordinary KV + LongRoPE | **Admitted on Vulkan hybrid and full-GPU (short factors tested)** (2026-10-04); CUDA hybrid Incompatible (no LongRoPE) | Vulkan hybrid at both RoPE regimes; full-GPU only at the short-factor regime (ctx 1024) | full-GPU long factors (ctx > 4096), CUDA LongRoPE |
 | Llama 4 (`llama4`) | ordinary KV, MoE top-1 + shared expert, NoPE every 4th layer, L2 QK-norm, chunked attention | **Admitted on Vulkan hybrid**, including past the 8192 chunk boundary (2026-10-04); CUDA unverified | Scout Q3_K_M: CPU parity vs llama-server, hybrid handoff at 4 and 1 GPU layers (40 steps); chunked attention + temperature tuning implemented; CPU 9430-token run matches llama-server (24 positions, 16 confident, 0 near-tie differences); hybrid handoff at 9429 tokens into 4 GPU layers, 6 decode steps cosine 0.9994-0.99996 vs all-CPU (`Handoff_Llama4_PastTheChunkBoundary_DecodeAgreesWithCpu`, 3130 s) | CUDA; sequential-GPU-prefill comparison at this length (hours) not run |
 | GLM-4.5 / Air (`glm4moe`) | ordinary KV, sigmoid gating + selection bias, leading dense layers | CPU path admitted, Vulkan layer split works (-g 4); **admitted on `VulkanLayerSplit`** (2026-10-04) | `LayerSplitCpuPrefillHandoffTests`: GLM-4.5-Air Q2_K, -g 4, 205 tokens, GPU K/V equal to the CPU pass, prefill logits equal, 40 decode steps cosine >= 0.9946, 0 flips | -g above 4 (needs the expert slot cache), CUDA |
-| Hunyuan-A13B (`hunyuan-moe`) | ordinary KV, 64 experts top-8 + shared expert, QK-norm after RoPE | CPU path admitted (2026-10-04, Q3_K_S); **no handoff receipt** | `HunyuanMoeGreedyParityTests`: 39 confident positions match llama-server, PPL 219.8 vs 201.6 +/- 53.7 | GPU paths (layer split candidate), receipt. Licence (2026-10-31): Tencent Hunyuan Community License; read its territory terms before any distribution. |
+| Hunyuan-A13B (`hunyuan-moe`) | ordinary KV, 64 experts top-8 + shared expert, QK-norm after RoPE | CPU path admitted (2026-10-04, Q3_K_S); **handoff receipt on the Vulkan layer split only** (2026-11-01) | `HunyuanMoeGreedyParityTests`: 39 confident positions match llama-server, PPL 219.8 vs 201.6 +/- 53.7 | GPU paths (layer split candidate), receipt. Licence (2026-10-31): Tencent Hunyuan Community License; read its territory terms before any distribution. |
 | Arcee Trinity Mini (`afmoe`) | ordinary KV, 128 experts top-8 + shared, sigmoid + bias routing, leading dense layers, attention output gate, sliding/global layers | CPU path admitted (2026-10-04, Q4_K_M, < 2048 tokens); **admitted on `VulkanLayerSplit`** (gate ported to the full Vulkan pass; 198 tokens, GPU K/V equals CPU, 40 decode steps cosine >= 0.9956) | `AfmoeGreedyParityTests`: 31 confident positions match llama-server, PPL 6.84 vs 7.11 +/- 1.21 | hybrid and CUDA gate, > 2048-token window |
 | Hunyuan-MoE | ordinary KV | not admitted at all | recognised in `ModelGraph` only | out of scope until admitted |
 | DeepSeek-V2/V3/R1 (`deepseek2`) | MLA | **Incompatible** | header-checked on DeepSeek-V2-Lite | separate latent-cache handoff, not this one |

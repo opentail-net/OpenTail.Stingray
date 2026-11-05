@@ -10,16 +10,7 @@ namespace OpenTail.Stingray.Tests.Diffusion;
 /// </summary>
 public sealed class WanFfnWeightLoadCheckTest
 {
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\wan2.1\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-            if (File.Exists(p)) return p;
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void FfnZeroWeightAndBias_MatchDirectFileRead()

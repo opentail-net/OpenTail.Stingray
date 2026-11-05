@@ -54,7 +54,9 @@ public sealed class OperationMetricsFilterTests
         var holder = new IHost[1];
         var client = await StartAsync(holder);
         using var host = holder[0];
+        var audioRequestStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         Assert.Equal(System.Net.HttpStatusCode.OK, (await client.PostAsync("/audio", new StringContent(""))).StatusCode);
+        double audioRequestSeconds = System.Diagnostics.Stopwatch.GetElapsedTime(audioRequestStarted).TotalSeconds;
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.PostAsync("/boom", new StringContent("")));
         listener.Dispose();
 
@@ -63,7 +65,12 @@ public sealed class OperationMetricsFilterTests
             var audio = Assert.Single(samples, s => s.Name == "opentail.audio.duration");
             Assert.Equal(4.0, audio.Value);
             var rtf = Assert.Single(samples, s => s.Name == "opentail.audio.realtime_factor");
-            Assert.InRange(rtf.Value, 0.004, 0.5);   // about 0.02 s of work for 4 s of audio
+            // About 0.02 s of work for 4 s of audio, but Task.Delay(20) can complete a few milliseconds early on Windows (timer granularity: 13.8 ms was seen),
+            // so the floor is 8 ms, not 16: it still proves the factor comes from elapsed time and is not zero. The ceiling is the wall time of the
+            // request as this test measured it (the filter's own timing sits inside it), not a fixed number: a loaded runner stalled one run for 2.5 s,
+            // which a fixed 0.5 ceiling reported as a failure.
+            Assert.True(rtf.Value >= 0.002, $"realtime factor {rtf.Value} implies under 8 ms of work for 4 s of audio");
+            Assert.True(rtf.Value * 4.0 <= audioRequestSeconds, $"realtime factor {rtf.Value} x 4 s exceeds the {audioRequestSeconds:F3} s the request took");
             var failure = Assert.Single(samples, s => s.Name == "gen_ai.server.request.duration" && (string?)s.Tags["opentail.endpoint"] == "test.filter_boom");
             Assert.Equal("error", failure.Tags["outcome"]);
             Assert.Equal("InvalidOperationException", failure.Tags["error.type"]);

@@ -26,30 +26,36 @@ public sealed class ServingRequestTimingTests
         var metrics = new ServerMetrics();
         var timing = metrics.BeginServingRequest();
 
+        // Bounded by what this test measured, not by fixed ceilings: a loaded CI runner stretches Thread.Sleep (a 30 ms sleep took long enough that the whole test ran 501 ms
+        // on a Windows run), but whatever it does, the generation sample can never exceed the wall time between the two marks.
+        var decodeWindow = System.Diagnostics.Stopwatch.StartNew();
         timing.MarkFirstToken();
         Thread.Sleep(30); // stands in for real decode time between tokens
         timing.MarkGenerationComplete();
+        double decodeWindowSeconds = decodeWindow.Elapsed.TotalSeconds;
 
-        // Stands in for slow response serialization/delivery to the client — must NOT be counted
-        // as generation time. Comfortably larger than the 30ms above and any scheduling jitter.
+        // Stands in for slow response serialization/delivery to the client; it must NOT be counted as generation time.
+        var deliveryWindow = System.Diagnostics.Stopwatch.StartNew();
         Thread.Sleep(200);
         timing.Dispose();
+        double deliverySeconds = deliveryWindow.Elapsed.TotalSeconds;
 
         var generation = metrics.GenerationDurationSummary;
         Assert.Equal(1, generation.Count);
-        // A hard ceiling well below the 200ms "delivery" sleep: if delivery time leaked in, this
-        // would be >= 200ms. Generous above the 30ms "decode" sleep to absorb CI scheduling jitter.
-        Assert.True(generation.TotalSeconds < 0.15,
-            $"generation duration was {generation.TotalSeconds * 1000:F0} ms; " +
+        // Upper bound: the sample is inside the decode window (a little slack for the clock reads around the marks). Had the delivery sleep leaked in, the sample would exceed
+        // the window by about the delivery time, far more than the slack.
+        Assert.True(generation.TotalSeconds <= decodeWindowSeconds + 0.010,
+            $"generation duration was {generation.TotalSeconds * 1000:F1} ms but the whole decode window was {decodeWindowSeconds * 1000:F1} ms; " +
             "post-MarkGenerationComplete delivery time leaked into the sample.");
+        // Not vacuous: the delivery sleep (at least 200 ms) is well above the slack, and the sample did see the decode sleep.
+        Assert.True(deliverySeconds >= 0.19, $"the delivery sleep only lasted {deliverySeconds * 1000:F0} ms");
+        Assert.True(generation.TotalSeconds >= 0.025, $"generation duration was {generation.TotalSeconds * 1000:F1} ms; expected it to include the 30 ms decode sleep.");
 
-        // Request duration is the OTHER histogram and is documented to include delivery — it must
-        // still see the full ~230ms, or this test would not be distinguishing the two at all.
+        // Request duration is the OTHER histogram and is documented to include delivery: it must see at least the delivery time, or this test would not tell the two apart.
         var request = metrics.RequestDurationSummary;
-        Assert.True(request.TotalSeconds >= 0.2,
-            $"request duration was {request.TotalSeconds * 1000:F0} ms; expected it to include the delivery sleep.");
+        Assert.True(request.TotalSeconds >= deliverySeconds,
+            $"request duration was {request.TotalSeconds * 1000:F0} ms; expected it to include the {deliverySeconds * 1000:F0} ms delivery sleep.");
     }
-
     /// <summary>
     /// Calling <see cref="ServingRequestTiming.MarkGenerationComplete"/> a second time (e.g. a
     /// call site that both finishes its loop AND later re-enters an error path) must not record a

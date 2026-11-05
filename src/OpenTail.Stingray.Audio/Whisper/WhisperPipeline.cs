@@ -89,6 +89,10 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         return FromModel(ggml, vad);
     }
 
+    /// <summary>A pipeline over already-parsed whisper.cpp weights. The weights are only read, so one <see cref="WhisperGgmlModel"/> can back many pipelines;
+    /// each pipeline has its own encoder work buffers and must not be shared between concurrent requests.</summary>
+    public static WhisperPipeline FromGgmlModel(WhisperGgmlModel ggml, SileroVad? vad = null) => FromModel(ggml, vad);
+
     private static WhisperPipeline FromModel(WhisperGgmlModel ggml, SileroVad? vad)
     {
         var config = ggml.ToConfig();

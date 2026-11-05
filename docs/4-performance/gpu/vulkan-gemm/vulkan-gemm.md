@@ -1,5 +1,7 @@
 # Vulkan quantized GEMM: owner file
 
+> Completed items moved to [../../../done/vulkan-gemm-completed-items-2026-10.md](../../../done/vulkan-gemm-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 **Owner:** this file (2026-10-30). It replaces two separate docs, kept below verbatim as parts:
 
 1. **Part 1, Path 1 / Path 2 scaffold** (was `gpu/vulkan-gemm/README.md`). **This part describes an older state.** Path 3, the tiled quantised GEMM, has been the default since 2026-10-11 (see the "Thread state" section of this document, which owns the LLM prefill thread). Read Part 1 for its measurements and reasoning, not for the current default.
@@ -39,7 +41,6 @@ memory: what llama.cpp calls `mul_mm` as distinct from `mul_mv`.
 
 ### Actionable items checklist
 
-- [x] **Tiled Q6_K shader**: Implement tiled Q6_K kernel for `ffn_down` (1418 of 9914 dispatches) to remove fallback to Path 1. (Done: `SgemmQ6K` exists and `TryMatMulBatchedPath2` accepts Q6_K; this checkbox was stale, checked 2026-10-31.)
 - [ ] **Widen tile & prefill chunk**: Raise BN > 16 (chunk 32 / chunk 64) once Q6_K is supported, chasing the projected 1.36x ceiling.
 - [ ] **Perplexity gate**: Run Wikitext-2 (8191 scored tokens) validation on Path 2 before considering making it default.
 
@@ -239,10 +240,6 @@ input, so it cannot be mis-attributed this way at all.
 Note: the status line above ("proposed, not started") is stale; the progress log below records work done on 2026-10-10.
 
 - [ ] Phase 0: harness and safety net (partial; the reference data is recorded)
-- [x] Phase 1: small-M kernel (kept, 2026-10-10)
-- [x] Phase 2(c): chunked image-stream MLP (kept, 2026-10-10; about 2.6 s, 10.7%, faster)
-- [x] Phase 2(a): 128x128 tile with 256 threads (rejected and reverted, 2026-10-10)
-- [x] Phase 2 MLP-up follow-ups: stopped, nothing cheap left (2026-10-10)
 - [ ] Five-run median of the Phase 1 + 2(c) checkpoint (outstanding per the log)
 - [ ] Phase 3: new tiled kernel family (the big-upside phase; needs its numerics decision)
 - [ ] Phase 4: fusions and epilogues
@@ -592,10 +589,7 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 - [ ] Larger prefill chunks (256); check scratch buffers and batched attention/KV-append accept them
 - [ ] A second dense model under Path 3 (the first measurement is Qwen3-4B only)
 - [ ] Decode regression check on Vulkan
-- [x] Path 3 default decided on 2026-10-11 (gate: at least 2x today's Vulkan prefill, and identical greedy output; recorded in the leads plan, Lead 2)
 - [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite
-
-- [x] K-quants other than Q4_K and Q6_K stay off the batched Vulkan trunk. **Closed 2026-10-31:** `GpuForwardPass.ComputeCanBatchedTrunk` accepts Q3_K and Q5_K under Path 3 (`GpuForwardPass.cs` 1352-1357; the earlier "only Q4_K and Q6_K" note was stale). SmolLM2-1.7B Q5_K_M now prefills 66.8-85.5 t/s against 84.7-86.0 for its Q4_K_M file (503 tokens, `-g -1`, 3 runs each; the Q4_K_M range is from idle re-runs, the lowest Q5_K_M run has no known cause). The 2026-10-11 figure (22.3 vs 235 tok/s, PerformanceLeague finding 5) predates Path 3. Remaining K-quants (Q2_K, IQ types) were not checked.
 
 ### Decisions for the owner
 

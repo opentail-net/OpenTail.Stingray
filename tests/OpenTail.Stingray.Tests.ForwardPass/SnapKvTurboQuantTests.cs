@@ -25,21 +25,7 @@ public sealed class SnapKvTurboQuantTests : HeavyTestBase
 
     // Qwen3-8B has headDim=128 which is in the shipped TurboQuant codebook set
     // (3-bit @ d=128 / 256). SmolLM2 has headDim=64 so it can't be used here.
-    private static string? FindModelPath(string filename = "Qwen3-8B-Q4_K_M.gguf")
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename = "Qwen3-8B-Q4_K_M.gguf") => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     private static int[] LongPrompt(GgufTokenizer tokenizer, int approxTokenCount)
     {

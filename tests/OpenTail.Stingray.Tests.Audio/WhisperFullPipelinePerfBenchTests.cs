@@ -90,21 +90,7 @@ public sealed class WhisperFullPipelinePerfBenchTests : HeavyTestBase
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "whisper_full_bench_result.txt"), reportText);
     }
 
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var p2 = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(p2)) return p2;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 }
 
 file static class DoubleExt

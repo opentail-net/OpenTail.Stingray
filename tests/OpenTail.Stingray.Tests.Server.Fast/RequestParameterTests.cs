@@ -194,4 +194,27 @@ public sealed class RequestParameterTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
+
+    [Theory]
+    [InlineData("auto", true)]
+    [InlineData("none", false)]
+    public async Task Anthropic_ToolChoice_None_KeepsTheToolsOutOfTheRenderedPrompt_Auto_Offers_Them(string type, bool toolsInPrompt)
+    {
+        // The default renderer has no template and never renders tools, so pin one that prints each tool's name.
+        var fake = new FakeInferenceEngine("test-model");
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.ConfigureServices(s =>
+        {
+            s.AddSingleton(new ChatTemplateRenderer("qwen2",
+                new JinjaChatTemplate("{% for t in tools %}TOOL:{{ t.function.name }};{% endfor %}{{ messages[0].content }}")));
+            s.AddSingleton<IInferenceEngine>(fake);
+        }));
+        using var client = factory.CreateClient();
+
+        var tools = new[] { new { name = "get_weather_zq", description = "Get weather", input_schema = new { type = "object" } } };
+        var response = await client.PostAsJsonAsync("/v1/messages",
+            AnthropicBody(("tools", tools), ("tool_choice", new { type })));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(toolsInPrompt == fake.LastPrompt!.Contains("get_weather_zq", StringComparison.Ordinal), "prompt was: " + fake.LastPrompt);
+    }
 }
