@@ -29,6 +29,17 @@ Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes
   First step: list the existing pull and download tests, then add the interrupted-download case first.
 - [ ] **E4. Memory and resource accounting.** Check that the RAM and VRAM the catalog and planner advertise match what the runtime peaks at, and that unloading and cancellation release memory. Done when a table of advertised against measured peak exists for the supported models.
   First step: pick one small CPU model from the catalog and measure its peak against its advertised figure.
+
+  Measured 2026-11-05 on the Ryzen 7 5700G, CPU only (`-g 0`), Release CLI, greedy, peak working set of the process:
+
+  | Model (catalog id) | Advertised | Measured peak | Tokens generated |
+  |---|---|---|---|
+  | qwen2.5-0.5b (Q4_K_M, 491 MB file) | about 1 GB | 835 MB | 512 (745 MB at 64) |
+  | qwen2.5-1.5b (Q4_K_M, 1.07 GB file) | about 2.5 GiB | 2.04 GB | 512 |
+  | qwen2.5-7b (Q4_K_M, first shard 3.8 GB) | about 9 GiB | 7.9 GB | 64 |
+
+  All three advertised figures are at or above the measured peak. Still open: speech models (piper-lessac, whisper-base), unloading and cancellation releasing memory in the multi-model server, and the 7B run across all shards.
+
 - [x] **E5. API compatibility corpus.** Done 2026-11-05: protocol-smoke now has 63 cases, including streaming, tool definitions, wrong shapes and malformed bodies on chat, messages and responses. Cancellation is not in the corpus (the harness reads whole bodies); `ClientDisconnectTests` covers it. Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
   First step: list the Anthropic and Chat Completions streaming cases not yet in the corpus.
 
