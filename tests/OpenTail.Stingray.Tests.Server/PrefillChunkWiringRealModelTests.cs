@@ -68,22 +68,5 @@ public sealed class PrefillChunkWiringRealModelTests
         finally { ((IDisposable?)loaded.Instance ?? loaded.Engine as IDisposable)?.Dispose(); }
     }
 
-    private static string? FindModel()
-    {
-        foreach (string root in new[] { @"F:\_models", @"E:\_models", @"H:\_models" })
-        {
-            string candidate = Path.Combine(root, ModelFile);
-            if (File.Exists(candidate)) return candidate;
-        }
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", ModelFile);
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(ModelFile);
 }

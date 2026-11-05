@@ -9,6 +9,17 @@ using OpenTail.Stingray.Core;
 internal static class FamilyModelSemantics
 {
     /// <summary>
+    /// Gemma 1 (llama.cpp build_gemma): sqrt(d) embedding scale and a GELU-tanh gated FFN. No sliding window, no soft-capping, standard 1/sqrt(head_dim) attention scale.
+    /// Without this the descriptor ran as a plain Llama-style model and every position predicted BOS (found 2026-11-01 on gemma-1.1-2b-it).
+    /// </summary>
+    public static ModelHyperparams Gemma1(ModelArchitectureSemanticsContext ctx)
+    {
+        var hp = ctx.Baseline;
+        if (hp.NumLayers <= 0) return hp;
+        return hp with { EmbeddingScale = MathF.Sqrt(hp.EmbeddingDim), FfnActivation = FfnActivation.GeluApprox };
+    }
+
+    /// <summary>
     /// Gemma 2 (llama.cpp src/models/gemma2.cpp): sqrt(n_embd) embedding scale, GeGLU (tanh-approximate GELU), the post-attention and
     /// post-FFN norms (picked up from the tensors), sliding-window attention on every other layer (window 4096; even layers local,
     /// i % 2 == 0, the same i % period &lt; period - 1 rule as Gemma 3 with period 2), attention-logit softcapping (50) and

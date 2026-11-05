@@ -11,7 +11,7 @@
 | Family | Architectures | Key Highlights | Architecture Card |
 |---|---|---|---|
 | **Llama** | Llama 3, 3.1, 3.2, 3.3, Llama 4 | GQA, RMSNorm, 128k YaRN RoPE, Llama 4 L2 QK-Norm & NoPE 4-step | [llama.md](llama.md) |
-| **Gemma** | Gemma 3, Gemma 4 / E4B (Gemma 1 and 2 have no STATUS.md row: unverified) | RMSNorm unit offset, dual residual norms, logit soft-capping, SigLIP vision | [gemma.md](gemma.md) |
+| **Gemma** | Gemma 3, Gemma 4 / E4B (Gemma 1 and 2: STATUS.md rows, CPU only, one 2B file each) | RMSNorm unit offset, dual residual norms, logit soft-capping, SigLIP vision | [gemma.md](gemma.md) |
 | **Mistral & Mixtral** | Mistral 7B, Mistral 3, Mixtral 8x7B/8x22B, Ministral | Sliding Window Attention (SWA), Tekken tokenizer, top-2 sparse MoE | [mistral.md](mistral.md) |
 | **Microsoft Phi** | Phi-2, Phi-3, Phi-3.5, PhiMoE | LongRoPE dynamic factors, RMSNorm+bias, 16x3.8B MoE with 2 active experts | [phi.md](phi.md) |
 | **IBM Granite** | Granite 3.x, Granite MoE, Granite 4.0-H | Residual/logit scale trio, Mamba-2 SSM hybrid recurrence without KV cache | [granite.md](granite.md) |
@@ -23,7 +23,7 @@
 
 | Family | Architectures | Key Highlights | Architecture Card |
 |---|---|---|---|
-| **Qwen Series** | Qwen 2.5, Qwen 3, Qwen 3.5 MoE, Qwen-Coder | Default catalogue model (`0.5b`), weighted QK-norm, Gated DeltaNet MoE | [qwen.md](qwen.md) / [qwen-series.md](qwen-series.md) |
+| **Qwen Series** | Qwen 2.5, Qwen 3, Qwen 3.5 MoE, Qwen-Coder | Default catalogue model (`0.5b`), weighted QK-norm, Gated DeltaNet MoE | [qwen.md](qwen.md) |
 | **Qwen 3.5 / 3.6 / 3.8 Hybrid** | `qwen35`, `qwen35moe`, Ornith 1.0 | Gated DeltaNet recurrence with periodic full attention, MoE variants, MTP self-speculation | [qwen35.md](qwen35.md) |
 | **gpt-oss** | `gpt-oss` | Attention sinks, alternating sliding window, biased MoE, native MXFP4 | [gpt-oss.md](gpt-oss.md) |
 | **DeepSeek** | DeepSeek-V2, V2.5, V3, R1 | Multi-Head Latent Attention (MLA, 3.5× KV reduction), DeepSeekMoE, thinking traces | [deepseek.md](deepseek.md) |

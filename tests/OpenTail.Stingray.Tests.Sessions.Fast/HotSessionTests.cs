@@ -89,7 +89,9 @@ public sealed class HotSessionTests
         fwd.ReleaseDecode.Set();
         var cancelled = await cancelledTurn;
 
-        Assert.Equal(SessionOperationState.Cancelled, cancelled.Operation.State);
+        // The message names the stored reason: this assertion failed once in 40 loops at 2 CPUs with a cause nobody captured (plan 6 G10).
+        Assert.True(cancelled.Operation.State == SessionOperationState.Cancelled,
+            $"expected Cancelled, got {cancelled.Operation.State}; failure reason [{cancelled.Operation.FailureReason}]");
         Assert.Null(cancelled.Operation.CommittedRevision);
         Assert.Equal(0, cancelled.Cursor.MaterializedPositionCount);
 
@@ -119,7 +121,8 @@ public sealed class HotSessionTests
 
         var cancelled = await turn;
 
-        Assert.Equal(SessionOperationState.Cancelled, cancelled.Operation.State);
+        Assert.True(cancelled.Operation.State == SessionOperationState.Cancelled,
+            $"expected Cancelled, got {cancelled.Operation.State}; failure reason [{cancelled.Operation.FailureReason}]");
         Assert.Null(cancelled.Operation.CommittedRevision);
         Assert.Equal(0, cancelled.Cursor.AcceptedPositionCount);
         Assert.Equal(0, cancelled.Cursor.MaterializedPositionCount);
@@ -432,7 +435,8 @@ public sealed class HotSessionTests
     [Fact]
     public async Task HotSession_AbandonedConsumer_DoesNotStallOtherSessions()
     {
-        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true, EmitNonStopOnDecode = true };
+        // MaxSeqLen is raised so the 64-position context limit does not retire A early (it used to, after about 62 steps).
+        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true, EmitNonStopOnDecode = true, MaxSeqLen = 8192 };
         using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 2);
 
         // A: a long generation whose reader stops consuming after the first chunk.
@@ -442,9 +446,13 @@ public sealed class HotSessionTests
         // a cancelled request is tidily retired, so nothing is abandoned and the invariant is never
         // exercised. (An earlier version of this test disposed inside an `await using` and was
         // vacuous for exactly that reason; the non-vacuity guard below caught it on every run.)
+        //
+        // A asks for 4000 tokens, just under the engine's non-blocking output limit (4092). At the 2 ms step delay that is at least 8 s of
+        // decode even on Linux, against the milliseconds B needs, so A outlasts B by a wide margin however slow a loaded runner makes B's
+        // cold first turn. (With 64 tokens A needed about a second on Windows and lost that race to B on a 2-CPU machine in 6 runs of 40.)
         fwd.DecodeDelay = TimeSpan.FromMilliseconds(2);
         var abandoned = engine.GenerateChunksAsync("one",
-            new SamplingParams { Temperature = 0f, MaxNewTokens = 64 }, CancellationToken.None);
+            new SamplingParams { Temperature = 0f, MaxNewTokens = 4000 }, CancellationToken.None);
         var reader = abandoned.GetAsyncEnumerator();
         await reader.MoveNextAsync();   // take exactly one chunk, then stop reading — but stay alive
 
@@ -462,7 +470,7 @@ public sealed class HotSessionTests
 
         // NON-VACUITY GUARD. The assertion above is "B finished", which a timeout expresses only
         // negatively — and it would pass trivially if A had already retired, or was never admitted,
-        // before B ran. Then nothing would have been abandoned and nothing tested. A generates 64
+        // before B ran. Then nothing would have been abandoned and nothing tested. A generates 4000
         // tokens with EOS never sampled while B needs 1, so A must still be in flight here.
         Assert.True(engine.ActiveRequests > 0 || engine.QueueDepth > 0,
             "the abandoned request had already retired, so this run never exercised an abandoned "
@@ -556,7 +564,8 @@ public sealed class HotSessionTests
         public ManualResetEventSlim ReleaseDecode { get; } = new(false);
         public bool SnapKvEnabled => false;
         public long KvBytesPerToken => 1;
-        public int MaxSeqLen => 64;
+        /// <summary>The sequence limit the fake reports. 64 by default, which is what ends a long generation by context; a test that needs one to run on can raise it.</summary>
+        public int MaxSeqLen { get; set; } = 64;
         public bool PrefillDequantCacheActive => false;
 
         public ISequenceKvCache CreateCache()

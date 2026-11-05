@@ -88,11 +88,13 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf", 4, -1)]
     [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf", 8, -1)]
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", 4, -1)]   // carries rope_freqs.weight (Llama-3.1 scaling); 8 KV heads
     [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 16, -1)]
     // Dense Qwen2.5 (the qwen2 receipt): Q/K/V biases, 2 KV heads.
     [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf", 8, -1)]
     [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf", 4, -1)]
     [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf", 12, -1)]
+    [InlineData("qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", 4, -1)]   // sharded; 4 KV heads, 28 layers
     // Qwen3-Coder (128 experts, top-8, 16 slots): which experts run on the GPU and which in the CPU fallback depends on when the background
     // prefetcher's uploads land, so the same 40 tokens give slightly different logits run to run (with the prefetcher and warm-up off,
     // 8 of 8 runs were bit-identical). Over 2,000 decode steps from 50 runs the median cosine was 0.99955, 1% of steps fell below 0.990 and the
@@ -187,6 +189,47 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
             var expected = seq.Forward(next, min + i).ToArray();
             Assert.True(Cosine(expected, logits) > 0.99, $"decode {i + 1}: cosine {Cosine(expected, logits):F6}");
         }
+    }
+
+    /// <summary>
+    /// The Vulkan hybrid has no logit soft-capping, so it must refuse Gemma 2 instead of running it with wrong numbers (the planner keeps Gemma 2 on the
+    /// CPU, but code that builds the pass directly would otherwise get a silently wrong model). The scale fields (Granite, Gemma 3) are applied now;
+    /// see <c>HybridScaleParityTests</c>.
+    /// </summary>
+    [Fact]
+    public void Hybrid_RefusesGemma2_WhichNeedsSoftCapping()
+    {
+        const string file = @"gemma-2-2b-it\gemma-2-2b-it-Q4_K_M.gguf";
+        using var s = Open(file)!;
+
+        var ex = Assert.Throws<NotSupportedException>(() => NewHybrid(s, 8, -1));
+
+        Assert.Contains("soft-capping", ex.Message);
+        Assert.Contains("-g 0", ex.Message);
+    }
+
+    /// <summary>The soft-cap guard must never catch a checkpoint that has a handoff row or receipt (it reads the header only).</summary>
+    [Theory]
+    [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf")]
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")]
+    [InlineData("orpheus-3b-0.1-ft.Q4_K_M.gguf")]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf")]
+    [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf")]
+    [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf")]
+    [InlineData("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen1.5-MoE-A2.7B-Chat.Q4_K_M.gguf")]
+    [InlineData("Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S.gguf")]
+    [InlineData("Phi-3.5-MoE-instruct-Q3_K_M.gguf")]
+    [InlineData("ERNIE-4.5-0.3B-Q8_0.gguf")]
+    public void Hybrid_SoftCapGuard_DoesNotRefuseTheCheckpointsThatPassTheHandoffRuns(string file)
+    {
+        string? path = Find(file);
+        Assert.SkipWhen(path is null, $"{file} not present");
+        using var model = GgufModel.Open(path!);
+
+        Assert.Null(GpuForwardPass.UnappliedSoftcapReason(ArchitectureModelResolver.ResolveHyperparams(model)));
     }
 
     /// <summary>
@@ -455,6 +498,147 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         Console.WriteLine($"[threeway-tokens] forcedFrom={(fromHybrid ? "hybrid" : "cpu")} firstDivergenceFromCpuGreedy={firstDiv} forced={string.Join(" ", forced)}");
         Console.WriteLine($"[threeway] {file} -g {layers}: handoff-vs-cpu: {Summary(hf, cpuL)}; sequential-vs-cpu: {Summary(sq, cpuL)}; handoff-vs-sequential: {Summary(hf, sq)}");
     }
+    /// <summary>
+    /// A later turn (<c>startPos &gt; 0</c>) takes the handoff too: the hybrid's earlier K/V rows are copied into the temporary CPU cache,
+    /// the CPU pass prefills only the new tokens against that history, and all rows are handed back. Compared with the CPU pass doing the
+    /// same two-step prefill on its own cache: the returned logits and every K/V row of every layer must be byte-identical (same computation,
+    /// same bytes); then decode agrees with a pure sequential run of the same tokens. <c>firstLen</c> below the gate (20) means the earlier
+    /// rows were produced by the GPU/hybrid kernels, which is the realistic case after a short first turn.
+    /// </summary>
+    [Theory]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1, 20)]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1, 48)]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1, 48)]
+    [InlineData("OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", 4, -1, 48)]
+    public void Handoff_LaterTurn_StartPosAboveZero_IsByteExact_AndDecodeAgreesWithSequential(string file, int gpuLayers, int slots, int firstLen)
+    {
+        using var s = Open(file)!;
+        int n = s.Prompt.Length, kvDim = s.Hp.NumKvHeads * s.Hp.HeadDim;
+        Assert.True(n - firstLen >= 32, $"prompt too short for a second turn past the gate: {n - firstLen} new tokens");
+        var first = s.Prompt.AsSpan(0, firstLen).ToArray();
+        var second = s.Prompt.AsSpan(firstLen).ToArray();
+
+        // Reference: the CPU pass doing the same two prefills on one cache (what the handoff reuses).
+        var refK = new float[s.Hp.NumLayers][]; var refV = new float[s.Hp.NumLayers][];
+        float[] refLogits;
+        using (var backend = new CpuBackend())
+        using (var cpu = new Engine.ForwardPass(s.Model, backend, s.Hp, maxContextLength: 1024))
+        using (var cache = new PagedKvCache(s.Hp.NumLayers, s.Hp.NumKvHeads, s.Hp.HeadDim, bf16Store: false, autoBf16: false, layerHeadDim: null))
+        {
+            cpu.PrefillWithCache(first, cache, 0);
+            refLogits = cpu.PrefillWithCache(second, cache, firstLen).ToArray();
+            for (int l = 0; l < s.Hp.NumLayers; l++)
+            {
+                refK[l] = new float[n * kvDim]; refV[l] = new float[n * kvDim];
+                for (int p = 0; p < n; p++)
+                {
+                    new ReadOnlySpan<float>(cache.KeyAt(l, p), kvDim).CopyTo(refK[l].AsSpan(p * kvDim, kvDim));
+                    for (int h = 0; h < s.Hp.NumKvHeads; h++)
+                        new ReadOnlySpan<float>(cache.ValueAtHead(l, p, h), s.Hp.HeadDim).CopyTo(refV[l].AsSpan(p * kvDim + h * s.Hp.HeadDim, s.Hp.HeadDim));
+                }
+            }
+        }
+
+        var decodeFast = new List<float[]>();
+        float[]? firstLogitsOfSecondTurn = null;
+        var forced = new int[12];
+        using (var fast = NewHybrid(s, gpuLayers, slots))
+        {
+            fast.Prefill(first, 0);
+            var l1 = fast.Prefill(second, firstLen).ToArray();
+            firstLogitsOfSecondTurn = l1;
+            Assert.True(fast.LastPrefillUsedCpuHandoff, "the later turn did not take the handoff: " + fast.LastCpuPrefillRefusal);
+            // When the first turn took the handoff, every row and the logits are CPU-pass bytes and must equal the reference exactly. When it was a
+            // sequential GPU prefill (firstLen below the gate) rows [0, firstLen) are GPU-kernel values the CPU reference does not share, and the new
+            // rows attend to them, so byte equality is not the contract there: the decode comparison below is.
+            // MoE rows are the exception: a router near-tie can flip an expert when CPU thread scheduling shifts the arithmetic (one full-class run
+            // of the OLMoE row moved the logits by about 3 percent with no change to the code), so for them the contract is the decode comparison.
+            if (firstLen >= 32 && !s.Hp.IsMoE)
+            {
+                Assert.Equal(refLogits, l1);
+                var k = new float[n * kvDim]; var v = new float[n * kvDim];
+                for (int l = 0; l < s.Hp.NumLayers; l++)
+                {
+                    fast.ReadKvRows(l, n, k, v);
+                    Assert.True(refK[l].AsSpan().SequenceEqual(k), $"layer {l} K rows differ after the later-turn handoff");
+                    Assert.True(refV[l].AsSpan().SequenceEqual(v), $"layer {l} V rows differ after the later-turn handoff");
+                }
+            }
+            var logits = l1;
+            for (int i = 0; i < forced.Length; i++)
+            {
+                forced[i] = Argmax(logits);
+                logits = fast.Forward(forced[i], n + i).ToArray();
+                decodeFast.Add(logits);
+            }
+        }
+
+        var decodeSeq = new List<float[]>();
+        using (var seq = NewHybrid(s, gpuLayers, slots))
+        {
+            seq.CpuPrefillEnabled = false;
+            seq.Prefill(s.Prompt, 0);
+            for (int i = 0; i < forced.Length; i++) decodeSeq.Add(seq.Forward(forced[i], n + i).ToArray());
+        }
+        var cos = decodeFast.Select((d, i) => Cosine(d, decodeSeq[i])).OrderBy(x => x).ToArray();
+        Console.WriteLine($"[later-turn] {file} -g {gpuLayers} first={firstLen}: min cosine {cos[0]:F5}, median {cos[cos.Length / 2]:F5}");
+        Assert.True(cos[0] > 0.99, $"decode after a later-turn handoff diverges from sequential: min cosine {cos[0]:F5}");
+        if (s.Hp.IsMoE) Assert.True(Cosine(refLogits, firstLogitsOfSecondTurn!) > 0.99, "later-turn prefill logits diverge from the CPU reference");
+    }
+
+    /// <summary>Turns chain: each handoff leaves the hybrid holding every row so far, so a third turn is admitted at the right <c>startPos</c>, and one that claims more rows than exist is refused.</summary>
+    [Fact]
+    public void Handoff_ThreeTurnsInARow_EachTakesTheHandoff_AndAStartPosBeyondTheRowsIsRefused()
+    {
+        using var s = Open("Qwen3-0.6B-Q8_0.gguf")!;
+        using var h = NewHybrid(s, 8, -1);
+        int a = 48, b = s.Prompt.Length - a;
+        h.Prefill(s.Prompt.AsSpan(0, a).ToArray(), 0);
+        Assert.True(h.LastPrefillUsedCpuHandoff, h.LastCpuPrefillRefusal);
+        h.Prefill(s.Prompt.AsSpan(a).ToArray(), a);
+        Assert.True(h.LastPrefillUsedCpuHandoff, h.LastCpuPrefillRefusal);
+        h.Prefill(s.Prompt.AsSpan(0, 32).ToArray(), a + b);
+        Assert.True(h.LastPrefillUsedCpuHandoff, "third turn: " + h.LastCpuPrefillRefusal);
+        h.Prefill(s.Prompt.AsSpan(0, 32).ToArray(), a + b + 33);
+        Assert.False(h.LastPrefillUsedCpuHandoff);
+        Assert.Contains("beyond", h.LastCpuPrefillRefusal);
+    }
+
+    /// <summary>
+    /// What the later-turn handoff buys: a ~400-token follow-up prefilled after a 48-token first turn, handoff against the sequential loop, three
+    /// interleaved repetitions each (rule 7: not an idle machine, so read the ratio, not the absolute figure). Asserts only that the handoff was
+    /// taken; the speed-up is printed and recorded in the plan.
+    /// </summary>
+    [Theory]
+    [InlineData("Falcon3-3B-Instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("Qwen3-0.6B-Q8_0.gguf", 8, -1)]
+    public void LaterTurn_Handoff_TimingAgainstSequential(string file, int gpuLayers, int slots)
+    {
+        string text = string.Join(" ", Enumerable.Repeat(Text, 4));
+        using var s = Open(file, text)!;
+        Assert.True(s.Prompt.Length > 300, $"need a long follow-up: {s.Prompt.Length} tokens");
+        var first = s.Prompt.AsSpan(0, 48).ToArray();
+        var second = s.Prompt.AsSpan(48, Math.Min(400, s.Prompt.Length - 48)).ToArray();
+        using var h = NewHybrid(s, gpuLayers, slots, ctx: 2048);
+        h.Prefill(first, 0); h.Prefill(second, 48); h.ResetCache();   // warm both paths once
+
+        var viaHandoff = new List<double>(); var viaSequential = new List<double>();
+        for (int rep = 0; rep < 3; rep++)
+            foreach (bool handoff in new[] { true, false })
+            {
+                h.ResetCache();
+                h.CpuPrefillEnabled = true;
+                h.Prefill(first, 0);
+                h.CpuPrefillEnabled = handoff;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                h.Prefill(second, 48);
+                double ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                Assert.Equal(handoff, h.LastPrefillUsedCpuHandoff);
+                (handoff ? viaHandoff : viaSequential).Add(ms);
+            }
+        Console.WriteLine($"[later-turn-timing] {file} -g {gpuLayers}, {second.Length}-token follow-up: handoff {string.Join(" / ", viaHandoff.Select(x => x.ToString("F0")))} ms, sequential {string.Join(" / ", viaSequential.Select(x => x.ToString("F0")))} ms");
+    }
+
     [Fact]
     public void ShortPrompts_StartPosAboveZero_AndDisabledSwitch_UseTheSequentialPath()
     {
@@ -478,14 +662,14 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
             Assert.True(h.LastPrefillUsedCpuHandoff, $"{len} tokens should take the handoff: {h.LastCpuPrefillRefusal}");
         }
 
-        // a later turn (startPos > 0) must stay sequential, and must agree with a pure sequential run of the same tokens
+        // a later turn that adds fewer tokens than the gate stays sequential (the reason names the gate), and must agree with a pure sequential run of the same tokens
         h.ResetCache();
         int first = 64, extra = 8;
         h.Prefill(s.Prompt.AsSpan(0, first).ToArray(), 0);
         Assert.True(h.LastPrefillUsedCpuHandoff);
         var continued = h.Prefill(s.Prompt.AsSpan(first, extra).ToArray(), first).ToArray();
         Assert.False(h.LastPrefillUsedCpuHandoff);
-        Assert.Contains("startPos", h.LastCpuPrefillRefusal);
+        Assert.Contains("shorter than", h.LastCpuPrefillRefusal);
 
         using var seq = NewHybrid(s, 4, -1);
         seq.CpuPrefillEnabled = false;

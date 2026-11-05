@@ -3,12 +3,14 @@ namespace OpenTail.Stingray.Server;
 /// <summary>Non-sensitive receipt of the concrete loader route selected for a built-in model.</summary>
 /// <param name="GpuLayers">Layers the execution plan placed on the GPU (0 for CPU). Null when the
 /// loader did not record it.</param>
+/// <param name="DeviceIndex">The device index the execution plan selected (-1 when it left the choice to the backend). Null when the loader did not record it.</param>
 public sealed record ServerRuntimeResolution(
     string Backend,
     string ForwardPass,
     string ModelFormat,
     int ContextSize,
-    int? GpuLayers = null);
+    int? GpuLayers = null,
+    int? DeviceIndex = null);
 
 /// <summary>Bridges lazy built-in model loading to diagnostics without entering inference loops.</summary>
 public sealed class ServerRuntimeResolutionRelay
