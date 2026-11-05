@@ -67,8 +67,25 @@ public static partial class HubClient
         string id = NormalizeRepoId(repo) ?? throw new ArgumentException($"'{repo}' is not a Hugging Face repo id (owner/name).", nameof(repo));
         string path = revision is { Length: > 0 } ? $"{id}/revision/{Uri.EscapeDataString(revision)}" : id;
         string json = await http.GetStringAsync(new Uri(s_api, path + "?blobs=true"), ct).ConfigureAwait(false);
-        using var doc = JsonDocument.Parse(json);
-        return ParseRepo(doc.RootElement, id);
+        return ParseRepoJson(json, id);
+    }
+
+    /// <summary>
+    /// Parses the body of a model-API response. A body that is not JSON (a rate-limit or proxy page, usually HTML) is reported as a
+    /// listing problem with the next step, not as a raw parser error.
+    /// </summary>
+    public static HubRepo ParseRepoJson(string json, string fallbackId)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            throw new InvalidDataException($"the Hugging Face API did not return a model listing for '{fallbackId}' (it answered with something that is not JSON, often a rate-limit or proxy page). Try again later.");
+        }
+        using (doc) return ParseRepo(doc.RootElement, fallbackId);
     }
 
     /// <summary>Parses a model-API response. Tolerant: an absent field is null, never a guess; a malformed file entry is skipped, not fatal.</summary>

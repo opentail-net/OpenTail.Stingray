@@ -148,6 +148,35 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
+    public async Task OversizedPartial_IsVerifiedAndDiscarded_NotInstalled()
+    {
+        byte[] a = Encoding.UTF8.GetBytes("the real file");
+        using var server = new StubServer(new() { ["/o/r/resolve/" + Rev + "/dir/a.bin"] = a });
+        var entry = MakeEntry(server, a, [1]) with { Files = [StubFile(server, "dir/a.bin", a)] };
+
+        string root = Path.Combine(Path.GetTempPath(), "stingray-catalog-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var home = new ModelHome(root);
+            Directory.CreateDirectory(root);
+            // A partial at least as large as the catalog size: the downloader counts it as complete, so the hash check is what catches it.
+            string part = Path.Combine(root, "a.bin" + ModelHome.PartialSuffix);
+            File.WriteAllBytes(part, Encoding.UTF8.GetBytes(new string('x', a.Length * 2)));
+            using var http = new HttpClient();
+            var ex = await Assert.ThrowsAsync<ModelHashMismatchException>(() =>
+                ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken));
+            Assert.True(ex.Discarded);
+            Assert.False(File.Exists(part));
+            Assert.False(File.Exists(Path.Combine(root, "a.bin")));
+            Assert.Empty(server.RangesSeen);   // no request was needed: the size alone was enough to reach the hash check
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task StaleRevisionFailsAndInstallsNothing()
     {
         byte[] a = Encoding.UTF8.GetBytes("pinned content");
