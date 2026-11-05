@@ -43,6 +43,11 @@ public static class ResponsesEndpoints
             await WriteBadRequestAsync(ctx, invalid);
             return;
         }
+        if (ValidateInput(req.Input) is { } inputError)
+        {
+            await WriteBadRequestAsync(ctx, inputError);
+            return;
+        }
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
         // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
@@ -58,9 +63,9 @@ public static class ResponsesEndpoints
             {
                 resolvedModelId = inferenceService.ResolveModel(req.Model);
             }
-            catch (ModelNotFoundException)
+            catch (ModelNotFoundException ex)
             {
-                ctx.Response.StatusCode = 404;
+                await WriteErrorResponseAsync(ctx, 404, "invalid_request_error", ex.Message);
                 return;
             }
 
@@ -68,9 +73,9 @@ public static class ResponsesEndpoints
             {
                 handle = await inferenceService.AcquireAsync(resolvedModelId, ctx.RequestAborted);
             }
-            catch (InsufficientResourcesException)
+            catch (InsufficientResourcesException ex)
             {
-                ctx.Response.StatusCode = 503;
+                await WriteErrorResponseAsync(ctx, 503, "insufficient_resources", ex.Message);
                 return;
             }
             catch (NotSupportedException ex)
@@ -285,13 +290,62 @@ public static class ResponsesEndpoints
     }
 
     /// <summary>A 400 with the same error body the chat endpoints send (the flat type and message fields plus the nested error object), so a client can read why.</summary>
-    private static async Task WriteBadRequestAsync(HttpContext ctx, string message)
+    private static Task WriteBadRequestAsync(HttpContext ctx, string message)
+        => WriteErrorResponseAsync(ctx, 400, "invalid_request_error", message);
+
+    private static async Task WriteErrorResponseAsync(HttpContext ctx, int status, string type, string message)
     {
-        ctx.Response.StatusCode = 400;
+        ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(
-            JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+            JsonSerializer.Serialize(new ErrorResponse(type, message), OpenTailStingrayJsonContext.Default.ErrorResponse),
             ctx.RequestAborted);
+    }
+
+    /// <summary>
+    /// Checks the shape of <c>input</c> before any message is built. Returns null when it is usable, otherwise a message naming the
+    /// field. A JSON null on <c>role</c>, <c>content</c> or <c>text</c> counts as absent, as it did before.
+    /// </summary>
+    internal static string? ValidateInput(JsonElement? input)
+    {
+        if (input is not { } value) return "input is required";
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.String:
+                return null;
+            case JsonValueKind.Array:
+            {
+                if (value.GetArrayLength() == 0) return "input must not be an empty array";
+                int i = 0;
+                foreach (var item in value.EnumerateArray())
+                {
+                    string where = $"input[{i}]";
+                    if (item.ValueKind != JsonValueKind.Object) return $"{where} must be an object";
+                    if (item.TryGetProperty("role", out var role) && role.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                        return $"{where}.role must be a string";
+                    if (item.TryGetProperty("content", out var content))
+                    {
+                        if (content.ValueKind is JsonValueKind.String or JsonValueKind.Null) { }
+                        else if (content.ValueKind == JsonValueKind.Array)
+                        {
+                            int j = 0;
+                            foreach (var part in content.EnumerateArray())
+                            {
+                                if (part.ValueKind != JsonValueKind.Object) return $"{where}.content[{j}] must be an object";
+                                if (part.TryGetProperty("text", out var text) && text.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                                    return $"{where}.content[{j}].text must be a string";
+                                j++;
+                            }
+                        }
+                        else return $"{where}.content must be a string or an array";
+                    }
+                    i++;
+                }
+                return null;
+            }
+            default:
+                return "input must be a string or an array";
+        }
     }
 
     private static async Task WriteEvent(HttpResponse response, string eventType, string data)
