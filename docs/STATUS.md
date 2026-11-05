@@ -20,14 +20,14 @@ NativeAOT-publishes to a single binary.
 
 A brutally honest status matrix, not a feature-list — and "verified" isn't one thing, so **Status** and **Confidence** are separate columns.
 
-**At a glance** (row counts as of 2026-10-29; the matrix is the source, so recount when rows change). The matrix is split by bold divider rows into five groups:
+**At a glance** (row counts as of 2026-11-05: 116 status rows, 109 🟢, 4 🟡, 3 🔴; the matrix is the source, so recount when rows change). The matrix is split by bold divider rows into five groups:
 
 | Group | 🟢 | 🟡 | 🔴 |
 |---|:---:|:---:|:---:|
 | General inference, encoders and classifiers | 11 | 0 | 0 |
 | Speech and audio | 34 | 1 | 0 |
 | Image, video and music generation | 18 | 0 | 0 |
-| Text model families and engine paths | 25 | 1 | 0 |
+| Text model families and engine paths | 26 | 2 | 0 |
 | Vision encoders | 20 | 1 | 3 |
 
 Each row's **Notes** cell holds the dated evidence, so read the row, not just its colour.
