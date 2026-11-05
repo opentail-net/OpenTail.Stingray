@@ -4,21 +4,18 @@ Merged 2026-11-01 from the former themed backlog (this file) and `done/103-quick
 
 ## Open work (as of 2026-11-03)
 
-As of 2026-11-03. Start with **Start here**: nothing in it waits on the owner. Items under **Needs a decision** need a scope call first. **Owner action** is separate and gates nothing above it. Evidence for finished items is in [done/open-work-evidence-2026-10-31-to-11-01.md](done/open-work-evidence-2026-10-31-to-11-01.md).
+As of 2026-11-05. Start with **Start here**: nothing in it waits on the owner. Items under **Needs a decision** need a scope call first. **Owner action** is separate and gates nothing above it. Evidence for finished items is in [done/open-work-evidence-2026-10-31-to-11-01.md](done/open-work-evidence-2026-10-31-to-11-01.md).
 **Working rules:** one merged PR per item; `Tests.Core` before every merge; a perf claim needs a quiet machine, interleaved A/B, 3+ runs and equal output; a new item must name a failure, a user-visible limit, a measurable gain or a recurring cost. A stalled item is documented and the next one starts.
 
 ## Start here (no owner input needed)
 
-- [ ] **1. Transcription `model` field** (decided 2026-11-01: yes, minimal). The audio route always builds a `WhisperPipeline` and ignores `model`. Done when `model` selects an installed ASR pipeline, or an unknown name returns 400 that names the field. Test and mutation-check it.
-  First step: `src/OpenTail.Stingray.Cli/SttCommand.cs` and the server audio route that builds `WhisperPipeline`. Make `model` resolve against the installed ASR catalog; an unknown name gets a 400 that names the field.
-
-- [ ] **2. Gemma 4 26B-A4B port, fused experts** (`ffn_gate_up_exps`, parallel dense FFN plus 128 experts). Stingray refuses it cleanly today. Reuse `Diffusion/DiffusionGemma/DiffusionGemmaForwardPass.cs`, which already implements the layer. References on `E:\_models`: the stock bartowski Q4_K_M in `gemma4-26b-a4b` (stock llama.cpp b11556 runs it), and `diffusiongemma\dg-backbone-as-gemma4.gguf`. Done when a real-weight greedy and logit comparison against llama.cpp passes, timed, with a STATUS row. Not admitted before that.
-  First step: read `src/OpenTail.Stingray.Engine/Architectures/Gemma4Architecture.cs` (where the fused-expert refusal is) and `src/OpenTail.Stingray.Diffusion/DiffusionGemma/DiffusionGemmaForwardPass.cs` (the layer to reuse). Map `ffn_gate_up_exps` first, then compare the first layer against llama.cpp before the full model.
+- [ ] **2. Gemma 4 26B-A4B port, fused experts** (`ffn_gate_up_exps`, parallel dense FFN plus 128 experts). Runs on the CPU since 2026-11-03 (`Gemma4MoeGreedyParityTests`, STATUS row yellow). Open: greedy parity against llama.cpp holds on 2 prompts but 4 of 5 further 96-token prompts diverge (divergence index not measured), and there is no GPU path. Reuse `Diffusion/DiffusionGemma/DiffusionGemmaForwardPass.cs`, which already implements the layer. References on `E:\_models`: the stock bartowski Q4_K_M in `gemma4-26b-a4b` (stock llama.cpp b11556 runs it), and `diffusiongemma\dg-backbone-as-gemma4.gguf`. Done when a real-weight greedy and logit comparison against llama.cpp passes, timed, with a STATUS row. Not admitted before that.
+  First step: measure the first divergence index on the four diverging prompts, against llama.cpp, before changing the layer.
 
 ## Needs a decision before work
 
 - [ ] **6. Handoff gaps, Vulkan hybrid:** LongRoPE, sliding-window llama, contexts above 4096, Qwen2.5-7B / Coder / VL. No owner decision recorded. Each needs a passing parity row or a recorded refusal.
-- [ ] **7. Handoff receipts, remaining families:** Phi-3 has no path for fused `attn_qkv` in the hybrid, so it is refused. Granite fails because the hybrid ignores the model scale fields (P2c, finished). Gemma 2 stays Unverified because soft-capping is not on GPU (owner: no). Decide per family: add the path, or keep the refusal and record it.
+- [ ] **7. Handoff receipts, remaining families:** Phi-3 has no path for fused `attn_qkv` in the hybrid, so it is refused. Granite's scale fields are applied on the hybrid now (P2c, finished); its handoff receipt is not recorded yet. Gemma 2 stays Unverified because soft-capping is not on GPU (owner: no). Decide per family: add the path, or keep the refusal and record it.
 
 ## Owner action (does not block the list above)
 
