@@ -51,6 +51,16 @@ public sealed class ScoutAnalyzerTests
     }
 
     [Fact]
+    public void Gemma4_with_fused_expert_tensors_has_no_blocker_since_the_cpu_pass_runs_it()
+    {
+        // Plan 6 F1: the 26B-A4B layout used to be refused (and scout reported that); the CPU forward pass runs it now, so scout must not call it unrunnable.
+        var tensors = Enumerable.Range(0, 2).SelectMany(i => Layer(i)).Append(T("blk.0.ffn_gate_up_exps.weight", DType.Q4_K, 64, 256, 8));
+        var r = Run(Input("gemma4", tensors));
+        Assert.Equal("Admitted", r.Architecture!.Status);
+        Assert.DoesNotContain(r.Blockers, b => b.Kind == BlockerKind.Confirmed);
+    }
+
+    [Fact]
     public void Bytes_by_dtype_sum_to_total()
     {
         var r = Run(Input("llama", Enumerable.Range(0, 2).SelectMany(i => Layer(i))));

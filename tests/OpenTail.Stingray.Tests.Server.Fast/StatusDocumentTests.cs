@@ -418,19 +418,39 @@ public sealed class StatusDocumentTests : IDisposable
     [Fact]
     public async Task Status_IsCheapEnoughToPollAtOneHertz()
     {
-        // §7.4 requires a document cheap enough to poll once a second. Twenty sequential polls
-        // well under a second in total leaves ample headroom; this fails loudly if the snapshot
-        // ever starts doing real work (a forced GC, a device query, a file read).
+        // §7.4 requires a document cheap enough to poll once a second. A fixed wall-clock ceiling failed on a loaded CI runner
+        // (20 polls took 1288 ms against 1000 ms), so this compares /status with /health, a plain in-memory route, in the same
+        // process: the two are requested alternately, so they see the same load, and the medians ignore a stall that hits a few
+        // requests. It still fails loudly if the snapshot starts doing real work (a forced GC, a device query, a file read),
+        // which costs far more than the allowance below however slow the machine is.
         var client = CreateClient(new StatusFakeEngine("smol.gguf"));
         await client.GetAsync("/status"); // discard first-request JIT/route warmup
+        await client.GetAsync("/health");
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        for (int i = 0; i < 20; i++)
+        const int polls = 20;
+        var status = new double[polls];
+        var health = new double[polls];
+        for (int i = 0; i < polls; i++)
+        {
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             (await client.GetAsync("/status")).EnsureSuccessStatusCode();
-        stopwatch.Stop();
+            status[i] = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
 
-        Assert.True(stopwatch.ElapsedMilliseconds < 1000,
-            $"20 status polls took {stopwatch.ElapsedMilliseconds} ms");
+            started = System.Diagnostics.Stopwatch.GetTimestamp();
+            (await client.GetAsync("/health")).EnsureSuccessStatusCode();
+            health[i] = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        }
+
+        double statusMedian = Median(status), healthMedian = Median(health);
+        Assert.True(statusMedian <= 10 * healthMedian + 20,
+            $"median /status poll {statusMedian:F2} ms vs /health {healthMedian:F2} ms (allowance 10x + 20 ms)");
+
+        static double Median(double[] values)
+        {
+            var sorted = (double[])values.Clone();
+            Array.Sort(sorted);
+            return (sorted[sorted.Length / 2 - 1] + sorted[sorted.Length / 2]) / 2;
+        }
     }
 }
 

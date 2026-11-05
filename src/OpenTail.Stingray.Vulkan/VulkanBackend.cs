@@ -1256,6 +1256,30 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         return new Tensor(shape, DType.Float32, handle);
     }
 
+    /// <summary>
+    /// Releases the cached upload staging buffers when they have grown past <paramref name="keepBytes"/>. They grow to the largest single upload
+    /// (the dequantised F32 output head is hundreds of MiB) and otherwise stay host-visible until the backend is disposed. A later upload simply allocates
+    /// a buffer of the size it needs. Call once the big weights are up (plan 6 F2).
+    /// </summary>
+    public void TrimUploadStaging(ulong keepBytes = 16UL << 20)
+    {
+        if (_uploadStaging != null && _uploadStagingSize > keepBytes)
+        {
+            _uploadStaging.Dispose();
+            _uploadStaging = null;
+            _uploadStagingSize = 0;
+        }
+        lock (_asyncCmdLock)
+        {
+            if (_asyncStaging != null && _asyncStagingSize > keepBytes)
+            {
+                _asyncStaging.Dispose();
+                _asyncStaging = null;
+                _asyncStagingSize = 0;
+            }
+        }
+    }
+
     // Cached staging buffer for downloads (avoids per-call alloc/free)
     private GpuBuffer? _downloadStaging;
     private ulong _downloadStagingSize;

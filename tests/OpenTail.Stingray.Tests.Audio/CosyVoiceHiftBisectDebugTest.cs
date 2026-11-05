@@ -9,19 +9,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// (conv_pre/upsample/resblock/ISTFT).</summary>
 public sealed class CosyVoiceHiftBisectDebugTest : HeavyTestBase
 {
-    private static string? FindModelPath(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(relPath);
 
     [Fact]
     public void Decode_With_Reference_Excitation()

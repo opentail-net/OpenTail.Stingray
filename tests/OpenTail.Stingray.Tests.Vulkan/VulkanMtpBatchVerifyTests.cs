@@ -31,29 +31,7 @@ public sealed class VulkanMtpBatchVerifyTests : HeavyTestBase
         catch { return null; }
     }
 
-    private static string? FindMtpModelPath()
-    {
-        const string fileName = "Qwen3.6-27B-MTP-Q4_K_M.gguf";
-        string[] absoluteRoots = { @"E:\models", @"C:\p\opentail-llm\models" };
-        foreach (var root in absoluteRoots)
-        {
-            var p = Path.Combine(root, fileName);
-            if (File.Exists(p)) return p;
-        }
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindMtpModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("Qwen3.6-27B-MTP-Q4_K_M.gguf");
 
     private static LayerPlacement GdnPlacement(ModelHyperparams hp) => new(
         GpuLayers: hp.NumLayers,

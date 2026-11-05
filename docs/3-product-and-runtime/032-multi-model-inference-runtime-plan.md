@@ -625,6 +625,23 @@ background/speculative model preloading. All out of scope here.
    `FairModelScheduling` is a fairness guarantee, not a speed claim; (3) a gate covers one compute domain and nothing picks the
    domain automatically, so models on different devices must not share one; (4) there is no starvation guarantee across the
    admission queue and the gate together beyond each being fair on its own. (5) Fairness is per iteration, not per unit of compute time: one long prefill iteration costs far more than a short decode iteration, so a model with long prompts still takes more wall-clock than its turn count suggests. Review fix 2026-10-31: the turn gate's cancellation callback is now registered before a waiter becomes visible to a release (previously a waiter granted in that gap kept an undisposed registration); the two late-race branches are covered by deterministic tests through an internal test seam.
+   **Measured 2026-10-31 ([plan 2, P4](../done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md)): on the CPU the gate costs more than it gives.** Scenario: a decode-heavy model (Qwen2.5-0.5B Q4_K_M,
+   200 tokens) beside a prefill-heavy one (Qwen2.5-1.5B Q4_K_M, three prompts of 1,245 tokens), both on the CPU backend of one process,
+   `MaxBatchSize` 2, gate off versus on, three interleaved pairs per setting, greedy. The machine was 10 to 16 percent busy with an IDE and
+   a browser, so these are not idle-machine figures (the pairs are interleaved so drift hits both alike). With no gate the OS shares the
+   cores and the decode model never stalls: median gap 27 ms, 95th percentile 37 ms, worst gap 40 to 159 ms, its run 5.6 s, both models done
+   in 7.9 s. With the gate on at the default prefill chunk (256 tokens) the decode model runs at 12 ms per token while it holds the turn but
+   waits for every prefill iteration: worst gap 1,183 ms, 95th percentile 44 ms, its run 8.8 s, both done in 8.8 s (12 percent slower overall);
+   the prefill model finishes 14 percent sooner (6.7 s against 7.9 s). Shrinking the chunk shrinks the stall roughly in proportion (worst gap
+   634 ms at 128, 356 ms at 64, 220 ms at 32, 143 ms at 16; 95th percentile gap 507, 304, 181, 107 ms) but costs throughput even without the
+   gate (both done in 9.4 s at chunk 16 against 7.9 s at 256) and never beats no gate on the decode model's tail (worst gap 52 to 82 ms without
+   it at every chunk). Generated text was identical in every run. Reading: a gate that serialises engines on the CPU gives up overlap the OS
+   already provides (decode is memory-bound and prefill compute-bound, so they overlap well), so `FairModelScheduling` should stay off for CPU
+   models, and mediating the single-request `InferenceEngine` is not worth building on this evidence. A shared GPU, where nothing arbitrates
+   between engines, is the case it could still help, and this machine cannot show that. Limits: one scenario, one model pair, an iGPU-only
+   machine, the chunk sweep was run in order and not randomised. Harness: `FairGateMeasurementTests` (opt-in, `STINGRAY_FAIR_GATE_MEASURE=1`).
+   Side finding: the prefill chunk size (`STINGRAY_PREFILL_CHUNK` and the server option) never reached the batching engine before this
+   measurement; it does now (`PrefillChunkWiringRealModelTests`).
 - [ ] 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*
@@ -882,12 +899,9 @@ Code and outside sources, checked 2026-10-31. Excerpts are in [research/2026-10-
 
 ### Open items
 
-- [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches)
-- [x] Phase 6: service quantum and starvation protection at execution level: opt-in `FairExecutionGate`, one engine iteration per turn (Slice 5, 2026-10-31). Open: `InferenceEngine` is not mediated; no throughput measurement
+- [ ] Phase 3: hybrid-GDN full-offload accounting (not done; slices 8-10 cover the other branches). **2026-11-01 (plan 6 C1):** until now the shipped server never fed accelerator-aware admission at all (`AddOpenTailStingray` built the manager without an estimator, so every candidate counted as 0). It now passes a pre-load estimate, the weights the execution plan places on the GPU (`InferenceEngineLoader.EstimateAcceleratorBytes`, from the same `BuildPlan` the load runs); on the real Qwen3-0.6B Q8_0 on Vulkan it equals the loaded runtime's resident figure (798,797,824 bytes). **Checked 2026-11-01: the figure is not right for the hybrid-GDN full-offload branch, nor for the dense one.** Measured 2026-11-01 (Ryzen 7 5700G integrated GPU, Vulkan, every layer offloaded, context 512, one run each; `scripts/gpu-process-memory.ps1` reads the Windows per-process GPU counters, an upper bound that includes driver overhead, KV and scratch): dense Qwen3-0.6B Q8_0 plan figure 761.8 MiB (file 609.8 MiB) against 1762.2 MiB committed (2.3x); hybrid-GDN Qwen3.5-0.8B Q8_0 plan figure 827.8 MiB (file 795.0 MiB) against 2600.5 MiB (3.1x). A temporary log of device-local allocations (reverted, not in the repo) showed one 970 MiB buffer on the hybrid model, exactly 248320 x 1024 x 4 bytes: an F32 copy of the tied embedding and output head. The planner (`ModelDescription.BuildPlanningFacts`) counts a tied head as a second quantised embedding and counts no KV or scratch in the weight figure, so the figure is a weights-only lower bound, not what the device holds. **Update 2026-11-01 (plan 6 F2):** the hybrid-specific gap, the planner never counting the GDN/SSM tensors of a layer (195 MiB of Qwen3.5-0.8B), is fixed, and the accelerator figure now includes KV and scratch (hybrid 827.8 to 1070.5 MiB, dense 761.8 to 874.4 MiB, against 1612.2 and 1152.7 measured). The Vulkan F32 output head (278 MiB dense, 455 MiB hybrid) is not modelled yet, so the box stays open as plan 6 F2.
+- [x] Phase 6: service quantum and starvation protection at execution level: opt-in `FairExecutionGate`, one engine iteration per turn (Slice 5, 2026-10-31). Open: `InferenceEngine` is not mediated; throughput and latency were measured 2026-10-31 (Slice 5): on the CPU the gate loses to the OS's own sharing, so it stays off
 - [ ] Phase 7: durable session restore across a restart in multi-model mode (deferred)
-- [x] Phase 7: model identity is exposed through `IInferenceService` (`ResolveModel`, `AvailableModelAliases`)
-- [x] Phase 6: per-model admission queues and request age are built (slices 1-4); only the execution-level quantum above is open
-- [x] Phase 3: resident tracking, memory estimates and `IResourceBudget` are built (slices 1-3); the hybrid-GDN accounting above is the open part
 
 ### Cadence
 

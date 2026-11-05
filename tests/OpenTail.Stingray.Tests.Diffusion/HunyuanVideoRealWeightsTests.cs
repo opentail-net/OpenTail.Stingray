@@ -7,37 +7,7 @@ public sealed class HunyuanVideoRealWeightsTests : HeavyTestBase
     private const string ModelFileName = "hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors";
     private const string VaeFileName = "hunyuan_video_vae_bf16.safetensors";
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
-            $@"C:\Git-Public\OpenTail.Stingray\models\hunyuanvideo\{fileName}",
-            $@"C:\p\opentail-llm\models\{fileName}",
-            $@"E:\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-        {
-            if (File.Exists(p)) return p;
-        }
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pUnderscore = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pUnderscore)) return pUnderscore;
-            var pNested = Path.Combine(dir, "models", "hunyuanvideo", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var pNestedNested = Path.Combine(dir, "models", "_models", "hunyuanvideo", fileName);
-            if (File.Exists(pNestedNested)) return pNestedNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void HunyuanVideo_RealModelFile_LoadsAndExposesTensors()

@@ -1,11 +1,9 @@
 # Unverified claims in the 2026-10-02/03 coverage wave
 
+> Completed items moved to [../done/2026-10-03-unverified-port-claims-completed-items-2026-10.md](../done/2026-10-03-unverified-port-claims-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist
 
-- [x] Muse-Glimmer admitted, text only, CPU only (code: `Architectures/MuseGlimmerArchitecture.cs`; admission logged 2026-10-03)
-- [x] DiffusionGemma temperature contract aligned to the reference schedule (table row resolved)
-- [x] DiffusionGemma EntropyBound token acceptance (resolved, see table)
-- [x] Provenance: DeepSeek-V4.1 attribution in `THIRD_PARTY_NOTICES.md` (checked 2026-10-30, line 149; the claim below that it is missing is out of date)
 - [ ] Qwen 3.8 Flash Next: Level 4 paged real-weight run
 - [ ] GLM-5.x: real-weight run and K-pool selection check
 - [ ] DiffusionGemma: real Q4_K_M parity ladder against llama.cpp (backbone) and TensorSharp (canvas/sampler)
@@ -100,8 +98,18 @@ as the port (level 2, not independent). Unchecked: real-weight parity against ll
 1e-8 post-norm and 3.87 / 1.0 Q/K scaling on real tensors, and the vision tower and DFlash drafter (deferred).
 
 ### Bonsai2 PRISM / Q1_0
-A real checkpoint produces coherent greedy answers at about 0.4 tokens/s. Still unchecked: the comparison against
-the publisher's reference and a fast ternary kernel.
+A real checkpoint produces coherent greedy answers at about 0.4 tokens/s. Still unchecked: a fast ternary kernel, and a teacher-forced golden.
+
+**Reference comparison, 2026-11-01 (plan 5 B2).** The publisher's own reference needs no fork build: the Bonsai model card says stock llama.cpp runs `Ternary-Bonsai-2-27B-Q2_0.gguf` from release b11556 onward (the dev repo's `...-prism-fork-required` file and the `PTQ1_0` file we had on `F:` use a fork-private type id, 143, which stock rejects: "invalid ggml type 143"). So the stock-compatible `Q2_0` file (7,626,008,928 bytes, from `prism-ml/Ternary-Bonsai-2-27B-gguf`) was pulled to `E:\_models\bonsai2`, and the stock `llama-b11556-bin-win-cpu-x64` `llama-completion` was run against it as the independent reference (`-t 8`, greedy, `--top-k 1`). Our CLI ran the same file with `STINGRAY_EXPERIMENTAL_PRISM=1`, `--temp 0 --repeat-penalty 1.0` and an identity chat template (`{{ messages[0].content }}`, so the prompt is raw, as in the reference), CPU.
+
+| Prompt | New tokens | Result |
+|---|---|---|
+| `The capital of France is` | 16 | identical text: `Paris.` / `The capital of Germany is Berlin.` / `The capital of Italy is` |
+| `Water boils at 100 degrees Celsius at sea level because` | 24 | identical text: `the vapor pressure of water equals the atmospheric pressure. At higher altitudes, the atmospheric pressure is lower, so water boils` |
+
+Timing (rule 12, wall clock including load): reference 26.9 s and 41.4 s; ours 48.0 s and 82.9 s (0.5 t/s decode, prefill included). Both runs loaded real weights (7.08 GiB pre-faulted).
+
+This is evidence, not admission: two short greedy prompts, text compared rather than token ids or logits. Rule 14 still applies, so the family stays internal and gets no STATUS row. What would admit it: the `admit-arch` teacher-forced golden against this reference build, a perplexity comparison, and a decision on the 0.4 t/s speed.
 
 ## Cross-cutting
 - **Provenance:** there is no DeepSeek-V4.1 attribution in the TensorSharp section of `THIRD_PARTY_NOTICES.md`,
@@ -166,3 +174,35 @@ to 64 in the GGUF header (restored afterwards) three ~300-token prompts agreed f
 0.05 nat). Speed against llama.cpp on the same CPU: prefill 1.4-1.7 vs 15.2 t/s, decode 1.1-1.7 vs 2.4-2.5 t/s. Still unchecked:
 the near-tie margins of the other two patched-window prompts, the vision tower, DFlash, any GPU path, and the checkpoint's license
 bucket (so no real-weight parity test is committed).
+
+## Scout dossiers, 2026-11-01 (plan 5 B1): which families fit this machine
+
+`stingray scout -r <repo> --quants --budget 60GB -c 4096 --format json` (scout build 1.0.9+8eb7c90b), one dossier per family, no checkpoint downloaded. Host: 63.3 GiB RAM; scout reserves 8 GiB, so a file fits when its estimated peak is about 52 GiB or less. Scout answers "Unsupported" for every row of a NotAdmitted family whatever its size, so the verdict column below is read from the size and the peak, not from scout's word. MiniMax-H3 is SafeTensors, outside scout's GGUF scope (plan 5 B3).
+
+| Family | Repo @ revision | Smallest quant | Size | Estimated peak | Fits 63.3 GiB? |
+|---|---|---|---|---|---|
+| Qwen 3.8 Flash Next | `unsloth/Qwen3.8-Flash-Next-GGUF` @ 766911a6 | UD-IQ1_S (3 shards) | 67.6 GiB | 70.5 GiB | **No** |
+| GLM-5.x (`glm-dsa`) | `unsloth/GLM-5.3-GGUF` @ 346b3591 | UD-IQ1_S (6 shards) | 201.8 GiB | 245.1 GiB | **No** (the Q2_K_XL on `E:\_models\glm-5.3` is 236.4 GiB, peak 279.2 GiB, complete but cannot be run) |
+| DiffusionGemma | `unsloth/diffusiongemma-26B-A4B-it-GGUF` @ f4183a2c | Q4_K_M | 15.7 GiB | 21.5 GiB | **Yes** (needs `DiffusionGemmaPipeline`, not the autoregressive path) |
+| DeepSeek V4 Flash | `unsloth/DeepSeek-V4-Flash-0731-GGUF` @ fbbb5b93; `antirez/deepseek-v4-gguf` @ f71f23d5 | UD-IQ1_S (3 shards); IQ2XXS-w2Q2K | 76.9 GiB; 80.8 GiB | 80.4 GiB; 83.7 GiB | **No** |
+| DeepSeek V4.1 Flash | `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` @ 8a6ec9cf; `antirez/deepseek-v4.1-flash-gguf` @ 9dcee516 | UD-IQ1_S (5 shards); Q2 | 217.0 GiB; 340.6 GiB | 220.3 GiB; not estimated | **No** |
+| Bonsai2 PRISM | `prism-ml/Ternary-Bonsai-2-27B-gguf-dev` @ 1dc2d993 | Q2_0 (`...-prism-fork-required.gguf`) | 7.1 GiB | 9.8 GiB | **Yes**; a copy (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.9 GB) is already on `F:\_models\bonsai2` |
+| MiniMax-H3 | not GGUF | n/a | n/a | n/a | not scouted (B3) |
+
+Corrections this scouting made to earlier statements:
+- "V4 (98.6 GB) can be paged from disk and checked against b10306" (table in the tensorsharp plan): the smallest V4 Flash files are 76.9 and 80.8 GiB, over the 63.3 GiB host, so by CLAUDE.md rule 15 the run is not made. No 98.6 GB file exists in the two repos scouted.
+- Qwen 3.8 Flash Next "smallest quant ~72.5 GB" is the decimal size of UD-IQ1_S (67.6 GiB); it does not fit either way.
+- V4.1: three of the unsloth quants (Q8_K_XL, Q4_K_XL, Q3_K_XL) carry `per_layer_token_embd.weight` with GGML type id 43, which this build does not support; the smaller IQ quants do not and are 217 GiB or more.
+- The `Q2_0` in the Bonsai2 dev repo is the only file listed; scout reads `general.architecture` (`qwen35`, admitted) and cannot see the `STINGRAY_EXPERIMENTAL_PRISM` gate, so its "Fits" is about size only.
+- The dossiers (JSON) are in the 2026-11-01 session scratchpad, not in the repository.
+## Independent references, 2026-11-01 (plan 5 B3)
+
+Checked against `ggml-org/llama.cpp` tag b11556 (`src/models`, 160 files, listed through the GitHub contents API) and the families' own notes. A reference counts only if it is not the code the port was derived from (CLAUDE.md rule 8).
+
+| Family | Independent reference | End state |
+|---|---|---|
+| Bonsai2 PRISM | **Yes.** Stock llama.cpp from b11556 runs `Ternary-Bonsai-2-27B-Q2_0.gguf` (model card); used 2026-11-01, see the Bonsai2 section above. The fork-private types (`PTQ1_0`, id 143) are rejected by stock builds. | Reference exists; admission still needs a teacher-forced golden and a perplexity check. |
+| DiffusionGemma | **None found.** `src/models` has no diffusion-gemma file (`gemma4.cpp` is the backbone the port follows, `minimax-m3.cpp` and others are unrelated). `examples/diffusion` exists (`diffusion-cli.cpp`) but nothing here shows it loads this architecture. TensorSharp is what the port was written against, so it is not independent. The Hugging Face reference is Python, and CLAUDE.md forbids adding Python reference scripts. The only partial route is the one in the 2026-10-03 note: relabel a copy of the GGUF as `gemma4` and compare the causal prefill path; the canvas, self-conditioning and sampler paths have no oracle. | Stays internal; what can be checked is the backbone only, and that check has not been run. |
+| MiniMax-H3 (video and audio) | **None found.** `src/models` has `minimax-m3.cpp`, `minimax-m2.cpp` and `minimax-01.cpp`, which are the text models, no H3. It is a SafeTensors diffusion model outside the GGUF tooling, and the port is a foundation only (no real DiT loader, no conditioning, see the table in the tensorsharp plan). | Stays internal; no pass is claimed, and none can be until a real checkpoint and a reference exist. |
+
+Not checked: whether the `examples/diffusion` CLI could run DiffusionGemma, and any reference outside llama.cpp b11556 (vLLM, Hugging Face).

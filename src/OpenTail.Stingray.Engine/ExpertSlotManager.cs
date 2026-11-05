@@ -30,6 +30,37 @@ public sealed class ExpertSlotManager : IDisposable, IExpertPrefetchTarget
 
     public ExpertAccessProfiler Profiler => _profiler;
 
+    /// <summary>
+    /// VRAM one expert's weights occupy once uploaded, mirroring UploadExpertWeight: Q4_K and Q6_K go up raw,
+    /// every other dtype is dequantised to F32 (so a Q8_0 or Q5_K expert costs 4 bytes per element, far more than on disk).
+    /// </summary>
+    internal static long ExpertFootprintBytes(DType dtype, int rows, int cols) =>
+        dtype is DType.Q4_K or DType.Q6_K
+            ? (long)rows * (cols / DTypeInfo.BlockSize(dtype)) * DTypeInfo.BytesPerBlock(dtype)
+            : (long)rows * cols * sizeof(float);
+
+    /// <summary>
+    /// Bytes one cache slot (gate + up + down for one expert) can take on the first <paramref name="gpuLayers"/> layers.
+    /// Each role is priced at its largest per-layer footprint, because a mixed-quant checkpoint can store a role at a
+    /// larger dtype on some layers and a slot is recycled across layers. Returns 0 when a role is absent (unmerged
+    /// per-expert tensors), which callers must treat as "size unknown".
+    /// </summary>
+    internal static long PerExpertGpuBytes(GgufModel model, int gpuLayers, int expertDim, int embDim)
+    {
+        long Max(string role, int rows, int cols)
+        {
+            long max = 0;
+            for (int l = 0; l < gpuLayers; l++)
+                if (model.FindTensor($"blk.{l}.{role}.weight") is { } info)
+                    max = Math.Max(max, ExpertFootprintBytes(info.DType, rows, cols));
+            return max;
+        }
+        long gate = Max("ffn_gate_exps", expertDim, embDim);
+        long up = Max("ffn_up_exps", expertDim, embDim);
+        long down = Max("ffn_down_exps", embDim, expertDim);
+        return gate == 0 || up == 0 || down == 0 ? 0 : gate + up + down;
+    }
+
     /// <summary>Slots the cache may hold (leased slots can briefly exceed it).</summary>
     public int Capacity => _cache.Capacity;
 

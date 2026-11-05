@@ -14,9 +14,10 @@ namespace OpenTail.Stingray.Tests.Server.Fast;
 /// admission slot, and leaves the server able to serve the next request. The engine is a token-by-token
 /// fake, so the disconnect lands during generation, not before or after it.
 ///
-/// <para>Single-model mode only. The chat endpoint acquires a <c>ModelRuntimeHandle</c> only in multi-model mode
-/// (OpenAiEndpoints.cs, "if (inferenceService.IsMultiModel)"), and that path is NOT covered here: it needs a
-/// fake loader, which is a separate follow-up. So this test proves the slot and the engine, not the handle.</para>
+/// <para>Two hosts. Single-model mode proves the engine and the admission slot. The chat endpoint acquires a
+/// <c>ModelRuntimeHandle</c> only in multi-model mode ("if (inferenceService.IsMultiModel)" in OpenAiEndpoints.cs), so the second
+/// test runs the same disconnect against a multi-model host whose model comes from a fake loader (NamedModelOptions.EngineFactory)
+/// and also proves the runtime handle is released: a leaked handle would pin the model against eviction for good.</para>
 ///
 /// <para>Every wait is bounded. A missing cancellation shows up as an assertion failure, not a hang.</para>
 /// </summary>
@@ -116,6 +117,84 @@ public sealed class ClientDisconnectTests : IDisposable
         Assert.DoesNotContain(_logs.Messages, m => m.Contains("Generation failed", StringComparison.Ordinal));
     }
 
+    private (HttpClient Client, IServiceProvider Services) CreateMultiModelServer(TokenByTokenEngine engine)
+    {
+        var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(b => b.ConfigureServices(s =>
+            {
+                s.Configure<OpenTailStingrayServerOptions>(o =>
+                {
+                    o.MaxConcurrentRequests = 1;
+                    o.MaxQueuedRequests = 0;
+                    o.Models =
+                    [
+                        new NamedModelOptions
+                        {
+                            Alias = Model,
+                            ModelPath = "/models/disconnect-test.gguf",
+                            EngineFactory = _ => new LoadedEngine(engine, "qwen2", null),
+                        },
+                    ];
+                });
+                s.AddSingleton<ILoggerProvider>(_logs);
+            }));
+        _factories.Add(factory);
+        return (factory.CreateClient(), factory.Services);
+    }
+
+    [Fact]
+    public async Task MultiModel_ClientDisconnectMidStream_ReleasesTheRuntimeHandle_TheSlot_AndStopsGeneration()
+    {
+        var engine = new TokenByTokenEngine(Model, tokens: 10_000, perTokenDelay: TimeSpan.FromMilliseconds(10));
+        var (client, services) = CreateMultiModelServer(engine);
+        var manager = services.GetRequiredService<IModelRuntimeManager>();
+
+        using var disconnect = new CancellationTokenSource();
+        using var deadline = new CancellationTokenSource(Bound * 3);
+        using var open = CancellationTokenSource.CreateLinkedTokenSource(disconnect.Token, deadline.Token);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(ChatRequest(stream: true)),
+        };
+        using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, open.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = await response.Content.ReadAsStreamAsync(open.Token);
+        using var reader = new StreamReader(body);
+        Assert.NotNull(await reader.ReadLineAsync(open.Token));
+
+        // Positive controls: the model was loaded by the fake loader, generation is in flight, and the request holds the runtime handle.
+        Assert.True(engine.Started.Wait(Bound), "the engine never started generating");
+        await WaitUntilAsync(() => engine.TokensYielded >= 2, "generation did not produce tokens");
+        var held = Assert.Single(manager.Snapshot());
+        Assert.Equal(ModelRuntimeState.Ready, held.State);
+        Assert.Equal(1, held.HandleCount);
+
+        disconnect.Cancel();
+        response.Dispose();
+
+        await WaitUntilAsync(() => engine.CancellationObserved, "cancellation never reached the engine");
+        int atCancel = engine.TokensYielded;
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        Assert.Equal(atCancel, engine.TokensYielded);
+
+        // The handle is released, so the model is evictable again. Released when the handler returns, a moment after the stream stops.
+        await WaitUntilAsync(() => manager.Snapshot().Single().HandleCount == 0,
+            "the runtime handle was never released after the client disconnected");
+
+        // The admission slot is free (MaxConcurrentRequests = 1 would answer 429 otherwise) and the model still serves.
+        HttpResponseMessage? next = null;
+        await WaitUntilAsync(async () =>
+        {
+            next?.Dispose();
+            next = await client.PostAsJsonAsync("/v1/chat/completions", ChatRequest(stream: false), deadline.Token);
+            return next.StatusCode == HttpStatusCode.OK;
+        }, "the admission slot was not released: the follow-up request kept getting a non-200 response");
+        next!.Dispose();
+        await WaitUntilAsync(() => manager.Snapshot().Single().HandleCount == 0, "the follow-up request leaked a runtime handle");
+
+        Assert.DoesNotContain(_logs.Messages, m => m.Contains("Generation failed", StringComparison.Ordinal));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, string failure)
     {
         var deadline = DateTime.UtcNow + Bound;
@@ -205,6 +284,10 @@ internal sealed class TokenByTokenEngine : IInferenceEngine
         }
         finally
         {
+            // The consumer can stop while this iterator is suspended at yield return: it is then disposed without the pending
+            // Task.Delay ever throwing, so the catch above never runs. The token the endpoint handed in is what cancellation means
+            // here, whichever way the iterator ends (a Windows CI runner lost this race once: 'cancellation never reached the engine').
+            if (ct.IsCancellationRequested) _cancellationObserved = true;
             Interlocked.Decrement(ref _active);
         }
     }

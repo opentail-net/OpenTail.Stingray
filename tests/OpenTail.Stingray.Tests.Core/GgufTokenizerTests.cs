@@ -3,19 +3,7 @@ namespace OpenTail.Stingray.Tests.Core;
 
 public sealed class GgufTokenizerTests
 {
-    private static string? FindModelPath()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 
     private static GgufTokenizer? CreateTokenizer()
     {

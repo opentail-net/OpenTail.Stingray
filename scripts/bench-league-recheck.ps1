@@ -23,6 +23,11 @@
 # machine can only slow a run down; a model that is missing, too big for free memory, unsupported or that times out is RECORDED
 # (SKIP / UNSUPPORTED / TIMEOUT), never silently dropped, and the script moves on.
 #
+# Text check: each row also carries the first ~80 characters the model generated and a flag when the text is EMPTY, NON-TEXT or REPEATING
+# (scripts/lib/TextCheck.ps1), because a run that decodes at speed can still print garbage. Each start is compared with
+# scripts/league-text-baselines.json (known-good starts, keyed model|backend|scenario): a different start is marked 'changed' (greedy output can
+# legitimately move with a kernel change or a near-tie, so read it, it is not a failure). -UpdateBaseline records the starts of unflagged rows.
+#
 # The numbers go into PerformanceLeague.md BY HAND, as dated rows, after reading them (rule 12: check the timings, not just that a
 # row exists).
 param(
@@ -35,16 +40,23 @@ param(
     [double]$MaxGB = 0,                           # -Set all: skip checkpoints larger than this; 0 = no cap (the engine streams / splits oversized checkpoints)
     [int]$TimeoutMinutes = 25,                    # per run
     [switch]$Resume,
+    [string]$Baseline = '',                       # known-good text starts; default scripts/league-text-baselines.json
+    [switch]$UpdateBaseline,                      # write the text start of every unflagged row into the baseline file
+    [switch]$HashModels,                         # SHA-256 each model once per experiment (slow for 12 GB files); default: size and modified time only
     [string]$OutFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/TextCheck.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
 $exe = Join-Path $repo 'src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe'
 if (-not (Test-Path $exe)) { throw "Build the CLI in Release first: dotnet build src/OpenTail.Stingray.Cli -c Release" }
 
+if (-not $Baseline) { $Baseline = Join-Path $PSScriptRoot 'league-text-baselines.json' }
+$baselineMap = [ordered]@{}
+if (Test-Path $Baseline) { foreach ($prop in (Get-Content -Raw $Baseline | ConvertFrom-Json).PSObject.Properties) { $baselineMap[$prop.Name] = [string]$prop.Value } }
 if ($Runs -le 0) { $Runs = if ($Set -eq 'all') { 1 } else { 2 } }
 if ($Scenarios.Count -eq 0) { $Scenarios = if ($Set -eq 'all') { @('500') } else { @('short', '500', '2k') } }
 
@@ -131,7 +143,8 @@ function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]
     if (-not $proc.WaitForExit($TimeoutMinutes * 60 * 1000)) { try { $proc.Kill($true) } catch {}; return @{ ok = $false; kind = 'TIMEOUT'; why = "timeout after $TimeoutMinutes min" } }
     $text = $outTask.Result + "`n" + $errTask.Result
     if ($text -match 'Prefill:\s*(\d+)\s*tokens,\s*([\d.]+)\s*t/s\s*\|\s*Decode:\s*(\d+)\s*tokens,\s*([\d.]+)\s*t/s') {
-        return @{ ok = $true; pt = [int]$Matches[1]; pf = [double]$Matches[2]; dt = [int]$Matches[3]; df = [double]$Matches[4] }
+        $gen = Get-GeneratedText $outTask.Result (Get-Content -Raw -Path $promptFile)
+        return @{ ok = $true; pt = [int]$Matches[1]; pf = [double]$Matches[2]; dt = [int]$Matches[3]; df = [double]$Matches[4]; text = $gen }
     }
     # Keep the first useful error line so an UNSUPPORTED row says why.
     $line = ($text -split "`n" | Where-Object { $_ -match 'rror|not supported|unsupported|refus|Unknown|cannot|failed|Exception' } | Select-Object -First 1)
@@ -139,8 +152,11 @@ function Invoke-One([string]$model, [string]$backend, [string]$promptFile, [int]
     return @{ ok = $false; kind = 'UNSUPPORTED'; why = ($line.Trim() -replace '\|', '/' -replace '\s+', ' ') }
 }
 
-$commit = (git rev-parse --short HEAD 2>$null)
-$dirty = if ((git status --porcelain 2>$null | Measure-Object).Count -gt 0) { '+dirty' } else { '' }
+. (Join-Path $PSScriptRoot 'lib/Repro.ps1')
+$reproBlock = (Get-ReproHeader -RepoRoot $repo -BinaryPath $exe -Backend ($Backends -join ' + ') `
+    -ModelPaths @($work | Where-Object { $_.path } | ForEach-Object { $_.path }) `
+    -Settings @{ scenarios = ($Scenarios -join ','); cpuLong = [bool]$CpuLong; timeoutMin = $TimeoutMinutes } `
+    -RunCount $Runs -Hash:$HashModels -CacheFile "$OutFile.hashes.json") -join "`n"
 $started = Get-Date
 $done = @{}
 if ($Resume -and (Test-Path $OutFile)) {
@@ -149,19 +165,21 @@ if ($Resume -and (Test-Path $OutFile)) {
 @"
 # League recheck, our side (C#), $($started.ToString('yyyy-MM-dd HH:mm')), set '$Set'
 
-Commit ``$commit$dirty``; engine defaults (no env overrides); best of $Runs run(s) per row; scenarios: $($Scenarios -join ', ') (short ~15-40 tok / 500 ~490-580 tok / 2k ~2,000 tok; SnapKV auto-budget 2048 applies); per-run timeout $TimeoutMinutes min$(if ($Set -eq 'all' -and $MaxGB -gt 0) { "; checkpoints over $MaxGB GB skipped" }).
+$reproBlock
+
+Engine defaults (no env overrides); best of $Runs run(s) per row; scenarios: $($Scenarios -join ', ') (short ~15-40 tok / 500 ~490-580 tok / 2k ~2,000 tok; SnapKV auto-budget 2048 applies); per-run timeout $TimeoutMinutes min$(if ($Set -eq 'all' -and $MaxGB -gt 0) { "; checkpoints over $MaxGB GB skipped" }).
 Machine: Ryzen 7 5700G + integrated Radeon (iGPU; rule 13: do not generalise to discrete GPUs). 63 GB RAM.
 
-| Model | GB | Arch | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) |
-|---|---:|---|---|---|---:|---:|---:|---|
+| Model | GB | Arch | Backend | Scenario | Prompt tok | Prefill t/s (best) | Decode t/s (best) | All runs (prefill / decode) | Text start (flag) |
+|---|---:|---|---|---|---:|---:|---:|---|---|
 "@ | Set-Content -Path $OutFile -Encoding utf8
 }
 
-$ok = 0; $bad = 0; $skipped = 0; $unsup = 0
+$ok = 0; $bad = 0; $skipped = 0; $unsup = 0; $textBad = 0
 foreach ($m in $work) {
     $stem = $m.stem
-    if (-not $m.path) { Add-Content -Path $OutFile -Value "| $stem | - | - | - | - | - | SKIP | SKIP | checkpoint not present |"; $skipped++; continue }
-    if ($Set -eq 'all' -and $MaxGB -gt 0 -and $m.gb -gt $MaxGB) { Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | - | - | - | SKIP | SKIP | larger than -MaxGB $MaxGB |"; $skipped++; continue }
+    if (-not $m.path) { Add-Content -Path $OutFile -Value "| $stem | - | - | - | - | - | SKIP | SKIP | checkpoint not present | - |"; $skipped++; continue }
+    if ($Set -eq 'all' -and $MaxGB -gt 0 -and $m.gb -gt $MaxGB) { Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | - | - | - | SKIP | SKIP | larger than -MaxGB $MaxGB | - |"; $skipped++; continue }
     # Memory guard: wait up to 3 minutes for enough free RAM for the mapped weights plus headroom, else record and skip.
     # Memory guard: only WAITS (up to 3 minutes) for free RAM to recover from the previous model; it never skips, because oversized checkpoints are
     # supported (layer split, expert streaming, mmap) and a slow or failed run is recorded as such.
@@ -174,7 +192,7 @@ foreach ($m in $work) {
             if ($done.ContainsKey("$stem|$backend|$scName")) { continue }
             if ($modelDead[$backend]) { continue }
             $file = $scenarioDefs[$scName][0]; $n = [int]$scenarioDefs[$scName][1]
-            $pf = @(); $df = @(); $tok = 0; $why = ''; $kind = ''; $suffix = ""
+            $pf = @(); $df = @(); $tok = 0; $lastText = ''; $why = ''; $kind = ''; $suffix = ""
             for ($r = 0; $r -lt $Runs; $r++) {
                 $res = Invoke-One $m.path $backend $file $n
                 # Full Vulkan offload of a checkpoint larger than the placement budget runs out of host memory while uploading layers; the supported way to
@@ -187,17 +205,24 @@ foreach ($m in $work) {
                         $suffix = " [partial offload -g $gN]"
                     }
                 }
-                if ($res.ok) { $pf += $res.pf; $df += $res.df; $tok = $res.pt } else { $why = $res.why; $kind = $res.kind; break }
+                if ($res.ok) { $pf += $res.pf; $df += $res.df; $tok = $res.pt; $lastText = $res.text } else { $why = $res.why; $kind = $res.kind; break }
             }
             if ($pf.Count -eq 0) {
-                Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | $backend | $scName | - | $kind | $kind | $why |"
+                Add-Content -Path $OutFile -Value "| $stem | $($m.gb) | $($m.arch) | $backend | $scName | - | $kind | $kind | $why | - |"
                 if ($kind -eq 'UNSUPPORTED') { $unsup++ } else { $bad++ }
                 $modelDead[$backend] = $true   # no point retrying the larger prompts on a backend that already failed
             } else {
                 $bp = ($pf | Measure-Object -Maximum).Maximum; $bd = ($df | Measure-Object -Maximum).Maximum
                 $runsTxt = (0..($pf.Count - 1) | ForEach-Object { '{0:F1}/{1:F1}' -f $pf[$_], $df[$_] }) -join ', '
                 $runsTxt += $suffix
-                Add-Content -Path $OutFile -Value ("| {0} | {1} | {2} | {3} | {4} | {5} | {6:F1} | {7:F1} | {8} |" -f $stem, $m.gb, $m.arch, $backend, $scName, $tok, $bp, $bd, $runsTxt); $ok++
+                $start = Format-TextStart $lastText
+                $flag = Get-TextFlag $lastText
+                $key = "$stem|$backend|$scName"
+                if (-not $flag -and $baselineMap.Contains($key) -and $baselineMap[$key] -cne $start) { $flag = 'changed' }
+                if ($flag -eq '' -and $UpdateBaseline) { $baselineMap[$key] = $start }
+                if ($flag -and $flag -ne 'changed') { $textBad++ }
+                $textCell = if ($flag) { "[$flag] $start" } else { $start }
+                Add-Content -Path $OutFile -Value ("| {0} | {1} | {2} | {3} | {4} | {5} | {6:F1} | {7:F1} | {8} | {9} |" -f $stem, $m.gb, $m.arch, $backend, $scName, $tok, $bp, $bd, $runsTxt, $textCell); $ok++
             }
         }
     }
@@ -208,8 +233,10 @@ if ($notInScope.Count -gt 0) {
     foreach ($r in ($notInScope | Sort-Object kind, arch, name)) { Add-Content -Path $OutFile -Value "| $($r.kind) | $($r.arch) | $($r.name) | $($r.sizeGB) |" }
 }
 
+if ($UpdateBaseline) { ($baselineMap | ConvertTo-Json) | Set-Content -Path $Baseline -Encoding utf8 }
+
 $elapsed = (Get-Date) - $started
-$summary = "LEAGUE-RECHECK DONE set=$Set results=$ok unsupported=$unsup failed=$bad skipped=$skipped elapsed=$([int]$elapsed.TotalMinutes)min file=$OutFile"
+$summary = "LEAGUE-RECHECK DONE set=$Set results=$ok bad-text=$textBad unsupported=$unsup failed=$bad skipped=$skipped elapsed=$([int]$elapsed.TotalMinutes)min file=$OutFile"
 Add-Content -Path $OutFile -Value "`n$summary"
 Set-Content -Path $doneFile -Value $summary -Encoding utf8
 Write-Output $summary

@@ -10,19 +10,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// tokenizer algorithm itself from the separate multilingual text-cleaning pass.</summary>
 public sealed class XttsBpeTokenizerTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relativePath);
+
 
     [Theory]
     [InlineData("[en]hello world[SPACE]this is a test.", new[] { 259, 62, 84, 28, 179, 79, 2, 147, 54, 14, 136, 63, 9 })]
