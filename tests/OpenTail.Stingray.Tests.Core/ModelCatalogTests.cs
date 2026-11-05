@@ -102,11 +102,44 @@ public sealed class ModelCatalogTests
         {
             var home = new ModelHome(root);
             using var http = new HttpClient();
-            await Assert.ThrowsAsync<ModelHashMismatchException>(() =>
+            var ex = await Assert.ThrowsAsync<ModelHashMismatchException>(() =>
                 ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken));
             Assert.False(File.Exists(Path.Combine(root, "a.bin")));
             Assert.False(File.Exists(Path.Combine(root, "a.bin" + ModelHome.PartialSuffix)));
             Assert.Equal(InstallState.Missing, home.StateOf(entry));
+            // The download was deleted by the installer, so the advice must not tell the user to delete it.
+            Assert.True(ex.Discarded);
+            Assert.Contains("run setup again", ex.Message);
+            Assert.DoesNotContain("Delete it", ex.Message);
+            Assert.NotEqual(ex.Expected, ex.Actual);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task WrongFileAlreadyOnDisk_IsReportedWithTheDeleteAdvice_AndIsNotRemoved()
+    {
+        byte[] a = Encoding.UTF8.GetBytes("the real file");
+        byte[] wrong = Encoding.UTF8.GetBytes("a tampered one");
+        using var server = new StubServer(new() { ["/o/r/resolve/" + Rev + "/dir/a.bin"] = wrong });
+        var entry = MakeEntry(server, a, [1]) with { Files = [StubFile(server, "dir/a.bin", a) with { Size = wrong.Length }] };
+
+        string root = Path.Combine(Path.GetTempPath(), "stingray-catalog-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var home = new ModelHome(root);
+            Directory.CreateDirectory(root);
+            // Same size as the catalog, wrong bytes: the installer does not download it, so the user has to remove it.
+            File.WriteAllBytes(Path.Combine(root, "a.bin"), wrong);
+            using var http = new HttpClient();
+            var ex = await Assert.ThrowsAsync<ModelHashMismatchException>(() =>
+                ModelInstaller.EnsureAsync(entry, home, http, null, null, TestContext.Current.CancellationToken));
+            Assert.False(ex.Discarded);
+            Assert.Contains("Delete it and run setup again", ex.Message);
+            Assert.True(File.Exists(Path.Combine(root, "a.bin")));
         }
         finally
         {

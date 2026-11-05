@@ -73,6 +73,7 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         {
             AnsiConsole.ErrorLine($"[red]Error:[/] could not fetch repo listing for '{Markup.Escape(repo)}': {Markup.Escape(ex.Message)}");
             AnsiConsole.MarkupLine("If this repo is gated, accept its terms on huggingface.co first and set HF_TOKEN — anonymous access is used otherwise.");
+            AnsiConsole.MarkupLine("Check the owner/name spelling and that the repo exists on huggingface.co.");
             return 1;
         }
 
@@ -175,10 +176,30 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             ? $"https://huggingface.co/api/models/{repo}/revision/{Uri.EscapeDataString(revision)}?blobs=true"
             : $"https://huggingface.co/api/models/{repo}?blobs=true";
         string json = http.GetStringAsync(new Uri(apiUrl), ct).GetAwaiter().GetResult();
-        using var doc = JsonDocument.Parse(json);
-        // The commit the listing describes. Downloading from it (not from "main") keeps the files consistent with what was listed and hashed.
-        resolvedRevision = doc.RootElement.TryGetProperty("sha", out var shaEl) && shaEl.ValueKind == JsonValueKind.String && shaEl.GetString() is { Length: >= 7 } s ? s : null;
-        return ParseGgufListing(doc.RootElement, sha256ByName);
+        return ParseListingJson(json, sha256ByName, out resolvedRevision);
+    }
+
+    /// <summary>
+    /// Parses a Hugging Face model API response. A body that is not JSON (a rate-limit or proxy page, usually HTML) is reported as
+    /// what it most likely is, not as a raw parser error.
+    /// </summary>
+    internal static List<(string Name, long? Size)> ParseListingJson(string json, Dictionary<string, string>? sha256ByName, out string? resolvedRevision)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            throw new InvalidDataException("the Hugging Face API did not return a model listing (it answered with something that is not JSON, often a rate-limit or proxy page). Try again later, or pass the file to download with the full path of a local copy.");
+        }
+        using (doc)
+        {
+            // The commit the listing describes. Downloading from it (not from "main") keeps the files consistent with what was listed and hashed.
+            resolvedRevision = doc.RootElement.TryGetProperty("sha", out var shaEl) && shaEl.ValueKind == JsonValueKind.String && shaEl.GetString() is { Length: >= 7 } s ? s : null;
+            return ParseGgufListing(doc.RootElement, sha256ByName);
+        }
     }
     /// <summary>Reads the .gguf files (and, when published, their LFS SHA-256) from a Hugging Face model API response.</summary>
     internal static List<(string Name, long? Size)> ParseGgufListing(JsonElement root, Dictionary<string, string>? sha256ByName = null)

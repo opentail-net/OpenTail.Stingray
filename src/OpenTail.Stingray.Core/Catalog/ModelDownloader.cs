@@ -84,11 +84,22 @@ public static class ModelDownloader
 }
 
 /// <summary>Thrown when a downloaded or existing catalog file does not have the catalog's SHA-256.</summary>
-public sealed class ModelHashMismatchException(string path, string expected, string actual)
-    : IOException($"{path}: SHA-256 {actual} does not match the catalog's {expected}. Delete it and run setup again.")
+public sealed class ModelHashMismatchException(string path, string expected, string actual, bool discarded = false)
+    : IOException(discarded
+        ? $"{path}: SHA-256 {actual} does not match the catalog's {expected}. The download was discarded; run setup again to fetch it."
+        : $"{path}: SHA-256 {actual} does not match the catalog's {expected}. Delete it and run setup again.")
 {
     /// <summary>File that failed the check.</summary>
     public string FilePath { get; } = path;
+
+    /// <summary>The catalog's SHA-256 for the file.</summary>
+    public string Expected { get; } = expected;
+
+    /// <summary>The SHA-256 of the bytes that were actually on disk.</summary>
+    public string Actual { get; } = actual;
+
+    /// <summary>True when the installer deleted the download; false when the file was already on disk and the user must remove it.</summary>
+    public bool Discarded { get; } = discarded;
 }
 
 /// <summary>Thrown when a catalog file has to be downloaded but offline mode is on.</summary>
@@ -142,10 +153,10 @@ public static class ModelInstaller
             {
                 await VerifyAsync(part, file, ct).ConfigureAwait(false);
             }
-            catch (ModelHashMismatchException)
+            catch (ModelHashMismatchException ex)
             {
                 File.Delete(part); // A corrupt partial file would otherwise be "resumed" forever.
-                throw;
+                throw new ModelHashMismatchException(part, file.Sha256, ex.Actual, discarded: true);
             }
             File.Move(part, dest, overwrite: true);
         }
