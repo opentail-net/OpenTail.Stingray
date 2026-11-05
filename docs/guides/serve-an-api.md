@@ -67,7 +67,7 @@ Runnable version: [samples/ChatServer](../../samples/ChatServer/Program.cs). Use
 | `POST /v1/responses` | OpenAI Responses API |
 | `POST /v1/embeddings`, `POST /v1/rerank` | [Search building blocks](search-embeddings-rerank.md) |
 | `POST /v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/audio/translations` | [Speech](speech.md) |
-| `POST /v1/images/generations`, `/edits`, `/variations` | [Images](images-and-video.md) |
+| `POST /v1/images/generations`, `/edits` | Answer `501` (not implemented); use `stingray image`. See [Images](images-and-video.md) |
 | `GET /v1/models`, `/health`, `/metrics`, `/capabilities` | Discovery, liveness, Prometheus metrics, diagnostics |
 | `/v1/sessions` | Opt-in named sessions that keep a conversation's state between calls |
 

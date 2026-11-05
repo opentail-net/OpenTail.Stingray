@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// resolution (cheap) and a live `ForwardPass.Prefill` if the environment has enough RAM.</summary>
 public sealed class PersonaPlexLmTensorSourceRealWeightsTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     // Real numbers confirmed from the checkpoint's own dumped tensor shapes (2026-09-07, not
     // guessed): hiddenDim/numLayers/ffDim/textVocabSize/lmCodebooks/audioCodebookSize all

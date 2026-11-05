@@ -284,6 +284,10 @@ internal sealed class TokenByTokenEngine : IInferenceEngine
         }
         finally
         {
+            // The consumer can stop while this iterator is suspended at yield return: it is then disposed without the pending
+            // Task.Delay ever throwing, so the catch above never runs. The token the endpoint handed in is what cancellation means
+            // here, whichever way the iterator ends (a Windows CI runner lost this race once: 'cancellation never reached the engine').
+            if (ct.IsCancellationRequested) _cancellationObserved = true;
             Interlocked.Decrement(ref _active);
         }
     }

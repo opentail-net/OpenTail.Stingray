@@ -9,6 +9,11 @@
     <Project Path="samples/OpenTail.Stingray.Sample.Chat/OpenTail.Stingray.Sample.Chat.csproj" />
     <Project Path="samples/OpenTail.Stingray.Sample.HotRouting/OpenTail.Stingray.Sample.HotRouting.csproj" />
     <Project Path="samples/OpenTail.Stingray.Sample.ToolCall/OpenTail.Stingray.Sample.ToolCall.csproj" />
+    <Project Path="samples/ChatServer/ChatServer.csproj" />
+    <Project Path="samples/OpenTail.Stingray.Sample.Diffusion/OpenTail.Stingray.Sample.Diffusion.csproj" />
+    <Project Path="samples/OpenTail.Stingray.Sample.Extract/OpenTail.Stingray.Sample.Extract.csproj" />
+    <Project Path="samples/OpenTail.Stingray.Sample.Speech/OpenTail.Stingray.Sample.Speech.csproj" />
+    <Project Path="samples/QuickStart/QuickStart.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/OpenTail.Stingray.Bench/OpenTail.Stingray.Bench.csproj" />
