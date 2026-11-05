@@ -816,12 +816,14 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task Responses_MissingInput_ReturnsEmptyCompletion()
+    public async Task Responses_MissingInput_IsRejectedWith400_NamingTheField()
     {
-        // Null input → treated as empty user message, should still return 200
+        // A missing input used to become an empty user message (200). It is now a 400 that names the field (the review's defect 1).
         var req = new { model = "test-model", max_output_tokens = 5, stream = false };
         var response = await _client.PostAsJsonAsync("/v1/responses", req);
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("input is required", body);
     }
 
     // ── Thinking-mode request fields ─────────────────────────────────────────
