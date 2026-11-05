@@ -44,7 +44,9 @@ Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes
 
   Found and fixed 2026-11-05: evicting a model in the multi-model server never closed its GGUF mapping, so the working set grew about 1.5 GB per switch between two models (measured with a two-model `singleslot` host: 782 MB -> 2.4 GB -> 4.0 GB over two cycles). `ModelRuntime.Dispose` now disposes the model the server created for it, after the engine and pass, and skips that when a batching engine did not drain. After the fix the same switches grow the working set by about 100-150 MB per cycle (812 MB -> 1.17 GB over four cycles; replies identical). `ModelRuntimeManagerTests` (58) pass.
 
-  Still open: (1) private memory still grows about 130 MB per full cycle (303 -> 701 MB over four), not yet traced; (2) the full 7B shard set; (3) whisper-base, not on disk.
+  Whisper-base (`ggml-base.bin`, SHA-256 checked against the catalog, downloaded to E:): stt peaks at 521-590 MB over 3 runs, so the catalog's "about 500 MB" was raised to about 600 MB. The 7B figure above is not a first-shard figure: the run loads both shards (3.99 GB + 0.69 GB), so 7.9 GB is the whole model.
+
+  Still open: (1) private memory still grows about 130 MB per full cycle of two-model switches (303 -> 701 MB over four), not yet traced to a leak or allocator retention.
 - [x] **E5. API compatibility corpus.** Done 2026-11-05: protocol-smoke now has 63 cases, including streaming, tool definitions, wrong shapes and malformed bodies on chat, messages and responses. Cancellation is not in the corpus (the harness reads whole bodies); `ClientDisconnectTests` covers it. Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
   First step: list the Anthropic and Chat Completions streaming cases not yet in the corpus.
 

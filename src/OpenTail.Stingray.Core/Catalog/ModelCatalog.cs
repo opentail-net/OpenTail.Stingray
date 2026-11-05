@@ -202,7 +202,7 @@ public static class ModelCatalog
             ],
             Licence: "MIT",
             LicenceNeedsConsent: false,
-            Hardware: "about 500 MB RAM, CPU only",
+            Hardware: "about 600 MB RAM, CPU only (measured peak 521-590 MB over 3 runs, 2026-11-05)",
             Speed: "a 2.9 s clip in 1.0-1.5 s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README 'Speak and listen' (word-exact round trip of the Piper sample)",
             RunTemplate: "stingray transcribe <audio.wav>"),
