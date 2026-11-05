@@ -17,6 +17,23 @@ As of 2026-11-05. Start with **Start here**: nothing in it waits on the owner. I
 - [ ] **6. Handoff gaps, Vulkan hybrid:** LongRoPE, sliding-window llama, contexts above 4096, Qwen2.5-7B / Coder / VL. No owner decision recorded. Each needs a passing parity row or a recorded refusal.
 - [ ] **7. Handoff receipts, remaining families:** Phi-3 has no path for fused `attn_qkv` in the hybrid, so it is refused. Granite's scale fields are applied on the hybrid now (P2c, finished); its handoff receipt is not recorded yet. Gemma 2 stays Unverified because soft-capping is not on GPU (owner: no). Decide per family: add the path, or keep the refusal and record it.
 
+## Evidence for the engine (added 2026-11-05, from the external review)
+
+Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes as a merged PR with its own test or report, and its own STATUS or backlog line. Do not start a model-family port, a UI, or a second backend.
+
+- [ ] **E1. Long-running inference stability.** Repeated prompts, long contexts and several sessions, looking for memory growth, stale state, and KV-cache corruption over time. Done when a soak run at temperature 0 gives identical output on every repeat, and resident memory is flat after warm-up.
+  First step: write a soak test on the fake engine in `tests/OpenTail.Stingray.Tests.Core` that loops N prompts and asserts identical output and flat allocations. Then the same loop against a real small model on CPU.
+- [ ] **E2. CPU performance regression gate.** A fixed set of representative models, measured for tokens per second, prefill speed and peak memory. CI fails on a regression past a stated threshold. Done when a deliberate slowdown makes the gate fail.
+  First step: `.github/workflows/ci.yml` already has timing tests (kernel against fallback, scalar against SIMD, a bandwidth gauge), skipped in CI by `OPENTAIL_SKIP_BENCHMARK_TESTS=1`. None of them measures tokens per second on a model. Define the baseline file and the threshold before any measurement.
+- [ ] **E3. Model admission reliability.** Scout, pull and admission against malformed, incomplete, incompatible and interrupted downloads. Failure messages must say what to do. Done when each failure class has a test that checks its message.
+  First step: list the existing pull and download tests, then add the interrupted-download case first.
+- [ ] **E4. Memory and resource accounting.** Check that the RAM and VRAM the catalog and planner advertise match what the runtime peaks at, and that unloading and cancellation release memory. Done when a table of advertised against measured peak exists for the supported models.
+  First step: pick one small CPU model from the catalog and measure its peak against its advertised figure.
+- [ ] **E5. API compatibility corpus.** Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
+  First step: list the Anthropic and Chat Completions streaming cases not yet in the corpus.
+
+Deferred (not in this batch): Vulkan parity expansion, telemetry usefulness, catalogue provenance, documentation usability test. They stay in their plans.
+
 ## Owner action (does not block the list above)
 
 - [ ] **Run once:** `pwsh scripts/qualify-tasks.ps1 -AcceptLicence`. It accepts the research-only Piper voice licence. Until then the speak and transcribe tasks show SKIP. The assistant cannot accept a licence for the owner.
