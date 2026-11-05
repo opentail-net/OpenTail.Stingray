@@ -14,6 +14,12 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
 
 ## Critical Rules & Traps (Do Not Break)
 
+## Git workflow (owner rule)
+
+- Work directly on `main`. Commit and push to `origin/main` when the code works.
+- Do not create feature branches, worktrees or PRs unless the owner asks. If a change seems to need one, ask first.
+- Before editing, check `git branch --show-current` is `main`.
+
 1. **Test Runner `--nologo` Trap**:
    * **Never pass `--nologo` to `dotnet test`**. Microsoft.Testing.Platform (MTP) rejects it with exit 5 and reports *"Zero tests ran"*.
 2. **Fast vs. Heavy Test Suites**:
