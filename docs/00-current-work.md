@@ -29,7 +29,7 @@ Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes
   First step: list the existing pull and download tests, then add the interrupted-download case first.
 - [ ] **E4. Memory and resource accounting.** Check that the RAM and VRAM the catalog and planner advertise match what the runtime peaks at, and that unloading and cancellation release memory. Done when a table of advertised against measured peak exists for the supported models.
   First step: pick one small CPU model from the catalog and measure its peak against its advertised figure.
-- [ ] **E5. API compatibility corpus.** Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
+- [x] **E5. API compatibility corpus.** Done 2026-11-05: protocol-smoke now has 63 cases, including streaming, tool definitions, wrong shapes and malformed bodies on chat, messages and responses. Cancellation is not in the corpus (the harness reads whole bodies); `ClientDisconnectTests` covers it. Extend `protocol-smoke.json` with streaming, cancellation, tool-call and error-format cases for Chat Completions, Responses and Anthropic. Done when every case has a recorded status and error type.
   First step: list the Anthropic and Chat Completions streaming cases not yet in the corpus.
 
 Deferred (not in this batch): Vulkan parity expansion, telemetry usefulness, catalogue provenance, documentation usability test. They stay in their plans.

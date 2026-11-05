@@ -50,5 +50,16 @@
   {"name": "responses: numeric role", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": 123, "content": "hi"}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input[0].role must be a string"},
   {"name": "responses: null content part", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [null]}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "content[0] must be an object"},
   {"name": "responses: numeric text part", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [{"type": "input_text", "text": 5}]}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "content[0].text must be a string"},
-  {"name": "responses: message array is valid", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}], "max_output_tokens": 4}, "status": 200}
+  {"name": "responses: message array is valid", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}], "max_output_tokens": 4}, "status": 200},
+  {"name": "chat: stream true is accepted", "route": "/v1/chat/completions", "body": {"model": "test-model", "max_tokens": 4, "stream": true, "messages": [{"role": "user", "content": "hi"}]}, "status": 200},
+  {"name": "chat: a function tool is accepted", "route": "/v1/chat/completions", "body": {"model": "test-model", "max_tokens": 4, "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]}, "status": 200},
+  {"name": "chat: messages as a string is refused", "route": "/v1/chat/completions", "body": {"model": "test-model", "max_tokens": 4, "messages": "hi"}, "status": 400, "errorType": "invalid_request_error", "messageContains": "messages"},
+  {"name": "chat: malformed JSON is refused", "route": "/v1/chat/completions", "rawBody": "{\"model\":", "status": 400, "errorType": "invalid_request_error"},
+  {"name": "chat: empty body is refused", "route": "/v1/chat/completions", "rawBody": "", "status": 400, "errorType": "invalid_request_error"},
+  {"name": "messages: stream true is accepted", "route": "/v1/messages", "body": {"model": "test-model", "max_tokens": 4, "stream": true, "messages": [{"role": "user", "content": "hi"}]}, "status": 200},
+  {"name": "messages: missing max_tokens is refused", "route": "/v1/messages", "body": {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}, "status": 400, "errorType": "invalid_request_error"},
+  {"name": "messages: messages as a string is refused", "route": "/v1/messages", "body": {"model": "test-model", "max_tokens": 4, "messages": "hi"}, "status": 400, "errorType": "invalid_request_error"},
+  {"name": "messages: malformed JSON is refused", "route": "/v1/messages", "rawBody": "{\"model\":", "status": 400, "errorType": "invalid_request_error"},
+  {"name": "responses: stream true is accepted", "route": "/v1/responses", "body": {"model": "test-model", "input": "hi", "max_output_tokens": 4, "stream": true}, "status": 200},
+  {"name": "responses: malformed JSON is refused", "route": "/v1/responses", "rawBody": "{\"model\":", "status": 400, "errorType": "invalid_request_error"}
 ]
