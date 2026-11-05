@@ -433,7 +433,7 @@ hoc at each read site rather than in one place.
 | Option | Class | Description |
 |---|---|---|
 | `--backend <BACKEND>` |  | Compute backend: auto (default), cpu, or vulkan. |
-| `--model <ID>` |  | Model catalog id (default: piper-lessac). |
+| `--model <ID>` |  | Model catalog id (default: kokoro-82m; piper-lessac is the smaller research-use-only alternative). |
 | `--model-file <PATH>` |  | Direct path to an ONNX voice model file (.onnx) or companion config (.json). |
 | `--output <PATH>` |  | Output destination path (.wav). Default: speech.wav. |
 | `--prompt <TEXT>` |  | Input text to synthesize into speech audio. |

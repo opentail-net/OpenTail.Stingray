@@ -131,7 +131,7 @@ both files of a voice, for example `en_US-lessac-medium.onnx` (63 MB) and
 > **Licence: the Lessac voice is for research use only.** It was trained on the Lessac Blizzard 2013 data, whose terms forbid commercial
 > use and redistribution of the voice (the Piper code itself is MIT). Read the
 > [terms](https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html) before you use it for anything else, or pick
-> another voice with a licence that suits you. `stingray setup speak` asks you to accept this; the code below does not check it.
+> another voice with a licence that suits you. `stingray setup piper-lessac` asks you to accept this; the code below does not check it. (`stingray setup speak` now installs the Kokoro voice, which is Apache-2.0.)
 
 <!-- verify:consumer -->
 ```csharp
@@ -194,7 +194,7 @@ dotnet tool install -g OpenTail.Stingray.Cli
 
 # 1. Download recommended models with verified checksums
 stingray setup chat          # Qwen2.5 0.5B Instruct, 469 MB
-stingray setup speak         # Piper en_US-lessac-medium, 60 MB (asks you to accept the voice data licence)
+stingray setup speak         # Kokoro-82M voice, 135 MB (Apache-2.0); the smaller Piper lessac voice is `stingray setup piper-lessac` and asks you to accept its research-only licence
 stingray setup transcribe    # Whisper base, 141 MB
 stingray models              # check status of installed tasks
 

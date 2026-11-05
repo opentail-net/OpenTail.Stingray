@@ -12,7 +12,7 @@ Related: [kokoro](kokoro.md), [xtts2](xtts2.md), [whisper](whisper.md). Verifica
 | **Synthesis Speed** | **🥇 0.129× Real-Time Factor (RTF)** on standard CPU (~320 ms per 2.5s sentence) |
 | **Phonemizer** | Native managed phoneme map / eSpeak-ng tokenization |
 | **Output Sample Rate** | 22,050 Hz (Medium models) / 16,000 Hz (Low) |
-| **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (`piper-lessac` default speech catalogue bundle) |
+| **Status & Confidence** | 🟢 **Admitted & Golden-Verified** (`piper-lessac`, the smaller research-use-only alternative speech catalogue bundle; the default is now [Kokoro-82M](kokoro.md)) |
 
 ---
 
@@ -68,8 +68,8 @@ Console.WriteLine($"Synthesized {result.Duration.TotalSeconds:F2}s audio in {res
 ### CLI Command
 
 ```bash
-# First-run setup: installs verified piper-lessac voice
-stingray setup speak
+# First-run setup for this voice (the speak default is now Kokoro-82M, so name it): installs the verified piper-lessac voice
+stingray setup piper-lessac
 
 # Generate speech path-free
 stingray speak "Hello from private, on-device AI." -o output.wav
