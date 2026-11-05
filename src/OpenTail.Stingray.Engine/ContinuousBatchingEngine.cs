@@ -927,8 +927,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             {
                 pending.Dequeue();
                 Interlocked.Decrement(ref _pendingCount);
-                req.Output.Writer.TryComplete();
                 ReturnUnstartedRetainedState(req);
+                CompleteCancelled(req.Output.Writer, req.Ct, retained: req.RetainedState is not null);
                 continue;
             }
 
@@ -1173,8 +1173,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             var p = prefilling[i];
             if (p.Req.Ct.IsCancellationRequested)
             {
-                p.Req.Output.Writer.TryComplete();
                 DropPrefilling(prefilling, i);
+                CompleteCancelled(p.Req.Output.Writer, p.Req.Ct, retained: p.RetainedState is not null);
             }
         }
         if (prefilling.Count == 0) return;
@@ -1277,6 +1277,17 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         prefilling.RemoveAt(i);
         Interlocked.Decrement(ref _activeCount);
     }
+
+    /// <summary>
+    /// Ends the output of a request that was cancelled before it produced a chunk (still queued, or between prefill chunks). A retained turn's caller must see
+    /// the cancellation as an exception: the token is marked cancelled before its callbacks run, so the batcher can get here while the caller is parked on the
+    /// channel and its own wake-up has not run yet, and a bare completion ends the caller's loop NORMALLY with no retained turn outcome to read (G6: the turn
+    /// was recorded as Failed instead of Cancelled). Callers publish or release the retained state first, so a caller that wakes on this completion also finds
+    /// it settled. A decode-time cancellation needs no such help: its final chunk is written first, and the caller's next wait sees the cancelled token.
+    /// Non-retained requests keep the plain completion their callers already handle.
+    /// </summary>
+    private static void CompleteCancelled(ChannelWriter<GenerateChunk> output, CancellationToken ct, bool retained) =>
+        output.TryComplete(retained ? new OperationCanceledException(ct) : null);
 
     /// <summary>Releases a retired decode sequence's cache and budget reservation.</summary>
     private void RetireSeq(ActiveSeq seq, bool rollback = false)

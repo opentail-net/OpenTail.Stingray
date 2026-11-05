@@ -98,6 +98,15 @@ public static class OpenAiEndpoints
                         OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
+            catch (NotSupportedException ex)
+            {
+                ctx.Response.StatusCode = ModelLoadRefusal.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
 
             engine = handle.Runtime.Loaded.Engine;
             // A fresh renderer per request (not the DI ChatTemplateRenderer singleton, which is

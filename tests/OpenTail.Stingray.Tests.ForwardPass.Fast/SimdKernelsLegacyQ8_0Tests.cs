@@ -211,6 +211,7 @@ public sealed unsafe class SimdKernelsLegacyQ8_0Tests
     [Fact]
     public void FastKernels_AreFasterThanDequantFallback()
     {
+        BenchmarkGate.SkipWhenDisabled();
         const int rows = 17408, cols = 5120;
         var rng = new Random(0xF457);
 

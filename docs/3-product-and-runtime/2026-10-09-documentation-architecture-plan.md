@@ -1,11 +1,12 @@
 # Documentation Architecture Plan: Grounded Consolidation & Authoritative References
 
+> Completed items moved to [../done/2026-10-09-documentation-architecture-plan-completed-items-2026-10.md](../done/2026-10-09-documentation-architecture-plan-completed-items-2026-10.md) on 2026-10-31. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 ## Checklist (2026-10-30; checked against the repo)
 
 - [ ] Phase 1: audit and assign ownership (the ownership map is in the plan; no audit record found)
 - [ ] Phase 2: correct the public front door (README recipes landed 2026-10-11; see `00-current-work.md` item 3.1; the rest is not re-checked)
 - [ ] Phase 3: consolidate existing user guides and references
-- [x] Phase 4: architecture cards and technical guides (34 files in `docs/models/`, 14 in `docs/guides/`)
 - [ ] Phase 5: documentation index and automated verification (no doc-consistency test found for the status matrix)
 
 > **Status (updated 2026-10-30):** Phase 4 done; Phase 2 partly done; Phases 1, 3 and 5 open (see the checklist above). Originally: Implementation-Ready Plan (Incorporating Review Corrections)  
@@ -60,7 +61,7 @@ To eliminate contradictory drift across documentation, every category of informa
 | **Measured performance, RAM requirements & commands** | [`docs/RUNNING.md`](../RUNNING.md) and [`PerformanceLeague.md`](../../PerformanceLeague.md) | Front door READMEs | Measured wall-clock numbers, batch latencies, TTFA, and peak RAM on defined hardware. |
 | **First-run catalogue bundles & hashes** | `ModelCatalog.cs` in `OpenTail.Stingray.Core` | `stingray setup --help`, [`src/OpenTail.Stingray.Cli/README.md`](../../src/OpenTail.Stingray.Cli/README.md) | Pinned source registry with verified SHA-256 hashes for out-of-the-box bundles (`qwen2.5-0.5b`, `piper-lessac`, `whisper-base`). |
 | **Actual CLI commands & options** | Generated [`docs/reference/cli-option-inventory.md`](../reference/cli-option-inventory.md) | [`src/OpenTail.Stingray.Cli/README.md`](../../src/OpenTail.Stingray.Cli/README.md), task guides | Auto-generated via `gen-cli-option-inventory.ps1`; validated by CLI contract tests. No manual duplicate tables. |
-| **Environment variables & diagnostic flags** | Generated / Regulated [`docs/reference/env-var-inventory.md`](../reference/env-var-inventory.md) | Developer guide, troubleshooting | Reconciled against source registry (`StingrayEnv.cs`). Never maintained as a disconnected manual markdown list. |
+| **Environment variables & diagnostic flags** | Generated / Regulated [`docs/reference/env-var-inventory.md`](../reference/env-var-inventory.md) | Developer guide, troubleshooting | Reconciled against source registry (`KnownEnvironmentVariables.cs`; there is no `StingrayEnv.cs`, see the [reconciliation report](../1-correctness/2026-11-01-documentation-claim-reconciliation-report.md)). Never maintained as a disconnected manual markdown list. |
 | **Step-by-step task workflows** | [`docs/guides/`](../guides/README.md) | `USAGE.md`, CLI README | Task-oriented recipes (chat, speak, transcribe, vision, server hosting). |
 | **Engine internals & architectural decisions** | [`docs/reference/OpenTail.Stingray-Design.md`](../reference/OpenTail.Stingray-Design.md) and ADRs | `DEVELOPMENT.md` | Subsystem architecture, memory management, session lifecycle ADRs. |
 | **Diagnostic & recovery workflows** | [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md) | CLI doctor, server guide | Real failure modes (VRAM exhaustion, missing Vulkan layers, audio clipping, token formatting). |
@@ -210,7 +211,7 @@ Rather than authoring speculative or generic guides, we focus on subjects that p
 
 ### Focused Technical Guides (`docs/guides/`)
 
-1. **`turboquant-kv-cache.md`**: KV cache quantization (FP8, INT4), paged memory allocation, and prefix cache reuse.
+1. **`turboquant-kv-cache.md`**: TurboQuant KV cache compression (the Lloyd-Max and KVarN quantizers; there is no FP8 or INT4 KV mode), and how it relates to the BF16 and F32 KV stores, paged allocation and prefix reuse, which are separate mechanisms ([reconciliation report](../1-correctness/2026-11-01-documentation-claim-reconciliation-report.md), R5).
 2. **`managed-simd-kernels.md`**: Pure C# vectorization using `System.Runtime.Intrinsics`, AVX-512 / AVX2 / Neon dispatch, and cache-conscious GEMM loops.
 3. **`hardware-backends.md`**: Execution backend selection (CPU, Vulkan, CUDA), memory offloading, and shader compilation.
 4. **`api-server-and-endpoints.md`**: Hosting the ASP.NET Core server with OpenAI and Anthropic API compatibility, streaming SSE tokens, and health endpoints.

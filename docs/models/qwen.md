@@ -2,7 +2,7 @@
 
 [← Back to Architecture Cards](README.md)
 
-Related: [Qwen3.5 / 3.6 / 3.8 hybrid card](qwen35.md), [Qwen-VL](qwen-vl.md), [Qwen Audio](qwen-audio.md), [Qwen Series (older overview)](qwen-series.md). Measured commands: [RUNNING.md](../RUNNING.md); verification: [STATUS.md](../STATUS.md).
+Related: [Qwen3.5 / 3.6 / 3.8 hybrid card](qwen35.md), [Qwen-VL](qwen-vl.md), [Qwen Audio](qwen-audio.md). Measured commands: [RUNNING.md](../RUNNING.md); verification: [STATUS.md](../STATUS.md).
 
 | Property | Value |
 |---|---|
@@ -115,3 +115,25 @@ stingray chat
 # Or run with explicit model and GPU offloading
 stingray -m models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf -g -1 --backend vulkan
 ```
+
+---
+
+## 6. Qwen 2.5 checkpoints (merged from the Qwen Series overview)
+
+| Model | Parameters | Context | Recommended Quantization | Typical Size | Hugging Face Repository |
+|---|---|---|---|---|---|
+| **Qwen2.5-0.5B-Instruct** | 0.5B | 32,768 | `Q4_K_M` / `Q8_0` | ~398 MB / ~530 MB | [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) |
+| **Qwen2.5-1.5B-Instruct** | 1.5B | 32,768 | `Q4_K_M` / `Q8_0` | ~986 MB / ~1.6 GB | [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) |
+| **Qwen2.5-7B-Instruct** | 7.6B | 32,768 | `Q4_K_M` / `Q8_0` | ~4.7 GB / ~8.1 GB | [Qwen/Qwen2.5-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF) |
+| **Qwen2.5-Coder-7B-Instruct** | 7.6B | 32,768 | `Q4_K_M` | ~4.7 GB | [Qwen/Qwen2.5-Coder-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF) |
+| **Qwen2.5-14B-Instruct** | 14.7B | 32,768 | `Q4_K_M` | ~9.0 GB | [Qwen/Qwen2.5-14B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF) |
+| **Qwen2.5-32B-Instruct** | 32.5B | 32,768 | `Q4_K_M` | ~19.8 GB | [Qwen/Qwen2.5-32B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GGUF) |
+| **Qwen2.5-72B-Instruct** | 72.7B | 32,768 | `Q4_K_M` | ~43.5 GB | [Qwen/Qwen2.5-72B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-72B-Instruct-GGUF) |
+
+---
+
+## 7. Qwen 2.5 verification evidence (merged from the Qwen Series overview)
+
+- **Golden Parity:** Verified token-by-token against `llama-cli` on `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` and `Qwen2.5-7B-Instruct-Q4_K_M.gguf`.
+- **Fast Forward Pass Tests:** `QwenForwardPassTests` in `tests/OpenTail.Stingray.Tests.ForwardPass.Fast`.
+- **Measured CPU Speed:** 60–70 tokens/sec on Ryzen 7 5700G (0.5B model, AVX2).

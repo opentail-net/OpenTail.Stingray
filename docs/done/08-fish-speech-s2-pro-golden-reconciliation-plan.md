@@ -1,7 +1,7 @@
 # Plan: Fish Speech S2 Pro correctness-test reconciliation
 
 **Entry in:** `docs/1-correctness/bugstofix.md`, item **08** (Fish Speech S2 Pro correctness-test
-reconciliation). Also informed by the 2026-09-27 `docs/103-quickest-first-plan.md` Audio sweep. This
+reconciliation). Also informed by the 2026-09-27 `docs/done/103-quickest-first-plan-merged-2026-11-01.md` Audio sweep. This
 is first a test/oracle reconciliation task, not a presumed product regression in `d377049`.
 
 ## Goal and scope
@@ -215,7 +215,7 @@ The final coverage should prove each claim with an appropriate test:
 
 Update this plan, `docs/1-correctness/bugstofix.md`, and the Fish Speech row in `docs/STATUS.md` with
 the actual corrected test results and any genuine remaining defects. Preserve the 2026-09-27
-`docs/103-quickest-first-plan.md` entry as a dated record of what the sweep observed and suspected at
+`docs/done/103-quickest-first-plan-merged-2026-11-01.md` entry as a dated record of what the sweep observed and suspected at
 the time; do not rewrite it to imply that the historical suspicion was already disproved then.
 
 ## What not to do

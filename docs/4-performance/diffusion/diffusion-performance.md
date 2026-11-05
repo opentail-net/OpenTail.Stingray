@@ -1,5 +1,7 @@
 # Diffusion performance: owner file
 
+> Completed items moved to [../../done/diffusion-performance-completed-items-2026-10.md](../../done/diffusion-performance-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
+
 **Owner:** this file (2026-10-30). It replaces four separate plans, which are kept below verbatim, one per part:
 
 1. **Part 1, umbrella plan** (was `094-diffusion-performance-plan.md`): ground rules, phases 6 and 9, working log.
@@ -195,11 +197,6 @@ of seconds.
 
 **Its core recommendation, in priority order — do NOT skip straight to changing tile sizes**:
 
-
-
-
-
-
 ### Practical notes for whoever picks this up
 
 - **No subagents** — do all work directly in the main session for this project (this project's
@@ -268,7 +265,6 @@ of seconds.
 - **Baseline Total Time**: 858.4s (DiT loop: 756.1s)
 - **Optimized Total Time**: **374.7s** (**2.29× overall speedup**, DiT loop ~272s, **2.78× DiT speedup**)
 - **Numerical Parity**: 100% verified against CPU reference across all 57 blocks (`FluxGpuVsCpuForwardBisectDebugTest` passing in 72s).
-
 
 ---
 
@@ -396,8 +392,6 @@ own evidence disagreed or added nuance)
       correctly-prioritized next real work — exactly where the plan's own decision rule said to
       look if GEMM throughput came back clean.
 
-
-
 #### Phase 1 — cheap, concrete removals (low effort, real, no new shader math)
 
 - [ ] **Apply the same row-offset idea anywhere else a materialize-then-immediately-consume
@@ -407,11 +401,9 @@ own evidence disagreed or added nuance)
 #### Phase 2 — kernel fusion (medium effort, real shader-authoring work, do only after Phase 0
 data justifies it)
 
-
 #### Phase 3 — weight-representation change (high effort, potentially the largest structural win)
 
 The completed Phase 3 items moved to [done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md](../../done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md). The open FP16-tile work is Part 2 of [vulkan-gemm.md](../gpu/vulkan-gemm/vulkan-gemm.md).
-
 
 ### Explicitly deferred / rejected by the review, with reasoning preserved
 
@@ -438,14 +430,11 @@ now, in order, before any Phase 1+ code changes.
 
 ### Checklist (2026-10-30; checked against the log)
 
-- [x] SD1.5, SDXL-Turbo, SDXL base (1024), FLUX.1-schnell, Z-Image-Turbo, SD3.5 Medium (section A "already done")
-- [x] Wan 2.1 one frame (CPU); LTX-Video one frame (abstract output)
 - [ ] Qwen Image Q3_K_S at 512x512 on the GPU (section A order 1; first attempt hit the 20-minute cap on CPU)
 - [ ] Wan 2.2 14B, one frame, 256x256
 - [ ] HunyuanVideo 720 fp8, one frame, 256x256
 - [ ] FLUX.2-dev + Mistral-Small-3.2-24B, 512x512 (never run before)
 - [ ] B0 workload: built and under test (status 2026-10-10)
-- [x] B1 baseline: measured results section (Qwen Image Q3_K_S, 60/60 blocks resident)
 - [ ] B2 instrument, B3 candidate optimisations, B4 A/B protocol on each change
 - [ ] B5 iGPU limits recorded (not a discrete-GPU result)
 
@@ -607,10 +596,8 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../research/2026-1
 ### Open items
 
 - [ ] Remaining image samples, in order: Qwen Image Q3_K_S at 512x512 on the GPU (the first attempt hit the 20-minute CPU cap); Wan 2.2 14B one frame; HunyuanVideo 720 fp8 one frame; FLUX.2-dev with Mistral-Small-3.2-24B at 512x512
-- [x] Qwen Image text conditioning integration: wired per the STATUS row (2026-09-27)
 - [ ] Five-run median for the Phase 1 plus 2(c) checkpoint
 - [ ] FP16-tile phases 3 (new tiled kernel family; carries the numerics decision), 4 and 5
-- [x] STATUS row for Qwen Image exists (2026-09-27); re-check it when the Q3_K_S 512x512 GPU sample lands
 
 ### Decisions for the owner
 

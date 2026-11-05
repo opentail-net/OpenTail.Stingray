@@ -527,7 +527,8 @@ public sealed unsafe partial class ForwardPass
                     // correctly take the dense path even though the model overall IsMoE.
                     bool layerIsMoe = IsMoeLayer(layer);
                     float* ffnOut = layerIsMoe ? batchMoeOut : batchNorm;
-                    if (layerIsMoe)
+                    bool parallelDenseMoe = layerIsMoe && _hp.ParallelDenseMoe;
+                    if (layerIsMoe && !parallelDenseMoe)
                     {
                         MoeFfnBatched(layer, batchNorm, batchMoeOut, N);
                     }
@@ -618,6 +619,10 @@ public sealed unsafe partial class ForwardPass
                                 SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
                         }
                     }
+                    // Gemma 4 26B-A4B: the dense FFN above left its output in batchNorm; add the routed experts (from the raw post-attention
+                    // residual rows) into batchMoeOut.
+                    if (parallelDenseMoe)
+                        Gemma4MoeBatched(layer, batchResidual, batchNorm, batchMoeOut, N);
                     if (profPrefill)
                     {
                         long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;

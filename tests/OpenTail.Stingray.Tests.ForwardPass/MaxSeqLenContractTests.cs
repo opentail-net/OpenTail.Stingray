@@ -26,21 +26,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class MaxSeqLenContractTests : HeavyTestBase
 {
-    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var candidate = Path.Combine(dir, "models", filename);
-            if (File.Exists(candidate)) return candidate;
-            var candidateNested = Path.Combine(dir, "models", "_models", filename);
-            if (File.Exists(candidateNested)) return candidateNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf") => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(filename);
 
     /// <summary>
     /// Ask for far more context than the model was trained for. The engine clamps its scratch and
