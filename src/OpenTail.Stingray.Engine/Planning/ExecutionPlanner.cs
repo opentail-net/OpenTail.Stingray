@@ -30,6 +30,16 @@ public static class ExecutionPlanner
         var (selectedBackend, backendDeviceName) = SelectBackend(
             model, request, capabilities, decisions, warnings);
 
+        // An explicit GPU request that the architecture cannot honour runs on the CPU (the descriptor says so); say that instead of
+        // dropping it silently. Only when the user did not pin a backend of their own.
+        if (selectedBackend == ForwardPassBackend.Cpu && request.PinnedGpuLayers is { } pinnedLayers && pinnedLayers != 0
+            && (string.IsNullOrEmpty(request.PinnedBackend) || string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
+            && ArchitectureRegistry.Find(model.Semantics.Architecture) is { } cpuOnly
+            && (cpuOnly.Capabilities.Backends & (SupportedBackends.Cuda | SupportedBackends.Vulkan)) == 0)
+        {
+            warnings.Add(CpuOnlyArchitectureWarningPrefix + $"GPU layers were requested ({pinnedLayers}) but '{model.Semantics.Architecture}' runs on the CPU: {cpuOnly.BackendLimitation}");
+        }
+
         // 2. Context Size Selection
         int ctxSize = ResolveContextSize(
             model.PlanningFacts, resolvedGoal, request.PinnedContextSize, decisions, warnings);
@@ -228,7 +238,8 @@ public static class ExecutionPlanner
             SupportsEmbeddingInput: model.Capabilities.SupportsEmbeddingInput,
             MmprojPath: request.MmprojPath);
 
-        double estVramMb = (placementResult.GpuWeightBytes + placementResult.GpuKvBytes) / (1024.0 * 1024.0);
+        double estVramMb = (placementResult.GpuWeightBytes + placementResult.GpuKvBytes
+            + MtpHeadAcceleratorBytes(model.PlanningFacts, selectedBackend, placementResult.GpuLayers, ctxSize)) / (1024.0 * 1024.0);
         double estRamMb = placementResult.CpuWeightBytes / (1024.0 * 1024.0);
 
         var memoryPlan = new MemoryPlan(
@@ -363,6 +374,20 @@ public static class ExecutionPlanner
     /// Resolves KV store, speculation, prefill and SnapKV settings into concrete values (unspecified request fields take the
     /// engine default). Parses nothing from the environment: frontends bridge env into the request first.
     /// </summary>
+    /// <summary>
+    /// Accelerator bytes the Vulkan hybrid-GDN pass spends on the checkpoint's MTP/NEXTN head: its weights plus the head's own F32 K and V
+    /// cache for the planned context (VulkanHybridGdnForwardPass.EstimateMtpHeadGpuBytes). The pass loads the head whenever the tensors exist,
+    /// whether or not speculation is enabled, so this does not depend on the MTP setting. 0 for the CPU, for other backends (CUDA's
+    /// layout is not modelled here), for a plan with no GPU layers, and for a model without a head. A lower bound: the head's small
+    /// fixed scratch buffers are not counted.
+    /// </summary>
+    internal static long MtpHeadAcceleratorBytes(ModelPlanningFacts facts, ForwardPassBackend backend, int gpuLayers, int contextSize)
+    {
+        if (backend != ForwardPassBackend.Vulkan || gpuLayers <= 0 || !facts.IsHybridSsm || facts.MtpHeadGpuBytes <= 0) return 0;
+        long kv = 2L * contextSize * facts.NumKvHeads * facts.HeadDim * sizeof(float);
+        return facts.MtpHeadGpuBytes + kv;
+    }
+
     private static EngineTuning ResolveTuning(ExecutionRequest request)
     {
         KvStoreMode store = request.KvStore?.Trim().ToLowerInvariant() switch
@@ -401,6 +426,9 @@ public static class ExecutionPlanner
 
     private static string KvDtypeEnvName(string pinned) => ExecutionPlan.KvDtypeToEnvValue(pinned);
 
+    /// <summary>Prefix of the plan warning raised when explicit GPU layers are overridden because the architecture is CPU-only.</summary>
+    public const string CpuOnlyArchitectureWarningPrefix = "cpu_only_architecture: ";
+
     private static (ForwardPassBackend Backend, string DeviceName) SelectBackend(
         ModelDescription model,
         ExecutionRequest request,
@@ -411,6 +439,18 @@ public static class ExecutionPlanner
         var descriptor = ArchitectureRegistry.Find(model.Semantics.Architecture);
         bool archSupportsCuda = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Cuda) != 0;
         bool archSupportsVulkan = descriptor is null || (descriptor.Capabilities.Backends & SupportedBackends.Vulkan) != 0;
+
+        // A checkpoint-level limit (the architecture's accelerator passes do not implement this checkpoint's layers).
+        if (model.PlanningFacts.CpuOnlyReason is { } cpuOnlyReason)
+        {
+            archSupportsCuda = false;
+            archSupportsVulkan = false;
+            if (!string.IsNullOrEmpty(request.PinnedBackend)
+                && request.PinnedBackend.Trim().ToLowerInvariant() is "cuda" or "vulkan")
+                throw new NotSupportedException($"This '{model.Semantics.Architecture}' checkpoint cannot run on the {request.PinnedBackend.Trim().ToLowerInvariant()} backend: {cpuOnlyReason}.");
+            decisions.Add(new("BACKEND", "cpu", "This checkpoint runs on the CPU only: " + cpuOnlyReason + ".", "auto_planner"));
+            return (ForwardPassBackend.Cpu, "CPU Host");
+        }
 
         if (!string.IsNullOrEmpty(request.PinnedBackend) &&
             !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))

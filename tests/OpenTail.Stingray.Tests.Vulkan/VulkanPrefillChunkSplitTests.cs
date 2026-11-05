@@ -16,19 +16,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// </remarks>
 public sealed class VulkanPrefillChunkSplitTests : HeavyTestBase
 {
-    private static string? FindModelPath()
-    {
-        var dir = AppDomain.CurrentDomain.BaseDirectory;
-        while (dir is not null)
-        {
-            var p = Path.Combine(dir, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
 
     private static VulkanBackend? TryCreate()
     {

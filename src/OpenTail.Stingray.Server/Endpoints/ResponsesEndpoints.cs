@@ -29,13 +29,18 @@ public static class ResponsesEndpoints
         }
         catch
         {
-            ctx.Response.StatusCode = 400;
+            await WriteBadRequestAsync(ctx, "The request body is not valid JSON.");
             return;
         }
 
         if (req is null)
         {
-            ctx.Response.StatusCode = 400;
+            await WriteBadRequestAsync(ctx, "The request body must be a JSON object.");
+            return;
+        }
+        if (RequestParameterValidation.ValidateResponses(req) is { } invalid)
+        {
+            await WriteBadRequestAsync(ctx, invalid);
             return;
         }
 
@@ -68,6 +73,15 @@ public static class ResponsesEndpoints
                 ctx.Response.StatusCode = 503;
                 return;
             }
+            catch (NotSupportedException ex)
+            {
+                ctx.Response.StatusCode = ModelLoadRefusal.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse(ModelLoadRefusal.ErrorType, ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
 
             engine = handle.Runtime.Loaded.Engine;
             chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);
@@ -96,10 +110,8 @@ public static class ResponsesEndpoints
         }
         catch (ChatTemplateException)
         {
-            // The template rejected the message list (e.g. non-alternating roles) — bad input,
-            // not a server fault. This endpoint reports plain status codes, matching the JSON
-            // handling directly above.
-            ctx.Response.StatusCode = 400;
+            // The template rejected the message list (e.g. non-alternating roles) — bad input, not a server fault.
+            await WriteBadRequestAsync(ctx, "The chat template rejected the message list (for example roles that do not alternate).");
             return;
         }
 
@@ -142,8 +154,13 @@ public static class ResponsesEndpoints
 
             var sb = new StringBuilder();
             long tokenCount = 0;
-            await foreach (var token in engine.GenerateAsync(prompt, sp, ctx.RequestAborted))
+            int promptTokens = 0;
+            await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
             {
+                // The engine reports the prompt size out of band, as a usage chunk; only text chunks are the answer.
+                if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
+                if (chunk.Kind != GenerateChunkKind.Text) continue;
+                string token = chunk.Text;
                 timing.MarkAdmitted();
                 timing.MarkFirstToken();
                 tokenCount++;
@@ -170,7 +187,7 @@ public static class ResponsesEndpoints
                 JsonSerializer.Serialize(itemDoneEvent, OpenTailStingrayJsonContext.Default.RespOutputItemDoneEvent));
 
             // response.completed
-            var usage = new RespUsage(0, (int)tokenCount, (int)tokenCount);
+            var usage = new RespUsage(promptTokens, (int)tokenCount, promptTokens + (int)tokenCount);
             var completedResp = new RespObject(responseId, "response", createdAt, modelId, "completed",
                 [finalItem], usage);
             var completedEvent = new RespCompletedEvent("response.completed", completedResp);
@@ -186,16 +203,19 @@ public static class ResponsesEndpoints
         {
             var sb = new StringBuilder();
             long tokenCount = 0;
-            await foreach (var token in engine.GenerateAsync(prompt, sp, ctx.RequestAborted))
+            int promptTokens = 0;
+            await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
             {
+                if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
+                if (chunk.Kind != GenerateChunkKind.Text) continue;
                 timing.MarkAdmitted();
                 timing.MarkFirstToken();
                 tokenCount++;
-                sb.Append(token);
+                sb.Append(chunk.Text);
             }
 
             string text = sb.ToString();
-            var usage = new RespUsage(0, (int)tokenCount, (int)tokenCount);
+            var usage = new RespUsage(promptTokens, (int)tokenCount, promptTokens + (int)tokenCount);
             var item = new RespOutputItem(itemId, "message", "assistant",
                 [new RespContentPart("output_text", text)]);
             timing.MarkGenerationComplete();
@@ -264,6 +284,16 @@ public static class ResponsesEndpoints
         return list;
     }
 
+    /// <summary>A 400 with the same error body the chat endpoints send (the flat type and message fields plus the nested error object), so a client can read why.</summary>
+    private static async Task WriteBadRequestAsync(HttpContext ctx, string message)
+    {
+        ctx.Response.StatusCode = 400;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+            ctx.RequestAborted);
+    }
+
     private static async Task WriteEvent(HttpResponse response, string eventType, string data)
     {
         await response.WriteAsync($"event: {eventType}\ndata: {data}\n\n",
@@ -282,7 +312,9 @@ public sealed record ResponsesRequest(
     float? Temperature,
     float? TopP,
     bool? Stream,
-    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] bool? OpentailTiming = null);
+    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] bool? OpentailTiming = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("tools")] JsonElement? Tools = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("previous_response_id")] string? PreviousResponseId = null);
 
 public sealed record RespObject(
     string Id,

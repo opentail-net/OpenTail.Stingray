@@ -57,3 +57,43 @@ Carried from [../done/101-work-queue-after-coverage-plan.md](../done/101-work-qu
 For every row: record commit SHA, exact model hash/quantization, backend/device/driver, command,
 warm-up protocol, repeated samples, numerical or token-parity result, and whether concurrent
 workloads were present. A result from another machine is evidence only for that recorded setup.
+
+## Moved from plan docs (2026-11-01)
+
+Hardware-only verification items taken out of the plans so that the plans carry only work that can run here. Each entry names its source; the source keeps a pointer.
+
+> from: `docs/2026-10-31-autonomous-plan-2.md`
+  - [ ] P2d (blocked: no NVIDIA hardware) The CUDA full and hybrid passes have no reference to the residual or logit scale either, and the new guard does not cover them; confirm on a machine with a CUDA GPU before relying on Granite or Gemma 3 there
+
+> from: `docs/2026-10-31-autonomous-plan-3.md`
+  - [ ] `startPos > 0` on the CUDA hybrid (CUDA cannot be tested here; the code change would mirror the Vulkan hybrid one)
+
+> from: `docs/2026-10-31-autonomous-plan-3.md`
+- [ ] **P2d** CUDA passes have no scale references (blocked: no NVIDIA hardware)
+
+> from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`
+- [ ] Phase 1 CUDA variant: written, compiles, never run (no NVIDIA GPU here; code: `CudaHybridPrefillHandoff.cs`)
+
+> from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`
+- [ ] Phase 6: discrete-GPU decode miss split and device-side cache decisions
+
+> from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`
+- [ ] Decision for the user: a discrete-GPU machine for Phase 3/4 speed measurement
+
+> from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`
+- [ ] CUDA variant: run on an NVIDIA machine
+
+> from: `docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md`
+- [ ] Phase 6 (discrete GPU only)
+
+> from: `docs/00-current-work.md`
+  - [ ] **CUDA items:** (`rope_freqs` for Llama-3.1-style models; M-RoPE image positions + deepstack in `CudaForwardPass`, done for Vulkan 2026-09-28) blocked on CUDA GPU.
+
+> from: `docs/00-current-work.md`
+  - [ ] **Discrete-GPU performance items** (from 15, 2026-09-28): Vulkan batched prefill, FLUX.1/FLUX.2 double-block GEMM and fusion (attention shader and audits: measurable on the iGPU but only pays off on a discrete GPU, see item 15), TTS/ASR GPU residency. This machine's iGPU shares DRAM with the CPU and trails it on prefill-shaped work, so a result here would not say whether the GPU code is good (CLAUDE.md rule 13). Blocked on a machine with a discrete GPU.
+
+> from: `docs/2-coverage/2026-10-03-streamed-residency-plan.md`
+- [ ] CUDA streamed path (not done)
+
+> from: `docs/4-performance/2026-10-10-inference-improvement-leads-plan.md`
+- [ ] **A10** CUDA decode attention (`llm_attention`, `_bf16`, `_q8_0`) has the identical one-block-per-head, one-thread-per-key structure; needs an NVIDIA machine to measure before porting.

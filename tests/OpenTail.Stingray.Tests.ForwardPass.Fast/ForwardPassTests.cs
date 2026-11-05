@@ -34,62 +34,8 @@ public sealed class ForwardPassTests
         public void Dispose() { }
     }
 
-    private sealed class IsolatedStatefulForwardPass : IForwardPass
-    {
-        // Shared immutable weights
-        private readonly float[] _sharedWeights;
-
-        public int VocabSize => _sharedWeights.Length;
-        public int MaxSeqLen => 2048;
-
-        // Isolated mutable decode state
-        public int Position { get; private set; }
-        public int Token { get; private set; }
-
-        public IsolatedStatefulForwardPass(float[] sharedWeights)
-        {
-            _sharedWeights = sharedWeights;
-        }
-
-        public IForwardPass CreateContext() => new IsolatedStatefulForwardPass(_sharedWeights);
-
-        public ReadOnlySpan<float> Forward(int token, int position)
-        {
-            Token = token;
-            Position = position;
-            return _sharedWeights;
-        }
-
-        public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
-        {
-            Position = startPos + tokens.Count;
-            return _sharedWeights;
-        }
-
-        public void TruncateTo(int position) => Position = position;
-        public void ResetCache() => Position = 0;
-        public void Dispose() { }
-    }
 
 
-    [Fact]
-    public void IForwardPass_OverriddenCreateContext_ProducesIsolatedExecutionContext()
-    {
-        // Issue #010: Stateful implementations override CreateContext() to return an isolated execution context.
-        var weights = new float[] { 0.1f, 0.5f, 0.9f };
-        var parent = new IsolatedStatefulForwardPass(weights);
-        var child = (IsolatedStatefulForwardPass)parent.CreateContext();
-
-        Assert.NotSame(parent, child);
-
-        // Generating on child updates child state without affecting parent
-        child.Forward(token: 99, position: 5);
-        Assert.Equal(99, child.Token);
-        Assert.Equal(5, child.Position);
-
-        Assert.Equal(0, parent.Token);
-        Assert.Equal(0, parent.Position);
-    }
 
     [Fact]
     public void IForwardPass_ForwardArgmax_StrictTieBreakingAndPeakLogitContract()

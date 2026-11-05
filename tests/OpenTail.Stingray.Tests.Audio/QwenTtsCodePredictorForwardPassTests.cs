@@ -11,21 +11,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class QwenTtsCodePredictorForwardPassTests : HeavyTestBase
 {
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p) && new FileInfo(p).Length > 50L * 1024 * 1024) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested) && new FileInfo(pNested).Length > 50L * 1024 * 1024) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
     public void ForwardPass_ConstructsAndRuns_AgainstRealQwenTtsCodePredictorGguf()

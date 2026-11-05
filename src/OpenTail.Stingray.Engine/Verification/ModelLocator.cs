@@ -80,13 +80,59 @@ public static class ModelLocator
     }
 
     /// <summary>
+    /// Every existing copy of the named files across all roots, in search order, one entry per distinct path. For callers that must tell copies of the
+    /// same file name apart (two checkpoints can share a name and a size on different drives and still differ).
+    /// </summary>
+    public static IReadOnlyList<string> FindAll(params string[] fileNames) => FindAll(Roots(), fileNames);
+
+    /// <summary>As <see cref="FindAll(string[])"/> over an explicit root list.</summary>
+    public static IReadOnlyList<string> FindAll(IEnumerable<string> roots, IEnumerable<string> fileNames)
+    {
+        var found = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rootList = roots as IReadOnlyList<string> ?? roots.ToList();
+        foreach (var name in fileNames)
+            foreach (var root in rootList)
+            {
+                string candidate = Path.Combine(root, name);
+                if (File.Exists(candidate) && seen.Add(Path.GetFullPath(candidate))) found.Add(candidate);
+            }
+        return found;
+    }
+    /// <summary>
+    /// <see cref="Find(string[])"/>, then one sub-folder level under every root: checkpoints are often kept in a folder of their own
+    /// (<c>_models\lfm2-8b-a1b\LFM2-8B-A1B-Q4_K_M.gguf</c>). A direct hit in any root always wins over a nested one.
+    /// </summary>
+    public static string? FindDeep(params string[] fileNames) => FindDeep(Roots(), fileNames);
+
+    /// <summary>As <see cref="FindDeep(string[])"/> over an explicit root list.</summary>
+    public static string? FindDeep(IEnumerable<string> roots, IEnumerable<string> fileNames)
+    {
+        var rootList = roots as IReadOnlyList<string> ?? roots.ToList();
+        var names = fileNames as IReadOnlyList<string> ?? fileNames.ToList();
+        if (Find(rootList, names) is { } direct) return direct;
+        foreach (var name in names)
+            foreach (var root in rootList)
+            {
+                IEnumerable<string> subs;
+                try { subs = Directory.EnumerateDirectories(root).ToList(); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+                foreach (var sub in subs)
+                {
+                    string candidate = Path.Combine(sub, name);
+                    if (File.Exists(candidate)) return candidate;
+                }
+            }
+        return null;
+    }
+    /// <summary>
     /// <see cref="Find(string[])"/>, but a miss is announced on stderr with the names wanted and the folders searched, so a skipped test
     /// says why instead of silently reporting a pass (CLAUDE.md rule 12).
     /// </summary>
     public static string? FindOrReport(params string[] fileNames)
     {
         var roots = Roots();
-        string? path = Find(roots, fileNames);
+        string? path = FindDeep(roots, fileNames);
         if (path is null) Console.Error.WriteLine(DescribeMiss(fileNames, roots));
         return path;
     }

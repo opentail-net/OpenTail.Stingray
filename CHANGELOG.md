@@ -9,6 +9,10 @@ human-facing map that a raw commit graph cannot.
 Ported from the upstream SharpInference snapshot in `examples/SharpInference08086`. **Not part of the
 1.0.3 packages**, which were built from the release-candidate commit before this work.
 
+### Removed
+
+- **`IForwardPass.CreateContext()`** (a default interface member that returned `this`; no backend ever overrode it and nothing in the library called it). This is a source and binary break for any code that called it on an `IForwardPass`; a class that happened to define its own `CreateContext()` method keeps compiling, an explicit interface implementation of it does not. Session forking never used it: it goes through `HotSessionRuntime.Fork` and the reference-counted KV cache. `Model.CreateContext(...)` (the public API entry point) is unrelated and unchanged.
+
 ### Changed
 
 - **`/metrics` names are now valid Prometheus identifiers.** The lifetime counters and gauges were emitted as `opentail-llm_*` (a hyphen is not allowed in a Prometheus metric name); they are now `opentail_llm_*`, matching the rest of the page. `stingray status` reads both spellings. Dashboards or alerts that used the hyphenated names must be updated.
@@ -62,6 +66,8 @@ Ported from the upstream SharpInference snapshot in `examples/SharpInference0808
 
 ### Fixed
 
+- **Accelerator admission was fed too small a figure.** The estimate left out the KV cache and scratch, and the planner's per-layer weight sum did not know the tensors of hybrid Gated-DeltaNet / SSM layers or a fused QKV (`attn_qkv`, `attn_gate`, `ssm_*`: 195 MiB of Qwen3.5-0.8B), so a hybrid model counted for about half of what the device holds. The estimate is now weights plus KV plus scratch, from one function used for both the pre-load candidate and the loaded runtime, and the per-layer sum counts those tensors when present. Still a lower bound: Vulkan holds a non-Q4_K/Q6_K/Q3_K output head as F32, which the planner does not model yet.
+- **A retained turn cancelled while queued or between prefill chunks could be recorded as Failed instead of Cancelled.** The engine completed the request's output with no exception before publishing the rolled-back turn, so a caller that woke on the completion before its own cancellation callback saw a clean end and no turn outcome ("completed without a retained turn outcome"). The channel now completes with an `OperationCanceledException` for retained requests, after their state is settled. Seen once on CI and about once in 4,000 randomly timed cancels locally.
 - **Prefix-cache reuse could rewind into compressed or overwritten KV.** Two distinct defects, both
   producing silent corruption or a crash:
   - TurboQuant compresses KV in place once it leaves the FP32 recent window, so those positions

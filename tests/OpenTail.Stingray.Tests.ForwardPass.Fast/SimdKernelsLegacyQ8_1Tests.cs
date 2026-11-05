@@ -116,6 +116,7 @@ public sealed unsafe class SimdKernelsLegacyQ8_1Tests
     [Fact]
     public void FastKernels_AreFasterThanDequantFallback()
     {
+        BenchmarkGate.SkipWhenDisabled();
         const int rows = 17408, cols = 5120;
         const int MaxAttempts = 3;
         const double MinSpeedup = 1.0;

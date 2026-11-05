@@ -24,7 +24,11 @@ namespace OpenTail.Stingray.Engine;
 /// sequential GPU prefill applies, but it is a conversion, so tests compare the downloaded words with an independent
 /// <see cref="Half"/> packing of the CPU cache, and decode agreement is tested end to end. Q8_0 KV is refused.</para>
 ///
-/// <para>All the other rules of the hybrid handoff apply: fresh sequences only, F32 CPU prefill cache, evidence-based family
+/// <para>A later turn (<c>startPos &gt; 0</c>) is handed off too, except on Gemma 4: the GPU's earlier K/V rows are read back as F32
+/// (fp16 rows widen exactly, so packing them again is lossless) into the temporary CPU cache, the CPU pass prefills only the new
+/// tokens against that history, and all rows are handed back (<see cref="SeedPrefillCache"/>).</para>
+///
+/// <para>All the other rules of the hybrid handoff apply: F32 CPU prefill cache, evidence-based family
 /// list, memory budget, single owner (see <see cref="HybridForwardPass"/>'s handoff file).</para>
 /// </summary>
 public sealed unsafe partial class GpuForwardPass
@@ -65,9 +69,10 @@ public sealed unsafe partial class GpuForwardPass
     {
         if (!CpuPrefillEnabled) return "disabled (STINGRAY_GPU_CPU_PREFILL=0)";
         if (_cpuPrefillBroken) return _cpuPrefillBrokenReason;
-        if (startPos != 0) return "startPos != 0 (a CPU pass built here does not hold the earlier turns' K/V)";
+        if (startPos < 0 || startPos > _kvLength) return $"startPos {startPos} is beyond the {_kvLength} K/V rows the GPU holds";
+        if (startPos != 0 && _isGemma4) return "startPos != 0 on Gemma 4 (per-layer head dimensions and aliased KV layers are not read back)";
         if (n < CpuPrefillMinTokens) return $"prompt shorter than {CpuPrefillMinTokens} tokens";
-        if (n > _maxSeqLen) return "prompt longer than the context";
+        if (startPos + n > _maxSeqLen) return "prompt longer than the context";
         if (!_isMoE && !_isGemma4) return "dense model: the GPU batched trunk handles prefill (nothing here is measured for dense on a fast GPU)";
         if (_canBatchedTrunk) return "the GPU batched trunk is available";
         if (_tqEnabled) return "TurboQuant KV is active";
@@ -81,13 +86,13 @@ public sealed unsafe partial class GpuForwardPass
         if (_kvDType is not (DType.Float32 or DType.BFloat16)) return $"GPU KV dtype {_kvDType} has no handoff conversion";
         if (_settings.Kv.RoundBf16) return "STINGRAY_KV_DTYPE=bf16 rounds every KV write; exact F32 K/V cannot be guaranteed";
         if (KvHandoff.FamilyRefusal(_model, _settings.Prefill.GpuCpuPrefill, HandoffPath.VulkanFullGpu) is { } familyRefusal) return familyRefusal;
-        long kvBytes = KvHandoff.TemporaryKvBytes(n, _numKvHeads, _isGemma4 ? _maxHeadDim : _headDim, _hp.NumLayers);
+        long kvBytes = KvHandoff.TemporaryKvBytes(startPos + n, _numKvHeads, _isGemma4 ? _maxHeadDim : _headDim, _hp.NumLayers);
         if (kvBytes > CpuPrefillKvBudgetBytes)
             return $"temporary CPU KV cache ({kvBytes >> 20} MiB) exceeds the {CpuPrefillKvBudgetBytes >> 20} MiB budget";
         return null;
     }
 
-    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens)
+    private bool TryPrefillViaCpuHandoff(IReadOnlyList<int> tokens, int startPos)
     {
         lock (_cpuPrefillGate)
         {
@@ -114,15 +119,16 @@ public sealed unsafe partial class GpuForwardPass
                     ownCache = new PagedKvCache(_hp.NumLayers, _numKvHeads, _headDim,
                         bf16Store: false, autoBf16: false, layerHeadDim: null);
                     cache = ownCache;
-                    logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, 0);
+                    if (startPos > 0) SeedPrefillCache(ownCache, startPos);
+                    logits = _cpuPrefillPass!.PrefillWithCache(tokens, cache, startPos);
                 }
                 try
                 {
                 logits[.._logitsBuf.Length].CopyTo(_logitsBuf);
                 long t2 = Stopwatch.GetTimestamp();
 
-                HandoffKv(cache, n);
-                TruncateTo(n); // _kvLength, the host KvCache counter and the M-RoPE image list, exactly as a rewind would
+                HandoffKv(cache, startPos + n);
+                TruncateTo(startPos + n); // _kvLength, the host KvCache counter and the M-RoPE image list, exactly as a rewind would
                 long t3 = Stopwatch.GetTimestamp();
 
                 LastPrefillUsedCpuHandoff = true;
@@ -152,6 +158,25 @@ public sealed unsafe partial class GpuForwardPass
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Fills the temporary CPU cache with the GPU's first <paramref name="count"/> K/V rows of every layer (<see cref="ReadKvRows"/>) so a CPU
+    /// prefill of a later turn attends to the same history as the sequential path. Non-Gemma 4 only (one head dimension for all layers).
+    /// </summary>
+    private void SeedPrefillCache(PagedKvCache cache, int count)
+    {
+        int kvDim = _numKvHeads * _headDim;
+        var k = new float[(long)count * kvDim];
+        var v = new float[(long)count * kvDim];
+        cache.ReserveBlockAt(count - 1);
+        for (int layer = 0; layer < _hp.NumLayers; layer++)
+        {
+            ReadKvRows(layer, count, k, v);
+            for (int pos = 0; pos < count; pos++)
+                cache.AppendAt(layer, pos, k.AsSpan(pos * kvDim, kvDim), v.AsSpan(pos * kvDim, kvDim));
+        }
+        for (int pos = 0; pos < count; pos++) cache.IncrementPosition();
     }
 
     private bool BuildCpuPrefillPass()

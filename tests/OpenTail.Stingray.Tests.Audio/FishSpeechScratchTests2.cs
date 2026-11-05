@@ -34,33 +34,8 @@ public sealed class FishSpeechScratchTests2 : HeavyTestBase
             $"pos1_first5=[{string.Join(",", result[1][..5])}]\n");
     }
 
-    private static string? FindModelPath(string fileName)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relativePath);
+
 }

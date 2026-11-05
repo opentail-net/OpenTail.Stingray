@@ -4,7 +4,7 @@
 
 ## Context
 
-Initially logged 2026-09-28 as `docs/103-quickest-first-plan.md` item 13.
+Initially logged 2026-09-28 as `docs/done/103-quickest-first-plan-merged-2026-11-01.md` item 13.
 
 Model: `LFM2-8B-A1B-Q4_K_M`.
 

@@ -19,10 +19,10 @@ public enum DownloadOutcome
 /// </summary>
 public static class ModelDownloader
 {
-    /// <summary>Creates an HttpClient suitable for large model downloads.</summary>
+    /// <summary>Creates an HttpClient suitable for large model downloads: no timeout, and the Hugging-Face-only policy of <see cref="OpenTail.Stingray.Core.Net.HuggingFaceOnlyHandler"/>.</summary>
     public static HttpClient CreateClient(string userAgent)
     {
-        var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        var http = new HttpClient(OpenTail.Stingray.Core.Net.HuggingFaceOnlyHandler.CreateDefault()) { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
         return http;
     }
