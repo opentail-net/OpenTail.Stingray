@@ -1,0 +1,12 @@
+{
+  "DESKTOP-A8DS883": {
+    "qwen2.5-0.5b": {
+      "prefill_tps": 237.7,
+      "decode_tps": 71.8
+    },
+    "qwen2.5-1.5b": {
+      "prefill_tps": 132.0,
+      "decode_tps": 34.2
+    }
+  }
+}
