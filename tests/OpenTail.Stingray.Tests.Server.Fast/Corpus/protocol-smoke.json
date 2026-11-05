@@ -41,5 +41,14 @@
   {"name": "rerank: top_n 0", "route": "/v1/rerank", "body": {"query": "q", "documents": ["a", "b"], "top_n": 0}, "status": 400, "errorType": "invalid_request_error", "messageContains": "top_n"},
   {"name": "rerank: top_n -2", "route": "/v1/rerank", "body": {"query": "q", "documents": ["a", "b"], "top_n": -2}, "status": 400, "errorType": "invalid_request_error", "messageContains": "top_n"},
   {"name": "embeddings: input missing", "route": "/v1/embeddings", "body": {"model": "test-model"}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input"},
-  {"name": "embeddings: malformed JSON body", "route": "/v1/embeddings", "rawBody": "{\"model\": ", "status": 400, "errorType": "invalid_request_error", "messageContains": "JSON"}
+  {"name": "embeddings: malformed JSON body", "route": "/v1/embeddings", "rawBody": "{\"model\": ", "status": 400, "errorType": "invalid_request_error", "messageContains": "JSON"},
+  {"name": "responses: input omitted", "route": "/v1/responses", "body": {"model": "test-model"}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input is required"},
+  {"name": "responses: input null", "route": "/v1/responses", "body": {"model": "test-model", "input": null}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input is required"},
+  {"name": "responses: input object", "route": "/v1/responses", "body": {"model": "test-model", "input": {}}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input must be a string or an array"},
+  {"name": "responses: empty input array", "route": "/v1/responses", "body": {"model": "test-model", "input": []}, "status": 400, "errorType": "invalid_request_error", "messageContains": "must not be an empty array"},
+  {"name": "responses: null input item", "route": "/v1/responses", "body": {"model": "test-model", "input": [null]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input[0] must be an object"},
+  {"name": "responses: numeric role", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": 123, "content": "hi"}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "input[0].role must be a string"},
+  {"name": "responses: null content part", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [null]}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "content[0] must be an object"},
+  {"name": "responses: numeric text part", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [{"type": "input_text", "text": 5}]}]}, "status": 400, "errorType": "invalid_request_error", "messageContains": "content[0].text must be a string"},
+  {"name": "responses: message array is valid", "route": "/v1/responses", "body": {"model": "test-model", "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}], "max_output_tokens": 4}, "status": 200}
 ]
