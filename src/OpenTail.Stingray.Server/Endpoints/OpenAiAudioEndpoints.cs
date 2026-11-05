@@ -6,6 +6,8 @@ using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.MeloTTS;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Audio.Whisper;
+using Microsoft.Extensions.DependencyInjection;
+using OpenTail.Stingray.Core.Catalog;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
@@ -25,7 +27,7 @@ public static class OpenAiAudioEndpoints
             {
                 ctx.Response.StatusCode = 400;
                 ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"Invalid JSON request body\",\"type\":\"invalid_request_error\"}}");
+                await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "Invalid JSON request body"), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
 
@@ -33,12 +35,35 @@ public static class OpenAiAudioEndpoints
             {
                 ctx.Response.StatusCode = 400;
                 ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync("{\"error\":{\"message\":\"'input' text field is required.\",\"type\":\"invalid_request_error\"}}");
+                await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "'input' text field is required."), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
+
+            // This endpoint always answers with WAV. A client that asks for another container (mp3, opus, aac, flac, pcm) would receive WAV bytes
+            // labelled audio/wav; refuse that instead of answering with a format the client did not ask for. Omitted or "wav" is accepted.
+            if (!string.IsNullOrEmpty(req.ResponseFormat) && !string.Equals(req.ResponseFormat, "wav", StringComparison.OrdinalIgnoreCase))
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(
+                        new ErrorResponse("invalid_request_error", $"'response_format' must be 'wav' (or omitted): this server only produces WAV audio (got '{req.ResponseFormat}')."),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse),
+                    ctx.RequestAborted);
                 return;
             }
 
             string voice = string.IsNullOrWhiteSpace(req.Voice) ? "af_heart" : req.Voice;
-            float speed = req.Speed > 0 ? req.Speed : 1.0f;
+            if (RequestParameterValidation.ValidateSpeechSpeed(req.Speed) is { } speedError)
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", speedError), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                    ctx.RequestAborted);
+                return;
+            }
+            float speed = req.Speed;
 
             bool isMelo = req.Model != null && req.Model.Contains("melo", StringComparison.OrdinalIgnoreCase);
             bool isChatterbox = req.Model != null && req.Model.Contains("chatter", StringComparison.OrdinalIgnoreCase);
@@ -90,16 +115,39 @@ public static class OpenAiAudioEndpoints
         return app;
     }
 
+    // OpenAI's own id for its transcription model, and the catalog's task name (ModelCatalog.Find accepts it for the task default).
+    private static readonly string[] s_transcriptionAliases = ["whisper-1", "transcribe"];
+
+    /// <summary>
+    /// Null when <paramref name="model"/> is omitted (the route keeps its default pipeline), is an alias, or names a catalog entry of the
+    /// transcribe task; otherwise a message that names the field and lists the valid ids.
+    /// </summary>
+    internal static string? ValidateTranscriptionModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return null;
+        var ids = ModelCatalog.Entries.Where(e => e.Task.Equals("transcribe", StringComparison.OrdinalIgnoreCase)).Select(e => e.Id).ToList();
+        ids.AddRange(s_transcriptionAliases);
+        if (ids.Contains(model, StringComparer.OrdinalIgnoreCase)) return null;
+        return $"model must be one of {string.Join(", ", ids)} (got '{model}')";
+    }
+
+    private static readonly HashSet<string> s_speechToTextFormats = new(StringComparer.OrdinalIgnoreCase) { "json", "text", "srt", "verbose_json", "vtt" };
+
     private static async Task HandleSpeechToTextAsync(HttpContext ctx, SpeechTask task)
     {
         float[]? samples = null;
         int sampleRate = 16000;
         string? language = null;
         string? prompt = null;
+        string? model = null;
         float temperature = 0.0f;
         string responseFormat = "json";
         bool useVad = false;
         bool stream = false;
+
+        // Client mistakes are 400s that name the problem, not unhandled exceptions: a body that is not WAV audio used to surface as a 500
+        // (InvalidDataException), and an unparseable temperature, an unknown response_format or a non-boolean flag was silently replaced by a default.
+        string? invalid = null;
 
         if (ctx.Request.HasFormContentType)
         {
@@ -109,28 +157,41 @@ public static class OpenAiAudioEndpoints
             if (file != null && file.Length > 0)
             {
                 using var fileStream = file.OpenReadStream();
-                var wavData = WavReader.ReadWav(fileStream);
-                samples = wavData.Samples;
-                sampleRate = wavData.SampleRate;
+                try
+                {
+                    var wavData = WavReader.ReadWav(fileStream);
+                    samples = wavData.Samples;
+                    sampleRate = wavData.SampleRate;
+                }
+                catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException) { invalid = $"'file' is not a valid WAV file: {ex.Message}"; }
             }
 
             language = form["language"].FirstOrDefault();
+            model = form["model"].FirstOrDefault();
             prompt = form["prompt"].FirstOrDefault() ?? form["initial_prompt"].FirstOrDefault();
             responseFormat = form["response_format"].FirstOrDefault() ?? "json";
-            
-            if (float.TryParse(form["temperature"].FirstOrDefault(), CultureInfo.InvariantCulture, out float temp))
+
+            string? tempText = form["temperature"].FirstOrDefault();
+            if (tempText is not null)
             {
-                temperature = temp;
+                if (float.TryParse(tempText, NumberStyles.Float, CultureInfo.InvariantCulture, out float temp) && temp >= 0f && temp <= 1f)
+                    temperature = temp;
+                else
+                    invalid ??= $"temperature must be a number between 0 and 1 (got '{tempText}')";
             }
 
-            if (bool.TryParse(form["vad"].FirstOrDefault() ?? form["use_vad"].FirstOrDefault(), out bool vadFlag))
+            string? vadText = form["vad"].FirstOrDefault() ?? form["use_vad"].FirstOrDefault();
+            if (vadText is not null)
             {
-                useVad = vadFlag;
+                if (bool.TryParse(vadText, out bool vadFlag)) useVad = vadFlag;
+                else invalid ??= $"vad must be true or false (got '{vadText}')";
             }
 
-            if (bool.TryParse(form["stream"].FirstOrDefault(), out bool streamFlag))
+            string? streamText = form["stream"].FirstOrDefault();
+            if (streamText is not null)
             {
-                stream = streamFlag;
+                if (bool.TryParse(streamText, out bool streamFlag)) stream = streamFlag;
+                else invalid ??= $"stream must be true or false (got '{streamText}')";
             }
         }
         else
@@ -141,28 +202,70 @@ public static class OpenAiAudioEndpoints
             ms.Position = 0;
             if (ms.Length > 0)
             {
-                var wavData = WavReader.ReadWav(ms);
-                samples = wavData.Samples;
-                sampleRate = wavData.SampleRate;
+                try
+                {
+                    var wavData = WavReader.ReadWav(ms);
+                    samples = wavData.Samples;
+                    sampleRate = wavData.SampleRate;
+                }
+                catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException) { invalid = $"the request body is not a valid WAV file: {ex.Message}"; }
             }
 
             if (ctx.Request.Query.TryGetValue("language", out var langVal)) language = langVal.ToString();
+            if (ctx.Request.Query.TryGetValue("model", out var modelVal)) model = modelVal.ToString();
             if (ctx.Request.Query.TryGetValue("prompt", out var promptVal)) prompt = promptVal.ToString();
             if (ctx.Request.Query.TryGetValue("response_format", out var formatVal)) responseFormat = formatVal.ToString();
-            if (ctx.Request.Query.TryGetValue("vad", out var vadVal) && bool.TryParse(vadVal, out bool v)) useVad = v;
-            if (ctx.Request.Query.TryGetValue("stream", out var streamVal) && bool.TryParse(streamVal, out bool s)) stream = s;
+            if (ctx.Request.Query.TryGetValue("vad", out var vadVal))
+            {
+                if (bool.TryParse(vadVal, out bool v)) useVad = v;
+                else invalid ??= $"vad must be true or false (got '{vadVal}')";
+            }
+            if (ctx.Request.Query.TryGetValue("stream", out var streamVal))
+            {
+                if (bool.TryParse(streamVal, out bool s)) stream = s;
+                else invalid ??= $"stream must be true or false (got '{streamVal}')";
+            }
         }
 
+        invalid ??= RequestParameterValidation.ValidateLanguageCode(language);
+        invalid ??= ValidateTranscriptionModel(model);
+        if (invalid is null && !s_speechToTextFormats.Contains(responseFormat))
+            invalid = $"response_format must be one of json, text, srt, verbose_json, vtt (got '{responseFormat}')";
+        if (invalid is not null)
+        {
+            ctx.Response.StatusCode = 400;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", invalid), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                ctx.RequestAborted);
+            return;
+        }
         if (samples == null || samples.Length == 0)
         {
             ctx.Response.StatusCode = 400;
             ctx.Response.ContentType = "application/json";
-            await ctx.Response.WriteAsync("{\"error\":{\"message\":\"Audio file or payload is required.\",\"type\":\"invalid_request_error\"}}");
+            await ctx.Response.WriteAsync(JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", "Audio file or payload is required."), OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
 
         ctx.Items[OperationMetricsFilterExtensions.AudioSecondsItem] = (double)samples.Length / sampleRate; // input audio, for opentail.audio.* metrics
-        using var pipeline = new WhisperPipeline();
+        // Real weights, as `stingray transcribe` uses. A valid model that is not installed is a 503 that says how to install it; it used to be a
+        // weightless placeholder pipeline whose "transcript" bore no relation to the audio.
+        WhisperPipeline created;
+        try
+        {
+            created = ctx.RequestServices.GetRequiredService<IWhisperPipelineProvider>().Create(model);
+        }
+        catch (TranscriptionModelUnavailableException ex)
+        {
+            ctx.Response.StatusCode = 503;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("model_not_installed", ex.Message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+                ctx.RequestAborted);
+            return;
+        }
+        using var pipeline = created;
         var req = new SpeechToTextRequest
         {
             AudioSamples = samples,

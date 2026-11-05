@@ -548,6 +548,20 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         return null;
     }
 
+    /// <summary>
+    /// Logit soft-capping (Gemma 2) is applied nowhere on the Vulkan hybrid: the final cap exists only in the full Vulkan pass and the attention cap in no GPU
+    /// pass (the planner keeps Gemma 2 on the CPU, <c>SupportedBackends = Cpu</c>; the full pass measured perplexity 15.38 against 12.58 on the CPU). The
+    /// embedding, residual, logit and attention scale fields (Granite, Gemma 3) and the sliding-window RoPE base are applied by <see cref="HybridForwardPass"/>:
+    /// measured 2026-10-31 against the CPU pass, minimum per-step cosine 0.996 (Granite 3.3-2B) and 0.990 (gemma-3-4b) at <c>-g 8</c> and <c>-g 20</c>.
+    /// </summary>
+    internal static string? UnappliedSoftcapReason(ModelHyperparams hp) =>
+        hp.FinalLogitSoftcap > 0f || hp.AttnLogitSoftcap > 0f
+            ? "logit soft-capping (Gemma 2; the planner runs it on the CPU)"
+            : null;
+
+    /// <summary><see cref="PartialOffloadUnsupportedReason"/> plus <see cref="UnappliedSoftcapReason"/>: what the Vulkan hybrid (<c>-g N</c>) cannot run.</summary>
+    public static string? VulkanHybridUnsupportedReason(GgufModel model, ModelHyperparams hp) =>
+        PartialOffloadUnsupportedReason(model, hp) ?? UnappliedSoftcapReason(hp);
     public GpuForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         int maxContextLength = 0, bool enableTurboQuant = false, int tqFp32Window = 256, int tqBits = 3,
         DType? kvDtype = null, int layerLimit = int.MaxValue,
@@ -1327,6 +1341,9 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // and _weightDTypes is populated.
         _canBatchedTrunk = ComputeCanBatchedTrunk();
 
+        // The upload staging buffer grew to the largest weight (the F32 output head); nothing uploads that much again.
+        gpu.TrimUploadStaging();
+
         Console.Error.WriteLine(" done.");
     }
 
@@ -1392,7 +1409,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         LastPrefillUsedCpuHandoff = false;
         LastCpuPrefillRefusal = CpuPrefillRefusal(N, startPos);
         if (s_prefillTiming && LastCpuPrefillRefusal is not null) Console.Error.WriteLine($"[gpu-prefill] cpu handoff refused: {LastCpuPrefillRefusal}");
-        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens))
+        if (LastCpuPrefillRefusal is null && TryPrefillViaCpuHandoff(tokens, startPos))
             return _logitsBuf;
         if (s_prefillTiming && LastCpuPrefillRefusal is null && _cpuPrefillBroken) Console.Error.WriteLine($"[gpu-prefill] cpu handoff unavailable: {_cpuPrefillBrokenReason}");
 

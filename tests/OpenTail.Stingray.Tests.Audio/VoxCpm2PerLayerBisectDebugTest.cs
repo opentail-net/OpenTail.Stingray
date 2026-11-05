@@ -14,19 +14,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// Impl::run`, instrumented this session) -- finds the FIRST layer index where the two diverge.</summary>
 public sealed class VoxCpm2PerLayerBisectDebugTest : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
+
 
     private const int NumLayers = 28, HiddenDim = 2048, NumHeads = 16, NumKvHeads = 2, HeadDim = 128;
     private const int FfDim = 6144, VocabSize = 73448;

@@ -18,7 +18,14 @@ public readonly record struct ResourceSnapshot(
     long HostMemoryAvailableBytes,
     long? AcceleratorMemoryAvailableBytes,
     long ResidentModelBytes,
-    long EstimatedAcceleratorResidentBytes);
+    long EstimatedAcceleratorResidentBytes,
+    IReadOnlyList<AcceleratorSnapshot>? Accelerators = null);
+
+/// <summary>
+/// One backend and device as admission sees it (plan 6 G2): its capacity (null when it cannot be probed, which means unknown, not zero) and the
+/// accelerator bytes the resident runtimes on exactly that target are estimated to hold.
+/// </summary>
+public readonly record struct AcceleratorSnapshot(AcceleratorTarget Target, long? CapacityBytes, long ResidentBytes);
 
 /// <summary>
 /// Thrown by <see cref="ModelRuntimeManager.AcquireAsync"/> when a cold load's candidate model
@@ -35,11 +42,15 @@ public sealed class InsufficientResourcesException : InvalidOperationException
     public ResourceAdmission Reason { get; }
     public ResourceSnapshot Snapshot { get; }
 
+    /// <summary>The backend and device the candidate was to be placed on, when the manager knew it.</summary>
+    public AcceleratorTarget? CandidateAcceleratorTarget { get; }
+
     public InsufficientResourcesException(
         ModelId model, long candidateModelBytes, long candidateAcceleratorBytes,
-        ResourceAdmission reason, ResourceSnapshot snapshot)
-        : base(BuildMessage(model, candidateModelBytes, candidateAcceleratorBytes, reason, snapshot))
+        ResourceAdmission reason, ResourceSnapshot snapshot, AcceleratorTarget? candidateAcceleratorTarget = null)
+        : base(BuildMessage(model, candidateModelBytes, candidateAcceleratorBytes, reason, snapshot, candidateAcceleratorTarget))
     {
+        CandidateAcceleratorTarget = candidateAcceleratorTarget;
         Model = model;
         CandidateModelBytes = candidateModelBytes;
         CandidateAcceleratorBytes = candidateAcceleratorBytes;
@@ -49,8 +60,13 @@ public sealed class InsufficientResourcesException : InvalidOperationException
 
     private static string BuildMessage(
         ModelId model, long candidateModelBytes, long candidateAcceleratorBytes,
-        ResourceAdmission reason, ResourceSnapshot snapshot) => reason switch
+        ResourceAdmission reason, ResourceSnapshot snapshot, AcceleratorTarget? target) => reason switch
     {
+        ResourceAdmission.InsufficientAcceleratorMemory when target is { } t && snapshot.Accelerators?.Where(a => a.Target == t).ToArray() is [var device] =>
+            $"Cannot admit model '{model}' (~{candidateAcceleratorBytes:N0} accelerator bytes " +
+            $"estimated) — insufficient VRAM on {t} even after evicting idle resident models " +
+            $"(capacity: {device.CapacityBytes:N0} bytes, currently " +
+            $"resident on it: {device.ResidentBytes:N0} bytes).",
         ResourceAdmission.InsufficientAcceleratorMemory =>
             $"Cannot admit model '{model}' (~{candidateAcceleratorBytes:N0} accelerator bytes " +
             $"estimated) — insufficient VRAM even after evicting idle resident models " +
@@ -93,6 +109,14 @@ public interface IResourceBudget
     /// accelerator admission untouched, exactly matching this parameter's absence before it existed.
     /// </summary>
     ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0);
+
+    /// <summary>
+    /// As the two-argument form, but the accelerator check is made against <paramref name="candidateTarget"/>'s own capacity and the bytes already
+    /// resident on that same backend and device, not one global sum (plan 6 G2). A null target means the caller does not know where the candidate lands.
+    /// A budget that predates targets inherits this default and keeps its two-argument behaviour.
+    /// </summary>
+    ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes, AcceleratorTarget? candidateTarget) =>
+        EstimateAdmission(candidateModelBytes, candidateAcceleratorBytes);
 }
 
 /// <summary>
@@ -125,10 +149,15 @@ public interface IResourceBudget
 /// unknown — there is no positive evidence it won't fit, so admission falls through to the host
 /// check alone rather than blocking on missing data.</para>
 /// </summary>
-public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, double safetyMarginMultiplier = 1.25)
+public sealed class HostResourceBudget(
+    IModelRuntimeManager modelRuntimes, double safetyMarginMultiplier = 1.25, Func<AcceleratorTarget, long?>? probeCapacity = null)
     : IResourceBudget
 {
     private static readonly Lazy<long?> s_acceleratorVramCapacityBytes = new(ProbeAcceleratorVramCapacity);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<AcceleratorTarget, Lazy<long?>> s_capacityByTarget = new();
+
+    private readonly Func<AcceleratorTarget, long?> _capacityOf = probeCapacity
+        ?? (target => s_capacityByTarget.GetOrAdd(target, t => new Lazy<long?>(() => ProbeCapacity(t))).Value);
 
     private static long? ProbeAcceleratorVramCapacity()
     {
@@ -146,6 +175,32 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
         }
     }
 
+    /// <summary>
+    /// Total device-local memory of <paramref name="target"/>, or null when it cannot be read. Vulkan opens a throwaway backend on that device index;
+    /// CUDA opens one on the process's pinned device (a process sees one CUDA device, see <see cref="AcceleratorTarget"/>). Not verified on CUDA
+    /// hardware: none is available on the development machine.
+    /// </summary>
+    private static long? ProbeCapacity(AcceleratorTarget target)
+    {
+        try
+        {
+            switch (target.Backend)
+            {
+                case "vulkan":
+                    using (var vk = new VulkanBackend(target.DeviceIndex)) return (long)vk.VramBytes;
+                case "cuda":
+                    if (!OpenTail.Stingray.Cuda.CudaBackend.IsAvailable()) return null;
+                    using (var cuda = OpenTail.Stingray.Cuda.CudaBackend.Create()) return (long)cuda.VramBytes;
+                default:
+                    return null;
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return null;
+        }
+    }
+
     public ResourceSnapshot GetCurrent()
     {
         var gc = GC.GetGCMemoryInfo();
@@ -154,10 +209,13 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
 
         long residentBytes = 0;
         long acceleratorResidentBytes = 0;
+        var perTarget = new Dictionary<AcceleratorTarget, long>();
         foreach (var stats in modelRuntimes.Snapshot())
         {
             residentBytes += stats.EstimatedModelBytes;
             acceleratorResidentBytes += stats.AcceleratorResidentBytesEstimate;
+            if (stats.Accelerator is { } target)
+                perTarget[target] = perTarget.GetValueOrDefault(target) + stats.AcceleratorResidentBytesEstimate;
         }
 
         return new ResourceSnapshot(
@@ -165,7 +223,8 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
             HostMemoryAvailableBytes: available,
             AcceleratorMemoryAvailableBytes: s_acceleratorVramCapacityBytes.Value,
             ResidentModelBytes: residentBytes,
-            EstimatedAcceleratorResidentBytes: acceleratorResidentBytes);
+            EstimatedAcceleratorResidentBytes: acceleratorResidentBytes,
+            Accelerators: [.. perTarget.Select(kv => new AcceleratorSnapshot(kv.Key, _capacityOf(kv.Key), kv.Value))]);
     }
 
     /// <summary>
@@ -179,9 +238,16 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
     /// biasing toward under-admitting is the deliberate, conservative default rather than trying
     /// to model every real allocation. Host is checked first — an accelerator-bound candidate
     /// that already fails on host memory is reported as a host failure, not silently overwritten
-    /// by a later accelerator check.
+    /// by a later accelerator check. With no target, the accelerator figures are the legacy global ones.
     /// </summary>
-    public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0)
+    public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0) =>
+        EstimateAdmission(candidateModelBytes, candidateAcceleratorBytes, null);
+
+    /// <summary>
+    /// With a <paramref name="candidateTarget"/> the accelerator check uses that backend and device's own capacity and only the bytes resident on the
+    /// same target (a CUDA model no longer competes with the Vulkan figure, and two Vulkan devices do not share one sum). Unknown capacity admits, as before.
+    /// </summary>
+    public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes, AcceleratorTarget? candidateTarget)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(candidateModelBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(candidateAcceleratorBytes);
@@ -192,12 +258,27 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
         if (requiredHost > snapshot.HostMemoryAvailableBytes)
             return ResourceAdmission.InsufficientHostMemory;
 
-        if (candidateAcceleratorBytes > 0 && snapshot.AcceleratorMemoryAvailableBytes is { } capacity)
+        if (candidateAcceleratorBytes > 0)
         {
-            long requiredAccel = (long)(candidateAcceleratorBytes * safetyMarginMultiplier);
-            long availableAccel = Math.Max(0, capacity - snapshot.EstimatedAcceleratorResidentBytes);
-            if (requiredAccel > availableAccel)
-                return ResourceAdmission.InsufficientAcceleratorMemory;
+            long? capacity;
+            long resident;
+            if (candidateTarget is { } target)
+            {
+                capacity = _capacityOf(target);
+                resident = snapshot.Accelerators?.FirstOrDefault(a => a.Target == target).ResidentBytes ?? 0;
+            }
+            else
+            {
+                capacity = snapshot.AcceleratorMemoryAvailableBytes;
+                resident = snapshot.EstimatedAcceleratorResidentBytes;
+            }
+
+            if (capacity is { } cap)
+            {
+                long requiredAccel = (long)(candidateAcceleratorBytes * safetyMarginMultiplier);
+                if (requiredAccel > Math.Max(0, cap - resident))
+                    return ResourceAdmission.InsufficientAcceleratorMemory;
+            }
         }
 
         return ResourceAdmission.Allowed;

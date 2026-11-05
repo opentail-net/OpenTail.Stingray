@@ -69,14 +69,16 @@ public static class PrefillHandoffFamilies
                 "orpheus-3b-0.1-ft Q4_K_M (Llama-3.2 3B; -g 8: >= 0.9997), " +
                 "Falcon3-3B-Instruct Q4_K_M (-g 4: >= 0.9987, -g 16: >= 0.9992). " +
                 "KNOWN DEVIATION: Falcon3-3B at -g 8 has one decode step (38 of 40) at cosine 0.9874, below the 0.99 bar, deterministic and specific to that split, argmax agreeing; " +
-                "the other splits of the same checkpoint pass. Not exercised: Llama-3.1-style rope_freqs scaling, LongRoPE, sliding-window llama variants, contexts above 1024. " +
+                "the other splits of the same checkpoint pass. Long prompts and rope_freqs: orpheus-3b (Llama-3.2, carries rope_freqs.weight, applied on the GPU and CPU layers) with a 1,774-token prompt at context 4096, -g 8: prefill cosine 0.9973, 40 decode steps >= 0.9992; Falcon3-3B with a 2,110-token prompt at context 4096, -g 4: prefill cosine 0.9998, decode >= 0.9998. A prompt of exactly 32 tokens takes the handoff and one token fewer does not. " +
+                "Llama-3.1-8B-Instruct Q4_K_M (bartowski, carries rope_freqs.weight; 2026-11-01, -g 4): prefill cosine 0.999724 at context 1024 (47.5 s), 40 decode steps >= 0.9990; with a 1,774-token prompt at context 4096 prefill cosine 0.999252, 40 decode steps >= 0.9966 (394 s), all above the 0.99 bar. Not exercised: LongRoPE, sliding-window llama variants, contexts above 4096, startPos > 0 (refused: a later chat turn prefills token by token). " +
                 "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
                 $"{LlamaArchitecture.Descriptor.Id}|attention.head_count_kv=32"),
             [(QwenArchitectures.Qwen2.Id, HandoffPath.VulkanHybrid)] = new(
                 "HybridCpuPrefillHandoffTests, dense Qwen2.5 (Q/K/V biases, GQA with 2 KV heads) on the Vulkan hybrid (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
                 "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992), " +
                 "Qwen2.5-3B-Instruct Q4_K_M (-g 12: >= 0.9985). Sequential hybrid prefill against the all-CPU pass stays >= 0.998 on the same prompt, so the handoff adds no drift. " +
-                "Not exercised: Qwen2.5-7B (sharded) and 0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",
+                "Qwen2.5-7B-Instruct Q4_K_M (sharded, 4 KV heads, 28 layers; 2026-11-03, -g 4, context 1024, 50 s on real weights): prefill cosine 0.998803, 40 decode steps >= 0.99689 (lowest at step 19; the bar is 0.99). " +
+                "Not exercised: Qwen2.5-0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",
                 $"{QwenArchitectures.Qwen2.Id}|attention.head_count_kv=2"),
             [("qwen2moe", HandoffPath.VulkanHybrid)] = new(
                 "Goldens/qwen2moe.golden.json (CPU vs llama-server, PPL 4.78 vs 4.81) + HybridCpuPrefillHandoffTests (Qwen1.5-MoE-A2.7B-Chat Q4_K_M, 1 and 4 GPU layers, shared expert with sigmoid gate): byte-exact K/V, logits cosine 0.998-0.9998",
@@ -108,6 +110,9 @@ public static class PrefillHandoffFamilies
             [("afmoe", HandoffPath.VulkanLayerSplit)] = new(
                 "Goldens/afmoe.golden.json (CPU vs llama-server, 31 confident positions, PPL 6.84 vs 7.11) + LayerSplitCpuPrefillHandoffTests (Arcee Trinity Mini Q4_K_M, -g 4, 198-token prompt; attention output gate in the Vulkan pass, sliding/global layers, leading dense layers, shared expert; the CPU source is the per-token trunk because gated models have no batched CPU prefill): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps vs all-CPU cosine >= 0.9956, 1 near-tie argmax flip of 41. Prompts under the 2048-token sliding window only",
                 "afmoe|attention.head_count_kv=4|attention.key_length=128|expert_count=128|expert_used_count=8|expert_feed_forward_length=1024|expert_shared_count=1|leading_dense_block_count=2|expert_gating_func=2|expert_weights_norm=True"),
+            [(OtherAdmittedArchitectures.Hunyuanmoe.Id, HandoffPath.VulkanLayerSplit)] = new(
+                "Goldens/hunyuan-moe.golden.json (CPU vs llama-server via HunyuanMoeGreedyParityTests, 39 confident positions match, PPL 219.8 vs 201.6 +/- 53.7) + LayerSplitCpuPrefillHandoffTests (Hunyuan-A13B-Instruct Q3_K_S, -g 4, 217-token prompt; 64 experts top-8 with a shared expert, QK-norm after RoPE): GPU K/V rows equal the CPU pass, prefill logits equal, 40 decode steps vs all-CPU worst cosine 0.9943 (all steps above 0.99), 1 near-tie argmax flip of 41. Run 2026-11-01 with STINGRAY_HYBRID_CPU_PREFILL=all, which is how a family without a receipt is first tested. Not run past one prompt length; the CPU source here is the batched trunk (a later-turn prefill 102 tokens: 11.9 s against 19.3 s sequential)",
+                $"{OtherAdmittedArchitectures.Hunyuanmoe.Id}|attention.head_count_kv=8|expert_count=64|expert_used_count=8|expert_feed_forward_length=3072|expert_shared_count=1|expert_shared_feed_forward_length=3072"),
             // CudaHybrid: no receipts. The path compiles and has never run (no NVIDIA GPU on the development machine).
         };
 

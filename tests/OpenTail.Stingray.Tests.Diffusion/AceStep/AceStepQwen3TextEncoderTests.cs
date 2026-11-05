@@ -19,19 +19,8 @@ namespace OpenTail.Stingray.Tests.Diffusion.AceStep;
 /// </summary>
 public sealed class AceStepQwen3TextEncoderTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relativePath);
+
 
     /// <summary>
     /// The Qwen3-Embedding tokenizer's post-processor appends `&lt;|endoftext|&gt;` to every sequence, and audio.cpp's

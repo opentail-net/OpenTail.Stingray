@@ -9,19 +9,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// "gibberish" bug lives in the flow encoder or further downstream (DiT/CFG/cond).</summary>
 public sealed class CosyVoice3FlowEncoderCompareDebugTest : HeavyTestBase
 {
-    private static string? FindModelPath(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(relPath);
 
     private static int[] ReadInts(string path)
     {

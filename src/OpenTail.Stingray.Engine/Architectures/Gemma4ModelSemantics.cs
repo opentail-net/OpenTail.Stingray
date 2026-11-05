@@ -83,6 +83,8 @@ internal static class Gemma4ModelSemantics
             FfnActivation = FfnActivation.GeluApprox,
             HasPerLayerTokenEmbd = metadata.ContainsKey("_opentailllm.has_ple")
                 || tensors.FindTensor("per_layer_token_embd.weight") is not null,
+            NormalizeMoeTopKWeights = false,
+            ParallelDenseMoe = tensors.FindTensor(Gemma4Architecture.FusedExpertTensor) is not null,
             HasLayerOutputScale = metadata.ContainsKey("_opentailllm.has_layer_output_scale")
                 || tensors.FindTensor("blk.0.layer_output_scale.weight") is not null,
             // 12B dense global layers omit attn_v and reuse K as V (not a GGUF key; flagged by the loader).

@@ -64,6 +64,7 @@ public sealed unsafe class SimdKernelsBF16Tests
     [Fact]
     public void FastKernel_IsFasterThanDequantFallback()
     {
+        BenchmarkGate.SkipWhenDisabled();
         const int rows = 17408, cols = 5120;
         var rng = new Random(0x8F16);
         byte[] weightBytes = BuildMatrix(rows, cols, rng);
