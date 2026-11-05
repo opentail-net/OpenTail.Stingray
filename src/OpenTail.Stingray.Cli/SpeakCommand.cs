@@ -20,15 +20,15 @@ public sealed class SpeakCommand : Command<SpeakCommand.Settings>
         public string OutputPath { get; init; } = "speech.wav";
 
         [CommandOption("-m|--model <ID>")]
-        [Description("Model catalog id (default: piper-lessac).")]
+        [Description("Model catalog id (default: kokoro-82m; piper-lessac is the smaller research-use-only alternative).")]
         public string? Model { get; init; }
 
         [CommandOption("--model-file <PATH>")]
-        [Description("Direct path to an ONNX voice model file (.onnx) or companion config (.json).")]
+        [Description("Direct path to a voice model file: a Kokoro .gguf, or a Piper .onnx (or its companion .json).")]
         public string? ModelFile { get; init; }
 
         [CommandOption("-v|--voice <VOICE>")]
-        [Description("Voice preset or style name.")]
+        [Description("Voice preset or style name (default: af_heart for Kokoro, lessac for Piper).")]
         public string? Voice { get; init; }
 
         [CommandOption("-s|--speed <SPEED>")]
@@ -55,14 +55,21 @@ public sealed class SpeakCommand : Command<SpeakCommand.Settings>
             return ExitCodes.Usage;
         }
 
+        // The catalog entry names its engine; a bare --model-file has no entry, so a .gguf is read as a Kokoro checkpoint and anything else as a Piper voice.
+        string engine = resolved!.Entry?.Engine
+            ?? (resolved.ModelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? "kokoro" : "piper");
+        bool kokoro = engine == "kokoro";
+
         var ttsSettings = new TtsCommand.Settings
         {
-            Engine = "piper",
-            ModelPath = resolved!.ModelPath,
+            Engine = engine,
+            ModelPath = resolved.ModelPath,
+            // Kokoro looks up kokoro-voice-<voice>.gguf in this folder; the catalog bundle puts it beside the model.
+            VoicesDir = kokoro ? Path.GetDirectoryName(resolved.ModelPath) : null,
             Text = s.Text,
             OutputPath = s.OutputPath,
             Speed = s.Speed,
-            Voice = s.Voice ?? "lessac",
+            Voice = s.Voice ?? (kokoro ? "af_heart" : "lessac"),
             Backend = s.Backend
         };
 

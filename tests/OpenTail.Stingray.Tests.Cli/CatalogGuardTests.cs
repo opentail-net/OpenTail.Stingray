@@ -174,7 +174,9 @@ public sealed class CatalogGuardTests
     {
         foreach (var entry in ModelCatalog.Entries)
         {
-            if (entry.Files.Count > 1 && entry.Files.All(f => f.FileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)))
+            // A bundle is sharded when any of its files carries the -of- shard marker. A multi-file bundle of distinct files (a speech model plus its voice file, both .gguf) is not.
+            if (entry.Files.Count > 1 && entry.Files.All(f => f.FileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+                && entry.Files.Any(f => f.FileName.Contains("-of-", StringComparison.OrdinalIgnoreCase)))
             {
                 for (int i = 0; i < entry.Files.Count; i++)
                 {

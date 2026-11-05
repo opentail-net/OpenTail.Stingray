@@ -33,6 +33,7 @@ public sealed record CatalogFile(string Repo, string Revision, string RepoPath, 
 /// <param name="RunTemplate">Command that uses the bundle; <c>{0}</c> is replaced by the main file's local path.</param>
 /// <param name="FamilyId">Entries sharing a family id are the same model line at different sizes or quantisations; a fallback never leaves the family.</param>
 /// <param name="Qualifications">What was actually checked, structured so code can read it (the free-text <paramref name="Evidence"/> stays for humans).</param>
+/// <param name="Engine">For speak entries: which synthesis engine reads the files (<c>piper</c>, <c>kokoro</c>); null for other tasks.</param>
 public sealed record CatalogEntry(
     string Id,
     string Task,
@@ -45,7 +46,8 @@ public sealed record CatalogEntry(
     string Evidence,
     string RunTemplate,
     string? FamilyId = null,
-    IReadOnlyList<CatalogQualification>? Qualifications = null)
+    IReadOnlyList<CatalogQualification>? Qualifications = null,
+    string? Engine = null)
 {
     /// <summary>What was qualified for this bundle (never null). Empty means unqualified: shown as such, never as known-good.</summary>
     public IReadOnlyList<CatalogQualification> Checked => Qualifications ?? [];
@@ -148,9 +150,29 @@ public static class ModelCatalog
             Qualifications: [Cpu("qwen2.5-7b", "NearTie, 31/32 tokens")]),
 
         new(
+            Id: "kokoro-82m",
+            Task: "speak",
+            Why: "Small (82M parameters, 142 MB) natural US English voice under a permissive licence; the default.",
+            Files:
+            [
+                // Both files go flat into the model home: Kokoro finds its voice as kokoro-voice-<voice>.gguf beside the model, and silently
+                // falls back to a garbled placeholder style vector when that file is missing, so the bundle always carries af_heart.
+                new("cstr/kokoro-82m-GGUF", "ab19534a3b5cc12bc2741478e9790eadb328654a", "kokoro-82m-q8_0.gguf",
+                    "3c8b60064b287a10abd35396a59c9981675c618db8bc91bd290db63f55eb492d", 141_322_336),
+                new("cstr/kokoro-voices-GGUF", "1c98db113c69e3feef9644cf0aaec5c0bea02a8e", "kokoro-voice-af_heart.gguf",
+                    "14463a5a5204a16a382b2da87b4b0206fcda225b44b7c4627999eb527f49c018", 522_784),
+            ],
+            Licence: "Apache-2.0 (the Hexgrad Kokoro-82M weights; the two GGUF repositories above carry the same Apache-2.0 tag)",
+            LicenceNeedsConsent: false,
+            Hardware: "CPU only; the model is 142 MB on disk (RAM not measured)",
+            Speed: "8.9 s of audio in 9.5 s on a Ryzen 7 5700G CPU (3 runs, 2026-11-05; 1.07x real time, so slower than real time on this CPU)",
+            Evidence: "KokoroRealWeightsTests ran on these exact files (2026-11-03)",
+            RunTemplate: "stingray speak \"Hello from Stingray.\"",
+            Engine: "kokoro"),
+        new(
             Id: "piper-lessac",
             Task: "speak",
-            Why: "Fast, clear US English voice.",
+            Why: "Smaller (60 MB) and quicker than Kokoro, but the voice is research-use only.",
             Files:
             [
                 new("rhasspy/piper-voices", "c10ece1aade47bb51c153c893d14e5bf8e5b7117", "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
@@ -166,7 +188,8 @@ public static class ModelCatalog
             Hardware: "about 200 MB RAM, CPU only",
             Speed: "2.9 s of audio in 1.1-1.35 s on a Ryzen 7 5700G CPU (2026-09-28)",
             Evidence: "README 'Speak and listen'",
-            RunTemplate: "stingray speak \"Hello from Stingray.\""),
+            RunTemplate: "stingray speak \"Hello from Stingray.\" -m piper-lessac",
+            Engine: "piper"),
 
         new(
             Id: "whisper-base",
