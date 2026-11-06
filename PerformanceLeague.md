@@ -445,8 +445,9 @@ Speculation is a loss on this hardware (verifying k tokens costs about k× compu
 | Qwen3.8-27B UD-Q3_K_XL | MTP, depth 1 (earlier) | decode, 64 tok | 1.9 (−21%) | 2.4 | 50% | 2026-10-08 |
 | Qwen3.6-27B UD-Q3_K_XL (superseded 2026-11-03) | self MTP, forced | decode, 96 tok | 2.0-2.1 (0.77-0.81x) | 2.6 | 45-76% | 2026-10-08 |
 | Qwen3.6-27B and Qwen3.8-27B UD-Q3_K_XL | self MTP after the Q3_K shared-decode kernels (PRs 217, 218) | decode, 96-token request, 3 runs each | Qwen3.6 2.7-2.8 (1.04-1.08x); Qwen3.8 2.8 (1.17x) | 2.6 / 2.4 | 83% / 88% | 2026-11-03 |
+| Qwen3.8-27B-UD-Q3_K_XL | self MTP (`--spec-type mtp`), 3 rounds on the same build | decode, 96 tok, `--temp 0 --no-thinking`, `-g 0` | 2.9 / 3.0 / 2.8 (median 2.9) | 2.3 / 2.3 / 2.2 (median 2.3) | not recorded | 2026-11-06 |
 
-> The MTP rows are the only speculative wins measured. Since 2026-11-03 (Q3_K kernels) Qwen3.8 is +17% and Qwen3.6 is +4-8% at depth 1; the Qwen3.6 2026-10-08 row above is superseded. Qwen3.6-27B, the same architecture with a different quant mix, is 0.77–0.81x of plain. `--spec-type auto` does not engage MTP on CPU; users who pass `--spec-type mtp` should compare with plain on their own file.
+> The MTP rows are the only speculative wins measured. Since 2026-11-03 (Q3_K kernels) Qwen3.8 is +17% and Qwen3.6 is +4-8% at depth 1; re-measured 2026-11-06 on the same build, Qwen3.8 is +26% (median 2.9 vs 2.3 t/s, three rounds each); the Qwen3.6 2026-10-08 row above is superseded. Qwen3.6-27B, the same architecture with a different quant mix, is 0.77–0.81x of plain. `--spec-type auto` does not engage MTP on CPU; users who pass `--spec-type mtp` should compare with plain on their own file.
 
 ## Historical CUDA (†) and other prior-hardware rows
 
