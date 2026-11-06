@@ -6,6 +6,11 @@ public enum ForwardPassBackend
     Cpu,
     Cuda,
     Vulkan,
+    /// <summary>Flag-gated, unmeasured (no Mac on this development machine) -- see
+    /// docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. Never selected by <c>Auto</c>;
+    /// a caller must request it explicitly, and <see cref="ForwardPassSelection.Select"/> still
+    /// refuses it unless <c>STINGRAY_MLX_DENSE=1</c> is set.</summary>
+    Mlx,
 }
 
 public enum ForwardPassKind
@@ -24,6 +29,8 @@ public enum ForwardPassKind
     VulkanHybridGdn,
     VulkanHybrid,
     VulkanLayerSplit,
+    /// <summary>Flag-gated, unmeasured -- see <see cref="ForwardPassBackend.Mlx"/>.</summary>
+    MlxDense,
 }
 
 public sealed record ForwardPassRequest
@@ -158,10 +165,27 @@ public static class ForwardPassSelection
             return ForwardPassDecision.Refuse(request.ArchitectureRefusal ??
                 $"GGUF architecture '{request.Architecture}' is not admitted by OpenTail.Stingray.");
         if (request.UnsupportedBackendName is { } unsupportedBackend)
-            return ForwardPassDecision.Refuse($"Unknown --backend value '{unsupportedBackend}'. Expected one of: auto, vulkan, cuda.");
+            return ForwardPassDecision.Refuse($"Unknown --backend value '{unsupportedBackend}'. Expected one of: auto, vulkan, cuda, mlx.");
 
         ArchitectureDescriptor? descriptor = ArchitectureRegistry.Find(request.Architecture);
         ForwardPassFamily family = descriptor?.Capabilities.Family ?? ForwardPassFamily.Dense;
+
+        // Deliberately isolated from every other branch below (ForwardPassBackend.Mlx is a new enum
+        // value nothing else checks, so no existing CPU/CUDA/Vulkan routing changes): a caller
+        // explicitly requesting --backend mlx is routed here and nowhere else, with none of the
+        // TurboQuant/DSpark/draft-model/sessions logic below applying -- this port implements none
+        // of those. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
+        if (request.Backend == ForwardPassBackend.Mlx)
+        {
+            if (Environment.GetEnvironmentVariable("STINGRAY_MLX_DENSE") != "1")
+                return ForwardPassDecision.Refuse(
+                    "--backend mlx requires STINGRAY_MLX_DENSE=1 (flag-gated, unmeasured -- no Mac on " +
+                    "this development machine; see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md).");
+            if (family != ForwardPassFamily.Dense)
+                return ForwardPassDecision.Refuse(
+                    $"--backend mlx only supports dense (non-MoE, non-hybrid, non-recurrent) architectures in this port; '{request.Architecture}' is {family}.");
+            return ForwardPassDecision.Select(ForwardPassKind.MlxDense);
+        }
 
         bool draftRequested = request.HasDraftModel || request.DraftLookup;
         string tqMode = request.TurboQuantMode.Trim().ToLowerInvariant();

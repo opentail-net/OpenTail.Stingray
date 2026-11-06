@@ -97,7 +97,7 @@ public static class ExecutionPlanner
             !string.Equals(request.PinnedBackend, "auto", StringComparison.OrdinalIgnoreCase))
         {
             string b = request.PinnedBackend.Trim().ToLowerInvariant();
-            if (b is not ("cpu" or "cuda" or "vulkan"))
+            if (b is not ("cpu" or "cuda" or "vulkan" or "mlx"))
             {
                 unsupportedBackend = request.PinnedBackend;
             }
@@ -467,10 +467,15 @@ public static class ExecutionPlanner
 
             decisions.Add(new("BACKEND", pinned, "User explicitly pinned backend.", "request_pin"));
 
+            // "mlx" carries no architecture-support check here (unlike cuda/vulkan above): it is
+            // flag-gated and dense-architecture-only, both enforced by ForwardPassSelection.Select's
+            // own isolated branch (docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md), not
+            // by ArchitectureDescriptor.Capabilities.Backends (which has no Mlx flag to check).
             return pinned switch
             {
                 "cuda" => (ForwardPassBackend.Cuda, capabilities.CudaDeviceName ?? "CUDA Device 0"),
                 "vulkan" => (ForwardPassBackend.Vulkan, capabilities.VulkanDeviceName ?? "Vulkan Device 0"),
+                "mlx" => (ForwardPassBackend.Mlx, "MLX Device 0 (flag-gated, unmeasured)"),
                 _ => (ForwardPassBackend.Cpu, "CPU Host")
             };
         }

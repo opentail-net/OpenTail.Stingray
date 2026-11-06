@@ -285,12 +285,29 @@ own scope section, not overlooked):
 - ~~GQA broadcast~~ -- done 2026-11-06 (see below); `mlx_fast_scaled_dot_product_attention` broadcasts internally, no new code needed.
 - ~~Multi-token continuation into an already-populated KV cache~~ -- done 2026-11-06 (see below), via `Forward`; `ForwardDecode` itself still handles only one new token at a time, by design.
 - MoE, hybrid/recurrent architectures, vision, diffusion, quantized MLX ops (not F32) -- entirely
-  untouched, per the plan's original scope section.
-- No engine/planner integration (`ForwardPassKind`, CLI `--backend mlx`) -- the loader and model exist
-  as standalone, directly-callable types, not wired into Stingray's dispatch.
+  untouched. The owner expanded scope 2026-11-06 ("do complete all these -> GQA, multi-token cache
+  continuation, MoE/hybrid/vision architectures, engine/CLI integration, TensorSharp's perf
+  optimizations") to include this; it is the next item to pick up, following the same discipline
+  (faithful port, two-tier testing, CI green per increment).
+- ~~No engine/planner integration~~ -- done 2026-11-06. `ForwardPassBackend.Mlx` and
+  `ForwardPassKind.MlxDense` added; `ForwardPassSelection.Select` has an isolated early-return branch
+  (`request.Backend == ForwardPassBackend.Mlx`) that refuses unless `STINGRAY_MLX_DENSE=1` and the
+  architecture family is `Dense`, nothing else checks the new enum values so no existing CPU/CUDA/
+  Vulkan routing changed. `CommonForwardPassFactory.CreateDense` wires `ForwardPassKind.MlxDense` to
+  `MlxGgufDenseModelLoader.Load` + `new MlxForwardPass(...)`. The real CLI string-parsing path
+  (`ExecutionPlanner`) was also updated end-to-end: the pinned-backend allowlist now accepts `"mlx"`,
+  and the backend-resolution switch maps it to `(ForwardPassBackend.Mlx, "MLX Device 0 (flag-gated,
+  unmeasured)")` -- previously it would have silently fallen through to CPU. Covered by
+  `ForwardPassSelectionTests.MlxBackendRoutingTests` (4 tests: flag unset refuses, flag set + dense
+  selects `MlxDense`, flag set + non-dense refuses, doesn't affect other routing) and
+  `ExecutionPlannerTests.MlxPinnedBackendTests` (2 tests: real end-to-end `--backend mlx` through
+  `ExecutionPlanner.Plan`, flag unset refuses with `STINGRAY_MLX_DENSE` in the message, flag set
+  resolves to `plan.Backend == "mlx"` / `ForwardPassKind.MlxDense`). 69+4 and 25+2 tests passing in
+  `Tests.Core` respectively, zero regression to the pre-existing 69/25.
 - TensorSharp's own performance optimizations not ported: per-device stream caching, the fused
   `FlatToHeadFirst` Metal kernel (this port uses `mlx_reshape` + `mlx_transpose_axes` instead, by
-  owner instruction to stay in C#), device-resident (vs. host-round-tripping) arrays.
+  owner instruction to stay in C#), device-resident (vs. host-round-tripping) arrays. Also in scope
+  per the 2026-11-06 expansion; not started.
 - Nothing has been run on real hardware. Every claim above is "compiles, reviewed for structural
   correctness, tested as far as this machine allows" -- not "works." That gap cannot be closed without
   a Mac, which is the whole premise this plan was scoped under.

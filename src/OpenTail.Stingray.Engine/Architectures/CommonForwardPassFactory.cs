@@ -133,6 +133,19 @@ public static class CommonForwardPassFactory
                 return vsplit;
             }
 
+            case ForwardPassKind.MlxDense:
+            {
+                // Flag-gated, unmeasured -- see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
+                // MlxGgufDenseModelLoader.Load itself re-checks STINGRAY_MLX_DENSE; the planner
+                // (ForwardPassSelection.Select) already refused this kind if it weren't set, so
+                // reaching here with the flag unset would mean the planner and the loader disagree --
+                // worth surfacing as a bug, not swallowing.
+                var mlxModel = OpenTail.Stingray.Mlx.MlxGgufDenseModelLoader.Load(ctx.Probe.Gguf!);
+                var mlxFwd = new OpenTail.Stingray.Mlx.MlxForwardPass(mlxModel, ctx.ContextSize);
+                ctx.TrackDisposable(mlxFwd);
+                return mlxFwd;
+            }
+
             default:
                 throw new InvalidOperationException($"Unsupported forward pass kind '{ctx.Plan.ForwardPassKind}' for dense architecture.");
         }

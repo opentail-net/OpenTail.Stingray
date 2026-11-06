@@ -270,6 +270,37 @@ public sealed class ExecutionPlannerTests : IDisposable
     }
 
     /// <summary>
+    /// End-to-end coverage for the MLX backend's CLI integration (docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md):
+    /// "--backend mlx" must survive the real string-parsing path in <see cref="ExecutionPlanner"/> (not just
+    /// <c>ForwardPassSelection.Select</c>'s own isolated unit tests) -- the pinned-backend allowlist, the
+    /// <see cref="ForwardPassBackend"/> resolution switch, and the planner's refusal plumbing when the flag is unset.
+    /// </summary>
+    public sealed class MlxPinnedBackendTests : IDisposable
+    {
+        private const string FlagVar = "STINGRAY_MLX_DENSE";
+        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, null);
+
+        [Fact]
+        public void Plan_PinnedMlxBackend_FlagNotSet_Refuses()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, null);
+            var ex = Assert.Throws<NotSupportedException>(() =>
+                new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "mlx" }));
+            Assert.Contains("STINGRAY_MLX_DENSE", ex.Message);
+        }
+
+        [Fact]
+        public void Plan_PinnedMlxBackend_FlagSet_SelectsMlxDense()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var plan = new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "mlx" });
+
+            Assert.Equal("mlx", plan.Backend);
+            Assert.Equal(ForwardPassKind.MlxDense, plan.ForwardPassKind);
+        }
+    }
+
+    /// <summary>
     /// Plan 6 F2: the planner's per-layer weight figure summed a fixed list of plain-transformer tensor names, so the fused QKV, Gated-DeltaNet and SSM
     /// projections of a hybrid layer were uploaded but never counted (Qwen3.5-0.8B: 195 MiB of 795). Each such tensor present in a layer now adds exactly its
     /// bytes; a tensor the list does not name still adds nothing, so a family without them measures what it always did.

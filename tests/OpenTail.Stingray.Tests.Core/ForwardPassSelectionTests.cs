@@ -73,7 +73,7 @@ public sealed class ForwardPassSelectionTests
         { "flag-skip-family-refusals-bypass", new() { Architecture = "gpt-oss", TurboQuant = true, SkipFamilyRefusals = true }, ForwardPassKind.GptOssCpu, null },
         { "flag-skip-turbo-quant-shape-validation-refusal", new() { Architecture = "gpt-oss", TurboQuant = true, HeadDim = 64, SkipTurboQuantShapeValidation = true }, null, "gpt-oss runs on its own CPU forward pass, which supports neither TurboQuant nor speculative decoding." },
         { "image-no-embedding-refusal", new() { Architecture = "gemma4", IsGemma4 = true, HasImageInput = true, SupportsEmbeddingInput = false }, null, "Image input requires a forward pass that accepts precomputed-embedding input." },
-        { "flag-unsupported-backend-refusal", new() { UnsupportedBackendName = "bogus" }, null, "Unknown --backend value 'bogus'. Expected one of: auto, vulkan, cuda." },
+        { "flag-unsupported-backend-refusal", new() { UnsupportedBackendName = "bogus" }, null, "Unknown --backend value 'bogus'. Expected one of: auto, vulkan, cuda, mlx." },
     };
 
     [Theory]
@@ -92,5 +92,56 @@ public sealed class ForwardPassSelectionTests
     {
         // Execution policy must not depend on which frontend asked: CLI, server and ModelContext share one planner.
         Assert.DoesNotContain(typeof(ForwardPassRequest).GetProperties(), p => p.Name.Contains("Frontend", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The MLX routing branch (docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md) is
+    /// isolated from the matrix above -- deliberately not a MatrixCases row, since it needs
+    /// per-case STINGRAY_MLX_DENSE env var setup/teardown the shared matrix doesn't support.
+    /// ForwardPassSelection.Select has zero native calls (it's a pure planning function), so this
+    /// is fully, really tested, not just "fails predictably."
+    /// </summary>
+    public sealed class MlxBackendRoutingTests : IDisposable
+    {
+        private const string FlagVar = "STINGRAY_MLX_DENSE";
+
+        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, null);
+
+        [Fact]
+        public void Mlx_FlagNotSet_Refuses()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, null);
+            var decision = ForwardPassSelection.Select(new() { Backend = ForwardPassBackend.Mlx });
+            Assert.True(decision.IsRefused);
+            Assert.Contains("STINGRAY_MLX_DENSE=1", decision.Refusal);
+        }
+
+        [Fact]
+        public void Mlx_FlagSet_DenseArchitecture_SelectsMlxDense()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var decision = ForwardPassSelection.Select(new() { Backend = ForwardPassBackend.Mlx, Architecture = "llama" });
+            Assert.Equal(ForwardPassKind.MlxDense, decision.Kind);
+            Assert.False(decision.IsRefused);
+        }
+
+        [Fact]
+        public void Mlx_FlagSet_NonDenseArchitecture_Refuses()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var decision = ForwardPassSelection.Select(new() { Backend = ForwardPassBackend.Mlx, Architecture = "gpt-oss" });
+            Assert.True(decision.IsRefused);
+            Assert.Contains("only supports dense", decision.Refusal);
+        }
+
+        [Fact]
+        public void Mlx_DoesNotAffectOtherBackendRouting()
+        {
+            // Zero risk to existing CPU/CUDA/Vulkan dispatch: a plain request with no Backend ==
+            // Mlx must route exactly as it did before this enum value existed.
+            Environment.SetEnvironmentVariable(FlagVar, "1"); // even with the flag set
+            var decision = ForwardPassSelection.Select(new());
+            Assert.Equal(ForwardPassKind.CpuDense, decision.Kind);
+        }
     }
 }
