@@ -303,7 +303,24 @@ own scope section, not overlooked):
     a perf/memory feature orthogonal to correctness, lower priority than the compute path. No MoE
     model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- these
     ops alone are not a runnable MoE forward pass.
-  - **Hybrid (MiniMax-H3) -- scoped and found out of scope, 2026-11-06**: `MlxMiniMaxH3Ops.cs` and
+  - **Hybrid architecture (Qwen3.5 Gated-DeltaNet) -- located and sized, 2026-11-06**: the real
+    MLX-relevant GDN hybrid is `TensorSharp.Models/Models/Qwen35/Qwen35Model.GatedDeltaNet.cs`
+    (4,136 lines) in `C:\Git-Public\example\TensorSharp`, not anything under
+    `TensorSharp.Backends.MLX`. It has a native-MLX-kernel fast path
+    (`MlxFusedOps.GatedDeltaNetCache.TryRunQwen35Packed`/`TryRunQwen35`, almost certainly another
+    custom Metal kernel for the chunked delta-rule scan -- not yet confirmed line-by-line) with an
+    explicit fallback (`if (!ranMlxNativeGdn) ...`) to a generic, backend-agnostic `Ops`-based path
+    that works on any storage type including MLX's, the same way this port's basic composed ops do.
+    Porting Stingray's existing CPU `HybridGdnForwardPass`/`GdnKernels` GDN recurrence to run on MLX
+    arrays via the generic-ops-equivalent path (skipping the fast fused-kernel path, same tradeoff
+    this whole port makes everywhere else) is plausible in principle, but at 4,136 lines of real
+    reference logic to read and faithfully translate, it is its own subsystem-sized port -- larger
+    than the entire dense-llama path was. Correctly sized rather than attempted shallowly in one
+    sitting; the next session picking this up should start by reading
+    `Qwen35Model.GatedDeltaNet.cs`'s non-MLX-native fallback branches specifically (the `if
+    (!ranMlxNativeGdn && !ranCudaNativeGdn)` branches), since those are the backend-agnostic
+    composed-ops version this port would actually translate, not the fused-kernel fast path.
+  - **MiniMax-H3 -- scoped and found out of scope, 2026-11-06**: `MlxMiniMaxH3Ops.cs` and
     `MlxMiniMaxH3AttentionOps.cs` are NOT a hybrid GDN/Mamba-style text LLM architecture despite the
     name -- they are video/audio VAE transform ops for a diffusion pipeline (packed AdaLN modulation,
     group-norm-SiLU, im2col variants, an exact-attention kernel for the VAE's own encoder). Every
@@ -313,7 +330,7 @@ own scope section, not overlooked):
     "stick to C#" instruction (no raw kernel porting) and the plan's own out-of-scope list (no
     diffusion), this is correctly left unported; it was never the right target for the "hybrid
     architectures" item anyway (that item means GDN/Mamba/short-conv hybrids, which this file is
-    not). No MLX GDN-hybrid text architecture has been scoped yet.
+    not). The real GDN-hybrid text architecture is scoped separately above (Qwen3.5 Gated-DeltaNet).
   - **Vision (Gemma 4) -- partially ported, 2026-11-06**: `MlxGemma4VisionOps.cs` is mostly custom
     Metal kernels too (`Gemma4VisionPosition2D`, `Gemma4VisionPool3x3`, `Gemma4VisionRope2D` all use
     `CreateFastMetalKernel`), but `TrySelfAttention` (~112-160) is different -- it is itself built
