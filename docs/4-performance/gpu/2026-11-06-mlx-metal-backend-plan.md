@@ -321,10 +321,23 @@ own scope section, not overlooked):
   `ExecutionPlanner.Plan`, flag unset refuses with `STINGRAY_MLX_DENSE` in the message, flag set
   resolves to `plan.Backend == "mlx"` / `ForwardPassKind.MlxDense`). 69+4 and 25+2 tests passing in
   `Tests.Core` respectively, zero regression to the pre-existing 69/25.
-- TensorSharp's own performance optimizations not ported: per-device stream caching, the fused
-  `FlatToHeadFirst` Metal kernel (this port uses `mlx_reshape` + `mlx_transpose_axes` instead, by
-  owner instruction to stay in C#), device-resident (vs. host-round-tripping) arrays. Also in scope
-  per the 2026-11-06 expansion; not started.
+- TensorSharp's own performance optimizations:
+  - ~~Per-device stream caching~~ -- done 2026-11-06. `MlxOps.GetCachedStream`, ported from
+    TensorSharp's `MlxNative.DefaultStream()` (`MlxNative.cs` ~6560-6582): the default MLX stream
+    for a device is a stable handle MLX owns, so every op in this file now fetches it from a cached
+    static field instead of doing a `device_new`+`get_default_stream`+`device_free`+`stream_free`
+    round trip on every call. Structural, not correctness-affecting -- no new tests were possible
+    or needed (the existing 110 all still pass, confirming no behavior change), and this cannot be
+    measured on this machine (no mlx-c to time against) the way the project's own perf-pass
+    discipline normally requires; stated here explicitly rather than claimed as a measured win.
+  - The fused `FlatToHeadFirst` Metal kernel -- this port uses `mlx_reshape` + `mlx_transpose_axes`
+    instead, by owner instruction to stay in C#, so there is nothing to "restore" here; TensorSharp's
+    kernel fusion and this port's op composition are different strategies, not a gap.
+  - Device-resident (vs. host-round-tripping) arrays -- every op in this file still uploads from and
+    downloads to a host array on every call, unlike TensorSharp's device-resident tensors that stay
+    on the GPU across ops in a forward pass. Not started; this is the largest remaining perf item
+    and would be a bigger structural change (threading `MlxArray` handles through `MlxDenseLayer`/
+    `MlxDenseModel` instead of `float[]`) than stream caching was.
 - Nothing has been run on real hardware. Every claim above is "compiles, reviewed for structural
   correctness, tested as far as this machine allows" -- not "works." That gap cannot be closed without
   a Mac, which is the whole premise this plan was scoped under.

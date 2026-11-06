@@ -9,17 +9,51 @@ namespace OpenTail.Stingray.Mlx;
 /// </summary>
 public static class MlxOps
 {
+    // ── Cached default stream (TensorSharp perf optimizations item,
+    // docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md) ──────────────────────────────
+    // Ported from TensorSharp's MlxNative.DefaultStream() (MlxNative.cs ~6560-6582): the default
+    // MLX stream for a device is a stable handle MLX itself owns, so recomputing it on every op (a
+    // device_new + device_free round trip per call, which every op below did until this port) is
+    // wasted work -- cache it once per device index instead. This is the first of this port's own
+    // "no stream caching" simplifications (named explicitly in RmsNorm's doc comment below) to be
+    // closed; unlike every correctness-affecting op in this file, this change cannot be verified by
+    // any test on this machine (no mlx-c to actually measure a round trip against) -- it is a
+    // structural change justified by reading the real TensorSharp comment, not a measured one.
+    private static MlxInterop.MlxStream _cachedStream;
+    private static int _cachedStreamDeviceIndex = -1;
+    private static readonly object _streamCacheLock = new();
+
+    private static MlxInterop.MlxStream GetCachedStream(int deviceIndex = 0)
+    {
+        lock (_streamCacheLock)
+        {
+            if (_cachedStreamDeviceIndex == deviceIndex)
+                return _cachedStream;
+
+            var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, deviceIndex);
+            try
+            {
+                Check(MlxInterop.GetDefaultStream(out var stream, device), "mlx_get_default_stream");
+                _cachedStream = stream;
+                _cachedStreamDeviceIndex = deviceIndex;
+                return stream;
+            }
+            finally
+            {
+                MlxInterop.DeviceFree(device);
+            }
+        }
+    }
+
     /// <summary>Elementwise multiply of two same-length arrays (<c>mlx_multiply</c>).</summary>
     public static float[] Multiply(ReadOnlySpan<float> lhs, ReadOnlySpan<float> rhs)
     {
         if (lhs.Length != rhs.Length) throw new ArgumentException($"lhs has {lhs.Length} elements, rhs has {rhs.Length}; they must match.", nameof(rhs));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray a = default, b = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             a = UploadFloat32(lhs, [lhs.Length]);
             b = UploadFloat32(rhs, [rhs.Length]);
             Check(MlxInterop.Multiply(out result, a, b, stream), "mlx_multiply");
@@ -33,8 +67,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (b.IsValid) MlxInterop.ArrayFree(b);
             if (a.IsValid) MlxInterop.ArrayFree(a);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -47,12 +79,11 @@ public static class MlxOps
     /// <c>mlx_fast_rms_norm</c>, obtaining the stream via its cached <c>DefaultStream()</c>) --
     /// <c>C:\Git-Public\example\TensorSharp\TensorSharp.Backends.MLX\MlxBasicOps.cs</c> lines
     /// ~893-919 and <c>MlxNative.cs</c> lines ~3915-3923 and ~6560-6582. Simplified relative to
-    /// that source in two ways, both named so a later port of a harder op knows what was dropped:
-    /// (1) no stream caching -- a device and stream are created and freed on every call here, where
-    /// TensorSharp caches the stream handle per device to avoid a device_new/free round trip per op;
-    /// a perf-sensitive port should restore that. (2) no beta (bias) parameter or F16/BF16/quantized
-    /// input paths -- TensorSharp's <c>RmsNorm</c> falls back to a generic path for those; this port
-    /// covers only the fp32, weight-only case <c>CudaForwardPass</c>'s RMSNorm calls actually need.</para>
+    /// that source in one remaining way: no beta (bias) parameter or F16/BF16/quantized input paths
+    /// -- TensorSharp's <c>RmsNorm</c> falls back to a generic path for those; this port covers only
+    /// the fp32, weight-only case <c>CudaForwardPass</c>'s RMSNorm calls actually need. (Stream
+    /// caching, named here as missing in an earlier version of this port, is now done -- see
+    /// <see cref="GetCachedStream"/>.)</para>
     /// </summary>
     /// <param name="input">Row-major <paramref name="rows"/> x <paramref name="hiddenDim"/> activations.</param>
     /// <param name="weight">The norm's learned scale, length <paramref name="hiddenDim"/>, or <c>null</c> for an unweighted norm.</param>
@@ -63,13 +94,10 @@ public static class MlxOps
         if (!weight.IsEmpty && weight.Length != hiddenDim)
             throw new ArgumentException($"weight has {weight.Length} elements, expected hiddenDim = {hiddenDim}.", nameof(weight));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray inputArray = default, weightArray = default, resultArray = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
-
             int[] inputShape = [rows, hiddenDim];
             inputArray = UploadFloat32(input, inputShape);
             if (!weight.IsEmpty)
@@ -86,8 +114,6 @@ public static class MlxOps
             if (resultArray.IsValid) MlxInterop.ArrayFree(resultArray);
             if (weightArray.IsValid) MlxInterop.ArrayFree(weightArray);
             if (inputArray.IsValid) MlxInterop.ArrayFree(inputArray);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -98,12 +124,10 @@ public static class MlxOps
     /// </summary>
     public static float[] Silu(ReadOnlySpan<float> input)
     {
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray x = default, sig = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             x = UploadFloat32(input, [input.Length]);
             Check(MlxInterop.Sigmoid(out sig, x, stream), "mlx_sigmoid");
             Check(MlxInterop.Multiply(out result, x, sig, stream), "mlx_multiply");
@@ -117,8 +141,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (sig.IsValid) MlxInterop.ArrayFree(sig);
             if (x.IsValid) MlxInterop.ArrayFree(x);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -133,12 +155,10 @@ public static class MlxOps
         if (a.Length != m * k) throw new ArgumentException($"a has {a.Length} elements, expected m*k = {m * k}.", nameof(a));
         if (b.Length != k * n) throw new ArgumentException($"b has {b.Length} elements, expected k*n = {k * n}.", nameof(b));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray aArray = default, bArray = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             aArray = UploadFloat32(a, [m, k]);
             bArray = UploadFloat32(b, [k, n]);
             Check(MlxInterop.MatMul(out result, aArray, bArray, stream), "mlx_matmul");
@@ -152,8 +172,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (bArray.IsValid) MlxInterop.ArrayFree(bArray);
             if (aArray.IsValid) MlxInterop.ArrayFree(aArray);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -168,12 +186,10 @@ public static class MlxOps
         if (a.Length != m * k) throw new ArgumentException($"a has {a.Length} elements, expected m*k = {m * k}.", nameof(a));
         if (b.Length != k * n) throw new ArgumentException($"b has {b.Length} elements, expected k*n = {k * n}.", nameof(b));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray biasArray = default, aArray = default, bArray = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             biasArray = UploadFloat32(bias, [n]);
             aArray = UploadFloat32(a, [m, k]);
             bArray = UploadFloat32(b, [k, n]);
@@ -189,8 +205,6 @@ public static class MlxOps
             if (bArray.IsValid) MlxInterop.ArrayFree(bArray);
             if (aArray.IsValid) MlxInterop.ArrayFree(aArray);
             if (biasArray.IsValid) MlxInterop.ArrayFree(biasArray);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -199,12 +213,10 @@ public static class MlxOps
     {
         if (input.Length != rows * cols) throw new ArgumentException($"input has {input.Length} elements, expected rows*cols = {rows * cols}.", nameof(input));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray x = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             x = UploadFloat32(input, [rows, cols]);
             Check(MlxInterop.SoftmaxAxis(out result, x, axis: -1, precise: true, stream), "mlx_softmax_axis");
 
@@ -216,8 +228,6 @@ public static class MlxOps
         {
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (x.IsValid) MlxInterop.ArrayFree(x);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -257,14 +267,12 @@ public static class MlxOps
         if (queryOffset < 0) throw new ArgumentOutOfRangeException(nameof(queryOffset), queryOffset, "queryOffset must be >= 0.");
         if (queryOffset > 0 && !causal) throw new ArgumentException("queryOffset > 0 only makes sense for causal attention.", nameof(queryOffset));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray q = default, k = default, v = default, result = default;
         MlxInterop.MlxArray rows = default, rowsColumn = default, cols = default, colsRow = default, distance = default, offsetMask = default;
         nint maskModePtr = nint.Zero;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             q = UploadFloat32(query, [numQueryHeads, querySeqLen, headDim]);
             k = UploadFloat32(key, [numKvHeads, kvSeqLen, headDim]);
             v = UploadFloat32(value, [numKvHeads, kvSeqLen, headDim]);
@@ -304,8 +312,6 @@ public static class MlxOps
             if (k.IsValid) MlxInterop.ArrayFree(k);
             if (q.IsValid) MlxInterop.ArrayFree(q);
             if (maskModePtr != nint.Zero) Marshal.FreeHGlobal(maskModePtr);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -324,12 +330,10 @@ public static class MlxOps
         if (positions.Length != seqLen) throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
         if (dims <= 0 || (dims & 1) != 0) throw new ArgumentOutOfRangeException(nameof(dims), dims, "RoPE dims must be a positive even number.");
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray x = default, offsets = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             x = UploadFloat32(input, [seqLen, headDim]);
             offsets = UploadInt32(positions, [seqLen]);
 
@@ -345,8 +349,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (offsets.IsValid) MlxInterop.ArrayFree(offsets);
             if (x.IsValid) MlxInterop.ArrayFree(x);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -362,12 +364,10 @@ public static class MlxOps
         int expected = seqLen * numHeads * headDim;
         if (flat.Length != expected) throw new ArgumentException($"flat has {flat.Length} elements, expected seqLen*numHeads*headDim = {expected}.", nameof(flat));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray x = default, reshaped = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             x = UploadFloat32(flat, [seqLen, numHeads * headDim]);
             Check(MlxInterop.Reshape(out reshaped, x, [seqLen, numHeads, headDim], 3, stream), "mlx_reshape");
             Check(MlxInterop.TransposeAxes(out result, reshaped, [1, 0, 2], 3, stream), "mlx_transpose_axes");
@@ -381,8 +381,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (reshaped.IsValid) MlxInterop.ArrayFree(reshaped);
             if (x.IsValid) MlxInterop.ArrayFree(x);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -392,12 +390,10 @@ public static class MlxOps
         int expected = numHeads * seqLen * headDim;
         if (headFirst.Length != expected) throw new ArgumentException($"headFirst has {headFirst.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(headFirst));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray x = default, transposed = default, result = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             x = UploadFloat32(headFirst, [numHeads, seqLen, headDim]);
             Check(MlxInterop.TransposeAxes(out transposed, x, [1, 0, 2], 3, stream), "mlx_transpose_axes");
             Check(MlxInterop.Reshape(out result, transposed, [seqLen, numHeads * headDim], 2, stream), "mlx_reshape");
@@ -411,8 +407,6 @@ public static class MlxOps
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (transposed.IsValid) MlxInterop.ArrayFree(transposed);
             if (x.IsValid) MlxInterop.ArrayFree(x);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -446,13 +440,11 @@ public static class MlxOps
         if (routerLogits.Length != numExperts) throw new ArgumentException($"routerLogits has {routerLogits.Length} elements, expected numExperts = {numExperts}.", nameof(routerLogits));
         if (k <= 0 || k >= numExperts) throw new ArgumentOutOfRangeException(nameof(k), k, "k must satisfy 0 < k < numExperts.");
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray logits = default, neg = default, partIdx = default, topIdx2d = default,
             topIdx1d = default, topIdx1dInt = default, topLogits = default, softmaxed = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             logits = UploadFloat32(routerLogits, [1, numExperts]);
 
             Check(MlxInterop.Negative(out neg, logits, stream), "mlx_negative");
@@ -479,8 +471,6 @@ public static class MlxOps
             if (partIdx.IsValid) MlxInterop.ArrayFree(partIdx);
             if (neg.IsValid) MlxInterop.ArrayFree(neg);
             if (logits.IsValid) MlxInterop.ArrayFree(logits);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
@@ -499,12 +489,10 @@ public static class MlxOps
     {
         if (src.Length != srcRows * cols) throw new ArgumentException($"src has {src.Length} elements, expected srcRows*cols = {srcRows * cols}.", nameof(src));
 
-        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-        MlxInterop.MlxStream stream = default;
+        var stream = GetCachedStream();
         MlxInterop.MlxArray srcArray = default, indicesArray = default, gathered = default, contiguous = default;
         try
         {
-            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
             srcArray = UploadFloat32(src, [srcRows, cols]);
             indicesArray = UploadInt32(indices, [indices.Length]);
             Check(MlxInterop.TakeAxis(out gathered, srcArray, indicesArray, axis: 0, stream), "mlx_take_axis");
@@ -520,8 +508,6 @@ public static class MlxOps
             if (gathered.IsValid) MlxInterop.ArrayFree(gathered);
             if (indicesArray.IsValid) MlxInterop.ArrayFree(indicesArray);
             if (srcArray.IsValid) MlxInterop.ArrayFree(srcArray);
-            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
-            MlxInterop.DeviceFree(device);
         }
     }
 
