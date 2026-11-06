@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Mlx;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
@@ -10,6 +11,39 @@ public sealed class CommonForwardPassFactoryTests
     public void CreateDense_ThrowsOnNullContext()
     {
         Assert.Throws<ArgumentNullException>(() => CommonForwardPassFactory.CreateDense(null!));
+    }
+
+    [Fact]
+    public void CreateDense_MlxUnavailable_RefusesBeforeLoadingModel()
+    {
+        Assert.SkipUnless(!MlxBackend.IsAvailable(), "This check is for hosts without a working MLX/Metal runtime.");
+        string? originalFlag = Environment.GetEnvironmentVariable("STINGRAY_MLX_DENSE");
+        Environment.SetEnvironmentVariable("STINGRAY_MLX_DENSE", "1");
+        try
+        {
+            var source = new FakeModelTensorSource();
+            var hp = new ModelHyperparams { EmbeddingDim = 128, NumLayers = 2, VocabSize = 100, HeadDim = 64 };
+            var plan = ExecutionPlan.CreateSynthesized(
+                architecture: "llama",
+                decision: new ForwardPassDecision(ForwardPassKind.MlxDense, null),
+                backend: ForwardPassBackend.Mlx,
+                contextSize: 512,
+                gpuLayers: 0,
+                headDim: 64);
+            var loadCtx = new ArchitectureLoadContext
+            {
+                Probe = new ArchitectureProbe { Architecture = "llama", TensorSource = source },
+                Hyperparams = hp,
+                Plan = plan,
+            };
+
+            var ex = Assert.Throws<NotSupportedException>(() => CommonForwardPassFactory.CreateDense(loadCtx));
+            Assert.Contains("MLX backend is unavailable", ex.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_MLX_DENSE", originalFlag);
+        }
     }
 
     [Fact]

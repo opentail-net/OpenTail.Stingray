@@ -35,6 +35,14 @@
     <NoWarn>$(NoWarn);IL3050;IL2026</NoWarn>
   </PropertyGroup>
 
+  <!-- Microsoft.DotNet.ILCompiler is pulled in implicitly by PublishAot, pinned to the SDK's
+       runtime-pack version (10.0.12, the latest available for the 10.0.301 SDK in global.json —
+       there is no newer version to upgrade to). NuGet audit flags it for GHSA-p3jp-9v83-76w9;
+       suppress since it isn't independently upgradable here. -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-p3jp-9v83-76w9" />
+  </ItemGroup>
+
   <!--
     Runtime-config switches that strip diagnostic features. Gated on _IsPublishing
     so they only apply to AOT publish output and do NOT propagate into the dotnet

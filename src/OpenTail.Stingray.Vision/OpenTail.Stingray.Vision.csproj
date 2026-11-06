@@ -12,11 +12,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.14" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vision" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
 </Project>

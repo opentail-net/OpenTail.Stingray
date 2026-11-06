@@ -12,12 +12,17 @@
          TestContext.Current.CancellationToken. It is a responsiveness recommendation, not a
          correctness rule, and the v2->v3 move surfaced it at ~340 existing call sites; the
          suite is fast and not cancellation-driven, so it is suppressed rather than churned. -->
-    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+    <!-- xUnit1069 asks every Timeout-decorated test to reference TestContext.Current.CancellationToken
+         so it can abort promptly on timeout. These [Fact(Timeout = ...)] tests are synchronous,
+         unbounded CPU compute (real mmproj forward passes) with nothing to thread a token through;
+         the Timeout exists only to fail a genuinely stuck run fast (see each test's own comment),
+         not to drive cooperative cancellation. Suppressed for the same reason as xUnit1051 below. -->
+    <NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="3.2.2" />
-    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -31,6 +36,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
 </Project>

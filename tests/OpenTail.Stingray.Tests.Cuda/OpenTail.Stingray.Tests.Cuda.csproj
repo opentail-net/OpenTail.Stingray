@@ -28,8 +28,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="3.2.2" />
-    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -56,6 +56,10 @@
          helper is CPU-only and stays with the CPU test class it belongs to. -->
     <ProjectReference Include="..\OpenTail.Stingray.Tests.ForwardPass\OpenTail.Stingray.Tests.ForwardPass.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Tests.ForwardPass.Fast\OpenTail.Stingray.Tests.ForwardPass.Fast.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
 </Project>

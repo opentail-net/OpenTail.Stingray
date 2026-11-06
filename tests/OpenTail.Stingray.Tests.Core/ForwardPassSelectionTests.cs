@@ -104,8 +104,9 @@ public sealed class ForwardPassSelectionTests
     public sealed class MlxBackendRoutingTests : IDisposable
     {
         private const string FlagVar = "STINGRAY_MLX_DENSE";
+        private readonly string? _originalFlag = Environment.GetEnvironmentVariable(FlagVar);
 
-        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, null);
+        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, _originalFlag);
 
         [Fact]
         public void Mlx_FlagNotSet_Refuses()
@@ -132,6 +133,90 @@ public sealed class ForwardPassSelectionTests
             var decision = ForwardPassSelection.Select(new() { Backend = ForwardPassBackend.Mlx, Architecture = "gpt-oss" });
             Assert.True(decision.IsRefused);
             Assert.Contains("only supports dense", decision.Refusal);
+        }
+
+        [Theory]
+        [InlineData("mistral")]
+        [InlineData("unregistered-dense")]
+        public void Mlx_FlagSet_ArchitectureOutsideAllowlist_Refuses(string architecture)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var decision = ForwardPassSelection.Select(new()
+            {
+                Backend = ForwardPassBackend.Mlx,
+                Architecture = architecture,
+                ArchitectureSupported = true,
+                AllowUnverifiedArchitecture = true,
+            });
+            Assert.True(decision.IsRefused);
+            Assert.Contains("verified 'llama'", decision.Refusal);
+        }
+
+        [Fact]
+        public void Mlx_SafeTensorsRequest_RefusesInsteadOfFallingBackToCpu()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var decision = ForwardPassSelection.Select(new() { Backend = ForwardPassBackend.Mlx, IsSafeTensors = true });
+            Assert.True(decision.IsRefused);
+            Assert.Contains("GGUF Llama", decision.Refusal);
+        }
+
+        [Theory]
+        [InlineData("TurboQuant")]
+        [InlineData("DSpark")]
+        [InlineData("DraftModel")]
+        [InlineData("Sessions")]
+        [InlineData("ImageInput")]
+        [InlineData("Batching")]
+        [InlineData("SnapKV")]
+        [InlineData("NonFp32Kv")]
+        [InlineData("DisabledFlashAttention")]
+        [InlineData("RopeOverride")]
+        [InlineData("ChunkedPrefill")]
+        [InlineData("PrefixCache")]
+        [InlineData("NonDefaultDevice")]
+        public void Mlx_UnsupportedFeatures_RefuseWithSpecificReason(string feature)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            ForwardPassRequest request = new() { Backend = ForwardPassBackend.Mlx, Architecture = "llama" };
+            request = feature switch
+            {
+                "TurboQuant" => request with { TurboQuant = true },
+                "DSpark" => request with { DsParkRequested = true },
+                "DraftModel" => request with { HasDraftModel = true },
+                "Sessions" => request with { SessionsRequested = true },
+                "ImageInput" => request with { HasImageInput = true },
+                "Batching" => request with { MaxBatchSizeGreaterThanOne = true },
+                "SnapKV" => request with { SnapKvEnabled = true },
+                "NonFp32Kv" => request with { PinnedKvDtype = "q8_0" },
+                "DisabledFlashAttention" => request with { FlashAttention = false },
+                "RopeOverride" => request with { RopeFrequencyBase = 5000 },
+                "ChunkedPrefill" => request with { PrefillChunkingRequested = true },
+                "PrefixCache" => request with { PrefixCacheRequested = true },
+                "NonDefaultDevice" => request with { DeviceIndex = 1 },
+                _ => throw new ArgumentOutOfRangeException(nameof(feature)),
+            };
+
+            var decision = ForwardPassSelection.Select(request);
+
+            Assert.True(decision.IsRefused);
+            Assert.Contains(feature switch
+            {
+                "TurboQuant" => "TurboQuant",
+                "DSpark" => "DSpark",
+                "DraftModel" => "Speculative decoding",
+                "Sessions" => "Sessions",
+                "ImageInput" => "Image or multimodal",
+                "Batching" => "Batching",
+                "SnapKV" => "SnapKV",
+                "NonFp32Kv" => "FP32 KV cache",
+                "DisabledFlashAttention" => "scaled-dot-product attention",
+                "RopeOverride" => "RoPE frequency overrides",
+                "ChunkedPrefill" => "Chunked prefill",
+                "PrefixCache" => "Prefix-cache",
+                "NonDefaultDevice" => "device index 0",
+                _ => feature,
+            }, decision.Refusal);
         }
 
         [Fact]

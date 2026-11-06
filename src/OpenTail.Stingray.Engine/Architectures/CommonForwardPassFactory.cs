@@ -135,6 +135,10 @@ public static class CommonForwardPassFactory
 
             case ForwardPassKind.MlxDense:
             {
+                if (!OpenTail.Stingray.Mlx.MlxBackend.IsAvailable())
+                    throw new NotSupportedException(
+                        "The MLX backend is unavailable on this host. Install the native mlx-c runtime and use a supported Apple Metal device; no fallback is performed for an explicitly selected backend.");
+
                 // Flag-gated, unmeasured -- see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
                 // MlxGgufDenseModelLoader.Load itself re-checks STINGRAY_MLX_DENSE; the planner
                 // (ForwardPassSelection.Select) already refused this kind if it weren't set, so

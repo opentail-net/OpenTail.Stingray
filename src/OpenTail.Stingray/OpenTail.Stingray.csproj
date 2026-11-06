@@ -41,25 +41,26 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
-    <PackageReference Include="Vortice.Vulkan" Version="3.2.3" />
-    <PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.1" />
+    <PackageReference Include="Vortice.Vulkan" Version="3.3.0" />
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.14" />
     <!-- Every NuGet dependency of a bundled (PrivateAssets) project must be repeated here, or
          consumers get FileNotFoundException at run time: 1.0.7 shipped without these two, so
          InferenceEngine generation hung (Logging.Abstractions) and ONNX speech engines could
          not load (OnnxRuntime). Found 2026-09-26 running the README quick start on 1.0.7. -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
   <Target Name="IncludeProjectReferenceOutputs" DependsOnTargets="ResolveReferences">
     <ItemGroup>
-      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths)"
-                            Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll'" />
-      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).xml')"
-                            Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll' AND Exists('%(RootDir)%(Directory)%(Filename).xml')" />
-      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).pdb')"
-                            Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll' AND Exists('%(RootDir)%(Directory)%(Filename).pdb')" />
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths)" Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll'" />
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).xml')" Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll' AND Exists('%(RootDir)%(Directory)%(Filename).xml')" />
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).pdb')" Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll' AND Exists('%(RootDir)%(Directory)%(Filename).pdb')" />
     </ItemGroup>
   </Target>
 

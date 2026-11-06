@@ -278,7 +278,8 @@ public sealed class ExecutionPlannerTests : IDisposable
     public sealed class MlxPinnedBackendTests : IDisposable
     {
         private const string FlagVar = "STINGRAY_MLX_DENSE";
-        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, null);
+        private readonly string? _originalFlag = Environment.GetEnvironmentVariable(FlagVar);
+        public void Dispose() => Environment.SetEnvironmentVariable(FlagVar, _originalFlag);
 
         [Fact]
         public void Plan_PinnedMlxBackend_FlagNotSet_Refuses()
@@ -297,6 +298,42 @@ public sealed class ExecutionPlannerTests : IDisposable
 
             Assert.Equal("mlx", plan.Backend);
             Assert.Equal(ForwardPassKind.MlxDense, plan.ForwardPassKind);
+        }
+
+        [Theory]
+        [InlineData("sessions")]
+        [InlineData("batching")]
+        [InlineData("image")]
+        [InlineData("draft")]
+        [InlineData("dspark")]
+        [InlineData("snapkv")]
+        public void Plan_PinnedMlx_MapsUnsupportedExecutionRequestFeatures(string feature)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var request = new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "mlx" };
+            request = feature switch
+            {
+                "sessions" => request with { EnableSessions = true },
+                "batching" => request with { MaxBatchSize = 2 },
+                "image" => request with { MmprojPath = "mmproj.gguf" },
+                "draft" => request with { SpeculationMode = SpeculationMode.DraftModel },
+                "dspark" => request with { SpeculationMode = SpeculationMode.DSpark },
+                "snapkv" => request with { SnapKvEnabled = true, SnapKvBudget = 32 },
+                _ => throw new ArgumentOutOfRangeException(nameof(feature)),
+            };
+
+            var ex = Assert.Throws<NotSupportedException>(() => new ExecutionPlannerTests().PlanTinyModel(request));
+
+            Assert.Contains(feature switch
+            {
+                "sessions" => "Sessions",
+                "batching" => "Batching",
+                "image" => "Image or multimodal",
+                "draft" => "Speculative decoding",
+                "dspark" => "DSpark",
+                "snapkv" => "SnapKV",
+                _ => feature,
+            }, ex.Message);
         }
     }
 

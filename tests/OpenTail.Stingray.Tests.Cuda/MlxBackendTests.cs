@@ -11,12 +11,23 @@ namespace OpenTail.Stingray.Tests.Cuda;
 public sealed class MlxBackendTests
 {
     [Fact]
-    public void IsAvailable_WithNoNativeLibraryPresent_ReturnsFalse_DoesNotThrow()
+    public void IsAvailable_ReportsProbeWithoutThrowing()
     {
-        // This asserts the honest, expected-here outcome, not a mocked one: this machine genuinely
-        // has no libmlxc. If a future CI runner or dev machine ever has one, this test's assumption
-        // changes and it should be revisited, not silently left green for the wrong reason.
-        Assert.False(MlxBackend.IsAvailable());
+        _ = MlxBackend.IsAvailable();
+    }
+
+    [Fact]
+    public void IsAvailable_UsesInjectedProbeResult()
+    {
+        Assert.True(MlxBackend.IsAvailable(() => true));
+        Assert.False(MlxBackend.IsAvailable(() => false));
+    }
+
+    [Fact]
+    public void IsAvailable_MissingNativeLibraryOrEntryPoint_ReturnsFalse()
+    {
+        Assert.False(MlxBackend.IsAvailable(() => throw new DllNotFoundException("test")));
+        Assert.False(MlxBackend.IsAvailable(() => throw new EntryPointNotFoundException("test")));
     }
 }
 
@@ -29,11 +40,34 @@ public sealed class MlxBackendTests
 public sealed class MlxOpsTests
 {
     [Fact]
+    public void AttentionShapes_IncludeSingletonBatchAndPreserveHeadSequenceDimensions()
+    {
+        Assert.Equal(new[] { 1, 4, 3, 2 }, MlxOps.AttentionTensorShape(heads: 4, sequenceLength: 3, headDim: 2));
+        Assert.Equal(new[] { 1, 1, 3, 5 }, MlxOps.AttentionMaskShape(querySequenceLength: 3, keySequenceLength: 5));
+        Assert.Equal(new[] { 1, 2, 3, 4 }, MlxOps.AttentionTensorShape(heads: 2, sequenceLength: 3, headDim: 4));
+    }
+
+    [Fact]
+    public void RopeShape_IsBatchSequenceFeatureAndSupportsSingleTokenDecode()
+    {
+        Assert.Equal(new[] { 1, 3, 4 }, MlxOps.RopeTensorShape(sequenceLength: 3, headDim: 4));
+        Assert.Equal(new[] { 1, 1, 4 }, MlxOps.RopeTensorShape(sequenceLength: 1, headDim: 4));
+    }
+
+    [Fact]
     public void RmsNorm_InputLengthMismatch_Throws()
     {
         var ex = Assert.Throws<ArgumentException>(() =>
             MlxOps.RmsNorm(new float[5], rows: 2, hiddenDim: 4, weight: [], eps: 1e-6f));
         Assert.Equal("input", ex.ParamName);
+    }
+
+    [Fact]
+    public void Attention_OffsetAndQueryLengthCannotExceedKeyLength()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            MlxOps.Attention(new float[2 * 3 * 4], new float[2 * 4 * 4], new float[2 * 4 * 4],
+                numQueryHeads: 2, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 4, headDim: 4, scale: 1f, causal: true, queryOffset: 2));
     }
 
     [Fact]

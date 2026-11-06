@@ -98,6 +98,15 @@ public sealed record ForwardPassRequest
     public bool HasImageInput { get; init; }
     public bool SupportsEmbeddingInput { get; init; } = true;
     public bool HasImageBatching { get; init; }
+    public bool FlashAttention { get; init; } = true;
+    public bool SnapKvEnabled { get; init; }
+    public string? PinnedKvDtype { get; init; }
+    public string? KvStore { get; init; }
+    public float? RopeFrequencyBase { get; init; }
+    public float? RopeFrequencyScale { get; init; }
+    public bool PrefillChunkingRequested { get; init; }
+    public bool PrefixCacheRequested { get; init; }
+    public int DeviceIndex { get; init; } = -1;
     public bool IsGemma4 { get; init; }
     public bool MaxBatchSizeGreaterThanOne { get; init; }
     public bool HasTokenConstraint { get; init; }
@@ -138,6 +147,9 @@ public static class ForwardPassSelection
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (request.Backend == ForwardPassBackend.Mlx && request.IsSafeTensors)
+            return ForwardPassDecision.Refuse("The MLX backend currently accepts GGUF Llama models only; SafeTensors packages are not supported.");
+
         if (request.IsSafeTensors)
         {
             if (!request.PackageSupported)
@@ -170,11 +182,9 @@ public static class ForwardPassSelection
         ArchitectureDescriptor? descriptor = ArchitectureRegistry.Find(request.Architecture);
         ForwardPassFamily family = descriptor?.Capabilities.Family ?? ForwardPassFamily.Dense;
 
-        // Deliberately isolated from every other branch below (ForwardPassBackend.Mlx is a new enum
-        // value nothing else checks, so no existing CPU/CUDA/Vulkan routing changes): a caller
-        // explicitly requesting --backend mlx is routed here and nowhere else, with none of the
-        // TurboQuant/DSpark/draft-model/sessions logic below applying -- this port implements none
-        // of those. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
+        // MLX is deliberately opt-in and only admits the exact architecture/configuration implemented
+        // by MlxGgufDenseModelLoader. Refuse requested features here rather than letting this isolated
+        // branch bypass the compatibility checks used by the other backends.
         if (request.Backend == ForwardPassBackend.Mlx)
         {
             if (Environment.GetEnvironmentVariable("STINGRAY_MLX_DENSE") != "1")
@@ -184,6 +194,36 @@ public static class ForwardPassSelection
             if (family != ForwardPassFamily.Dense)
                 return ForwardPassDecision.Refuse(
                     $"--backend mlx only supports dense (non-MoE, non-hybrid, non-recurrent) architectures in this port; '{request.Architecture}' is {family}.");
+            if (descriptor is null || !string.Equals(request.Architecture, "llama", StringComparison.OrdinalIgnoreCase))
+                return ForwardPassDecision.Refuse($"--backend mlx currently supports only the verified 'llama' architecture; '{request.Architecture}' is not supported.");
+            if (request.TurboQuant)
+                return ForwardPassDecision.Refuse("TurboQuant is not supported by the MLX backend.");
+            if (request.DsParkRequested || request.HasDSparkModel)
+                return ForwardPassDecision.Refuse("DSpark is not supported by the MLX backend.");
+            if (request.HasDraftModel || request.DraftLookup || request.HasMtpSpecType)
+                return ForwardPassDecision.Refuse("Speculative decoding (draft model, prompt lookup, or MTP) is not supported by the MLX backend.");
+            if (request.SessionsRequested)
+                return ForwardPassDecision.Refuse("Sessions are not supported by the MLX backend.");
+            if (request.HasImageInput)
+                return ForwardPassDecision.Refuse("Image or multimodal input is not supported by the MLX backend.");
+            if (request.IsContinuousBatching || request.MaxBatchSizeGreaterThanOne)
+                return ForwardPassDecision.Refuse("Batching with more than one sequence is not supported by the MLX backend.");
+            if (request.SnapKvEnabled)
+                return ForwardPassDecision.Refuse("SnapKV is not supported by the MLX backend.");
+            if (request.PinnedKvDtype is { } kvDtype && kvDtype.Trim().ToLowerInvariant() is not ("fp32" or "f32" or "float32"))
+                return ForwardPassDecision.Refuse($"The MLX backend supports only FP32 KV cache storage; requested '{kvDtype}'.");
+            if (request.KvStore is { } kvStore && kvStore.Trim().ToLowerInvariant() is not ("" or "auto" or "fp32" or "float32"))
+                return ForwardPassDecision.Refuse($"The MLX backend supports only FP32 KV cache storage; requested KV store '{kvStore}'.");
+            if (!request.FlashAttention)
+                return ForwardPassDecision.Refuse("The MLX backend requires its scaled-dot-product attention operation; disabling flash attention is not supported.");
+            if (request.RopeFrequencyBase.HasValue || request.RopeFrequencyScale.HasValue)
+                return ForwardPassDecision.Refuse("Runtime RoPE frequency overrides are not supported by the MLX backend.");
+            if (request.PrefillChunkingRequested)
+                return ForwardPassDecision.Refuse("Chunked prefill is not supported by the MLX backend.");
+            if (request.PrefixCacheRequested)
+                return ForwardPassDecision.Refuse("Prefix-cache slot and scratch settings are not supported by the MLX backend.");
+            if (request.DeviceIndex > 0)
+                return ForwardPassDecision.Refuse($"The MLX backend supports only device index 0; requested device index {request.DeviceIndex}.");
             return ForwardPassDecision.Select(ForwardPassKind.MlxDense);
         }
 

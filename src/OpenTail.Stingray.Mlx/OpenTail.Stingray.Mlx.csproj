@@ -9,4 +9,10 @@
          is F32-only (see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md). -->
     <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+  </ItemGroup>
 </Project>

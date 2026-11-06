@@ -7,7 +7,7 @@
   <ItemGroup>
     <!-- Logging abstractions only (no provider): lets the engine emit ILogger diagnostics
          (per-request perf trace) that the host's configured logging pipeline renders. -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,6 +35,10 @@
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan.Fast" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Embeddings" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Sessions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
 </Project>

@@ -59,7 +59,7 @@ public static class MlxOps
             Check(MlxInterop.Multiply(out result, a, b, stream), "mlx_multiply");
 
             var output = new float[lhs.Length];
-            DownloadFloat32(result, output);
+                DownloadFloat32(result, output, stream);
             return output;
         }
         finally
@@ -106,7 +106,7 @@ public static class MlxOps
             Check(MlxInterop.FastRmsNorm(out resultArray, inputArray, weightArray, eps, stream), "mlx_fast_rms_norm");
 
             var output = new float[input.Length];
-            DownloadFloat32(resultArray, output);
+            DownloadFloat32(resultArray, output, stream);
             return output;
         }
         finally
@@ -133,7 +133,7 @@ public static class MlxOps
             Check(MlxInterop.Multiply(out result, x, sig, stream), "mlx_multiply");
 
             var output = new float[input.Length];
-            DownloadFloat32(result, output);
+            DownloadFloat32(result, output, stream);
             return output;
         }
         finally
@@ -164,7 +164,7 @@ public static class MlxOps
             Check(MlxInterop.MatMul(out result, aArray, bArray, stream), "mlx_matmul");
 
             var output = new float[m * n];
-            DownloadFloat32(result, output);
+            DownloadFloat32(result, output, stream);
             return output;
         }
         finally
@@ -196,7 +196,7 @@ public static class MlxOps
             Check(MlxInterop.AddMm(out result, biasArray, aArray, bArray, alpha: 1f, beta: 1f, stream), "mlx_addmm");
 
             var output = new float[m * n];
-            DownloadFloat32(result, output);
+            DownloadFloat32(result, output, stream);
             return output;
         }
         finally
@@ -221,7 +221,7 @@ public static class MlxOps
             Check(MlxInterop.SoftmaxAxis(out result, x, axis: -1, precise: true, stream), "mlx_softmax_axis");
 
             var output = new float[input.Length];
-            DownloadFloat32(result, output);
+            DownloadFloat32(result, output, stream);
             return output;
         }
         finally
@@ -232,9 +232,9 @@ public static class MlxOps
     }
 
     /// <summary>
-    /// Scaled dot-product attention: <paramref name="query"/> is row-major
-    /// <c>[numQueryHeads, querySeqLen, headDim]</c>; <paramref name="key"/>/<paramref name="value"/>
-    /// are row-major <c>[numKvHeads, kvSeqLen, headDim]</c> -- <paramref name="kvSeqLen"/> equal to
+    /// Scaled dot-product attention: the host buffers are row-major
+    /// <c>[numQueryHeads, querySeqLen, headDim]</c> and <c>[numKvHeads, kvSeqLen, headDim]</c>;
+    /// MLX receives them as <c>[1, heads, sequenceLength, headDim]</c>. <paramref name="kvSeqLen"/> is equal to
     /// <paramref name="querySeqLen"/> for a prefill, or the KV cache's full length for an incremental
     /// decode step (<see cref="MlxKvCache"/>), where <paramref name="querySeqLen"/> is 1.
     /// <paramref name="numKvHeads"/> may be less than <paramref name="numQueryHeads"/> (GQA):
@@ -259,6 +259,12 @@ public static class MlxOps
     public static float[] Attention(ReadOnlySpan<float> query, ReadOnlySpan<float> key, ReadOnlySpan<float> value,
         int numQueryHeads, int numKvHeads, int querySeqLen, int kvSeqLen, int headDim, float scale, bool causal, int queryOffset = 0)
     {
+        if (numQueryHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numQueryHeads));
+        if (numKvHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numKvHeads));
+        if (numQueryHeads % numKvHeads != 0) throw new ArgumentException("numQueryHeads must be divisible by numKvHeads for grouped-query attention.", nameof(numKvHeads));
+        if (querySeqLen <= 0) throw new ArgumentOutOfRangeException(nameof(querySeqLen));
+        if (kvSeqLen <= 0) throw new ArgumentOutOfRangeException(nameof(kvSeqLen));
+        if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
         int queryExpected = numQueryHeads * querySeqLen * headDim;
         int kvExpected = numKvHeads * kvSeqLen * headDim;
         if (query.Length != queryExpected) throw new ArgumentException($"query has {query.Length} elements, expected numQueryHeads*querySeqLen*headDim = {queryExpected}.", nameof(query));
@@ -266,16 +272,18 @@ public static class MlxOps
         if (value.Length != kvExpected) throw new ArgumentException($"value has {value.Length} elements, expected numKvHeads*kvSeqLen*headDim = {kvExpected}.", nameof(value));
         if (queryOffset < 0) throw new ArgumentOutOfRangeException(nameof(queryOffset), queryOffset, "queryOffset must be >= 0.");
         if (queryOffset > 0 && !causal) throw new ArgumentException("queryOffset > 0 only makes sense for causal attention.", nameof(queryOffset));
+        if (queryOffset > 0 && queryOffset + querySeqLen > kvSeqLen)
+            throw new ArgumentException("queryOffset + querySeqLen cannot exceed kvSeqLen.", nameof(queryOffset));
 
         var stream = GetCachedStream();
         MlxInterop.MlxArray q = default, k = default, v = default, result = default;
-        MlxInterop.MlxArray rows = default, rowsColumn = default, cols = default, colsRow = default, distance = default, offsetMask = default;
+        MlxInterop.MlxArray rows = default, rowsColumn = default, cols = default, colsRow = default, distance = default, offsetMask2d = default, offsetMask = default;
         nint maskModePtr = nint.Zero;
         try
         {
-            q = UploadFloat32(query, [numQueryHeads, querySeqLen, headDim]);
-            k = UploadFloat32(key, [numKvHeads, kvSeqLen, headDim]);
-            v = UploadFloat32(value, [numKvHeads, kvSeqLen, headDim]);
+            q = UploadFloat32(query, AttentionTensorShape(numQueryHeads, querySeqLen, headDim));
+            k = UploadFloat32(key, AttentionTensorShape(numKvHeads, kvSeqLen, headDim));
+            v = UploadFloat32(value, AttentionTensorShape(numKvHeads, kvSeqLen, headDim));
 
             MlxInterop.MlxArray maskArray = default;
             if (queryOffset > 0)
@@ -286,8 +294,9 @@ public static class MlxOps
                 Check(MlxInterop.Reshape(out colsRow, cols, [1, kvSeqLen], 2, stream), "mlx_reshape (colsRow)");
                 Check(MlxInterop.Subtract(out distance, rowsColumn, colsRow, stream), "mlx_subtract");
                 var minusOne = MlxInterop.ArrayNewInt(-1);
-                try { Check(MlxInterop.Greater(out offsetMask, distance, minusOne, stream), "mlx_greater"); }
+                try { Check(MlxInterop.Greater(out offsetMask2d, distance, minusOne, stream), "mlx_greater"); }
                 finally { MlxInterop.ArrayFree(minusOne); }
+                Check(MlxInterop.Reshape(out offsetMask, offsetMask2d, AttentionMaskShape(querySeqLen, kvSeqLen), 4, stream), "mlx_reshape (offsetMask)");
                 maskArray = offsetMask;
             }
             maskModePtr = Marshal.StringToHGlobalAnsi(causal && queryOffset == 0 ? "causal" : string.Empty);
@@ -296,13 +305,14 @@ public static class MlxOps
                 "mlx_fast_scaled_dot_product_attention");
 
             var output = new float[queryExpected];
-            DownloadFloat32(result, output);
+            DownloadFloat32(result, output, stream);
             return output;
         }
         finally
         {
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (offsetMask.IsValid) MlxInterop.ArrayFree(offsetMask);
+            if (offsetMask2d.IsValid) MlxInterop.ArrayFree(offsetMask2d);
             if (distance.IsValid) MlxInterop.ArrayFree(distance);
             if (colsRow.IsValid) MlxInterop.ArrayFree(colsRow);
             if (cols.IsValid) MlxInterop.ArrayFree(cols);
@@ -318,39 +328,62 @@ public static class MlxOps
 
     /// <summary>
     /// RoPE (base-frequency form, no YaRN/scaled-frequency variant) over the last
-    /// <paramref name="dims"/> features of a row-major <c>[seqLen, headDim]</c> tensor, one head at a
-    /// time -- ported from TensorSharp's <c>FastRopeDynamic</c> (the <c>freqs=default</c> overload;
+    /// <paramref name="dims"/> features of a row-major host <c>[seqLen, headDim]</c> tensor, one head at a
+    /// time. MLX receives each contiguous run as <c>[1, runLength, headDim]</c> and a single offset
+    /// for the batch; non-contiguous positions are processed as separate runs -- ported from TensorSharp's
+    /// <c>FastRopeDynamic</c> (the <c>freqs=default</c> overload;
     /// its <c>FastRopeDynamicWithFreqs</c> sibling for YaRN/scaled rope is not ported).
     /// <paramref name="positions"/> has length <paramref name="seqLen"/>.
     /// </summary>
     public static float[] Rope(ReadOnlySpan<float> input, int seqLen, int headDim, int dims,
         bool traditional, float baseValue, float scale, ReadOnlySpan<int> positions)
     {
+        if (seqLen <= 0) throw new ArgumentOutOfRangeException(nameof(seqLen));
+        if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
         if (input.Length != seqLen * headDim) throw new ArgumentException($"input has {input.Length} elements, expected seqLen*headDim = {seqLen * headDim}.", nameof(input));
         if (positions.Length != seqLen) throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
         if (dims <= 0 || (dims & 1) != 0) throw new ArgumentOutOfRangeException(nameof(dims), dims, "RoPE dims must be a positive even number.");
+        if (dims > headDim) throw new ArgumentOutOfRangeException(nameof(dims), dims, "RoPE dims cannot exceed headDim.");
+        for (int i = 0; i < positions.Length; i++)
+            if (positions[i] < 0) throw new ArgumentOutOfRangeException(nameof(positions), positions[i], "RoPE positions must be non-negative.");
 
         var stream = GetCachedStream();
-        MlxInterop.MlxArray x = default, offsets = default, result = default;
-        try
+        var output = new float[input.Length];
+        int runStart = 0;
+        while (runStart < seqLen)
         {
-            x = UploadFloat32(input, [seqLen, headDim]);
-            offsets = UploadInt32(positions, [seqLen]);
+            int runLength = 1;
+            while (runStart + runLength < seqLen && positions[runStart + runLength] == positions[runStart] + runLength)
+                runLength++;
 
-            Check(MlxInterop.FastRopeDynamic(out result, x, dims, traditional, MlxInterop.MlxOptionalFloat.Some(baseValue), scale, offsets, freqs: default, stream),
-                "mlx_fast_rope_dynamic");
+            MlxInterop.MlxArray x = default, offsets = default, result = default;
+            try
+            {
+                x = UploadFloat32(input.Slice(runStart * headDim, runLength * headDim), RopeTensorShape(runLength, headDim));
+                offsets = UploadInt32([positions[runStart]], [1]);
 
-            var output = new float[input.Length];
-            DownloadFloat32(result, output);
-            return output;
+                Check(MlxInterop.FastRopeDynamic(out result, x, dims, traditional, MlxInterop.MlxOptionalFloat.Some(baseValue), scale, offsets, freqs: default, stream),
+                    "mlx_fast_rope_dynamic");
+
+                DownloadFloat32(result, output.AsSpan(runStart * headDim, runLength * headDim), stream);
+            }
+            finally
+            {
+                if (result.IsValid) MlxInterop.ArrayFree(result);
+                if (offsets.IsValid) MlxInterop.ArrayFree(offsets);
+                if (x.IsValid) MlxInterop.ArrayFree(x);
+            }
+
+            runStart += runLength;
         }
-        finally
-        {
-            if (result.IsValid) MlxInterop.ArrayFree(result);
-            if (offsets.IsValid) MlxInterop.ArrayFree(offsets);
-            if (x.IsValid) MlxInterop.ArrayFree(x);
-        }
+        return output;
     }
+
+    internal static int[] AttentionTensorShape(int heads, int sequenceLength, int headDim) => [1, heads, sequenceLength, headDim];
+
+    internal static int[] AttentionMaskShape(int querySequenceLength, int keySequenceLength) => [1, 1, querySequenceLength, keySequenceLength];
+
+    internal static int[] RopeTensorShape(int sequenceLength, int headDim) => [1, sequenceLength, headDim];
 
     /// <summary>
     /// Flat projection output [seqLen, numHeads*headDim] -> head-first [numHeads, seqLen, headDim],
@@ -365,19 +398,21 @@ public static class MlxOps
         if (flat.Length != expected) throw new ArgumentException($"flat has {flat.Length} elements, expected seqLen*numHeads*headDim = {expected}.", nameof(flat));
 
         var stream = GetCachedStream();
-        MlxInterop.MlxArray x = default, reshaped = default, result = default;
+        MlxInterop.MlxArray x = default, reshaped = default, result = default, contiguous = default;
         try
         {
             x = UploadFloat32(flat, [seqLen, numHeads * headDim]);
             Check(MlxInterop.Reshape(out reshaped, x, [seqLen, numHeads, headDim], 3, stream), "mlx_reshape");
             Check(MlxInterop.TransposeAxes(out result, reshaped, [1, 0, 2], 3, stream), "mlx_transpose_axes");
+            Check(MlxInterop.Contiguous(out contiguous, result, allowColMajor: false, stream), "mlx_contiguous");
 
             var output = new float[expected];
-            DownloadFloat32(result, output);
+            DownloadFloat32(contiguous, output, stream);
             return output;
         }
         finally
         {
+            if (contiguous.IsValid) MlxInterop.ArrayFree(contiguous);
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (reshaped.IsValid) MlxInterop.ArrayFree(reshaped);
             if (x.IsValid) MlxInterop.ArrayFree(x);
@@ -391,19 +426,21 @@ public static class MlxOps
         if (headFirst.Length != expected) throw new ArgumentException($"headFirst has {headFirst.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(headFirst));
 
         var stream = GetCachedStream();
-        MlxInterop.MlxArray x = default, transposed = default, result = default;
+        MlxInterop.MlxArray x = default, transposed = default, result = default, contiguous = default;
         try
         {
             x = UploadFloat32(headFirst, [numHeads, seqLen, headDim]);
             Check(MlxInterop.TransposeAxes(out transposed, x, [1, 0, 2], 3, stream), "mlx_transpose_axes");
             Check(MlxInterop.Reshape(out result, transposed, [seqLen, numHeads * headDim], 2, stream), "mlx_reshape");
+            Check(MlxInterop.Contiguous(out contiguous, result, allowColMajor: false, stream), "mlx_contiguous");
 
             var output = new float[expected];
-            DownloadFloat32(result, output);
+            DownloadFloat32(contiguous, output, stream);
             return output;
         }
         finally
         {
+            if (contiguous.IsValid) MlxInterop.ArrayFree(contiguous);
             if (result.IsValid) MlxInterop.ArrayFree(result);
             if (transposed.IsValid) MlxInterop.ArrayFree(transposed);
             if (x.IsValid) MlxInterop.ArrayFree(x);
@@ -456,9 +493,9 @@ public static class MlxOps
             Check(MlxInterop.SoftmaxAxis(out softmaxed, topLogits, axis: -1, precise: true, stream), "mlx_softmax_axis");
 
             var topIndices = new int[k];
-            DownloadInt32(topIdx1dInt, topIndices);
+            DownloadInt32(topIdx1dInt, topIndices, stream);
             var routeWeights = new float[k];
-            DownloadFloat32(softmaxed, routeWeights);
+            DownloadFloat32(softmaxed, routeWeights, stream);
             return (topIndices, routeWeights);
         }
         finally
@@ -499,7 +536,7 @@ public static class MlxOps
             Check(MlxInterop.Contiguous(out contiguous, gathered, allowColMajor: false, stream), "mlx_contiguous");
 
             var output = new float[indices.Length * cols];
-            DownloadFloat32(contiguous, output);
+            DownloadFloat32(contiguous, output, stream);
             return output;
         }
         finally
@@ -572,7 +609,7 @@ public static class MlxOps
             Check(MlxInterop.Contiguous(out output, restored, allowColMajor: false, stream), "mlx_contiguous");
 
             var result = new float[expected];
-            DownloadFloat32(output, result);
+            DownloadFloat32(output, result, stream);
             return result;
         }
         finally
@@ -625,12 +662,21 @@ public static class MlxOps
         }
     }
 
-    private static unsafe void DownloadInt32(MlxInterop.MlxArray array, Span<int> destination)
+    private static unsafe void DownloadInt32(MlxInterop.MlxArray array, Span<int> destination, MlxInterop.MlxStream stream)
     {
-        nint src = MlxInterop.ArrayDataInt32(array);
-        if (src == nint.Zero)
-            throw new InvalidOperationException("mlx_array_data_int32 returned null.");
-        new ReadOnlySpan<int>((void*)src, destination.Length).CopyTo(destination);
+        Check(MlxInterop.Contiguous(out var contiguous, array, allowColMajor: false, stream), "mlx_contiguous");
+        try
+        {
+            Check(MlxInterop.ArrayEval(contiguous, stream), "mlx_array_eval");
+            nint src = MlxInterop.ArrayDataInt32(contiguous);
+            if (src == nint.Zero)
+                throw new InvalidOperationException("mlx_array_data_int32 returned null.");
+            new ReadOnlySpan<int>((void*)src, destination.Length).CopyTo(destination);
+        }
+        finally
+        {
+            MlxInterop.ArrayFree(contiguous);
+        }
     }
 
     private static unsafe MlxInterop.MlxArray UploadInt32(ReadOnlySpan<int> data, int[] shape)
@@ -645,12 +691,21 @@ public static class MlxOps
             return MlxInterop.ArrayNewData((nint)ptr, shape, shape.Length, MlxInterop.MlxFloat32);
     }
 
-    private static unsafe void DownloadFloat32(MlxInterop.MlxArray array, Span<float> destination)
+    private static unsafe void DownloadFloat32(MlxInterop.MlxArray array, Span<float> destination, MlxInterop.MlxStream stream)
     {
-        nint src = MlxInterop.ArrayDataFloat32(array);
-        if (src == nint.Zero)
-            throw new InvalidOperationException("mlx_array_data_float32 returned null.");
-        new ReadOnlySpan<float>((void*)src, destination.Length).CopyTo(destination);
+        Check(MlxInterop.Contiguous(out var contiguous, array, allowColMajor: false, stream), "mlx_contiguous");
+        try
+        {
+            Check(MlxInterop.ArrayEval(contiguous, stream), "mlx_array_eval");
+            nint src = MlxInterop.ArrayDataFloat32(contiguous);
+            if (src == nint.Zero)
+                throw new InvalidOperationException("mlx_array_data_float32 returned null.");
+            new ReadOnlySpan<float>((void*)src, destination.Length).CopyTo(destination);
+        }
+        finally
+        {
+            MlxInterop.ArrayFree(contiguous);
+        }
     }
 
     private static void Check(int returnCode, string call)

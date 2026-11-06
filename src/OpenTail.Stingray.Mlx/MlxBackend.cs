@@ -20,20 +20,14 @@ public static class MlxBackend
     /// </summary>
     public static bool IsAvailable()
     {
+        return IsAvailable(ProbeNativeAvailability);
+    }
+
+    internal static bool IsAvailable(Func<bool> probe)
+    {
         try
         {
-            if (MlxInterop.MetalIsAvailable(out bool metalAvailable) != 0 || !metalAvailable)
-                return false;
-
-            var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
-            try
-            {
-                return MlxInterop.DeviceIsAvailable(out bool deviceAvailable, device) == 0 && deviceAvailable;
-            }
-            finally
-            {
-                MlxInterop.DeviceFree(device);
-            }
+            return probe();
         }
         catch (DllNotFoundException)
         {
@@ -42,6 +36,22 @@ public static class MlxBackend
         catch (EntryPointNotFoundException)
         {
             return false;
+        }
+    }
+
+    private static bool ProbeNativeAvailability()
+    {
+        if (MlxInterop.MetalIsAvailable(out bool metalAvailable) != 0 || !metalAvailable)
+            return false;
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        try
+        {
+            return MlxInterop.DeviceIsAvailable(out bool deviceAvailable, device) == 0 && deviceAvailable;
+        }
+        finally
+        {
+            MlxInterop.DeviceFree(device);
         }
     }
 }

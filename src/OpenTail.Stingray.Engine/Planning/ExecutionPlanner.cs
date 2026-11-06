@@ -110,12 +110,33 @@ public static class ExecutionPlanner
             cudaAvailable: capabilities.CudaAvailable,
             turboQuant: request.TurboQuant,
             turboQuantMode: request.TurboQuantMode,
-            hasDraftModel: !string.IsNullOrEmpty(request.DraftModelPath),
+            hasDraftModel: !string.IsNullOrEmpty(request.DraftModelPath) || request.SpeculationMode == SpeculationMode.DraftModel,
+            draftLookup: request.SpeculationMode == SpeculationMode.PromptLookup,
             isContinuousBatching: request.BatchingMode == BatchingMode.Continuous,
             targetContextLength: ctxSize,
             allowUnverifiedArchitecture: request.AllowUnverifiedArchitecture,
             unsupportedBackendName: unsupportedBackend,
-            hasDSparkModel: !string.IsNullOrEmpty(request.DSparkModelPath));
+            hasDSparkModel: !string.IsNullOrEmpty(request.DSparkModelPath)) with
+        {
+            DsParkRequested = !string.IsNullOrEmpty(request.DSparkModelPath)
+                || request.SpeculationMode == SpeculationMode.DSpark
+                || request.DSparkRequired,
+            HasMtpSpecType = model.PlanningFacts.MtpHeadGpuBytes > 0 && (request.MtpEnabled ?? true),
+            SessionsRequested = request.EnableSessions,
+            HasImageInput = !string.IsNullOrWhiteSpace(request.MmprojPath),
+            HasImageBatching = !string.IsNullOrWhiteSpace(request.MmprojPath) &&
+                (request.BatchingMode == BatchingMode.Continuous || request.MaxBatchSize > 1),
+            MaxBatchSizeGreaterThanOne = request.MaxBatchSize > 1,
+            FlashAttention = request.FlashAttention,
+            SnapKvEnabled = request.SnapKvEnabled || request.SnapKvBudget > 0,
+            PinnedKvDtype = request.PinnedKvDtype,
+            KvStore = request.KvStore,
+            RopeFrequencyBase = request.RopeFrequencyBase,
+            RopeFrequencyScale = request.RopeFrequencyScale,
+            PrefillChunkingRequested = request.PrefillChunkTokens is > 0,
+            PrefixCacheRequested = request.PrefixSlots is > 0 || request.PrefixScratchTokens is > 0,
+            DeviceIndex = request.DeviceIndex,
+        };
 
         var passDecision = ForwardPassSelection.Select(passReq);
         if (passDecision.IsRefused)

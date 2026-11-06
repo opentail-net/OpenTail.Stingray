@@ -564,6 +564,7 @@ public sealed record ModelDescription(
             IsSafeTensorsGpuRequested = Semantics.Format == ModelFormat.SafeTensors && (gpuLayers != 0 || backend is ForwardPassBackend.Cuda or ForwardPassBackend.Vulkan),
             IsSafeTensorsDraftRequested = Semantics.Format == ModelFormat.SafeTensors && (hasDraftModel || draftLookup),
             IsSafeTensorsDSparkRequested = Semantics.Format == ModelFormat.SafeTensors && hasDSparkModel,
+            HasDSparkModel = hasDSparkModel,
             PackageSupported = true,
             IsHybridSsm = PlanningFacts.IsHybridSsm,
             HasHybridGdnLayers = PlanningFacts.HasHybridGdnLayers,

@@ -72,6 +72,10 @@ internal static partial class MlxInterop
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ArrayFree(MlxArray array);
 
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_eval")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ArrayEval(MlxArray array, MlxStream stream);
+
     // ── Streams, array-from-data, and fast RMSNorm ─────────────────────────
     // Ported from MlxNative.cs's DefaultStream()/FastRmsNorm() (lines ~6560, ~3915, and the
     // LibraryImport declarations ~8800-8854), chosen as the first real op to port end to end
