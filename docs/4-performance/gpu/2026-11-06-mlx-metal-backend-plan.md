@@ -117,10 +117,23 @@ on every call rather than caching it, correctness-first over the perf TensorShar
 With RMSNorm, Silu, MatMul, AddMm, Softmax and Attention now ported, every op a plain dense-llama
 decode step needs exists except RoPE.
 
+Ported `Rope` (`mlx_fast_rope_dynamic`, base-frequency form only — TensorSharp's `FastRopeDynamicWithFreqs`
+sibling for YaRN/scaled-frequency variants is not ported). Needed `MlxOptionalFloat` (a `{float value;
+bool has_value;}` tagged struct, copied from TensorSharp's own) and, to pass a bool-containing struct
+by value through `LibraryImport`, `[assembly: DisableRuntimeMarshalling]` in `GlobalUsings.cs` — same
+attribute TensorSharp's own `MlxNative.cs` carries, for the same reason.
+
+**Every op a plain dense-llama decode step needs now exists**: RmsNorm, Silu, MatMul, AddMm, Softmax,
+Attention, Rope. Seven ops, each a faithful TensorSharp port, each with a shape-validation test and a
+real-call-fails-predictably test (`MlxOpsTests`, 61 tests total in `Tests.Cuda` as of this entry).
+
 ## Next steps (not started)
 
-1. RoPE (`mlx_fast_rope_dynamic`) needs an `MlxOptionalFloat` struct not yet ported — the last op gap
-   before a dense-llama forward pass has every primitive it needs.
+1. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
+   `CudaForwardPass`) by wiring these seven ops into weight loading, a KV cache, and the decode loop.
+   Real design work, not another op port — this is the next distinct phase.
+2. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
+   actual behaviour to gate.
 2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
    `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
    skeleton.

@@ -137,4 +137,23 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_fast_scaled_dot_product_attention")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int FastScaledDotProductAttention(out MlxArray result, MlxArray query, MlxArray key, MlxArray value, float scale, nint maskMode, MlxArray mask, MlxArray sinks, [MarshalAs(UnmanagedType.I1)] bool forceFused, MlxStream stream);
+
+    // ── RoPE ────────────────────────────────────────────────────────────────
+
+    /// <summary>mlx-c's int32 dtype tag (value 7, per MlxNative.cs's DType -> mlx dtype switch).</summary>
+    internal const int MlxInt32 = 7;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal readonly struct MlxOptionalFloat
+    {
+        private readonly float value;
+        [MarshalAs(UnmanagedType.I1)]
+        private readonly bool hasValue;
+        private MlxOptionalFloat(float value, bool hasValue) { this.value = value; this.hasValue = hasValue; }
+        public static MlxOptionalFloat Some(float value) => new(value, true);
+    }
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_fast_rope_dynamic")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int FastRopeDynamic(out MlxArray result, MlxArray input, int dims, [MarshalAs(UnmanagedType.I1)] bool traditional, MlxOptionalFloat baseValue, float scale, MlxArray offsets, MlxArray freqs, MlxStream stream);
 }

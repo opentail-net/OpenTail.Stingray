@@ -240,6 +240,52 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// RoPE (base-frequency form, no YaRN/scaled-frequency variant) over the last
+    /// <paramref name="dims"/> features of a row-major <c>[seqLen, headDim]</c> tensor, one head at a
+    /// time -- ported from TensorSharp's <c>FastRopeDynamic</c> (the <c>freqs=default</c> overload;
+    /// its <c>FastRopeDynamicWithFreqs</c> sibling for YaRN/scaled rope is not ported).
+    /// <paramref name="positions"/> has length <paramref name="seqLen"/>.
+    /// </summary>
+    public static float[] Rope(ReadOnlySpan<float> input, int seqLen, int headDim, int dims,
+        bool traditional, float baseValue, float scale, ReadOnlySpan<int> positions)
+    {
+        if (input.Length != seqLen * headDim) throw new ArgumentException($"input has {input.Length} elements, expected seqLen*headDim = {seqLen * headDim}.", nameof(input));
+        if (positions.Length != seqLen) throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
+        if (dims <= 0 || (dims & 1) != 0) throw new ArgumentOutOfRangeException(nameof(dims), dims, "RoPE dims must be a positive even number.");
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray x = default, offsets = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            x = UploadFloat32(input, [seqLen, headDim]);
+            offsets = UploadInt32(positions, [seqLen]);
+
+            Check(MlxInterop.FastRopeDynamic(out result, x, dims, traditional, MlxInterop.MlxOptionalFloat.Some(baseValue), scale, offsets, freqs: default, stream),
+                "mlx_fast_rope_dynamic");
+
+            var output = new float[input.Length];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (offsets.IsValid) MlxInterop.ArrayFree(offsets);
+            if (x.IsValid) MlxInterop.ArrayFree(x);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
+    private static unsafe MlxInterop.MlxArray UploadInt32(ReadOnlySpan<int> data, int[] shape)
+    {
+        fixed (int* ptr = data)
+            return MlxInterop.ArrayNewData((nint)ptr, shape, shape.Length, MlxInterop.MlxInt32);
+    }
+
     private static unsafe MlxInterop.MlxArray UploadFloat32(ReadOnlySpan<float> data, int[] shape)
     {
         fixed (float* ptr = data)

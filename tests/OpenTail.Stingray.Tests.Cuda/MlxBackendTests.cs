@@ -114,4 +114,25 @@ public sealed class MlxOpsTests
         Assert.Throws<DllNotFoundException>(() =>
             MlxOps.Attention(qkv, qkv, qkv, numHeads: 2, seqLen: 3, headDim: 4, scale: 0.5f, causal));
     }
+
+    [Fact]
+    public void Rope_PositionsLengthMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            MlxOps.Rope(new float[3 * 4], seqLen: 3, headDim: 4, dims: 4, traditional: false, baseValue: 10000f, scale: 1f, positions: [0, 1]));
+    }
+
+    [Fact]
+    public void Rope_OddDims_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MlxOps.Rope(new float[3 * 4], seqLen: 3, headDim: 4, dims: 3, traditional: false, baseValue: 10000f, scale: 1f, positions: [0, 1, 2]));
+    }
+
+    [Fact]
+    public void Rope_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.Rope(new float[3 * 4], seqLen: 3, headDim: 4, dims: 4, traditional: false, baseValue: 10000f, scale: 1f, positions: [0, 1, 2]));
+    }
 }
