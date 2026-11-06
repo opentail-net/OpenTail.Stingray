@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>MLX compute backend for OpenTail.Stingray: Apple Silicon inference via mlx-c (libmlxc). Flag-gated and never run on real hardware -- no Mac exists on this development machine. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -29,6 +29,7 @@
     <Project Path="src/OpenTail.Stingray.Cuda/OpenTail.Stingray.Cuda.csproj" />
     <Project Path="src/OpenTail.Stingray.Diffusion/OpenTail.Stingray.Diffusion.csproj" />
     <Project Path="src/OpenTail.Stingray.Engine/OpenTail.Stingray.Engine.csproj" />
+    <Project Path="src/OpenTail.Stingray.Mlx/OpenTail.Stingray.Mlx.csproj" />
     <Project Path="src/OpenTail.Stingray.Pipeline/OpenTail.Stingray.Pipeline.csproj" />
     <Project Path="src/OpenTail.Stingray.Server.Host/OpenTail.Stingray.Server.Host.csproj" />
     <Project Path="src/OpenTail.Stingray.Server/OpenTail.Stingray.Server.csproj" />

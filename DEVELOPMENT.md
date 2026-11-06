@@ -15,6 +15,7 @@ src/
 ├── OpenTail.Stingray.Cpu/        <- Managed SIMD kernels (AVX-512, AVX2, ARM Neon) & thread pool
 ├── OpenTail.Stingray.Vulkan/     <- SPIR-V compute shaders, memory allocator, GPU dispatch
 ├── OpenTail.Stingray.Cuda/       <- Managed CUDA driver interop & custom CUDA kernels
+├── OpenTail.Stingray.Mlx/        <- MLX (Apple Silicon) backend skeleton, flag-gated, never run (no Mac here)
 ├── OpenTail.Stingray.Pipeline/   <- VRAM → pinned RAM → NVMe memory hierarchy, SLRU expert cache, prefetcher
 ├── OpenTail.Stingray.TurboQuant/ <- KV-cache compression (Lloyd-Max codebooks, KVarN)
 ├── OpenTail.Stingray.Engine/     <- Public API facade, Model, ModelContext, Executors, ChatSession

@@ -47,6 +47,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Mlx\OpenTail.Stingray.Mlx.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
