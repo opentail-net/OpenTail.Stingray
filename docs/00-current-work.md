@@ -63,6 +63,7 @@ Deferred (not in this batch): Vulkan parity expansion, telemetry usefulness, cat
 - **3. DiffusionGemma and Bonsai2 verdicts** (after item 2). Owned by [unverified-port-claims](1-correctness/2026-10-03-unverified-port-claims.md) (DiffusionGemma parity ladder, Bonsai2 PRISM) and [ported-families-todo](2-coverage/ported-families-todo.md). Stays internal (rule 14).
 - **4. HunyuanVideo and Wan 2.2 findings.** Owned by [reconciliation plan, R2](1-correctness/2026-10-09-documentation-claim-reconciliation-plan.md) (owner decision: duplicate first). Per-variant boxes also in [diffusion-performance](4-performance/diffusion/diffusion-performance.md).
 - **5. Gemma 2 beyond the 2B file.** Owned by [gemma family plan](2-coverage/2026-10-31-gemma-family-plan.md). Gemma 1 is done (STATUS row). Gemma 2 9B needs a download to E: or H:, never F:.
+- **9. CUDA tensor parallelism, flag-gated and unmeasured by owner decision (2026-11-06).** Owned by [plan](4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md). Overrides the "no NVIDIA hardware here" standing position for this one feature only; everything else in that position is unchanged. Not started — a dense-`llama`-first slice is the plan's own recommended order.
 - **8. OpenTelemetry acceptance.** Owned by [OpenTelemetry plan](3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md) (its open acceptance boxes). Test files exist; map each box to a test, tick it, or write why it is not met.
 
 ## Blocked or parked
