@@ -54,7 +54,7 @@ Deferred (not in this batch): Vulkan parity expansion, telemetry usefulness, cat
 
 ## Owner action (does not block the list above)
 
-- [ ] **Run once:** `pwsh scripts/qualify-tasks.ps1 -AcceptLicence`. It accepts the research-only Piper voice licence. Until then the speak and transcribe tasks show SKIP. The assistant cannot accept a licence for the owner.
+- [x] **Run once:** `pwsh scripts/qualify-tasks.ps1`. Run 2026-11-06: chat, speak and transcribe all PASS with no licence flag (the default speak model is Kokoro, Apache-2.0; the Piper licence applies only if Piper is chosen with `-m piper-lessac`).
 - [ ] **Release 1.0.10:** not ready. No tag, no version bump, no pack for publication. Everything since 1.0.9 stays unpublished until the owner says otherwise.
 
 ## Pointers to work owned elsewhere

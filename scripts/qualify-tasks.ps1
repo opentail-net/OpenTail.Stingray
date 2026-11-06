@@ -6,8 +6,8 @@
   config directory (STINGRAY_MODEL_HOME, STINGRAY_CONFIG_DIR), so the owner's models and settings
   (including %APPDATA%\stingray\favourites.json) are never read or written. Needs network access to
   Hugging Face and about 1 GB of disk; both temporary directories are removed afterwards.
-  The speak voice is research-use only. Pass -AcceptLicence to accept that licence for the run; without it speak and
-  transcribe are reported as SKIP (not as a pass).
+  The default speak model is Kokoro-82M (Apache-2.0), which needs no licence acceptance. -AcceptLicence is only
+  needed for the Piper voice (research-use only); the recipes here use the default.
   Checks: chat answers a fixed arithmetic prompt with non-empty text; speak writes a WAV with audio
   samples; transcribe of that WAV returns text containing the spoken words.
 .PARAMETER Cli
@@ -65,13 +65,8 @@ try {
         if ($out -notmatch '4') { throw "reply does not contain 4: $out" }
         'reply contains 4'
     }
-    if (-not $AcceptLicence) {
-        $results['speak'] = @{ Skip = $true; Detail = 'the voice licence is research-use only; rerun with -AcceptLicence'; Seconds = 0 }
-        $results['transcribe'] = @{ Skip = $true; Detail = 'needs the speak output'; Seconds = 0 }
-    }
-    else {
     Invoke-Task 'speak' {
-        & $Cli setup speak --yes --accept-licence 2>&1 | Out-Null
+        & $Cli setup speak --yes 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "setup speak exited $LASTEXITCODE" }
         & $Cli speak -t $SpokenText -o $wav 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "speak exited $LASTEXITCODE" }
@@ -87,7 +82,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "transcribe exited $LASTEXITCODE" }
         if ($out -notmatch '(?i)hello') { throw "transcript lacks 'hello': $out" }
         'transcript contains hello'
-    }
     }
 }
 finally {
