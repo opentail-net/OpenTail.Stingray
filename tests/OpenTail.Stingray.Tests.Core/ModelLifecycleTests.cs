@@ -152,22 +152,31 @@ public sealed class ModelLifecycleTests : IDisposable
     public void RuntimeInstanceCreate_WithACallerSuppliedModel_LeavesItUsableAfterAFailedConstruction()
     {
         using var model = Model.Load(_path);
+
+        // A second, independent live context sharing the same model — the one that must survive
+        // a sibling context's failed engine construction untouched.
+        var survivor = model.CreateContext();
+
         var planningCtx = (ModelContext)model.CreateContext();
         var plan = planningCtx.ExecutionPlan;
-        planningCtx.Dispose();
 
         var unexecutablePlan = plan with { IsExecutable = false };
         Assert.Throws<OpenTail.Stingray.Engine.Runtime.PlanNotExecutableException>(
             () => OpenTail.Stingray.Engine.Runtime.RuntimeInstance.Create(unexecutablePlan, model));
 
-        // The shared model must not have been disposed by the failed Create() above: a disposed
-        // Model refuses every further CreateContext() with ObjectDisposedException (see
-        // ModelDispose_DisposesLiveContexts_AndRefusesNewOnes above). Stop short of actually
-        // building a real forward pass over this test's deliberately minimal synthetic GGUF
-        // (1 block, garbage tensor bytes) — this file never exercises real compute kernels, only
-        // Model/ModelContext lifecycle semantics.
-        using var ctx = model.CreateContext();
-        Assert.Equal(1, model.ActiveContextCount);
+        // The shared model must not have been disposed by the failed Create() above, and the
+        // unrelated sibling context must still be fully usable — a disposed Model refuses every
+        // operation with ObjectDisposedException (see ModelDispose_DisposesLiveContexts_AndRefusesNewOnes
+        // above), so Reset() succeeding here proves the model (and survivor) came through intact.
+        // Stop short of actually building a real forward pass over this test's deliberately
+        // minimal synthetic GGUF (1 block, garbage tensor bytes) — this file never exercises real
+        // compute kernels, only Model/ModelContext lifecycle semantics.
+        survivor.Reset();
+        Assert.Equal(2, model.ActiveContextCount);
+
+        survivor.Dispose();
+        planningCtx.Dispose();
+        Assert.Equal(0, model.ActiveContextCount);
     }
 
     [Fact]
