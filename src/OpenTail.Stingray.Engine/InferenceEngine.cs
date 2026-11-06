@@ -81,6 +81,17 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     // if both are called (or called concurrently).
     private int _disposed;
 
+    /// <summary>
+    /// Mirrors <see cref="ContinuousBatchingEngine.DrainedOnDispose"/> for the sequential engine:
+    /// <c>false</c> only when a dispose's drain wait timed out and <see cref="DisposeCore"/> therefore
+    /// deliberately left the forward pass allocated under a possibly still-live worker. A caller that
+    /// also owns the underlying <see cref="Model"/> (e.g. <c>ModelRuntime</c>) must check this before
+    /// freeing the model's memory-mapped weights out from under that worker — the same reason
+    /// <see cref="RuntimeInstance.Dispose"/> never frees the pass/backends here either. <c>true</c>
+    /// before <see cref="Dispose"/>/<see cref="DisposeAsync"/> has ever run.
+    /// </summary>
+    public bool DrainedOnDispose { get; private set; } = true;
+
     // Upper bound on how long Dispose waits for an in-flight generation to drain before
     // giving up. The worker is cancelled (via _shutdownCts) and cooperatively checks
     // cancellation between decode tokens and prefill chunks, so the real wait is one
@@ -1533,6 +1544,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     /// </summary>
     private void DisposeCore(bool drained)
     {
+        DrainedOnDispose = drained;
         if (!drained)
         {
             Console.Error.WriteLine(

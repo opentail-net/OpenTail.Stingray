@@ -257,6 +257,50 @@ public sealed class InferenceEngineConcurrencyTests
         await genTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    /// <summary>
+    /// Regression (2026-11-06 review): <see cref="InferenceEngine.DrainedOnDispose"/> must report
+    /// <c>false</c> after a timed-out drain, mirroring <c>ContinuousBatchingEngine.DrainedOnDispose</c>
+    /// — a caller that also owns the underlying model (<c>ModelRuntime</c>) reads this flag to decide
+    /// whether freeing the model's mapped weights would be a use-after-free under the still-live
+    /// worker left behind by <see cref="InferenceEngineConcurrencyTests.DisposeAsync_DrainTimeout_LeaksForwardPassInsteadOfFreeingUnderLiveWorker"/>.
+    /// </summary>
+    [Fact]
+    public async Task DisposeAsync_DrainTimeout_ReportsNotDrained()
+    {
+        var fwd = new DrainTrackingForwardPass();
+        var engine = new InferenceEngine(fwd, new SingleTokenTokenizer(), "mock")
+        {
+            _disposeDrainTimeout = TimeSpan.FromMilliseconds(200),
+        };
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 64 };
+
+        using var cts = new CancellationTokenSource();
+        var genTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var _ in engine.GenerateChunksAsync("seed", sp, cts.Token))
+                {
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+
+        Assert.True(fwd.EnteredForward.Wait(TimeSpan.FromSeconds(5)),
+            "worker never entered the forward pass");
+        Assert.True(engine.DrainedOnDispose, "should report drained before any dispose has run");
+
+        await engine.DisposeAsync();
+
+        Assert.False(engine.DrainedOnDispose,
+            "DrainedOnDispose must flip to false on a timed-out drain so an owner can refuse to free the model");
+
+        fwd.Release();
+        await genTask.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public async Task GenerateChunksAsync_AfterDispose_Throws()
     {

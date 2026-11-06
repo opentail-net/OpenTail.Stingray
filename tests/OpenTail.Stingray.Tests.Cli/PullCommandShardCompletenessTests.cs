@@ -26,6 +26,16 @@ public sealed class PullCommandShardCompletenessTests
     }
 
     [Fact]
+    public void FindMissingShards_OnlyOneOfThreeShardsFound_ReportsBothMissingOnes()
+    {
+        // Regression: the original check short-circuited to "nothing missing" whenever
+        // selected.Count < 2, which let a repo missing two of its three shards slip through
+        // because SelectFiles only ever found the single shard that was actually present.
+        var selected = new List<(string Name, long? Size)> { F("Model-00001-of-00003.gguf") };
+        Assert.Equal([2, 3], PullCommand.FindMissingShards(selected));
+    }
+
+    [Fact]
     public void FindMissingShards_MiddleShardAbsentFromTheRepo_IsReported()
     {
         var selected = new List<(string Name, long? Size)>
@@ -47,5 +57,14 @@ public sealed class PullCommandShardCompletenessTests
         var selected = PullCommand.SelectFiles(files, quantHint: null);
         Assert.Equal(2, selected.Count);
         Assert.Equal([2], PullCommand.FindMissingShards(selected));
+    }
+
+    [Fact]
+    public void SelectFiles_RepoHostsOnlyOneOfThreeShards_StillFlagsTheMissingTwo()
+    {
+        var files = new List<(string Name, long? Size)> { F("Model-00001-of-00003.gguf") };
+        var selected = PullCommand.SelectFiles(files, quantHint: null);
+        Assert.Single(selected);
+        Assert.Equal([2, 3], PullCommand.FindMissingShards(selected));
     }
 }

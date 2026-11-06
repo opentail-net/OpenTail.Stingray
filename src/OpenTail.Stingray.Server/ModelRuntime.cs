@@ -256,9 +256,11 @@ public sealed class ModelRuntime : IDisposable
         (Loaded.Engine as IDisposable)?.Dispose();
         // The server creates this model for this runtime alone (InferenceEngineLoader), and nothing else holds it. Without this
         // the GGUF mapping stays open after eviction and the process keeps the memory (measured 2026-11-05: working set grew about
-        // 1.5 GB per switch between two models). Skipped when a batching engine could not drain: its forward pass may still be
-        // reading the mapped weights.
-        if (Instance is { } instance && instance.Engine is not ContinuousBatchingEngine { DrainedOnDispose: false })
+        // 1.5 GB per switch between two models). Skipped when either engine shape could not drain its worker within its dispose
+        // timeout: its forward pass may still be reading the mapped weights, so freeing them here would be a use-after-free.
+        if (Instance is { } instance
+            && instance.Engine is not ContinuousBatchingEngine { DrainedOnDispose: false }
+            && instance.Engine is not OpenTail.Stingray.Engine.InferenceEngine { DrainedOnDispose: false })
             instance.Model.Dispose();
     }
 }

@@ -289,19 +289,21 @@ public sealed class PullCommand : Command<PullCommand.Settings>
     /// 1..N of its "-NNNNN-of-NNNNN.gguf" set (mirrors the completeness check
     /// <see cref="OpenTail.Stingray.Core.Net.HubClient.IsComplete"/> applies for <c>scout</c>/
     /// <c>QuantPicker</c> — <c>pull</c> picks shards by regex match alone, so a repo missing a
-    /// shard would otherwise download silently into an unusable model). Returns the missing
-    /// 1-based indices (empty when <paramref name="selected"/> is a single non-split file or
-    /// every shard is present).
+    /// shard would otherwise download silently into an unusable model). Checked by filename
+    /// pattern alone, independent of how many files were selected — a lone
+    /// "model-00001-of-00003.gguf" declares a 3-shard set just as plainly as three files would,
+    /// so this must not skip the check merely because only one shard was found. Returns the
+    /// missing 1-based indices (empty when <paramref name="selected"/> is a single non-split
+    /// file or every shard is present).
     /// </summary>
     internal static List<int> FindMissingShards(List<(string Name, long? Size)> selected)
     {
-        if (selected.Count < 2) return [];
         var indices = new List<int>();
         int total = -1;
         foreach (var (name, _) in selected)
         {
             var m = System.Text.RegularExpressions.Regex.Match(name, @"-(\d{5})-of-(\d{5})\.gguf$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!m.Success) return [];   // not actually a shard set (shouldn't happen given SelectFiles' own match)
+            if (!m.Success) return [];   // not a shard set at all (shouldn't happen given SelectFiles' own match)
             indices.Add(int.Parse(m.Groups[1].Value));
             total = int.Parse(m.Groups[2].Value);
         }
