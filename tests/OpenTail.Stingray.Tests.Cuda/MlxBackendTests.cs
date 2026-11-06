@@ -102,7 +102,7 @@ public sealed class MlxOpsTests
     {
         float[] qkv = new float[2 * 3 * 4]; // numHeads=2, seqLen=3, headDim=4
         Assert.Throws<ArgumentException>(() =>
-            MlxOps.Attention(new float[5], qkv, qkv, numHeads: 2, seqLen: 3, headDim: 4, scale: 1f, causal: true));
+            MlxOps.Attention(new float[5], qkv, qkv, numHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 1f, causal: true));
     }
 
     [Theory]
@@ -112,7 +112,7 @@ public sealed class MlxOpsTests
     {
         float[] qkv = new float[2 * 3 * 4];
         Assert.Throws<DllNotFoundException>(() =>
-            MlxOps.Attention(qkv, qkv, qkv, numHeads: 2, seqLen: 3, headDim: 4, scale: 0.5f, causal));
+            MlxOps.Attention(qkv, qkv, qkv, numHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 0.5f, causal));
     }
 
     [Fact]

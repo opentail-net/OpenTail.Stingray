@@ -50,6 +50,38 @@ public sealed class MlxDenseLayerTests
     }
 
     [Fact]
+    public void ForwardDecode_WrongHiddenLength_Throws()
+    {
+        var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4);
+        var cache = new MlxKvCache(numHeads: 2, maxSeqLen: 4, headDim: 4);
+        Assert.Throws<ArgumentException>(() => layer.ForwardDecode(new float[5], position: 0, cache));
+    }
+
+    [Fact]
+    public void ForwardDecode_CacheShapeMismatch_Throws()
+    {
+        var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4);
+        var wrongCache = new MlxKvCache(numHeads: 1, maxSeqLen: 4, headDim: 4); // numHeads should be 2
+        Assert.Throws<ArgumentException>(() => layer.ForwardDecode(new float[8], position: 0, wrongCache));
+    }
+
+    [Fact]
+    public void ForwardDecode_MismatchedKvHeads_ThrowsNotSupported()
+    {
+        var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4, numKvHeads: 1);
+        var cache = new MlxKvCache(numHeads: 1, maxSeqLen: 4, headDim: 4);
+        Assert.Throws<NotSupportedException>(() => layer.ForwardDecode(new float[8], position: 0, cache));
+    }
+
+    [Fact]
+    public void ForwardDecode_ValidShapes_WithNoNativeLibraryPresent_ReachesFirstNativeCall_FailsPredictably()
+    {
+        var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4, intermDim: 16);
+        var cache = new MlxKvCache(numHeads: 2, maxSeqLen: 4, headDim: 4);
+        Assert.Throws<DllNotFoundException>(() => layer.ForwardDecode(new float[8], position: 0, cache));
+    }
+
+    [Fact]
     public void Forward_HiddenLengthMismatch_Throws()
     {
         var layer = MakeLayer();

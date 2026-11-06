@@ -79,7 +79,7 @@ public sealed class MlxDenseLayer
         float[] v = MlxOps.SplitHeads(vFlat, seqLen, NumKvHeads, HeadDim);
 
         float scale = 1f / MathF.Sqrt(HeadDim);
-        float[] attnOut = MlxOps.Attention(q, k, v, NumHeads, seqLen, HeadDim, scale, causal: true);
+        float[] attnOut = MlxOps.Attention(q, k, v, NumHeads, querySeqLen: seqLen, kvSeqLen: seqLen, HeadDim, scale, causal: true);
         float[] merged = MlxOps.MergeHeads(attnOut, NumHeads, seqLen, HeadDim);
 
         float[] projected = MlxOps.MatMul(merged, seqLen, NumHeads * HeadDim, Wo, HiddenDim);
@@ -90,6 +90,61 @@ public sealed class MlxDenseLayer
         float[] up = MlxOps.MatMul(normed2, seqLen, HiddenDim, WUp, IntermDim);
         float[] ffnHidden = MlxOps.Multiply(MlxOps.Silu(gate), up);
         float[] down = MlxOps.MatMul(ffnHidden, seqLen, IntermDim, WDown, HiddenDim);
+
+        return Add(afterAttn, down);
+    }
+
+    /// <summary>
+    /// One incremental decode step: a single new token's hidden state attends to everything already
+    /// in <paramref name="cache"/> plus itself. Matches TensorSharp's own convention for why no mask
+    /// is needed here (<c>FastScaledDotProductAttention</c> call sites pass <c>string.Empty</c>
+    /// specifically "for a single-token decode step" -- a lone query has no future token relative to
+    /// itself or to the cached past, so <see cref="Forward"/>'s causal mask has nothing to do).
+    /// <paramref name="hidden"/> is [HiddenDim] (one token); <paramref name="position"/> is its
+    /// absolute position (for RoPE). <paramref name="cache"/> is appended to in place.
+    ///
+    /// <para><b>Only the single-new-token case is handled.</b> Continuing a multi-token prefill into
+    /// an already-populated cache (more than one new token at once, non-empty cache) is refused
+    /// rather than silently mismasked -- TensorSharp's "causal" mask string assumes the query and key
+    /// axes start causally aligned, which an offset multi-token continuation would need its own mask
+    /// array for, not built here.</para>
+    /// </summary>
+    public float[] ForwardDecode(ReadOnlySpan<float> hidden, int position, MlxKvCache cache)
+    {
+        if (hidden.Length != HiddenDim)
+            throw new ArgumentException($"hidden has {hidden.Length} elements, expected HiddenDim = {HiddenDim}.", nameof(hidden));
+        if (NumKvHeads != NumHeads)
+            throw new NotSupportedException($"NumKvHeads ({NumKvHeads}) != NumHeads ({NumHeads}): GQA broadcast is not implemented.");
+        if (cache.NumHeads != NumKvHeads || cache.HeadDim != HeadDim)
+            throw new ArgumentException($"cache is [{cache.NumHeads} heads, {cache.HeadDim} headDim], expected [{NumKvHeads}, {HeadDim}].", nameof(cache));
+
+        float[] normed = MlxOps.RmsNorm(hidden, 1, HiddenDim, AttnNormWeight, Eps);
+
+        float[] qFlat = MlxOps.MatMul(normed, 1, HiddenDim, Wq, NumHeads * HeadDim);
+        float[] kFlat = MlxOps.MatMul(normed, 1, HiddenDim, Wk, NumKvHeads * HeadDim);
+        float[] vFlat = MlxOps.MatMul(normed, 1, HiddenDim, Wv, NumKvHeads * HeadDim);
+
+        ReadOnlySpan<int> positions = [position];
+        float[] q = ApplyRopePerHead(MlxOps.SplitHeads(qFlat, 1, NumHeads, HeadDim), NumHeads, 1, positions);
+        float[] kNew = ApplyRopePerHead(MlxOps.SplitHeads(kFlat, 1, NumKvHeads, HeadDim), NumKvHeads, 1, positions);
+        float[] vNew = MlxOps.SplitHeads(vFlat, 1, NumKvHeads, HeadDim);
+
+        cache.Append(kNew, vNew, seqLen: 1);
+        float[] kAll = cache.Keys();
+        float[] vAll = cache.Values();
+
+        float scale = 1f / MathF.Sqrt(HeadDim);
+        float[] attnOut = MlxOps.Attention(q, kAll, vAll, NumHeads, querySeqLen: 1, kvSeqLen: cache.Length, HeadDim, scale, causal: false);
+        float[] merged = MlxOps.MergeHeads(attnOut, NumHeads, 1, HeadDim);
+
+        float[] projected = MlxOps.MatMul(merged, 1, NumHeads * HeadDim, Wo, HiddenDim);
+        float[] afterAttn = Add(hidden, projected);
+
+        float[] normed2 = MlxOps.RmsNorm(afterAttn, 1, HiddenDim, FfnNormWeight, Eps);
+        float[] gate = MlxOps.MatMul(normed2, 1, HiddenDim, WGate, IntermDim);
+        float[] up = MlxOps.MatMul(normed2, 1, HiddenDim, WUp, IntermDim);
+        float[] ffnHidden = MlxOps.Multiply(MlxOps.Silu(gate), up);
+        float[] down = MlxOps.MatMul(ffnHidden, 1, IntermDim, WDown, HiddenDim);
 
         return Add(afterAttn, down);
     }

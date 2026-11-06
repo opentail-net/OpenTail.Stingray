@@ -222,20 +222,23 @@ public static class MlxOps
     }
 
     /// <summary>
-    /// Scaled dot-product attention over one sequence: <paramref name="query"/>/<paramref name="key"/>/
-    /// <paramref name="value"/> are row-major <c>[numHeads, seqLen, headDim]</c>. <paramref name="causal"/>
-    /// selects MLX's built-in <c>"causal"</c> mask string (TensorSharp passes <c>string.Empty</c> for a
-    /// single-token decode step and <c>"causal"</c> for a multi-token prefill -- no mask array, no
-    /// attention sinks, no forced-fused flag; those are TensorSharp's gpt-oss/chunked-prefill paths,
-    /// not ported here).
+    /// Scaled dot-product attention: <paramref name="query"/> is row-major
+    /// <c>[numHeads, querySeqLen, headDim]</c>; <paramref name="key"/>/<paramref name="value"/> are
+    /// row-major <c>[numHeads, kvSeqLen, headDim]</c> -- equal to <paramref name="querySeqLen"/> for a
+    /// prefill, or the KV cache's full length for an incremental decode step (<see cref="MlxKvCache"/>),
+    /// where <paramref name="querySeqLen"/> is 1. <paramref name="causal"/> selects MLX's built-in
+    /// <c>"causal"</c> mask string (TensorSharp passes <c>string.Empty</c> for a single-token decode
+    /// step and <c>"causal"</c> for a multi-token prefill -- no mask array, no attention sinks, no
+    /// forced-fused flag; those are TensorSharp's gpt-oss/chunked-prefill paths, not ported here).
     /// </summary>
     public static float[] Attention(ReadOnlySpan<float> query, ReadOnlySpan<float> key, ReadOnlySpan<float> value,
-        int numHeads, int seqLen, int headDim, float scale, bool causal)
+        int numHeads, int querySeqLen, int kvSeqLen, int headDim, float scale, bool causal)
     {
-        int expected = numHeads * seqLen * headDim;
-        if (query.Length != expected) throw new ArgumentException($"query has {query.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(query));
-        if (key.Length != expected) throw new ArgumentException($"key has {key.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(key));
-        if (value.Length != expected) throw new ArgumentException($"value has {value.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(value));
+        int queryExpected = numHeads * querySeqLen * headDim;
+        int kvExpected = numHeads * kvSeqLen * headDim;
+        if (query.Length != queryExpected) throw new ArgumentException($"query has {query.Length} elements, expected numHeads*querySeqLen*headDim = {queryExpected}.", nameof(query));
+        if (key.Length != kvExpected) throw new ArgumentException($"key has {key.Length} elements, expected numHeads*kvSeqLen*headDim = {kvExpected}.", nameof(key));
+        if (value.Length != kvExpected) throw new ArgumentException($"value has {value.Length} elements, expected numHeads*kvSeqLen*headDim = {kvExpected}.", nameof(value));
 
         var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
         MlxInterop.MlxStream stream = default;
@@ -244,16 +247,15 @@ public static class MlxOps
         try
         {
             Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
-            int[] shape = [numHeads, seqLen, headDim];
-            q = UploadFloat32(query, shape);
-            k = UploadFloat32(key, shape);
-            v = UploadFloat32(value, shape);
+            q = UploadFloat32(query, [numHeads, querySeqLen, headDim]);
+            k = UploadFloat32(key, [numHeads, kvSeqLen, headDim]);
+            v = UploadFloat32(value, [numHeads, kvSeqLen, headDim]);
             maskModePtr = Marshal.StringToHGlobalAnsi(causal ? "causal" : string.Empty);
 
             Check(MlxInterop.FastScaledDotProductAttention(out result, q, k, v, scale, maskModePtr, mask: default, sinks: default, forceFused: false, stream),
                 "mlx_fast_scaled_dot_product_attention");
 
-            var output = new float[expected];
+            var output = new float[queryExpected];
             DownloadFloat32(result, output);
             return output;
         }

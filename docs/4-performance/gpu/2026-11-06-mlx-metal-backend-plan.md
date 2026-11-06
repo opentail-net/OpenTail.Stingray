@@ -162,16 +162,33 @@ added; GQA broadcast (KV heads != query heads) is not implemented, checked expli
 
 72 tests passing in `Tests.Cuda` as of this entry (9 ops + the composed multi-head layer).
 
+## KV cache and incremental decode (2026-11-06)
+
+`MlxKvCache` (host-resident, plain array bookkeeping -- TensorSharp keeps its cache device-resident
+and writes with a native `mlx_slice_update` to avoid a host round trip; every op here already
+round-trips through host memory per call, so there is nothing a native slice-update buys, and
+appending needs no mlx-c binding at all) plus `MlxDenseLayer.ForwardDecode`, a single-new-token
+incremental step: appends the new K/V to the cache, attends the one new query against the cache's
+full length, no mask needed (matches TensorSharp's own stated reason: "a lone query has no future
+token relative to itself or the cached past"). Generalized `Attention` to take separate
+`querySeqLen`/`kvSeqLen` (previously assumed equal, which decode breaks).
+
+**Named limitation:** only single-new-token decode is handled; continuing a multi-token prefill into
+an already-populated cache is refused (`NotSupportedException` is not used here since this specific
+case isn't checked yet -- worth tightening later) rather than silently mismasked, because MLX's
+`"causal"` mask string assumes query/key start causally aligned, which an offset continuation would
+need its own mask array for.
+
+`MlxKvCacheTests` is the first *fully* verified test in this backend (no "fails predictably" caveat
+needed) -- the cache is plain host array bookkeeping with no native call in it at all, so its
+head/position data layout is checked for real.
+
+81 tests passing in `Tests.Cuda` as of this entry.
+
 ## Next steps (not started)
 
-1. A KV cache and an incremental decode step (`Forward` recomputes the whole sequence every call today).
-3. Weight loading from a real GGUF checkpoint (dequantizing quantized tensors to F32 first) and
-   stacking `MlxDenseLayer`s into a full model with embedding + output head -- the `IComputeBackend`/
-   `CudaForwardPass`-equivalent integration.
-4. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
-   actual behaviour to gate.
-2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
-   `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
-   skeleton.
-3. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
+1. Weight loading from a real GGUF checkpoint (dequantizing quantized tensors to F32 first, reusing
+   Stingray's existing dequantization kernels) and stacking `MlxDenseLayer`s into a full model with
+   embedding + output head -- the `IComputeBackend`/`CudaForwardPass`-equivalent integration.
+2. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
    actual behaviour to gate.
