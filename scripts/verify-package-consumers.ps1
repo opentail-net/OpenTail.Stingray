@@ -55,7 +55,32 @@ if (-not $Feed) {
         if (-not $ok) { throw "pack failed: $p" }
     }
 }
-$sources = "$Feed;https://api.nuget.org/v3/index.json"
+# Package source mapping, not just RestoreSources: when $Feed is handed in at the SAME version already
+# published on nuget.org (e.g. the CI job reuses the release-candidate pack, which must equal
+# Directory.Build.props's version), plain RestoreSources lets NuGet resolve OpenTail.Stingray* from either
+# source, and it can silently pick the published (stale) one instead of the one just packed (found
+# 2026-11-06: a brand-new public type built clean locally but failed every consumer build in CI).
+# Mapping pins OpenTail.Stingray* to the local feed unconditionally; everything else (third-party
+# dependencies) still resolves from nuget.org.
+$nugetConfigPath = Join-Path $Work 'verify.nuget.config'
+@"
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="local" value="$Feed" />
+    <add key="nuget" value="https://api.nuget.org/v3/index.json" />
+  </packageSources>
+  <packageSourceMapping>
+    <packageSource key="local">
+      <package pattern="OpenTail.Stingray*" />
+    </packageSource>
+    <packageSource key="nuget">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
+</configuration>
+"@ | Set-Content -LiteralPath $nugetConfigPath -Encoding utf8
 
 # --- 2. README code blocks
 $readmes = @('README.md', 'src/OpenTail.Stingray/README.md')
@@ -84,7 +109,6 @@ foreach ($rm in $readmes) {
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RestoreSources>$sources</RestoreSources>
   </PropertyGroup>
   <ItemGroup>
 $refs
@@ -93,7 +117,7 @@ $refs
 "@ | Set-Content -LiteralPath (Join-Path $dir 'block.csproj') -Encoding utf8
         Set-Content -LiteralPath (Join-Path $dir 'Program.cs') -Value $text -Encoding utf8
         # The repo's Directory.Build.props must not apply to the isolated consumer: the work dir is outside the repo, so it does not.
-        $out = & dotnet build (Join-Path $dir 'block.csproj') -c $Configuration 2>&1 | Out-String
+        $out = & dotnet build (Join-Path $dir 'block.csproj') -c $Configuration "-p:RestoreConfigFile=$nugetConfigPath" 2>&1 | Out-String
         $ok = ($LASTEXITCODE -eq 0)
         $first = if ($code.Count -gt 0) { ($code | Where-Object { $_.Trim() } | Select-Object -First 1).Trim() } else { '' }
         Add-Result "$rm line $($i + 1) ($first)" $ok $(if ($ok) { 'builds against the packed package' } else { (($out -split "`n" | Where-Object { $_ -match 'error' } | Select-Object -First 2) -join ' ' -replace '\[[A-Z]:\\[^\]]*\]', '') })
@@ -103,7 +127,7 @@ $refs
 # --- 3. samples in package mode
 foreach ($s in 'OpenTail.Stingray.Sample.Chat', 'OpenTail.Stingray.Sample.QuickChat', 'OpenTail.Stingray.Sample.Extract', 'OpenTail.Stingray.Sample.Speech', 'OpenTail.Stingray.Sample.Diffusion', 'ChatServer') {
     $proj = Join-Path $repo "samples/$s"
-    $out = & dotnet build $proj -c $Configuration "-p:StingrayPackageVersion=$Version" "-p:RestoreSources=$($sources -replace ';', '%3B')" 2>&1 | Out-String
+    $out = & dotnet build $proj -c $Configuration "-p:StingrayPackageVersion=$Version" "-p:RestoreConfigFile=$nugetConfigPath" 2>&1 | Out-String
     $ok = ($LASTEXITCODE -eq 0)
     $detail = ''
     if ($ok) {
