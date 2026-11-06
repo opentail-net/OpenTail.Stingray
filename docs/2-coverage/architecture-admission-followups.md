@@ -23,7 +23,7 @@ Three 2026-10-08/09 plans are finished and archived verbatim in `docs/done/`; th
 8. **Core structural tables still keyed on arch strings:** hybrid layer topology (GDN / Mamba-2 / short-conv), RWKV head size, the NEOX table for descriptor-less archs, and the by-name shim `ModelArchitectureTraits.Legacy` (12 literals; `qwen3vlmoe` lives only there). A new hybrid-recurrent family can still need a Core edit until the shim is deleted.
 9. **Separate registries kept out of scope, edited per family:** tokenizer family switches (`GgufTokenizer.cs`, `PreTokenizerPatterns.cs`), `ChatProtocolRegistry.cs`, `ToolCallAdapter.cs` (deliberately not moved), `PrefillHandoffFamilies.cs`, vision projector dispatch (`UnifiedVisionPipeline.cs`).
 10. **`FallbackChat` vs `ChatProtocolId`** disagree for six architectures by design (CLI/server no-template fallback vs engine API); retire or keep as derived convenience is decision D3, not taken.
-11. **Duplicated admitted-set snapshot** in `ArchitectureDescriptorContractTests` and `ArchitectureRegistryTests`: remove one.
+11. ~~**Duplicated admitted-set snapshot** in `ArchitectureDescriptorContractTests` and `ArchitectureRegistryTests`: remove one.~~ Closed 2026-11-06: removed from `ArchitectureRegistryTests` (kept in `ArchitectureDescriptorContractTests`).
 
 ### Small and optional
 12. Capabilities plan 0.3 (deferred, low value): test that every key in `PrefillHandoffFamilies` names a registered architecture.

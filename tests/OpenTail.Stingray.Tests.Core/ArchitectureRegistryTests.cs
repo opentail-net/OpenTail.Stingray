@@ -174,29 +174,8 @@ public sealed class ArchitectureRegistryTests
             Assert.False(ModelCompatibility.IsTextGenerationArchitectureSupported(d.Id));
     }
 
-    [Fact]
-    public void AdmittedSet_IsExactlyTheSnapshot()
-    {
-        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen2vl", "qwen35", "qwen35moe",
-            "mimo", "mimo2", "gemma", "gemma2", "gemma3", "gemma3n", "phi2", "phi3", "phimoe",
-            "olmoe", "rwkv7", "rwkv6", "gpt-oss", "deepseek2", "smollm3", "apertus", "gptneox",
-            "falcon", "olmo2", "exaone", "orion", "ernie4_5", "paddleocr", "qwen3vl", "deepseek2-ocr",
-            "granitehybrid", "nemotron_h", "lfm2", "lfm2moe", "internlm2", "starcoder2", "cohere2", "glm4",
-            "glm4moe", "stablelm", "hunyuan-dense", "hunyuan-moe", "afmoe", "gpt2", "granitemoe", "olmo",
-            "starcoder", "codeshell", "jais2", "jais", "maincoder", "exaone4", "mistral3", "ministral",
-            "xverse", "minicpm", "gemma4", "granite", "llama", "llama4", "muse-glimmer", "muse_glimmer",
-        };
-        var actual = ArchitectureRegistry.All
-            .Where(d => d.Status == AdmissionStatus.Admitted)
-            .SelectMany(d => d.Aliases.Prepend(d.Id))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        Assert.True(expected.SetEquals(actual),
-            $"Missing: {string.Join(", ", expected.Except(actual, StringComparer.OrdinalIgnoreCase))}; " +
-            $"unexpected: {string.Join(", ", actual.Except(expected, StringComparer.OrdinalIgnoreCase))}");
-    }
+    // AdmittedSet_IsExactlyTheSnapshot lives in ArchitectureDescriptorContractTests only
+    // (was duplicated verbatim in both files; docs/2-coverage/architecture-admission-followups.md #11).
 
     [Fact]
     public void ExperimentalEnvironmentVariables_AreInKnownInventory()
