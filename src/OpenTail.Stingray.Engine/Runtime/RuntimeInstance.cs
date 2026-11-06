@@ -278,6 +278,9 @@ public sealed class RuntimeInstance : IDisposable
             {
                 try { d.Dispose(); } catch { }
             }
+            // Create() is the only remaining owner of model on a failed construction — nothing
+            // else holds a reference to dispose it (RuntimeInstance.Dispose() never returns).
+            try { model.Dispose(); } catch { }
             throw;
         }
     }

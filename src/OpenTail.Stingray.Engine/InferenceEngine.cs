@@ -60,9 +60,11 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     private int[]?[]? _slotTokens;
     private readonly int _scratchCap;
 
-    // Image input (issue #253). Set once at load via EnableImageInput; the VisionModel is
-    // owned/disposed elsewhere (in _owned). Image requests splice projected soft tokens at
-    // each placeholder during a fresh (no-prefix-reuse) prefill.
+    // Image input (issue #253). Set once at load via EnableImageInput; the VisionModel is set
+    // after construction (the loader opens it only once vision support is confirmed), so it
+    // cannot join the fixed _owned array — DisposeCore frees _visionModel directly instead.
+    // Image requests splice projected soft tokens at each placeholder during a fresh
+    // (no-prefix-reuse) prefill.
     private GemmaUvVisionEmbedder? _visionEmbedder;
     // DSpark draft head (PR #413 Phase 6) — attached post-construction by the loader;
     // engine-owned (disposed in DisposeCore before the forward pass it drafts against).
@@ -317,8 +319,8 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
 
     /// <summary>
     /// Enable image (vision) input (issue #253). Call once at load time, before any request.
-    /// The <paramref name="model"/> must already be in this engine's <c>owned</c> disposables
-    /// (the loader adds it) — this method only borrows references. <paramref name="openId"/>,
+    /// Takes ownership of <paramref name="model"/>: <see cref="DisposeCore"/> disposes it
+    /// directly, since it arrives after <c>_owned</c> is already fixed. <paramref name="openId"/>,
     /// <paramref name="closeId"/>, <paramref name="placeholderId"/> are the Gemma 4
     /// <c>&lt;|image&gt;</c> / <c>&lt;image|&gt;</c> / <c>&lt;|image|&gt;</c> token ids.
     /// </summary>
@@ -1577,6 +1579,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         _fwd.Dispose();
         foreach (var d in _owned)
             d.Dispose();
+        _visionModel?.Dispose();
         _gate.Dispose();
         _shutdownCts.Dispose();
     }

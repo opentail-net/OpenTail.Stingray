@@ -102,6 +102,13 @@ public sealed class PullCommand : Command<PullCommand.Settings>
             return 1;
         }
 
+        if (FindMissingShards(selected) is { Count: > 0 } missing)
+        {
+            AnsiConsole.ErrorLine($"[red]Error:[/] '{Markup.Escape(repo)}' is a split GGUF checkpoint missing shard(s) {string.Join(", ", missing)} " +
+                "of the set — downloading the present shards would produce an unusable model.");
+            return 1;
+        }
+
         Directory.CreateDirectory(settings.OutDir);
 
         foreach (var (name, size) in selected)
@@ -275,6 +282,31 @@ public sealed class PullCommand : Command<PullCommand.Settings>
                         && f.Name.Contains($"-of-{totalStr}", StringComparison.OrdinalIgnoreCase))
             .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// Checks that a sharded selection from <see cref="SelectFiles"/> covers every index
+    /// 1..N of its "-NNNNN-of-NNNNN.gguf" set (mirrors the completeness check
+    /// <see cref="OpenTail.Stingray.Core.Net.HubClient.IsComplete"/> applies for <c>scout</c>/
+    /// <c>QuantPicker</c> — <c>pull</c> picks shards by regex match alone, so a repo missing a
+    /// shard would otherwise download silently into an unusable model). Returns the missing
+    /// 1-based indices (empty when <paramref name="selected"/> is a single non-split file or
+    /// every shard is present).
+    /// </summary>
+    internal static List<int> FindMissingShards(List<(string Name, long? Size)> selected)
+    {
+        if (selected.Count < 2) return [];
+        var indices = new List<int>();
+        int total = -1;
+        foreach (var (name, _) in selected)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(name, @"-(\d{5})-of-(\d{5})\.gguf$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) return [];   // not actually a shard set (shouldn't happen given SelectFiles' own match)
+            indices.Add(int.Parse(m.Groups[1].Value));
+            total = int.Parse(m.Groups[2].Value);
+        }
+        var present = indices.ToHashSet();
+        return Enumerable.Range(1, total).Where(i => !present.Contains(i)).ToList();
     }
 
     /// <summary>

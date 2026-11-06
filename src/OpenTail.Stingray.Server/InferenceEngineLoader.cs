@@ -45,7 +45,25 @@ public static class InferenceEngineLoader
         });
 
         var instance = RuntimeInstance.Create(plan, model, turnGate);
+        try
+        {
+            return BuildLoadedEngine(plan, model, instance, sessionStorageDirectory);
+        }
+        catch
+        {
+            // Everything after RuntimeInstance.Create() succeeds (vision setup, DSpark attach) can
+            // throw; nothing else holds a reference to instance/model at that point, so this is the
+            // only place that can free them. instance.Dispose() frees the engine/forward pass/backends
+            // it owns, but never the model (that stays the caller's job on the success path), so both
+            // are disposed explicitly here.
+            try { instance.Dispose(); } catch { }
+            try { model.Dispose(); } catch { }
+            throw;
+        }
+    }
 
+    private static LoadedEngine BuildLoadedEngine(ExecutionPlan plan, Model model, RuntimeInstance instance, string? sessionStorageDirectory)
+    {
         HotSessionRuntime? sessionRuntime = null;
         ColdSessionRuntime? coldSessionRuntime = null;
         if (plan.Batching?.EnableSessions == true && instance.Engine is ContinuousBatchingEngine batchingEngine)
@@ -77,11 +95,19 @@ public static class InferenceEngineLoader
 
             var mmprojPath = ResolvePath(plan.Modality.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
             var visionModel = VisionModel.Open(mmprojPath);
-            var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
-            int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
-            int imgClose = instance.Tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
-            int imgPlaceholder = instance.Tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880;
-            ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
+            try
+            {
+                var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
+                int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
+                int imgClose = instance.Tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
+                int imgPlaceholder = instance.Tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880;
+                ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
+            }
+            catch
+            {
+                visionModel.Dispose();
+                throw;
+            }
         }
 
         if (plan.Speculation is { DSparkEnabled: true } && !string.IsNullOrWhiteSpace(plan.Speculation.DSparkModelPath) && instance.Engine is InferenceEngine ieDspark && model.IsGguf)
