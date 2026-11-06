@@ -55,6 +55,22 @@ if (-not $Feed) {
         if (-not $ok) { throw "pack failed: $p" }
     }
 }
+# Once a package id+version is already extracted into the NuGet global-packages folder, a restore is
+# satisfied straight from there -- no source (local feed or nuget.org) is consulted at all, so
+# packageSourceMapping below cannot help if a STALE copy of this exact version already sits in the
+# cache. That cache is not scoped to this script: CI (ci.yml) caches ~/.nuget/packages across runs on
+# `main` keyed only by csproj/Directory.Build.props hashes, so an earlier run that packed this same
+# version (e.g. before a new public type existed) leaves a stale extraction that later runs silently
+# keep using (found 2026-11-06, the actual reason the version-suffix and source-mapping fixes alone did
+# not stop CI failing: a brand-new public type built clean locally but every CI run kept resolving the
+# OLD cached extraction of the version just packed). Force a fresh extraction every run by removing any
+# existing cache entry for exactly this id+version first.
+$globalPackagesRoot = (& dotnet nuget locals global-packages --list) -replace '^global-packages:\s*', ''
+foreach ($id in 'opentail.stingray', 'opentail.stingray.server') {
+    $cached = Join-Path $globalPackagesRoot.Trim() (Join-Path $id $Version)
+    if (Test-Path $cached) { Remove-Item -Recurse -Force $cached }
+}
+
 # Package source mapping, not just RestoreSources: when $Feed is handed in at the SAME version already
 # published on nuget.org (e.g. the CI job reuses the release-candidate pack, which must equal
 # Directory.Build.props's version), plain RestoreSources lets NuGet resolve OpenTail.Stingray* from either
