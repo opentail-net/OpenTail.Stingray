@@ -35,16 +35,23 @@ public sealed class MlxDenseModel
     /// Runs every layer's <see cref="MlxDenseLayer.Forward"/> over a fresh prompt and returns logits
     /// for every position, row-major [seqLen, VocabSize] (not just the last position -- a caller that
     /// only wants the next-token distribution reads the last <see cref="VocabSize"/> floats).
+    /// <paramref name="caches"/> is optional: one entry per layer (same order as <see cref="Layers"/>).
+    /// When given, each layer also appends this prompt's K/V into its cache (<see cref="MlxDenseLayer.Forward"/>'s
+    /// own <c>cache</c> parameter), so a later <see cref="Decode"/> on the same caches continues this
+    /// sequence. Passing caches that already hold any positions is refused by the layer, not here.
     /// </summary>
-    public float[] Prefill(ReadOnlySpan<int> tokenIds)
+    public float[] Prefill(ReadOnlySpan<int> tokenIds, MlxKvCache[]? caches = null)
     {
+        if (caches is not null && caches.Length != Layers.Length)
+            throw new ArgumentException($"caches has {caches.Length} entries, expected one per layer ({Layers.Length}).", nameof(caches));
+
         int seqLen = tokenIds.Length;
         float[] hidden = Embed(tokenIds);
         int[] positions = new int[seqLen];
         for (int i = 0; i < seqLen; i++) positions[i] = i;
 
-        foreach (var layer in Layers)
-            hidden = layer.Forward(hidden, seqLen, positions);
+        for (int i = 0; i < Layers.Length; i++)
+            hidden = Layers[i].Forward(hidden, seqLen, positions, caches?[i]);
 
         return FinalLogits(hidden, seqLen);
     }

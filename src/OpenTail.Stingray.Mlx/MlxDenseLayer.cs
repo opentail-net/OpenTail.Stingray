@@ -56,10 +56,18 @@ public sealed class MlxDenseLayer
     /// <para><b>Still simplified, named explicitly:</b> no GQA broadcast (<see cref="NumKvHeads"/>
     /// must equal <see cref="NumHeads"/>); no bias terms (<see cref="MlxOps.AddMm"/> exists for when a
     /// family needs one); F32 weights only (a real GGUF checkpoint's quantized weights would need
-    /// dequantizing to F32 first -- not done here); no KV cache (every call recomputes attention over
-    /// the whole sequence, there is no incremental decode step yet).</para>
+    /// dequantizing to F32 first -- not done here).</para>
+    ///
+    /// <para><paramref name="cache"/> is optional: when provided, this call also appends the
+    /// prompt's post-RoPE K/V (head-first, the same layout <see cref="MlxKvCache.Append"/> already
+    /// accepts for any <c>seqLen</c>, not just one) so a later <see cref="ForwardDecode"/> on the same
+    /// cache continues this sequence rather than starting a fresh, cache-less one. Passing a
+    /// non-empty cache (<see cref="MlxKvCache.Length"/> &gt; 0) is refused: that would be continuing a
+    /// multi-token prefill into an already-populated cache, which needs an offset causal mask this
+    /// port does not build (see <see cref="ForwardDecode"/>'s own doc comment for the same limitation
+    /// from the other direction).</para>
     /// </summary>
-    public float[] Forward(ReadOnlySpan<float> hidden, int seqLen, ReadOnlySpan<int> positions)
+    public float[] Forward(ReadOnlySpan<float> hidden, int seqLen, ReadOnlySpan<int> positions, MlxKvCache? cache = null)
     {
         if (hidden.Length != seqLen * HiddenDim)
             throw new ArgumentException($"hidden has {hidden.Length} elements, expected seqLen*HiddenDim = {seqLen * HiddenDim}.", nameof(hidden));
@@ -67,6 +75,8 @@ public sealed class MlxDenseLayer
             throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
         if (NumKvHeads != NumHeads)
             throw new NotSupportedException($"NumKvHeads ({NumKvHeads}) != NumHeads ({NumHeads}): GQA broadcast is not implemented.");
+        if (cache is { Length: > 0 })
+            throw new NotSupportedException($"cache already has {cache.Length} positions: continuing a multi-token prefill into an already-populated cache is not implemented.");
 
         float[] normed = MlxOps.RmsNorm(hidden, seqLen, HiddenDim, AttnNormWeight, Eps);
 
@@ -77,6 +87,8 @@ public sealed class MlxDenseLayer
         float[] q = ApplyRopePerHead(MlxOps.SplitHeads(qFlat, seqLen, NumHeads, HeadDim), NumHeads, seqLen, positions);
         float[] k = ApplyRopePerHead(MlxOps.SplitHeads(kFlat, seqLen, NumKvHeads, HeadDim), NumKvHeads, seqLen, positions);
         float[] v = MlxOps.SplitHeads(vFlat, seqLen, NumKvHeads, HeadDim);
+
+        cache?.Append(k, v, seqLen);
 
         float scale = 1f / MathF.Sqrt(HeadDim);
         float[] attnOut = MlxOps.Attention(q, k, v, NumHeads, querySeqLen: seqLen, kvSeqLen: seqLen, HeadDim, scale, causal: true);

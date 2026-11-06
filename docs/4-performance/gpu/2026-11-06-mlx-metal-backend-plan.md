@@ -206,6 +206,32 @@ just "the loader ran without throwing."
 88 tests passing in `Tests.Cuda` as of this entry (10 ops, head split/merge, the composed layer forward
 + decode, the KV cache, the full model, and the loader).
 
+## Scope expanded by owner instruction (2026-11-06): complete the remaining gaps
+
+After the close criterion was met, the owner asked to complete the remaining named gaps to the best
+of our ability, with CI tests covering the work: GQA, multi-token cache continuation, MoE/hybrid/
+vision architectures, engine/CLI integration, TensorSharp's perf optimizations. Taken in roughly this
+order (bounded items first); MoE/hybrid/vision and the perf optimizations are each comparable in size
+to a new subsystem, so progress on those is reported honestly as it happens rather than promised
+up front.
+
+### Engine/planner integration: MlxForwardPass (2026-11-06)
+
+`MlxForwardPass : IForwardPass` is the actual integration point. Most of its control flow has no
+native call in it and is tested for real: `VocabSize`/`MaxSeqLen` plumbing, `ResetCache`,
+`TruncateTo`'s accept-0-or-current-length contract (`SupportsPartialRewind` stays `false`), and
+`Forward`/`Prefill`'s position/startPos validation. `MlxDenseLayer.Forward` gained an optional
+`MlxKvCache? cache` parameter (appends the prompt's K/V so a later `ForwardDecode` continues the same
+sequence) and `MlxDenseModel.Prefill` threads it through per layer -- closing the gap where prefill
+and decode previously used disconnected state.
+
+**Not done in this slice**: no `ForwardPassKind` case, no CLI `--backend mlx` option, no
+`ArchitectureLoadContext`/`CommonForwardPassFactory` wiring -- `MlxForwardPass` exists and implements
+the real contract, but nothing in the engine can select it yet. That is the "CLI integration" item,
+tracked separately below.
+
+96 tests passing in `Tests.Cuda` as of this entry.
+
 ## Status: close criterion met for the scope as defined
 
 Per the owner's stop condition ("a faithful port that passes all tests in CI"): there is now a
