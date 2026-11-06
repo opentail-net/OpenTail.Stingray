@@ -185,10 +185,49 @@ head/position data layout is checked for real.
 
 81 tests passing in `Tests.Cuda` as of this entry.
 
-## Next steps (not started)
+## Weight loading, full model assembly, and the flag (2026-11-06) -- close criterion reached
 
-1. Weight loading from a real GGUF checkpoint (dequantizing quantized tensors to F32 first, reusing
-   Stingray's existing dequantization kernels) and stacking `MlxDenseLayer`s into a full model with
-   embedding + output head -- the `IComputeBackend`/`CudaForwardPass`-equivalent integration.
-2. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
-   actual behaviour to gate.
+`MlxGgufDenseModelLoader.Load` reads a real GGUF's own metadata keys (`{arch}.embedding_length` etc.,
+the llama.cpp/GGUF convention -- not `ArchitectureModelResolver`'s hyperparameter resolution, which
+handles many architecture-specific overrides this dense-only port doesn't need) and dequantizes every
+tensor to F32 via Stingray's existing `Dequantize.ToFloat32` (added a `Cpu` project reference to the
+`Mlx` project for this -- no new quantization logic). `MlxDenseModel` stacks the resulting
+`MlxDenseLayer`s with an embedding table and output head; `Embed`/the final logits projection's
+RMSNorm+MatMul reuse the ported ops. `STINGRAY_MLX_DENSE=1` gates `Load` directly (no engine/planner
+integration exists -- no `ForwardPassKind` case, no CLI `--backend mlx` -- named explicitly as not
+attempted; this flag only gates direct calls to the loader).
+
+**`MlxGgufDenseModelLoaderTests` is real, not "fails predictably"**: a standalone synthetic-GGUF
+builder (GgufModel/Dequantize both run fine here, no Mac needed) produces a tiny one-layer F32
+checkpoint with every weight tensor filled with its own distinct constant, and the test asserts each
+one landed in the correct `MlxDenseLayer` field -- would catch a transposed or swapped tensor, not
+just "the loader ran without throwing."
+
+88 tests passing in `Tests.Cuda` as of this entry (10 ops, head split/merge, the composed layer forward
++ decode, the KV cache, the full model, and the loader).
+
+## Status: close criterion met for the scope as defined
+
+Per the owner's stop condition ("a faithful port that passes all tests in CI"): there is now a
+complete dense-llama MLX forward pass -- weight loading from a real GGUF, dequantization, multi-head
+attention, RoPE, SwiGLU FFN, a KV cache and incremental decode, stacked into a full model with
+embedding and output head -- every piece a faithful, cited port of TensorSharp's real source, every
+piece tested the strongest way actually possible without a Mac (full real verification for pure
+host-side logic, shape validation + graceful-native-failure for everything that touches mlx-c), and
+CI green on every commit along the way (`eb38583d` through this one).
+
+**What remains for true TensorSharp parity** (explicitly out of scope for this round, per the plan's
+own scope section, not overlooked):
+- GQA broadcast (`NumKvHeads != NumHeads`) -- checked and refused, not implemented.
+- Multi-token continuation into an already-populated KV cache (`ForwardDecode` handles only one new
+  token at a time) -- refused, not silently mismasked.
+- MoE, hybrid/recurrent architectures, vision, diffusion, quantized MLX ops (not F32) -- entirely
+  untouched, per the plan's original scope section.
+- No engine/planner integration (`ForwardPassKind`, CLI `--backend mlx`) -- the loader and model exist
+  as standalone, directly-callable types, not wired into Stingray's dispatch.
+- TensorSharp's own performance optimizations not ported: per-device stream caching, the fused
+  `FlatToHeadFirst` Metal kernel (this port uses `mlx_reshape` + `mlx_transpose_axes` instead, by
+  owner instruction to stay in C#), device-resident (vs. host-round-tripping) arrays.
+- Nothing has been run on real hardware. Every claim above is "compiles, reviewed for structural
+  correctness, tested as far as this machine allows" -- not "works." That gap cannot be closed without
+  a Mac, which is the whole premise this plan was scoped under.

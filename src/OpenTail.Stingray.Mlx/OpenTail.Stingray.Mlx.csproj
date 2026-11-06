@@ -4,5 +4,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <!-- For Dequantize.ToFloat32, reused rather than reimplemented: weight loading dequantizes a
+         real GGUF checkpoint's quantized tensors to F32 before handing them to MlxDenseLayer, which
+         is F32-only (see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md). -->
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
   </ItemGroup>
 </Project>

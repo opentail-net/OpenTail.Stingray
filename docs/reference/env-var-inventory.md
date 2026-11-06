@@ -1,5 +1,9 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-06)
 
+**Reconciled again 2026-11-06, later — `KnownEnvironmentVariables.All` now contains **289** names**
+(added `STINGRAY_MLX_DENSE`: gates `MlxGgufDenseModelLoader.Load`,
+docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md)
+
 **Reconciled again 2026-11-06 — `KnownEnvironmentVariables.All` now contains **288** names** (added
 `STINGRAY_TP_DEGREE`: the CUDA tensor-parallelism flag,
 docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md)
@@ -344,6 +348,12 @@ dynamically composed names.
 | `STINGRAY_PREFILL_MMQ` | experimental | `=0` reverts CUDA prefill from the MMQ path to the cuBLAS GEMM path (MMQ drops the fp16 weight temporary). Default on, under the prefill-GEMM gate. |
 | `STINGRAY_TP_DEGREE` | experimental | Tensor-parallel degree for the CUDA dense path (`CommonForwardPassFactory`). Unset or `1`: ordinary single-GPU path, unchanged. `>1`: currently refused with a clear `NotSupportedException` -- `CudaTensorParallelGroup` and the weight-sharding/AllReduce math exist and are unit tested, but the dense-llama forward pass that wires them into `CudaForwardPass`'s decode loop is not built yet. Never run on real multi-GPU hardware (none on this development machine); see docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md. |
 | `STINGRAY_TRUNK_MATVEC_FAST` | experimental | `=1` enables the fast Q8_0 trunk matvec in the CUDA hybrid-GDN plain-decode path. Default off. |
+
+## OpenTail.Stingray.Mlx
+
+| Variable | Class | Notes |
+|---|---|---|
+| `STINGRAY_MLX_DENSE` | experimental | Must be exactly `1` for `MlxGgufDenseModelLoader.Load` to run; any other value (including unset) throws `NotSupportedException`. No engine/planner integration exists yet (no `ForwardPassKind` case, no CLI `--backend mlx`) -- this only gates direct calls to the loader. Never run on real hardware (no Mac on this development machine); see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. |
 
 ## OpenTail.Stingray.Engine
 

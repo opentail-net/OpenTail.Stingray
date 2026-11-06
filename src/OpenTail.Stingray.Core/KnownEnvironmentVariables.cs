@@ -171,6 +171,7 @@ public static class KnownEnvironmentVariables
         // hint. Removed so the typo is reported and SuggestClosest points at STINGRAY_MAX_QUEUE.
         "STINGRAY_MIN_BATCH_BLAS",
         "STINGRAY_MLA_TRACE",
+        "STINGRAY_MLX_DENSE",
         "STINGRAY_MMPROJ",
         "STINGRAY_MMQ_SOA",
         "STINGRAY_MODEL",
