@@ -62,6 +62,72 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// SiLU (Swish): <c>x * sigmoid(x)</c>, elementwise. Ported from TensorSharp's primitives
+    /// (<c>mlx_sigmoid</c> + <c>mlx_multiply</c>) rather than a fused kernel -- TensorSharp fuses this
+    /// into its gate/up/SiLU MoE kernels for performance, which this port does not attempt yet.
+    /// </summary>
+    public static float[] Silu(ReadOnlySpan<float> input)
+    {
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray x = default, sig = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            x = UploadFloat32(input, [input.Length]);
+            Check(MlxInterop.Sigmoid(out sig, x, stream), "mlx_sigmoid");
+            Check(MlxInterop.Multiply(out result, x, sig, stream), "mlx_multiply");
+
+            var output = new float[input.Length];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (sig.IsValid) MlxInterop.ArrayFree(sig);
+            if (x.IsValid) MlxInterop.ArrayFree(x);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
+    /// <summary>
+    /// Row-major <paramref name="m"/> x <paramref name="k"/> times <paramref name="k"/> x
+    /// <paramref name="n"/> matmul (<c>mlx_matmul</c>), e.g. a linear projection's activation-times-
+    /// weight. No bias -- TensorSharp's <c>mlx_addmm</c> (<c>result = alpha*A@B + beta*src</c>) is the
+    /// next natural port for a biased projection, not ported yet.
+    /// </summary>
+    public static float[] MatMul(ReadOnlySpan<float> a, int m, int k, ReadOnlySpan<float> b, int n)
+    {
+        if (a.Length != m * k) throw new ArgumentException($"a has {a.Length} elements, expected m*k = {m * k}.", nameof(a));
+        if (b.Length != k * n) throw new ArgumentException($"b has {b.Length} elements, expected k*n = {k * n}.", nameof(b));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray aArray = default, bArray = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            aArray = UploadFloat32(a, [m, k]);
+            bArray = UploadFloat32(b, [k, n]);
+            Check(MlxInterop.MatMul(out result, aArray, bArray, stream), "mlx_matmul");
+
+            var output = new float[m * n];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (bArray.IsValid) MlxInterop.ArrayFree(bArray);
+            if (aArray.IsValid) MlxInterop.ArrayFree(aArray);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     private static unsafe MlxInterop.MlxArray UploadFloat32(ReadOnlySpan<float> data, int[] shape)
     {
         fixed (float* ptr = data)

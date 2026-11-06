@@ -96,12 +96,19 @@ no `libmlxc` present fails predictably (`DllNotFoundException` at the first nati
 crashing the process. Neither test says the *math* is correct — that genuinely cannot be checked here —
 only that the port's failure mode on this machine is the honest, expected one.
 
+Ported two more the same way (owner note: "don't need to worry about citing everything, the project
+borrows BSD code already" — attribution still lives in `THIRD_PARTY_NOTICES.md`, one line per file, not
+a citation in every doc comment): `Silu` (sigmoid + multiply) and `MatMul`. Both in `MlxOps.cs`, with
+the `mlx_sigmoid`/`mlx_multiply`/`mlx_matmul` bindings added to `MlxInterop.cs`. Same two testable
+things covered (`MlxOpsTests`): shape validation, and a real call failing predictably with no
+`libmlxc` present.
+
 ## Next steps (not started)
 
-1. Port the next op following the same discipline: read the real TensorSharp source first, copy real
-   signatures, cite file/line ranges, name every simplification. Candidates in rough order of how soon
-   a dense-llama forward pass needs them: array arithmetic/elementwise ops, RoPE, attention
-   (`mlx_fast_scaled_dot_product_attention`), SwiGLU FFN, embedding lookup.
+1. `mlx_addmm` (biased linear), `mlx_softmax_axis` and `mlx_fast_scaled_dot_product_attention`
+   (bindings already added to `MlxInterop.cs`, not yet wrapped in `MlxOps.cs`) are the next candidates
+   — attention is the big one a dense-llama pass needs. RoPE (`mlx_fast_rope_dynamic`) needs an
+   `MlxOptionalFloat` struct not yet ported.
 2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
    `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
    skeleton.

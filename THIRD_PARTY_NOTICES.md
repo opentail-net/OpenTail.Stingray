@@ -54,6 +54,7 @@ or inspired by TensorSharp, including:
 - Qwen 3.8 Flash Next (`qwen4exp`) architecture structures, GatedResidual hyper-connections, PLE dilated conv, and QSA indexing in `src/OpenTail.Stingray.Engine/Qwen4Exp*.cs` (referencing TensorSharp `Models/Qwen4Exp/` and llama.cpp `src/models/qwen4exp.cpp`)
 - MiniMax-H3 architecture structures, dual flow schedulers, AdaLN timestep curve modulation, and packed sequence layout in `src/OpenTail.Stingray.Diffusion/MiniMaxH3/` (referencing TensorSharp `Models/MiniMaxH3/` and upstream MiniMax-H3)
 - Muse-Glimmer text tower architecture structures, SWA masking, attention output gate, and sandwich norms in `src/OpenTail.Stingray.Engine/` (referencing TensorSharp `Models/MuseGlimmer/` and llama.cpp `src/models/muse-glimmer.cpp`)
+- The MLX (Apple Silicon) backend in `src/OpenTail.Stingray.Mlx/` (ported from TensorSharp's `TensorSharp.Backends.MLX/`; flag-gated, never run — no Mac on this development machine)
 
 - Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu

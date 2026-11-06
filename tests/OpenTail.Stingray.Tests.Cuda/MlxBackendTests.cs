@@ -52,4 +52,22 @@ public sealed class MlxOpsTests
         Assert.Throws<DllNotFoundException>(() =>
             MlxOps.RmsNorm(new float[8], rows: 2, hiddenDim: 4, weight: new float[4], eps: 1e-6f));
     }
+
+    [Fact]
+    public void Silu_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.Silu(new float[4]));
+    }
+
+    [Fact]
+    public void MatMul_ShapeMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.MatMul(new float[6], m: 2, k: 3, b: new float[5], n: 2));
+    }
+
+    [Fact]
+    public void MatMul_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.MatMul(new float[6], m: 2, k: 3, b: new float[6], n: 2));
+    }
 }

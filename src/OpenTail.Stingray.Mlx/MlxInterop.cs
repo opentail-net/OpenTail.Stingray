@@ -110,4 +110,26 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_fast_rms_norm")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int FastRmsNorm(out MlxArray result, MlxArray input, MlxArray weight, float eps, MlxStream stream);
+
+    // ── Elementwise, matmul and attention (ported from TensorSharp's TensorSharp.Backends.MLX) ───
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_sigmoid")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Sigmoid(out MlxArray result, MlxArray input, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_multiply")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Multiply(out MlxArray result, MlxArray lhs, MlxArray rhs, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_matmul")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int MatMul(out MlxArray result, MlxArray a, MlxArray b, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_softmax_axis")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int SoftmaxAxis(out MlxArray result, MlxArray input, int axis, [MarshalAs(UnmanagedType.I1)] bool precise, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_fast_scaled_dot_product_attention")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int FastScaledDotProductAttention(out MlxArray result, MlxArray query, MlxArray key, MlxArray value, float scale, nint maskMode, MlxArray mask, MlxArray sinks, [MarshalAs(UnmanagedType.I1)] bool forceFused, MlxStream stream);
 }
