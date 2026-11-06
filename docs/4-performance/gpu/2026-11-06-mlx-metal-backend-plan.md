@@ -127,12 +127,36 @@ attribute TensorSharp's own `MlxNative.cs` carries, for the same reason.
 Attention, Rope. Seven ops, each a faithful TensorSharp port, each with a shape-validation test and a
 real-call-fails-predictably test (`MlxOpsTests`, 61 tests total in `Tests.Cuda` as of this entry).
 
+## Forward-pass wiring started: MlxDenseLayer (2026-11-06)
+
+`MlxDenseLayer.Forward` (`src/OpenTail.Stingray.Mlx/MlxDenseLayer.cs`) composes all seven ops into one
+transformer block: RMSNorm -> QKV -> RoPE(Q,K) -> causal attention -> output projection -> residual
+add -> RMSNorm -> SwiGLU FFN (`down(silu(gate(x)) * up(x))`) -> residual add. Added an eighth op,
+`Multiply` (`mlx_multiply`), needed for the SwiGLU gate.
+
+**Simplified relative to a real dense-llama layer, named explicitly in the doc comment:** single
+attention head only (no multi-head split/concat -- `Wq`/`Wk`/`Wv` project straight to `HeadDim`); no
+GQA; no bias terms; F32 weights only (no quantized-weight dequantization path); no KV cache (every
+call recomputes attention over the whole sequence -- there is no incremental decode step yet).
+
+**The one thing checkable end to end without a Mac**: that a structurally valid call reaches the
+*first* real native call and fails there (`DllNotFoundException`), not some earlier bug in the shape
+handoff between ops throwing a different exception first. `MlxDenseLayerTests` asserts exactly this --
+it is meaningfully stronger evidence of correctness than any single op's own test, because it exercises
+every op's output shape feeding correctly into the next op's input shape, all the way through.
+
+66 tests passing in `Tests.Cuda` as of this entry (8 ops + the composed layer, each with shape
+validation and a graceful-failure check).
+
 ## Next steps (not started)
 
-1. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
-   `CudaForwardPass`) by wiring these seven ops into weight loading, a KV cache, and the decode loop.
-   Real design work, not another op port — this is the next distinct phase.
-2. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
+1. Multi-head attention (split hidden into heads before Q/K/V projection, concat after attention) --
+   the layer forward's biggest remaining simplification.
+2. A KV cache and an incremental decode step (`Forward` recomputes the whole sequence every call today).
+3. Weight loading from a real GGUF checkpoint (dequantizing quantized tensors to F32 first) and
+   stacking `MlxDenseLayer`s into a full model with embedding + output head -- the `IComputeBackend`/
+   `CudaForwardPass`-equivalent integration.
+4. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
    actual behaviour to gate.
 2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
    `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the

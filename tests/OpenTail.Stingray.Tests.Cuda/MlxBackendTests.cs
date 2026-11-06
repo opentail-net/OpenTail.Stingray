@@ -135,4 +135,16 @@ public sealed class MlxOpsTests
         Assert.Throws<DllNotFoundException>(() =>
             MlxOps.Rope(new float[3 * 4], seqLen: 3, headDim: 4, dims: 4, traditional: false, baseValue: 10000f, scale: 1f, positions: [0, 1, 2]));
     }
+
+    [Fact]
+    public void Multiply_LengthMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.Multiply(new float[3], new float[4]));
+    }
+
+    [Fact]
+    public void Multiply_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.Multiply(new float[4], new float[4]));
+    }
 }

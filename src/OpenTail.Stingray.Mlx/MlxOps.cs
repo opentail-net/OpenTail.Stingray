@@ -9,6 +9,35 @@ namespace OpenTail.Stingray.Mlx;
 /// </summary>
 public static class MlxOps
 {
+    /// <summary>Elementwise multiply of two same-length arrays (<c>mlx_multiply</c>).</summary>
+    public static float[] Multiply(ReadOnlySpan<float> lhs, ReadOnlySpan<float> rhs)
+    {
+        if (lhs.Length != rhs.Length) throw new ArgumentException($"lhs has {lhs.Length} elements, rhs has {rhs.Length}; they must match.", nameof(rhs));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray a = default, b = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            a = UploadFloat32(lhs, [lhs.Length]);
+            b = UploadFloat32(rhs, [rhs.Length]);
+            Check(MlxInterop.Multiply(out result, a, b, stream), "mlx_multiply");
+
+            var output = new float[lhs.Length];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (b.IsValid) MlxInterop.ArrayFree(b);
+            if (a.IsValid) MlxInterop.ArrayFree(a);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     /// <summary>
     /// RMSNorm over the last axis: <c>x / sqrt(mean(x^2, axis=-1) + eps) * weight</c>, computed by
     /// MLX's fused <c>mlx_fast_rms_norm</c> primitive in one dispatch.
