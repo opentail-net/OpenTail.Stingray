@@ -2,6 +2,8 @@
 
 using OpenTail.Stingray;
 using OpenTail.Stingray.Core.Catalog;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Executors;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
@@ -92,5 +94,43 @@ public sealed class StingrayFacadeTests : IDisposable
         await session.DisposeAsync();
 
         Assert.Equal(0, model.ActiveContextCount);
+    }
+
+    [Fact]
+    public async Task AskAsync_BuffersTheUnderlyingChatStream_WithNoSeparateInferencePath()
+    {
+        using var model = Model.Load(_path);
+        using var context = model.CreateContext();
+        var executor = new FakeExecutor(context, "Hello", ", ", "world!");
+        var chatSession = new ChatSession(executor);
+        using var session = new StingraySession(model, context, chatSession);
+
+        string reply = await session.AskAsync("hi");
+
+        Assert.Equal("Hello, world!", reply);
+    }
+
+    private sealed class FakeExecutor(IModelContext context, params string[] chunks) : IExecutor
+    {
+        public IModelContext Context => context;
+
+        public async IAsyncEnumerable<string> InferAsync(
+            string prompt, IInferenceParams? inferenceParams = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (string chunk in chunks)
+            {
+                await Task.Yield();
+                yield return chunk;
+            }
+        }
+
+        public async IAsyncEnumerable<GenerateChunk> InferChunksAsync(
+            string prompt, IInferenceParams? inferenceParams = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await foreach (string chunk in InferAsync(prompt, inferenceParams, cancellationToken))
+                yield return new GenerateChunk(GenerateChunkKind.Text, chunk);
+        }
     }
 }

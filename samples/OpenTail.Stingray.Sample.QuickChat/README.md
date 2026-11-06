@@ -73,5 +73,5 @@ unlike `OpenTail.Stingray.Sample.Chat`'s explicit `2048`.
   GPU backend and produced the answer shown above. One run.
 - **Package contract:** builds against project references in-repo; pass
   `-p:StingrayPackageVersion=<version>` to build against the packed `OpenTail.Stingray` NuGet
-  package instead, as `scripts/verify-package-consumers.ps1` does for the other package-consumer
-  samples (not yet run for this sample — add it to that script's list when it's updated next).
+  package instead, as `scripts/verify-package-consumers.ps1` now does for this sample alongside the
+  other package-consumer samples.

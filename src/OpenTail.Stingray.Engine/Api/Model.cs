@@ -113,7 +113,16 @@ public sealed class Model : IModel
             tensorSource = gguf;
         }
 
-        var resolved = ArchitectureModelResolver.Resolve(tensorSource, parameters.ModelPath, gguf);
+        ResolvedModelArchitecture resolved;
+        try
+        {
+            resolved = ArchitectureModelResolver.Resolve(tensorSource, parameters.ModelPath, gguf);
+        }
+        catch
+        {
+            (gguf as IDisposable ?? tensorSource as IDisposable)?.Dispose();
+            throw;
+        }
 
         return new Model(parameters.ModelPath, tensorSource, gguf, resolved.Hyperparams, resolved.CanonicalArchitecture, parameters);
     }
