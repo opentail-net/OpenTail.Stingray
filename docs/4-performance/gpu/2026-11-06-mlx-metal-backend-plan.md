@@ -284,11 +284,23 @@ CI green on every commit along the way (`eb38583d` through this one).
 own scope section, not overlooked):
 - ~~GQA broadcast~~ -- done 2026-11-06 (see below); `mlx_fast_scaled_dot_product_attention` broadcasts internally, no new code needed.
 - ~~Multi-token continuation into an already-populated KV cache~~ -- done 2026-11-06 (see below), via `Forward`; `ForwardDecode` itself still handles only one new token at a time, by design.
-- MoE, hybrid/recurrent architectures, vision, diffusion, quantized MLX ops (not F32) -- entirely
-  untouched. The owner expanded scope 2026-11-06 ("do complete all these -> GQA, multi-token cache
-  continuation, MoE/hybrid/vision architectures, engine/CLI integration, TensorSharp's perf
-  optimizations") to include this; it is the next item to pick up, following the same discipline
-  (faithful port, two-tier testing, CI green per increment).
+- MoE, hybrid/recurrent architectures, vision, diffusion, quantized MLX ops (not F32) -- the owner
+  expanded scope 2026-11-06 ("do complete all these -> GQA, multi-token cache continuation,
+  MoE/hybrid/vision architectures, engine/CLI integration, TensorSharp's perf optimizations") to
+  include these. Progress so far:
+  - **MoE router (gating) ported 2026-11-06**: `MlxOps.MoeRouterTopKSoftmax`, faithfully ported from
+    TensorSharp's `MlxFusedOps.TryMoeRouterTopKSoftmax` (`MlxFusedOps.cs` ~102-182) -- negate, top-K
+    via `mlx_argpartition_axis`, slice/reshape/cast the indices, gather the top-K logits, softmax
+    them. This is the router/gating decision only (which experts fire, their normalized weights).
+    **Not yet done**: the actual expert FFN gather/compute/scatter-add that consumes the router's
+    output (TensorSharp's `TryGatherRows`/`TryScatterAddWeightedRows`/`TryMoeBiasWeightedSum`,
+    `MlxFusedOps.cs` ~291-701) and the expert-offload LRU memory mechanism (`MoeExpertOffload.cs`,
+    a perf/memory feature orthogonal to correctness, lower priority than the compute path). No MoE
+    model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- the
+    router alone is not a runnable MoE forward pass.
+  - **Hybrid (MiniMax-H3, `MlxMiniMaxH3Ops.cs`/`MlxMiniMaxH3AttentionOps.cs`, ~540 lines) and vision
+    (Gemma 4, `MlxGemma4VisionOps.cs`, ~334 lines)**: not started. Each is its own subsystem-sized
+    port, same as the dense-llama path was; scoped to be picked up next, same discipline.
 - ~~No engine/planner integration~~ -- done 2026-11-06. `ForwardPassBackend.Mlx` and
   `ForwardPassKind.MlxDense` added; `ForwardPassSelection.Select` has an isolated early-return branch
   (`request.Backend == ForwardPassBackend.Mlx`) that refuses unless `STINGRAY_MLX_DENSE=1` and the

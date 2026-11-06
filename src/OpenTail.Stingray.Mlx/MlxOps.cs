@@ -416,6 +416,82 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// MoE router top-K + normalized softmax over a single token's router logits: returns the
+    /// indices of the <paramref name="k"/> largest logits and softmax(those <paramref name="k"/>
+    /// logits) -- normalized within just the selected experts, matching the common "renormalize
+    /// top-K probabilities" MoE gating convention.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxFusedOps.TryMoeRouterTopKSoftmax</c>
+    /// (<c>C:\Git-Public\example\TensorSharp\TensorSharp.Backends.MLX\MlxFusedOps.cs</c> lines
+    /// ~102-182): negate the logits so <c>mlx_argpartition_axis</c>'s "k smallest" gives the top-K
+    /// largest, slice out the first <paramref name="k"/> partitioned indices, reshape/cast them to
+    /// int32, gather (<c>mlx_take_axis</c>) the corresponding logits, then softmax those <paramref
+    /// name="k"/> values. This is the router/gating step only -- it decides which experts fire and
+    /// their relative weights; the expert FFN gather/compute/scatter-add that consumes this output
+    /// (TensorSharp's <c>TryGatherRows</c>/<c>TryScatterAddWeightedRows</c>/<c>TryMoeBiasWeightedSum</c>)
+    /// is a separate, larger, not-yet-ported piece (docs/4-performance/gpu/2026-11-06-mlx-metal-
+    /// backend-plan.md).</para>
+    ///
+    /// <para>Unlike TensorSharp's version (which writes results in place into caller-owned MLX-backed
+    /// tensors to avoid a host round trip on the decode hot path), this port is a plain host-in/
+    /// host-out function -- consistent with every other op in this file; the device-resident,
+    /// round-trip-free variant is one of the un-ported performance optimizations.</para>
+    /// </summary>
+    /// <param name="routerLogits">One token's logits, length <paramref name="numExperts"/>.</param>
+    /// <param name="numExperts">Total number of experts (<paramref name="routerLogits"/>'s length).</param>
+    /// <param name="k">Number of experts to route to; must satisfy <c>0 &lt; k &lt; numExperts</c>.</param>
+    public static (int[] TopIndices, float[] RouteWeights) MoeRouterTopKSoftmax(ReadOnlySpan<float> routerLogits, int numExperts, int k)
+    {
+        if (routerLogits.Length != numExperts) throw new ArgumentException($"routerLogits has {routerLogits.Length} elements, expected numExperts = {numExperts}.", nameof(routerLogits));
+        if (k <= 0 || k >= numExperts) throw new ArgumentOutOfRangeException(nameof(k), k, "k must satisfy 0 < k < numExperts.");
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray logits = default, neg = default, partIdx = default, topIdx2d = default,
+            topIdx1d = default, topIdx1dInt = default, topLogits = default, softmaxed = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            logits = UploadFloat32(routerLogits, [1, numExperts]);
+
+            Check(MlxInterop.Negative(out neg, logits, stream), "mlx_negative");
+            Check(MlxInterop.ArgPartitionAxis(out partIdx, neg, kth: k - 1, axis: 1, stream), "mlx_argpartition_axis");
+            Check(MlxInterop.Slice(out topIdx2d, partIdx, starts: [0, 0], startCount: 2, stops: [1, k], stopCount: 2, strides: [1, 1], strideCount: 2, stream), "mlx_slice");
+            Check(MlxInterop.Reshape(out topIdx1d, topIdx2d, [k], 1, stream), "mlx_reshape");
+            Check(MlxInterop.Astype(out topIdx1dInt, topIdx1d, MlxInterop.MlxInt32, stream), "mlx_astype");
+            Check(MlxInterop.TakeAxis(out topLogits, logits, topIdx1dInt, axis: 1, stream), "mlx_take_axis");
+            Check(MlxInterop.SoftmaxAxis(out softmaxed, topLogits, axis: -1, precise: true, stream), "mlx_softmax_axis");
+
+            var topIndices = new int[k];
+            DownloadInt32(topIdx1dInt, topIndices);
+            var routeWeights = new float[k];
+            DownloadFloat32(softmaxed, routeWeights);
+            return (topIndices, routeWeights);
+        }
+        finally
+        {
+            if (softmaxed.IsValid) MlxInterop.ArrayFree(softmaxed);
+            if (topLogits.IsValid) MlxInterop.ArrayFree(topLogits);
+            if (topIdx1dInt.IsValid) MlxInterop.ArrayFree(topIdx1dInt);
+            if (topIdx1d.IsValid) MlxInterop.ArrayFree(topIdx1d);
+            if (topIdx2d.IsValid) MlxInterop.ArrayFree(topIdx2d);
+            if (partIdx.IsValid) MlxInterop.ArrayFree(partIdx);
+            if (neg.IsValid) MlxInterop.ArrayFree(neg);
+            if (logits.IsValid) MlxInterop.ArrayFree(logits);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
+    private static unsafe void DownloadInt32(MlxInterop.MlxArray array, Span<int> destination)
+    {
+        nint src = MlxInterop.ArrayDataInt32(array);
+        if (src == nint.Zero)
+            throw new InvalidOperationException("mlx_array_data_int32 returned null.");
+        new ReadOnlySpan<int>((void*)src, destination.Length).CopyTo(destination);
+    }
+
     private static unsafe MlxInterop.MlxArray UploadInt32(ReadOnlySpan<int> data, int[] shape)
     {
         fixed (int* ptr = data)

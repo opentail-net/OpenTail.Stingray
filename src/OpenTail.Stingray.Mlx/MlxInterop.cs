@@ -107,6 +107,10 @@ internal static partial class MlxInterop
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial nint ArrayDataFloat32(MlxArray array);
 
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_data_int32")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial nint ArrayDataInt32(MlxArray array);
+
     /// <summary>MLX's fused RMSNorm primitive: <c>x / sqrt(mean(x^2) + eps) * weight</c> in one
     /// dispatch. <paramref name="weight"/> may be an invalid (default) <see cref="MlxArray"/> for an
     /// unweighted norm -- mlx-c treats a null/invalid array argument there as "no weight" the same way
@@ -188,4 +192,36 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_transpose_axes")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int TransposeAxes(out MlxArray result, MlxArray array, int[] axes, nuint axesCount, MlxStream stream);
+
+    // ── MoE router top-K + softmax (ported from TensorSharp's TryMoeRouterTopKSoftmax,
+    // MlxFusedOps.cs ~102-182: negate, argpartition for top-K, slice/reshape/cast the indices,
+    // gather the top-K logits, softmax them) -- MoE/hybrid/vision architectures item,
+    // docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. This is the router/gating
+    // step only: which experts fire and their normalized weights. The expert FFN gather/compute/
+    // scatter-add that consumes this output is a separate, larger, not-yet-ported piece.
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_negative")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Negative(out MlxArray result, MlxArray input, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_argpartition_axis")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ArgPartitionAxis(out MlxArray result, MlxArray input, int kth, int axis, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_slice")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Slice(out MlxArray result, MlxArray input, int[] starts, nuint startCount, int[] stops, nuint stopCount, int[] strides, nuint strideCount, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_astype")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Astype(out MlxArray result, MlxArray array, int dtype, MlxStream stream);
+
+    /// <summary>mlx-c's uint32 dtype tag (value 6, per MlxNative.cs's DType -> mlx dtype switch;
+    /// <c>mlx_argpartition_axis</c>'s real output dtype, which the top-K index path casts down to
+    /// <see cref="MlxInt32"/> afterwards, matching TensorSharp's own cast).</summary>
+    internal const int MlxUInt32 = 6;
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_take_axis")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int TakeAxis(out MlxArray result, MlxArray input, MlxArray indices, int axis, MlxStream stream);
 }

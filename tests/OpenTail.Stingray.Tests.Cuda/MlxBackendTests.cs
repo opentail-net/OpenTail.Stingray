@@ -211,4 +211,26 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.MergeHeads(new float[2 * 2 * 4], numHeads: 2, seqLen: 2, headDim: 4));
     }
+
+    [Fact]
+    public void MoeRouterTopKSoftmax_LogitsLengthMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.MoeRouterTopKSoftmax(new float[5], numExperts: 8, k: 2));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(-1)]
+    public void MoeRouterTopKSoftmax_KOutOfRange_Throws(int k)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => MlxOps.MoeRouterTopKSoftmax(new float[8], numExperts: 8, k: k));
+    }
+
+    [Fact]
+    public void MoeRouterTopKSoftmax_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.MoeRouterTopKSoftmax(new float[8], numExperts: 8, k: 2));
+    }
 }
