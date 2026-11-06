@@ -28,7 +28,14 @@ New-Item -ItemType Directory -Force -Path $Work | Out-Null
 if (-not $Version) {
     $m = Select-String -Path (Join-Path $repo 'Directory.Build.props') -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
     if (-not $m) { throw 'cannot read <Version> from Directory.Build.props' }
-    $Version = $m.Matches[0].Groups[1].Value
+    # A plain Directory.Build.props version (e.g. "1.0.9") collides with whatever is already published
+    # at that exact number on nuget.org, which is also in RestoreSources below. NuGet can then resolve
+    # a consumer's PackageReference to the PUBLISHED package instead of the one just packed from this
+    # checkout, silently testing stale code (found 2026-11-06: a brand-new public type built clean
+    # locally but failed every consumer build in CI with "does not exist in the current context" --
+    # the published 1.0.9 predates it). A unique prerelease suffix makes every verification run pack
+    # and restore a version nothing else could already have.
+    $Version = "$($m.Matches[0].Groups[1].Value)-verify.$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
 }
 
 $results = [System.Collections.Generic.List[object]]::new()
@@ -42,7 +49,7 @@ if (-not $Feed) {
     $Feed = Join-Path $Work 'feed'
     New-Item -ItemType Directory -Force -Path $Feed | Out-Null
     foreach ($p in 'src/OpenTail.Stingray/OpenTail.Stingray.csproj', 'src/OpenTail.Stingray.Server/OpenTail.Stingray.Server.csproj') {
-        $out = & dotnet pack $p -c $Configuration -o $Feed 2>&1 | Out-String
+        $out = & dotnet pack $p -c $Configuration -o $Feed "-p:Version=$Version" 2>&1 | Out-String
         $ok = ($LASTEXITCODE -eq 0)
         Add-Result "pack $p" $ok $(if ($ok) { "version $Version" } else { ($out -split "`n" | Where-Object { $_ -match 'error' } | Select-Object -First 2) -join ' ' })
         if (-not $ok) { throw "pack failed: $p" }
