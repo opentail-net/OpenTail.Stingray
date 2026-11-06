@@ -192,6 +192,54 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// Scaled dot-product attention over one sequence: <paramref name="query"/>/<paramref name="key"/>/
+    /// <paramref name="value"/> are row-major <c>[numHeads, seqLen, headDim]</c>. <paramref name="causal"/>
+    /// selects MLX's built-in <c>"causal"</c> mask string (TensorSharp passes <c>string.Empty</c> for a
+    /// single-token decode step and <c>"causal"</c> for a multi-token prefill -- no mask array, no
+    /// attention sinks, no forced-fused flag; those are TensorSharp's gpt-oss/chunked-prefill paths,
+    /// not ported here).
+    /// </summary>
+    public static float[] Attention(ReadOnlySpan<float> query, ReadOnlySpan<float> key, ReadOnlySpan<float> value,
+        int numHeads, int seqLen, int headDim, float scale, bool causal)
+    {
+        int expected = numHeads * seqLen * headDim;
+        if (query.Length != expected) throw new ArgumentException($"query has {query.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(query));
+        if (key.Length != expected) throw new ArgumentException($"key has {key.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(key));
+        if (value.Length != expected) throw new ArgumentException($"value has {value.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(value));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray q = default, k = default, v = default, result = default;
+        nint maskModePtr = nint.Zero;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            int[] shape = [numHeads, seqLen, headDim];
+            q = UploadFloat32(query, shape);
+            k = UploadFloat32(key, shape);
+            v = UploadFloat32(value, shape);
+            maskModePtr = Marshal.StringToHGlobalAnsi(causal ? "causal" : string.Empty);
+
+            Check(MlxInterop.FastScaledDotProductAttention(out result, q, k, v, scale, maskModePtr, mask: default, sinks: default, forceFused: false, stream),
+                "mlx_fast_scaled_dot_product_attention");
+
+            var output = new float[expected];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (v.IsValid) MlxInterop.ArrayFree(v);
+            if (k.IsValid) MlxInterop.ArrayFree(k);
+            if (q.IsValid) MlxInterop.ArrayFree(q);
+            if (maskModePtr != nint.Zero) Marshal.FreeHGlobal(maskModePtr);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     private static unsafe MlxInterop.MlxArray UploadFloat32(ReadOnlySpan<float> data, int[] shape)
     {
         fixed (float* ptr = data)

@@ -106,12 +106,21 @@ things covered (`MlxOpsTests`): shape validation, and a real call failing predic
 Ported `AddMm` (biased linear, `mlx_addmm`) and `Softmax` (`mlx_softmax_axis`) the same way. Same two
 testable things per op.
 
+Ported `Attention` (`mlx_fast_scaled_dot_product_attention`), covering the plain self-attention case
+only: `[numHeads, seqLen, headDim]` query/key/value, no mask array, no sinks, no forced-fused flag
+(TensorSharp's gpt-oss/chunked-prefill paths, not ported). `causal` selects MLX's built-in `"causal"`
+mask string vs. none — ported from TensorSharp's own convention (`string.Empty` for single-token
+decode, `"causal"` for multi-token prefill). The mask-mode string marshaling is simplified relative to
+TensorSharp's cached, process-lifetime `GetModePtr`: this port allocates and frees the native string
+on every call rather than caching it, correctness-first over the perf TensorSharp optimized for.
+
+With RMSNorm, Silu, MatMul, AddMm, Softmax and Attention now ported, every op a plain dense-llama
+decode step needs exists except RoPE.
+
 ## Next steps (not started)
 
-1. `mlx_fast_scaled_dot_product_attention` (binding already added to `MlxInterop.cs`, not yet wrapped
-   in `MlxOps.cs`) is the big remaining one a dense-llama pass needs — its mask-mode parameter is a
-   native string pointer, more involved marshaling than the ops ported so far. RoPE
-   (`mlx_fast_rope_dynamic`) needs an `MlxOptionalFloat` struct not yet ported.
+1. RoPE (`mlx_fast_rope_dynamic`) needs an `MlxOptionalFloat` struct not yet ported — the last op gap
+   before a dense-llama forward pass has every primitive it needs.
 2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
    `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
    skeleton.

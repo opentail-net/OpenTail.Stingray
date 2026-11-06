@@ -96,4 +96,22 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.Softmax(new float[6], rows: 2, cols: 3));
     }
+
+    [Fact]
+    public void Attention_ShapeMismatch_Throws()
+    {
+        float[] qkv = new float[2 * 3 * 4]; // numHeads=2, seqLen=3, headDim=4
+        Assert.Throws<ArgumentException>(() =>
+            MlxOps.Attention(new float[5], qkv, qkv, numHeads: 2, seqLen: 3, headDim: 4, scale: 1f, causal: true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Attention_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash(bool causal)
+    {
+        float[] qkv = new float[2 * 3 * 4];
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.Attention(qkv, qkv, qkv, numHeads: 2, seqLen: 3, headDim: 4, scale: 0.5f, causal));
+    }
 }
