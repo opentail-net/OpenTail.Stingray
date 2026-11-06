@@ -232,4 +232,41 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_contiguous")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int Contiguous(out MlxArray result, MlxArray array, [MarshalAs(UnmanagedType.I1)] bool allowColMajor, MlxStream stream);
+
+    // ── Gemma 4 vision padded self-attention (ported from TensorSharp's Gemma4VisionOps.TrySelfAttention,
+    // MlxGemma4VisionOps.cs ~112-160: transpose to head-major, zero-pad the head dim so MLX's fast SDPA
+    // path uses F32 SIMD instead of narrowing to TF32, run fused attention, crop and transpose back) --
+    // MoE/hybrid/vision architectures item. Needs a zero-filled array (mlx_full) and concatenation
+    // (mlx_concatenate_axis, via an MlxVectorArray) on top of the ops already bound above.
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal readonly struct MlxVectorArray
+    {
+        public readonly nint Ctx;
+        public bool IsValid => Ctx != nint.Zero;
+    }
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_new_float32")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MlxArray ArrayNewFloat32(float value);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_vector_array_new")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MlxVectorArray VectorArrayNew();
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_vector_array_free")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int VectorArrayFree(MlxVectorArray vector);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_vector_array_append_value")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int VectorArrayAppendValue(MlxVectorArray vector, MlxArray value);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_full")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Full(out MlxArray result, int[] shape, nuint shapeCount, MlxArray values, int dtype, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_concatenate_axis")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ConcatenateAxis(out MlxArray result, MlxVectorArray arrays, int axis, MlxStream stream);
 }

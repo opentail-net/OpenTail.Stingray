@@ -303,9 +303,32 @@ own scope section, not overlooked):
     a perf/memory feature orthogonal to correctness, lower priority than the compute path. No MoE
     model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- these
     ops alone are not a runnable MoE forward pass.
-  - **Hybrid (MiniMax-H3, `MlxMiniMaxH3Ops.cs`/`MlxMiniMaxH3AttentionOps.cs`, ~540 lines) and vision
-    (Gemma 4, `MlxGemma4VisionOps.cs`, ~334 lines)**: not started. Each is its own subsystem-sized
-    port, same as the dense-llama path was; scoped to be picked up next, same discipline.
+  - **Hybrid (MiniMax-H3) -- scoped and found out of scope, 2026-11-06**: `MlxMiniMaxH3Ops.cs` and
+    `MlxMiniMaxH3AttentionOps.cs` are NOT a hybrid GDN/Mamba-style text LLM architecture despite the
+    name -- they are video/audio VAE transform ops for a diffusion pipeline (packed AdaLN modulation,
+    group-norm-SiLU, im2col variants, an exact-attention kernel for the VAE's own encoder). Every
+    single function in both files is a custom fused Metal kernel (`CreateFastMetalKernel` with an
+    embedded shader string) with no basic-mlx-c-ops composition available -- unlike the MoE router/
+    gather ops, there is no "this part happens to already be basic ops" path here. Per the owner's
+    "stick to C#" instruction (no raw kernel porting) and the plan's own out-of-scope list (no
+    diffusion), this is correctly left unported; it was never the right target for the "hybrid
+    architectures" item anyway (that item means GDN/Mamba/short-conv hybrids, which this file is
+    not). No MLX GDN-hybrid text architecture has been scoped yet.
+  - **Vision (Gemma 4) -- partially ported, 2026-11-06**: `MlxGemma4VisionOps.cs` is mostly custom
+    Metal kernels too (`Gemma4VisionPosition2D`, `Gemma4VisionPool3x3`, `Gemma4VisionRope2D` all use
+    `CreateFastMetalKernel`), but `TrySelfAttention` (~112-160) is different -- it is itself built
+    entirely from basic composed mlx-c ops in TensorSharp's own source (transpose, zero-pad via
+    `mlx_full`+`mlx_concatenate_axis`, the same `mlx_fast_scaled_dot_product_attention` this port
+    already uses, slice, transpose back), not a kernel being reimplemented. Ported faithfully as
+    `MlxOps.Gemma4VisionSelfAttention`: pads the 64-wide head dim to 80 (192 for `tokens <= 8`) with
+    exact zeros so MLX's fused SDPA kernel takes its F32 SIMD path instead of narrowing to TF32,
+    then crops back -- mathematically a no-op, just a precision-path selection. New `MlxInterop`
+    bindings: `mlx_array_new_float32`, `mlx_vector_array_new`/`_free`/`_append_value`, `mlx_full`,
+    `mlx_concatenate_axis`. 3 new tests. **Not done**: `TryAddPosition2D`, `TryPool3x3`, `TryRope2D`
+    (all custom kernels, same as the MiniMax-H3 situation) and `EvaluateForProfile` (a pure
+    diagnostic helper, not inference logic). No vision model assembly (loading a real `mmproj`
+    checkpoint, wiring this op into a `UnifiedVisionPipeline`-equivalent for MLX) exists either --
+    this one op alone is not a runnable vision forward pass.
 - ~~No engine/planner integration~~ -- done 2026-11-06. `ForwardPassBackend.Mlx` and
   `ForwardPassKind.MlxDense` added; `ForwardPassSelection.Select` has an isolated early-return branch
   (`request.Backend == ForwardPassBackend.Mlx`) that refuses unless `STINGRAY_MLX_DENSE=1` and the

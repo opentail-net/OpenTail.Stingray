@@ -511,6 +511,120 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// Gemma 4 vision encoder's padded self-attention: <paramref name="query"/>/<paramref name="key"/>/
+    /// <paramref name="value"/> are row-major <c>[batches, tokens, heads, 64]</c> (head dim fixed at
+    /// 64, matching the source's own constraint). No scaling (<c>scale = 1</c>) and no causal mask --
+    /// the vision encoder's self-attention is bidirectional over all patch tokens.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>Gemma4VisionOps.TrySelfAttention</c>
+    /// (<c>C:\Git-Public\example\TensorSharp\TensorSharp.Backends.MLX\MlxGemma4VisionOps.cs</c>
+    /// ~112-160): transpose <c>[batches, tokens, heads, 64]</c> to head-major
+    /// <c>[batches, heads, tokens, 64]</c>, zero-pad the head dimension to 80 (192 for <c>tokens &lt;=
+    /// 8</c>) so MLX's fused SDPA kernel takes its F32 SIMD path instead of narrowing 64/96/128/256-
+    /// wide heads to TF32 (the padding is exact zeros and the scale stays 1, so this changes nothing
+    /// mathematically), run the fused attention, crop back to the real 64 channels, transpose back.
+    /// Unlike every other op in this port, this one is built entirely from basic composed ops in
+    /// TensorSharp's own source too -- it is not a custom-Metal-kernel function being reimplemented,
+    /// just a faithful translation of real composed logic.</para>
+    /// </summary>
+    public static float[] Gemma4VisionSelfAttention(ReadOnlySpan<float> query, ReadOnlySpan<float> key, ReadOnlySpan<float> value,
+        int batches, int tokens, int heads)
+    {
+        const int headDim = 64;
+        int expected = batches * tokens * heads * headDim;
+        if (query.Length != expected) throw new ArgumentException($"query has {query.Length} elements, expected batches*tokens*heads*64 = {expected}.", nameof(query));
+        if (key.Length != expected) throw new ArgumentException($"key has {key.Length} elements, expected batches*tokens*heads*64 = {expected}.", nameof(key));
+        if (value.Length != expected) throw new ArgumentException($"value has {value.Length} elements, expected batches*tokens*heads*64 = {expected}.", nameof(value));
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray q = default, k = default, v = default, qh = default, kh = default, vh = default,
+            padding = default, qp = default, kp = default, vp = default, attention = default,
+            cropped = default, restored = default, output = default;
+        nint maskModePtr = nint.Zero;
+        try
+        {
+            int[] shape = [batches, tokens, heads, headDim];
+            q = UploadFloat32(query, shape);
+            k = UploadFloat32(key, shape);
+            v = UploadFloat32(value, shape);
+
+            int[] transposeAxes = [0, 2, 1, 3];
+            Check(MlxInterop.TransposeAxes(out qh, q, transposeAxes, 4, stream), "mlx_transpose_axes (q)");
+            Check(MlxInterop.TransposeAxes(out kh, k, transposeAxes, 4, stream), "mlx_transpose_axes (k)");
+            Check(MlxInterop.TransposeAxes(out vh, v, transposeAxes, 4, stream), "mlx_transpose_axes (v)");
+
+            int paddedHead = tokens <= 8 ? 192 : 80;
+            padding = UploadFullZero([batches, heads, tokens, paddedHead - headDim], stream);
+            qp = ConcatenateLastAxis(qh, padding, stream);
+            kp = ConcatenateLastAxis(kh, padding, stream);
+            vp = ConcatenateLastAxis(vh, padding, stream);
+
+            maskModePtr = Marshal.StringToHGlobalAnsi(string.Empty);
+            Check(MlxInterop.FastScaledDotProductAttention(out attention, qp, kp, vp, scale: 1f, maskModePtr, mask: default, sinks: default, forceFused: true, stream),
+                "mlx_fast_scaled_dot_product_attention");
+
+            Check(MlxInterop.Slice(out cropped, attention,
+                starts: [0, 0, 0, 0], startCount: 4,
+                stops: [batches, heads, tokens, headDim], stopCount: 4,
+                strides: [1, 1, 1, 1], strideCount: 4, stream), "mlx_slice");
+            Check(MlxInterop.TransposeAxes(out restored, cropped, transposeAxes, 4, stream), "mlx_transpose_axes (restored)");
+            Check(MlxInterop.Contiguous(out output, restored, allowColMajor: false, stream), "mlx_contiguous");
+
+            var result = new float[expected];
+            DownloadFloat32(output, result);
+            return result;
+        }
+        finally
+        {
+            if (output.IsValid) MlxInterop.ArrayFree(output);
+            if (restored.IsValid) MlxInterop.ArrayFree(restored);
+            if (cropped.IsValid) MlxInterop.ArrayFree(cropped);
+            if (attention.IsValid) MlxInterop.ArrayFree(attention);
+            if (vp.IsValid) MlxInterop.ArrayFree(vp);
+            if (kp.IsValid) MlxInterop.ArrayFree(kp);
+            if (qp.IsValid) MlxInterop.ArrayFree(qp);
+            if (padding.IsValid) MlxInterop.ArrayFree(padding);
+            if (vh.IsValid) MlxInterop.ArrayFree(vh);
+            if (kh.IsValid) MlxInterop.ArrayFree(kh);
+            if (qh.IsValid) MlxInterop.ArrayFree(qh);
+            if (v.IsValid) MlxInterop.ArrayFree(v);
+            if (k.IsValid) MlxInterop.ArrayFree(k);
+            if (q.IsValid) MlxInterop.ArrayFree(q);
+            if (maskModePtr != nint.Zero) Marshal.FreeHGlobal(maskModePtr);
+        }
+    }
+
+    private static MlxInterop.MlxArray UploadFullZero(int[] shape, MlxInterop.MlxStream stream)
+    {
+        var scalar = MlxInterop.ArrayNewFloat32(0f);
+        try
+        {
+            Check(MlxInterop.Full(out var result, shape, (nuint)shape.Length, scalar, MlxInterop.MlxFloat32, stream), "mlx_full");
+            return result;
+        }
+        finally
+        {
+            MlxInterop.ArrayFree(scalar);
+        }
+    }
+
+    private static MlxInterop.MlxArray ConcatenateLastAxis(MlxInterop.MlxArray first, MlxInterop.MlxArray second, MlxInterop.MlxStream stream)
+    {
+        var vector = MlxInterop.VectorArrayNew();
+        try
+        {
+            Check(MlxInterop.VectorArrayAppendValue(vector, first), "mlx_vector_array_append_value (first)");
+            Check(MlxInterop.VectorArrayAppendValue(vector, second), "mlx_vector_array_append_value (second)");
+            Check(MlxInterop.ConcatenateAxis(out var result, vector, axis: 3, stream), "mlx_concatenate_axis");
+            return result;
+        }
+        finally
+        {
+            if (vector.IsValid) MlxInterop.VectorArrayFree(vector);
+        }
+    }
+
     private static unsafe void DownloadInt32(MlxInterop.MlxArray array, Span<int> destination)
     {
         nint src = MlxInterop.ArrayDataInt32(array);

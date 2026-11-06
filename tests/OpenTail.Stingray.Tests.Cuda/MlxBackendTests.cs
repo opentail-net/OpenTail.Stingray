@@ -245,4 +245,20 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.GatherRows(new float[2 * 3], srcRows: 2, cols: 3, indices: [1, 0, 1]));
     }
+
+    [Fact]
+    public void Gemma4VisionSelfAttention_QueryLengthMismatch_Throws()
+    {
+        float[] ok = new float[1 * 4 * 2 * 64];
+        Assert.Throws<ArgumentException>(() => MlxOps.Gemma4VisionSelfAttention(new float[5], ok, ok, batches: 1, tokens: 4, heads: 2));
+    }
+
+    [Theory]
+    [InlineData(4)]  // tokens <= 8 -> paddedHead = 192
+    [InlineData(16)] // tokens > 8 -> paddedHead = 80
+    public void Gemma4VisionSelfAttention_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash(int tokens)
+    {
+        float[] qkv = new float[1 * tokens * 2 * 64];
+        Assert.Throws<DllNotFoundException>(() => MlxOps.Gemma4VisionSelfAttention(qkv, qkv, qkv, batches: 1, tokens: tokens, heads: 2));
+    }
 }
