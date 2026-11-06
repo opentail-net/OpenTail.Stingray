@@ -236,6 +236,70 @@ public sealed class ModelLifecycleTests : IDisposable
         Assert.Equal(0, model.ActiveContextCount);
     }
 
+    private sealed class FakeEngineForDisposalTest : OpenTail.Stingray.Engine.IInferenceEngine
+    {
+        public string ModelId => "fake";
+        public int QueueDepth => 0;
+        public int ActiveRequests => 0;
+        public bool PrefixCacheEnabled => false;
+        public long PrefillTokensReused => 0;
+        public IAsyncEnumerable<OpenTail.Stingray.Engine.GenerateChunk> GenerateChunksAsync(
+            string prompt, OpenTail.Stingray.Engine.SamplingParams sp, CancellationToken ct = default, string? canonicalHistoryPrefix = null) =>
+            throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Regression (2026-11-06 review): <see cref="ModelContext.Engine"/>, <see cref="ModelContext.SetEngine"/>,
+    /// <see cref="ModelContext.Reset"/> and <see cref="ModelContext.ExecutionPlan"/> used to call
+    /// <c>ThrowIfDisposed()</c> BEFORE acquiring <c>_lock</c>, not under it. A thread that passed that
+    /// check could lose a race to a concurrent <see cref="Dispose"/> (which needs the same lock, and
+    /// which — once every context is gone — lets <see cref="Model.Dispose"/> free the shared tensor
+    /// source) and then still re-acquire the lock itself and proceed: <c>Engine</c> would build a real
+    /// engine against an already-disposed context/model, and <c>SetEngine</c> would attach a caller's
+    /// engine to a context that will never call <see cref="IDisposable.Dispose"/> on it again. The fix
+    /// moves the check inside the lock everywhere, matching <see cref="CreateContinuousBatchingEngine"/>'s
+    /// shape (and the test above): the simulated lock-holder below stands in for "Dispose() is running
+    /// and will flip _disposed before releasing the lock," and once it is released and Dispose() has
+    /// actually completed, every lazy accessor must see the disposed state deterministically rather
+    /// than slipping through a check it already passed before the lock was available.
+    /// </summary>
+    [Fact]
+    public async Task LazyAccessors_CheckDisposalUnderTheLock_NotBeforeIt()
+    {
+        using var model = Model.Load(_path);
+        var ctx = (ModelContext)model.CreateContext();
+
+        var lockField = typeof(ModelContext).GetField("_lock", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var ctxLock = lockField.GetValue(ctx)!;
+
+        using var holderEntered = new ManualResetEventSlim(false);
+        using var releaseHolder = new ManualResetEventSlim(false);
+
+        var holder = Task.Run(() =>
+        {
+            lock (ctxLock)
+            {
+                holderEntered.Set();
+                releaseHolder.Wait(TimeSpan.FromSeconds(10));
+            }
+        });
+
+        Assert.True(holderEntered.Wait(TimeSpan.FromSeconds(5)), "simulated holder never entered the lock");
+
+        var disposeTask = Task.Run(ctx.Dispose);
+        var settledEarly = await Task.WhenAny(disposeTask, Task.Delay(300));
+        Assert.NotSame(disposeTask, settledEarly);   // Dispose() must not complete while the lock is held
+
+        releaseHolder.Set();
+        await holder;
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Throws<ObjectDisposedException>(() => ctx.Engine);
+        Assert.Throws<ObjectDisposedException>(() => ctx.Reset());
+        Assert.Throws<ObjectDisposedException>(() => ctx.ExecutionPlan);
+        Assert.Throws<ObjectDisposedException>(() => ctx.SetEngine(new FakeEngineForDisposalTest()));
+    }
+
     private sealed class TrackingDisposable(string name, List<string> order) : IDisposable
     {
         public void Dispose() => order.Add(name);

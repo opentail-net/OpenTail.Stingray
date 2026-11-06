@@ -62,9 +62,12 @@ public sealed class ModelContext : IModelContext
     {
         get
         {
-            ThrowIfDisposed();
+            // ThrowIfDisposed() checked under the lock, not before it (see Engine below for why):
+            // a check-then-lock gap here let Dispose() run entirely in between, so the planning
+            // that follows could read a Model whose tensor source has just been freed.
             lock (_lock)
             {
+                ThrowIfDisposed();
                 if (_runtimeInstance is not null)
                 {
                     return _runtimeInstance.Plan;
@@ -82,9 +85,15 @@ public sealed class ModelContext : IModelContext
     {
         get
         {
-            ThrowIfDisposed();
+            // ThrowIfDisposed() must run under the lock, not before it: a caller passing the
+            // check, then losing a race to a concurrent Dispose() (which needs this same lock)
+            // before it re-acquires the lock itself, would otherwise still proceed to
+            // CreateDefaultEngine() against an already-disposed context/model — building a real
+            // engine against freed resources, and attaching it to a context Dispose() already tore
+            // down and will never call Dispose() on again.
             lock (_lock)
             {
+                ThrowIfDisposed();
                 return _engine ??= CreateDefaultEngine();
             }
         }
@@ -113,9 +122,11 @@ public sealed class ModelContext : IModelContext
     public void SetEngine(IInferenceEngine engine)
     {
         ArgumentNullException.ThrowIfNull(engine);
-        ThrowIfDisposed();
         lock (_lock)
         {
+            // Same check-under-lock requirement as Engine above: otherwise a caller could install
+            // engine onto a context Dispose() already tore down, and it would never be disposed.
+            ThrowIfDisposed();
             if (_runtimeInstance is not null && !ReferenceEquals(_runtimeInstance.Engine, engine))
             {
                 _runtimeInstance.Dispose();
@@ -186,9 +197,9 @@ public sealed class ModelContext : IModelContext
     /// </summary>
     public void EnsureContinuousBatchingEngine(int? maxBatchSize = null)
     {
-        ThrowIfDisposed();
         lock (_lock)
         {
+            ThrowIfDisposed();
             if (_engine is ContinuousBatchingEngine) return;
             var batchEngine = CreateContinuousBatchingEngine(maxBatchSize);
             SetEngine(batchEngine);
@@ -225,9 +236,9 @@ public sealed class ModelContext : IModelContext
     /// <inheritdoc/>
     public void Reset()
     {
-        ThrowIfDisposed();
         lock (_lock)
         {
+            ThrowIfDisposed();
             _engine?.Reset();
         }
     }
