@@ -28,10 +28,10 @@ public sealed class MlxDenseLayer
     public required int HiddenDim { get; init; }
     public required int NumHeads { get; init; }
     /// <summary>
-    /// Key/value head count. <b>No GQA/MQA broadcast is implemented yet</b>: must equal
-    /// <see cref="NumHeads"/> for now, checked in <see cref="Forward"/> -- a family whose KV head
-    /// count differs would need K/V repeated across query-head groups before
-    /// <see cref="MlxOps.Attention"/>, not built here.
+    /// Key/value head count; may be less than <see cref="NumHeads"/> (GQA/MQA). Broadcast across
+    /// query-head groups happens inside <c>mlx_fast_scaled_dot_product_attention</c> itself (see
+    /// <see cref="MlxOps.Attention"/>'s doc comment for how this was confirmed against TensorSharp's
+    /// real call site, not guessed) -- no repeat step is needed on this side.
     /// </summary>
     public required int NumKvHeads { get; init; }
     public required int HeadDim { get; init; }
@@ -53,19 +53,22 @@ public sealed class MlxDenseLayer
     /// (<c>MlxBasicOps.cs</c>'s RoPE reshapes to isolate one head-sized feature dimension before
     /// calling <c>FastRopeDynamic</c>).</para>
     ///
-    /// <para><b>Still simplified, named explicitly:</b> no GQA broadcast (<see cref="NumKvHeads"/>
-    /// must equal <see cref="NumHeads"/>); no bias terms (<see cref="MlxOps.AddMm"/> exists for when a
-    /// family needs one); F32 weights only (a real GGUF checkpoint's quantized weights would need
-    /// dequantizing to F32 first -- not done here).</para>
+    /// <para><b>Still simplified, named explicitly:</b> no bias terms (<see cref="MlxOps.AddMm"/>
+    /// exists for when a family needs one); F32 weights only (a real GGUF checkpoint's quantized
+    /// weights would need dequantizing to F32 first -- not done here). GQA (<see cref="NumKvHeads"/>
+    /// &lt; <see cref="NumHeads"/>) IS supported -- <c>mlx_fast_scaled_dot_product_attention</c>
+    /// broadcasts internally, confirmed against TensorSharp's real call site.</para>
     ///
-    /// <para><paramref name="cache"/> is optional: when provided, this call also appends the
-    /// prompt's post-RoPE K/V (head-first, the same layout <see cref="MlxKvCache.Append"/> already
-    /// accepts for any <c>seqLen</c>, not just one) so a later <see cref="ForwardDecode"/> on the same
-    /// cache continues this sequence rather than starting a fresh, cache-less one. Passing a
-    /// non-empty cache (<see cref="MlxKvCache.Length"/> &gt; 0) is refused: that would be continuing a
-    /// multi-token prefill into an already-populated cache, which needs an offset causal mask this
-    /// port does not build (see <see cref="ForwardDecode"/>'s own doc comment for the same limitation
-    /// from the other direction).</para>
+    /// <para><paramref name="cache"/> is optional: when provided, this call appends the prompt's
+    /// post-RoPE K/V (head-first, the same layout <see cref="MlxKvCache.Append"/> already accepts for
+    /// any <c>seqLen</c>, not just one) so a later <see cref="ForwardDecode"/> -- or another
+    /// <see cref="Forward"/> call continuing this sequence -- attends over the full history.
+    /// <paramref name="positions"/> must already reflect <c>cache.Length</c> as the new tokens'
+    /// starting absolute position (the caller's responsibility, same as for a fresh prefill where it
+    /// starts at 0); this method derives the attention mask's offset from <c>cache.Length</c>
+    /// directly, via <see cref="MlxOps.Attention"/>'s <c>queryOffset</c> parameter (an offset causal
+    /// mask built from basic ops -- see that method's doc comment -- rather than the built-in
+    /// <c>"causal"</c> string, which assumes the query and key axes start aligned).</para>
     /// </summary>
     public float[] Forward(ReadOnlySpan<float> hidden, int seqLen, ReadOnlySpan<int> positions, MlxKvCache? cache = null)
     {
@@ -73,10 +76,6 @@ public sealed class MlxDenseLayer
             throw new ArgumentException($"hidden has {hidden.Length} elements, expected seqLen*HiddenDim = {seqLen * HiddenDim}.", nameof(hidden));
         if (positions.Length != seqLen)
             throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
-        if (NumKvHeads != NumHeads)
-            throw new NotSupportedException($"NumKvHeads ({NumKvHeads}) != NumHeads ({NumHeads}): GQA broadcast is not implemented.");
-        if (cache is { Length: > 0 })
-            throw new NotSupportedException($"cache already has {cache.Length} positions: continuing a multi-token prefill into an already-populated cache is not implemented.");
 
         float[] normed = MlxOps.RmsNorm(hidden, seqLen, HiddenDim, AttnNormWeight, Eps);
 
@@ -88,10 +87,14 @@ public sealed class MlxDenseLayer
         float[] k = ApplyRopePerHead(MlxOps.SplitHeads(kFlat, seqLen, NumKvHeads, HeadDim), NumKvHeads, seqLen, positions);
         float[] v = MlxOps.SplitHeads(vFlat, seqLen, NumKvHeads, HeadDim);
 
+        int queryOffset = cache?.Length ?? 0;
         cache?.Append(k, v, seqLen);
+        float[] kAttn = cache?.Keys() ?? k;
+        float[] vAttn = cache?.Values() ?? v;
+        int kvSeqLen = cache?.Length ?? seqLen;
 
         float scale = 1f / MathF.Sqrt(HeadDim);
-        float[] attnOut = MlxOps.Attention(q, k, v, NumHeads, querySeqLen: seqLen, kvSeqLen: seqLen, HeadDim, scale, causal: true);
+        float[] attnOut = MlxOps.Attention(q, kAttn, vAttn, NumHeads, NumKvHeads, querySeqLen: seqLen, kvSeqLen: kvSeqLen, HeadDim, scale, causal: true, queryOffset);
         float[] merged = MlxOps.MergeHeads(attnOut, NumHeads, seqLen, HeadDim);
 
         float[] projected = MlxOps.MatMul(merged, seqLen, NumHeads * HeadDim, Wo, HiddenDim);
@@ -115,18 +118,16 @@ public sealed class MlxDenseLayer
     /// <paramref name="hidden"/> is [HiddenDim] (one token); <paramref name="position"/> is its
     /// absolute position (for RoPE). <paramref name="cache"/> is appended to in place.
     ///
-    /// <para><b>Only the single-new-token case is handled.</b> Continuing a multi-token prefill into
-    /// an already-populated cache (more than one new token at once, non-empty cache) is refused
-    /// rather than silently mismasked -- TensorSharp's "causal" mask string assumes the query and key
-    /// axes start causally aligned, which an offset multi-token continuation would need its own mask
-    /// array for, not built here.</para>
+    /// <para><b>Only the single-new-token case is handled here</b> -- this method always advances
+    /// exactly one position. A caller continuing a cache with more than one new token at once (a
+    /// multi-token prefill resuming an existing conversation) uses <see cref="Forward"/> with that
+    /// cache instead, which builds the needed offset causal mask (see its own doc comment and
+    /// <see cref="MlxOps.Attention"/>'s <c>queryOffset</c> parameter).</para>
     /// </summary>
     public float[] ForwardDecode(ReadOnlySpan<float> hidden, int position, MlxKvCache cache)
     {
         if (hidden.Length != HiddenDim)
             throw new ArgumentException($"hidden has {hidden.Length} elements, expected HiddenDim = {HiddenDim}.", nameof(hidden));
-        if (NumKvHeads != NumHeads)
-            throw new NotSupportedException($"NumKvHeads ({NumKvHeads}) != NumHeads ({NumHeads}): GQA broadcast is not implemented.");
         if (cache.NumHeads != NumKvHeads || cache.HeadDim != HeadDim)
             throw new ArgumentException($"cache is [{cache.NumHeads} heads, {cache.HeadDim} headDim], expected [{NumKvHeads}, {HeadDim}].", nameof(cache));
 
@@ -146,7 +147,7 @@ public sealed class MlxDenseLayer
         float[] vAll = cache.Values();
 
         float scale = 1f / MathF.Sqrt(HeadDim);
-        float[] attnOut = MlxOps.Attention(q, kAll, vAll, NumHeads, querySeqLen: 1, kvSeqLen: cache.Length, HeadDim, scale, causal: false);
+        float[] attnOut = MlxOps.Attention(q, kAll, vAll, NumHeads, NumKvHeads, querySeqLen: 1, kvSeqLen: cache.Length, HeadDim, scale, causal: false);
         float[] merged = MlxOps.MergeHeads(attnOut, NumHeads, 1, HeadDim);
 
         float[] projected = MlxOps.MatMul(merged, 1, NumHeads * HeadDim, Wo, HiddenDim);

@@ -36,10 +36,28 @@ public sealed class MlxDenseLayerTests
     }
 
     [Fact]
-    public void Forward_MismatchedKvHeads_ThrowsNotSupported()
+    public void Forward_Gqa_FewerKvHeadsThanQueryHeads_WithNoNativeLibraryPresent_ReachesFirstNativeCall_FailsPredictably()
     {
+        // GQA is supported (mlx_fast_scaled_dot_product_attention broadcasts internally) --
+        // confirms a mismatched KV head count is accepted and reaches the real native call,
+        // not rejected by shape validation.
         var layer = MakeLayer(hiddenDim: 4, numHeads: 2, headDim: 4, numKvHeads: 1);
-        Assert.Throws<NotSupportedException>(() => layer.Forward(new float[3 * 4], seqLen: 3, positions: [0, 1, 2]));
+        Assert.Throws<DllNotFoundException>(() => layer.Forward(new float[3 * 4], seqLen: 3, positions: [0, 1, 2]));
+    }
+
+    [Fact]
+    public void Forward_ContinuingAnAlreadyPopulatedCache_WithNoNativeLibraryPresent_ReachesFirstNativeCall_FailsPredictably()
+    {
+        // Multi-token cache continuation: a cache already holding real positions (advanced via
+        // Append, which is pure host logic -- no native call, see MlxKvCacheTests) must now be
+        // ACCEPTED by Forward (it used to throw NotSupportedException here) and reach the real
+        // native call for the offset causal mask, not be rejected by validation.
+        var layer = MakeLayer(hiddenDim: 4, numHeads: 2, headDim: 2);
+        var cache = new MlxKvCache(numHeads: 2, maxSeqLen: 8, headDim: 2);
+        cache.Append(newKHeadFirst: new float[2 * 2 * 2], newVHeadFirst: new float[2 * 2 * 2], seqLen: 2);
+        Assert.Equal(2, cache.Length); // cache already holds 2 positions before this call
+
+        Assert.Throws<DllNotFoundException>(() => layer.Forward(new float[3 * 4], seqLen: 3, positions: [2, 3, 4], cache));
     }
 
     [Fact]
@@ -66,11 +84,11 @@ public sealed class MlxDenseLayerTests
     }
 
     [Fact]
-    public void ForwardDecode_MismatchedKvHeads_ThrowsNotSupported()
+    public void ForwardDecode_Gqa_FewerKvHeadsThanQueryHeads_WithNoNativeLibraryPresent_ReachesFirstNativeCall_FailsPredictably()
     {
         var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4, numKvHeads: 1);
         var cache = new MlxKvCache(numHeads: 1, maxSeqLen: 4, headDim: 4);
-        Assert.Throws<NotSupportedException>(() => layer.ForwardDecode(new float[8], position: 0, cache));
+        Assert.Throws<DllNotFoundException>(() => layer.ForwardDecode(new float[8], position: 0, cache));
     }
 
     [Fact]

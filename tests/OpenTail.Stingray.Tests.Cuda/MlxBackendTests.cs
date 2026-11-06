@@ -102,7 +102,7 @@ public sealed class MlxOpsTests
     {
         float[] qkv = new float[2 * 3 * 4]; // numHeads=2, seqLen=3, headDim=4
         Assert.Throws<ArgumentException>(() =>
-            MlxOps.Attention(new float[5], qkv, qkv, numHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 1f, causal: true));
+            MlxOps.Attention(new float[5], qkv, qkv, numQueryHeads: 2, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 1f, causal: true));
     }
 
     [Theory]
@@ -112,7 +112,47 @@ public sealed class MlxOpsTests
     {
         float[] qkv = new float[2 * 3 * 4];
         Assert.Throws<DllNotFoundException>(() =>
-            MlxOps.Attention(qkv, qkv, qkv, numHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 0.5f, causal));
+            MlxOps.Attention(qkv, qkv, qkv, numQueryHeads: 2, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 0.5f, causal));
+    }
+
+    [Fact]
+    public void Attention_Gqa_FewerKvHeadsThanQueryHeads_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        // 4 query heads, 2 KV heads (2:1 GQA grouping) -- confirms the shape validation accepts
+        // numKvHeads < numQueryHeads and reaches the real native call rather than rejecting it.
+        float[] query = new float[4 * 3 * 2];
+        float[] kv = new float[2 * 3 * 2];
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.Attention(query, kv, kv, numQueryHeads: 4, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 2, scale: 0.5f, causal: true));
+    }
+
+    [Fact]
+    public void Attention_NegativeQueryOffset_Throws()
+    {
+        float[] qkv = new float[2 * 3 * 4];
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MlxOps.Attention(qkv, qkv, qkv, numQueryHeads: 2, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 1f, causal: true, queryOffset: -1));
+    }
+
+    [Fact]
+    public void Attention_QueryOffsetWithoutCausal_Throws()
+    {
+        float[] qkv = new float[2 * 3 * 4];
+        Assert.Throws<ArgumentException>(() =>
+            MlxOps.Attention(qkv, qkv, qkv, numQueryHeads: 2, numKvHeads: 2, querySeqLen: 3, kvSeqLen: 3, headDim: 4, scale: 1f, causal: false, queryOffset: 2));
+    }
+
+    [Fact]
+    public void Attention_ContinuationWithQueryOffset_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        // Multi-token cache continuation: 2 new query positions attending over a 5-position KV
+        // range (3 already cached + the 2 new ones) starting at offset 3 -- confirms the offset
+        // mask construction path (arange/reshape/subtract/greater) is reached, not just the
+        // plain "causal" string path.
+        float[] query = new float[2 * 2 * 4]; // numHeads=2, querySeqLen=2, headDim=4
+        float[] kv = new float[2 * 5 * 4];    // numHeads=2, kvSeqLen=5, headDim=4
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.Attention(query, kv, kv, numQueryHeads: 2, numKvHeads: 2, querySeqLen: 2, kvSeqLen: 5, headDim: 4, scale: 0.5f, causal: true, queryOffset: 3));
     }
 
     [Fact]

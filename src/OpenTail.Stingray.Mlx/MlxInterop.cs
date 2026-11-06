@@ -64,6 +64,10 @@ internal static partial class MlxInterop
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MlxArray ArrayNew();
 
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_new_int")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MlxArray ArrayNewInt(int value);
+
     [LibraryImport(LibraryName, EntryPoint = "mlx_array_free")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ArrayFree(MlxArray array);
@@ -156,6 +160,22 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_fast_rope_dynamic")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int FastRopeDynamic(out MlxArray result, MlxArray input, int dims, [MarshalAs(UnmanagedType.I1)] bool traditional, MlxOptionalFloat baseValue, float scale, MlxArray offsets, MlxArray freqs, MlxStream stream);
+
+    // ── Offset causal mask (continuing a multi-token prefill into an already-populated KV cache) --
+    // ported from TensorSharp's SlidingWindowMask (MlxFusedOps.cs ~2076), minus the window term: just
+    // the "notFuture" (distance >= 0) half of that function's mask construction.
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_arange")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Arange(out MlxArray result, double start, double stop, double step, int dtype, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_subtract")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Subtract(out MlxArray result, MlxArray lhs, MlxArray rhs, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_greater")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Greater(out MlxArray result, MlxArray lhs, MlxArray rhs, MlxStream stream);
 
     // ── Reshape/transpose, for multi-head split/concat (TensorSharp uses a custom Metal kernel,
     // FlatToHeadFirst, here instead -- composed from these two basic ops; see MlxOps.SplitHeads/

@@ -232,6 +232,44 @@ tracked separately below.
 
 96 tests passing in `Tests.Cuda` as of this entry.
 
+### GQA broadcast (2026-11-06)
+
+Removed the artificial `NumKvHeads != NumHeads` refusal after checking TensorSharp's real call site
+(`MlxFusedOps.cs`): it sizes its KV cache at `numKVHeads` and passes `q` at the full `numHeads`
+directly into `mlx_fast_scaled_dot_product_attention`, with no repeat/broadcast step anywhere in that
+code path -- the fused primitive broadcasts GQA internally. `MlxOps.Attention` now takes separate
+`numQueryHeads`/`numKvHeads` parameters instead of one shared `numHeads`. No new op, no new
+complexity -- the restriction was unnecessary, not a missing feature.
+
+97 tests passing in `Tests.Cuda` as of this entry (replaced the two "mismatched KV heads throws" tests
+with "mismatched KV heads is accepted and reaches the real native call" ones, added a dedicated GQA
+shape test to `MlxOpsTests`).
+
+### Multi-token cache continuation (2026-11-06)
+
+`MlxOps.Attention` gained a real `queryOffset` parameter: when continuing a prefill into an
+already-populated `MlxKvCache`, it builds an offset causal mask device-side (`mlx_arange` +
+`mlx_reshape` + `mlx_subtract` + `mlx_greater`, all basic ops -- never downloaded to host and
+re-uploaded, since mlx-c's mask is boolean and this port has no host-side bool path) instead of
+using the built-in `"causal"` string, which assumes query/key start aligned. Ported from
+TensorSharp's `SlidingWindowMask` (`MlxFusedOps.cs` ~2076), minus its window term -- same language
+throughout, no kernel involved, the cleanest port so far.
+
+`MlxDenseLayer.Forward` no longer refuses a non-empty cache: it derives `queryOffset` from
+`cache.Length`, attends over the cache's full history (old + new), and appends the new K/V.
+`MlxDenseModel.Prefill` was fixed to start RoPE positions at the caches' shared length instead of
+always 0, and validates every layer's cache is at the same length. `MlxForwardPass.Prefill` was
+corrected to match `IForwardPass`'s actual contract -- `tokens` at `startPos > 0` is the NEW suffix,
+not a repeat of the cached prefix, which my first draft had backwards.
+
+**What's still true:** `ForwardDecode` itself is still single-new-token only by design (a caller
+continuing with more than one new token uses `Forward` with the cache instead, now that it supports
+it).
+
+102 tests passing in `Tests.Cuda` as of this entry -- including a real end-to-end structural check
+(`MlxDenseLayerTests`): a cache advanced via `Append` (pure host logic, no native call) to a non-zero
+length is now *accepted* by `Forward` and reaches the real native call, where it used to be refused.
+
 ## Status: close criterion met for the scope as defined
 
 Per the owner's stop condition ("a faithful port that passes all tests in CI"): there is now a
@@ -244,9 +282,8 @@ CI green on every commit along the way (`eb38583d` through this one).
 
 **What remains for true TensorSharp parity** (explicitly out of scope for this round, per the plan's
 own scope section, not overlooked):
-- GQA broadcast (`NumKvHeads != NumHeads`) -- checked and refused, not implemented.
-- Multi-token continuation into an already-populated KV cache (`ForwardDecode` handles only one new
-  token at a time) -- refused, not silently mismasked.
+- ~~GQA broadcast~~ -- done 2026-11-06 (see below); `mlx_fast_scaled_dot_product_attention` broadcasts internally, no new code needed.
+- ~~Multi-token continuation into an already-populated KV cache~~ -- done 2026-11-06 (see below), via `Forward`; `ForwardDecode` itself still handles only one new token at a time, by design.
 - MoE, hybrid/recurrent architectures, vision, diffusion, quantized MLX ops (not F32) -- entirely
   untouched, per the plan's original scope section.
 - No engine/planner integration (`ForwardPassKind`, CLI `--backend mlx`) -- the loader and model exist

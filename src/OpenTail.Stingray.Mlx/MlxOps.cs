@@ -223,36 +223,68 @@ public static class MlxOps
 
     /// <summary>
     /// Scaled dot-product attention: <paramref name="query"/> is row-major
-    /// <c>[numHeads, querySeqLen, headDim]</c>; <paramref name="key"/>/<paramref name="value"/> are
-    /// row-major <c>[numHeads, kvSeqLen, headDim]</c> -- equal to <paramref name="querySeqLen"/> for a
-    /// prefill, or the KV cache's full length for an incremental decode step (<see cref="MlxKvCache"/>),
-    /// where <paramref name="querySeqLen"/> is 1. <paramref name="causal"/> selects MLX's built-in
-    /// <c>"causal"</c> mask string (TensorSharp passes <c>string.Empty</c> for a single-token decode
-    /// step and <c>"causal"</c> for a multi-token prefill -- no mask array, no attention sinks, no
-    /// forced-fused flag; those are TensorSharp's gpt-oss/chunked-prefill paths, not ported here).
+    /// <c>[numQueryHeads, querySeqLen, headDim]</c>; <paramref name="key"/>/<paramref name="value"/>
+    /// are row-major <c>[numKvHeads, kvSeqLen, headDim]</c> -- <paramref name="kvSeqLen"/> equal to
+    /// <paramref name="querySeqLen"/> for a prefill, or the KV cache's full length for an incremental
+    /// decode step (<see cref="MlxKvCache"/>), where <paramref name="querySeqLen"/> is 1.
+    /// <paramref name="numKvHeads"/> may be less than <paramref name="numQueryHeads"/> (GQA):
+    /// <c>mlx_fast_scaled_dot_product_attention</c> broadcasts internally when given fewer KV heads
+    /// than query heads -- confirmed from TensorSharp's own real call site
+    /// (<c>MlxFusedOps.cs</c>, its KV cache is explicitly sized <c>numKVHeads</c> while <c>q</c> is
+    /// sized the full <c>numHeads</c>, with no repeat/broadcast step anywhere in that code path), not
+    /// a guess. <paramref name="causal"/> selects MLX's built-in <c>"causal"</c> mask string
+    /// (TensorSharp passes <c>string.Empty</c> for a single-token decode step and <c>"causal"</c> for
+    /// a multi-token prefill -- no mask array, no attention sinks, no forced-fused flag; those are
+    /// TensorSharp's gpt-oss/chunked-prefill paths, not ported here). <paramref name="queryOffset"/>
+    /// &gt; 0 (continuing a prefill into an already-populated <see cref="MlxKvCache"/>, so the new
+    /// queries' absolute positions start partway through the key range) builds a real offset causal
+    /// mask instead of using the built-in string -- ported from TensorSharp's <c>SlidingWindowMask</c>
+    /// (<c>MlxFusedOps.cs</c> ~2076: <c>arange</c>+<c>reshape</c> the query and key absolute
+    /// positions, <c>subtract</c> to get their pairwise distance, <c>greater than -1</c> for
+    /// "not in the future" -- this port omits that function's window term, since it is building a
+    /// plain offset causal mask, not a sliding-window one). The mask is built and consumed entirely
+    /// device-side within this call -- never downloaded to host and re-uploaded, since mlx-c's mask
+    /// array is boolean and this port has no host-side bool-array path.
     /// </summary>
     public static float[] Attention(ReadOnlySpan<float> query, ReadOnlySpan<float> key, ReadOnlySpan<float> value,
-        int numHeads, int querySeqLen, int kvSeqLen, int headDim, float scale, bool causal)
+        int numQueryHeads, int numKvHeads, int querySeqLen, int kvSeqLen, int headDim, float scale, bool causal, int queryOffset = 0)
     {
-        int queryExpected = numHeads * querySeqLen * headDim;
-        int kvExpected = numHeads * kvSeqLen * headDim;
-        if (query.Length != queryExpected) throw new ArgumentException($"query has {query.Length} elements, expected numHeads*querySeqLen*headDim = {queryExpected}.", nameof(query));
-        if (key.Length != kvExpected) throw new ArgumentException($"key has {key.Length} elements, expected numHeads*kvSeqLen*headDim = {kvExpected}.", nameof(key));
-        if (value.Length != kvExpected) throw new ArgumentException($"value has {value.Length} elements, expected numHeads*kvSeqLen*headDim = {kvExpected}.", nameof(value));
+        int queryExpected = numQueryHeads * querySeqLen * headDim;
+        int kvExpected = numKvHeads * kvSeqLen * headDim;
+        if (query.Length != queryExpected) throw new ArgumentException($"query has {query.Length} elements, expected numQueryHeads*querySeqLen*headDim = {queryExpected}.", nameof(query));
+        if (key.Length != kvExpected) throw new ArgumentException($"key has {key.Length} elements, expected numKvHeads*kvSeqLen*headDim = {kvExpected}.", nameof(key));
+        if (value.Length != kvExpected) throw new ArgumentException($"value has {value.Length} elements, expected numKvHeads*kvSeqLen*headDim = {kvExpected}.", nameof(value));
+        if (queryOffset < 0) throw new ArgumentOutOfRangeException(nameof(queryOffset), queryOffset, "queryOffset must be >= 0.");
+        if (queryOffset > 0 && !causal) throw new ArgumentException("queryOffset > 0 only makes sense for causal attention.", nameof(queryOffset));
 
         var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
         MlxInterop.MlxStream stream = default;
         MlxInterop.MlxArray q = default, k = default, v = default, result = default;
+        MlxInterop.MlxArray rows = default, rowsColumn = default, cols = default, colsRow = default, distance = default, offsetMask = default;
         nint maskModePtr = nint.Zero;
         try
         {
             Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
-            q = UploadFloat32(query, [numHeads, querySeqLen, headDim]);
-            k = UploadFloat32(key, [numHeads, kvSeqLen, headDim]);
-            v = UploadFloat32(value, [numHeads, kvSeqLen, headDim]);
-            maskModePtr = Marshal.StringToHGlobalAnsi(causal ? "causal" : string.Empty);
+            q = UploadFloat32(query, [numQueryHeads, querySeqLen, headDim]);
+            k = UploadFloat32(key, [numKvHeads, kvSeqLen, headDim]);
+            v = UploadFloat32(value, [numKvHeads, kvSeqLen, headDim]);
 
-            Check(MlxInterop.FastScaledDotProductAttention(out result, q, k, v, scale, maskModePtr, mask: default, sinks: default, forceFused: false, stream),
+            MlxInterop.MlxArray maskArray = default;
+            if (queryOffset > 0)
+            {
+                Check(MlxInterop.Arange(out rows, queryOffset, queryOffset + querySeqLen, 1, MlxInterop.MlxInt32, stream), "mlx_arange (rows)");
+                Check(MlxInterop.Reshape(out rowsColumn, rows, [querySeqLen, 1], 2, stream), "mlx_reshape (rowsColumn)");
+                Check(MlxInterop.Arange(out cols, 0, kvSeqLen, 1, MlxInterop.MlxInt32, stream), "mlx_arange (cols)");
+                Check(MlxInterop.Reshape(out colsRow, cols, [1, kvSeqLen], 2, stream), "mlx_reshape (colsRow)");
+                Check(MlxInterop.Subtract(out distance, rowsColumn, colsRow, stream), "mlx_subtract");
+                var minusOne = MlxInterop.ArrayNewInt(-1);
+                try { Check(MlxInterop.Greater(out offsetMask, distance, minusOne, stream), "mlx_greater"); }
+                finally { MlxInterop.ArrayFree(minusOne); }
+                maskArray = offsetMask;
+            }
+            maskModePtr = Marshal.StringToHGlobalAnsi(causal && queryOffset == 0 ? "causal" : string.Empty);
+
+            Check(MlxInterop.FastScaledDotProductAttention(out result, q, k, v, scale, maskModePtr, mask: maskArray, sinks: default, forceFused: false, stream),
                 "mlx_fast_scaled_dot_product_attention");
 
             var output = new float[queryExpected];
@@ -262,6 +294,12 @@ public static class MlxOps
         finally
         {
             if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (offsetMask.IsValid) MlxInterop.ArrayFree(offsetMask);
+            if (distance.IsValid) MlxInterop.ArrayFree(distance);
+            if (colsRow.IsValid) MlxInterop.ArrayFree(colsRow);
+            if (cols.IsValid) MlxInterop.ArrayFree(cols);
+            if (rowsColumn.IsValid) MlxInterop.ArrayFree(rowsColumn);
+            if (rows.IsValid) MlxInterop.ArrayFree(rows);
             if (v.IsValid) MlxInterop.ArrayFree(v);
             if (k.IsValid) MlxInterop.ArrayFree(k);
             if (q.IsValid) MlxInterop.ArrayFree(q);
@@ -270,6 +308,7 @@ public static class MlxOps
             MlxInterop.DeviceFree(device);
         }
     }
+
 
     /// <summary>
     /// RoPE (base-frequency form, no YaRN/scaled-frequency variant) over the last

@@ -52,6 +52,20 @@ public sealed class MlxDenseModelTests
     }
 
     [Fact]
+    public void Prefill_CachesAtDifferentLengths_Throws()
+    {
+        var model = MakeModel(numHeads: 2, headDim: 2, numLayers: 2);
+        var caches = new[]
+        {
+            new MlxKvCache(numHeads: 2, maxSeqLen: 8, headDim: 2),
+            new MlxKvCache(numHeads: 2, maxSeqLen: 8, headDim: 2),
+        };
+        caches[0].Append(new float[2 * 1 * 2], new float[2 * 1 * 2], seqLen: 1); // length 1
+        // caches[1] stays at length 0 -- mismatched.
+        Assert.Throws<ArgumentException>(() => model.Prefill([0, 1], caches));
+    }
+
+    [Fact]
     public void Decode_WrongCacheCount_Throws()
     {
         var model = MakeModel(numLayers: 2);

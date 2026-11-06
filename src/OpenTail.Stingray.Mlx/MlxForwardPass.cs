@@ -46,28 +46,29 @@ public sealed class MlxForwardPass : IForwardPass
     }
 
     /// <summary>
-    /// This port's <see cref="MlxDenseLayer.Forward"/> refuses a non-empty cache (see its own doc
-    /// comment), so a prompt can only be prefilled once per cache lifetime -- <paramref name="startPos"/>
-    /// must be 0. The engine's own convention for "startPos equals current cache length is also fine"
-    /// (reusing a cached prefix) is honored too, since that is a true no-extra-work case here: there
-    /// is nothing to recompute, so it is accepted rather than refused as "not implemented."
+    /// Per <see cref="IForwardPass.Prefill"/>'s own contract, <paramref name="tokens"/> at
+    /// <paramref name="startPos"/> &gt; 0 is the NEW suffix beyond what the cache already holds, not
+    /// a repeat of it -- so <paramref name="startPos"/> must equal the cache's current length exactly
+    /// (0 for a fresh prefill, or the length left by an earlier <see cref="Prefill"/>/<see cref="Forward"/>
+    /// call for a continuation), and this always does real work for a non-empty token list. The actual
+    /// continuation support -- an offset causal mask instead of the aligned built-in one -- lives in
+    /// <see cref="MlxDenseLayer.Forward"/>'s <c>cache</c> parameter and
+    /// <see cref="MlxOps.Attention"/>'s <c>queryOffset</c>; this method is just the thin
+    /// <c>IForwardPass</c>-shaped entry point to it.
     /// </summary>
     public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
     {
-        if (startPos != 0 && startPos != _length)
+        if (startPos != _length)
             throw new NotSupportedException(
-                $"Prefill(startPos={startPos}): this port only supports startPos==0 (fresh prefill) " +
-                $"or startPos==current cache length ({_length}, a no-op reuse) -- continuing a multi-" +
-                "token prefill into an already-populated cache at any other offset is not implemented.");
+                $"Prefill(startPos={startPos}) does not match the cache's current length ({_length}) -- " +
+                "this port only supports prefilling a new suffix starting exactly where the cache left off.");
 
         int[] tokenArray = [.. tokens];
-        if (startPos == 0)
-        {
-            _lastLogits = _model.Prefill(tokenArray, _caches);
-            _length = tokenArray.Length;
-        }
-        // startPos == _length and tokenArray is the already-cached suffix: nothing to recompute.
-        // _lastLogits already holds the right value from whichever call last advanced the cache.
+        if (tokenArray.Length == 0)
+            return _lastLogits.AsSpan(_lastLogits.Length - VocabSize);
+
+        _lastLogits = _model.Prefill(tokenArray, _caches);
+        _length += tokenArray.Length;
         return _lastLogits.AsSpan(_lastLogits.Length - VocabSize);
     }
 
