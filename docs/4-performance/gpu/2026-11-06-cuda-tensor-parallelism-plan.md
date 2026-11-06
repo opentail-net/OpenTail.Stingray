@@ -83,6 +83,35 @@ A single, explicit opt-in, off by default, loudly labeled as unverified wherever
   CLAUDE.md rule 14 already uses for "ported, not verified" model families, applied here to a whole
   feature rather than one checkpoint.
 
+## Progress (2026-11-06)
+
+Started the dense-`llama`-first slice. Built and genuinely verified (unit tested on CPU, no GPU
+needed for this part):
+- **`CudaTensorParallelSharding`** (`src/OpenTail.Stingray.Engine/CudaTensorParallelSharding.cs`): pure
+  column-parallel (contiguous row-range) and row-parallel (per-row, block-aligned column range)
+  weight-sharding math, plus the host-staged `AllReduceSum`. 8 real unit tests
+  (`CudaTensorParallelShardingTests`), including a Q8_0 block-alignment check that would catch a
+  block split across ranks.
+- **`CudaBackend.Create(int deviceIndex, ...)`** (`src/OpenTail.Stingray.Cuda/CudaBackend.cs`) and the
+  matching `cudaSetDevice`/`cudaGetDeviceCount`/peer-access bindings in `CuBlasInterop.cs`. Compiles
+  clean; cannot be run (no CUDA device here).
+- **`CudaTensorParallelGroup`** (`src/OpenTail.Stingray.Engine/CudaTensorParallelGroup.cs`): creates N
+  device-pinned `CudaBackend`s on dedicated threads (CUDA's current-device is thread-local) and wires
+  the tested `AllReduceSum` into `AllReduceSumAcrossRanks`. Compiles clean; cannot be run.
+- **`STINGRAY_TP_DEGREE` flag** (`CommonForwardPassFactory.CheckTensorParallelDegree`, registered in
+  `KnownEnvironmentVariables` and `docs/reference/env-var-inventory.md`): unset or `1` is the ordinary
+  single-GPU path, byte-for-byte unchanged (no new code runs). `>1` currently throws a clear
+  `NotSupportedException` naming exactly what exists and what doesn't, rather than silently running
+  single-GPU and ignoring the flag. 5 unit tests (`CudaTensorParallelFlagTests`).
+
+**Not yet done, and the larger remaining piece:** the actual dense-llama forward pass that uploads
+sharded weights onto a `CudaTensorParallelGroup`'s ranks and calls `AllReduceSumAcrossRanks` at the two
+reconvergence points (attention output, FFN down) inside a decode/prefill loop. `CudaForwardPass` is a
+~7,000-line single-`CudaBackend`-coupled class; retrofitting it, or writing a smaller dedicated
+dense-TP forward pass next to it, is real design work that was not attempted this round rather than
+rushed. A CLI `--tp` option and a typed `ContextParams`/`EngineSettings` field (today it's an env var
+read directly in `CommonForwardPassFactory`, to keep this round's surface small) are also still open.
+
 ## Order (first slice, before any other architecture)
 
 Port one architecture end-to-end first to validate the generic-dispatch design against real code,

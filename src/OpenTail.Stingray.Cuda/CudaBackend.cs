@@ -670,7 +670,7 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     }
 
     private CudaBackend(nint handle, SgemmPrecision precision, int smVersion, int smCount, nint stream,
-                        nint pinnedBuf, nuint pinnedBufSize)
+                        nint pinnedBuf, nuint pinnedBufSize, int deviceIndex)
     {
         _handle        = handle;
         _precision     = precision;
@@ -679,7 +679,16 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         _stream        = stream;
         _pinnedBuf     = pinnedBuf;
         _pinnedBufSize = pinnedBufSize;
+        _deviceIndex   = deviceIndex;
     }
+
+    /// <summary>
+    /// CUDA device ordinal this backend was created on (0 for every normal, single-GPU caller).
+    /// Only meaningful to callers doing their own multi-device coordination
+    /// (<c>CudaTensorParallelGroup</c>) -- never read by this class itself.
+    /// </summary>
+    public int DeviceIndex => _deviceIndex;
+    private readonly int _deviceIndex;
 
     public static bool IsAvailable()
     {
@@ -693,29 +702,49 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     }
 
     /// <summary>Create a CudaBackend, auto-detecting the best supported precision.</summary>
-    public static CudaBackend Create() => Create(precision: null);
+    public static CudaBackend Create() => Create(precision: null, deviceIndex: 0);
 
     /// <summary>
     /// Create a CudaBackend with an explicit precision override.
     /// Useful for benchmarking or testing a specific SGEMM path regardless of device capability.
     /// </summary>
-    public static CudaBackend Create(SgemmPrecision forcedPrecision) => Create(precision: forcedPrecision);
+    public static CudaBackend Create(SgemmPrecision forcedPrecision) => Create(precision: forcedPrecision, deviceIndex: 0);
 
-    private static CudaBackend Create(SgemmPrecision? precision)
+    /// <summary>
+    /// Create a CudaBackend pinned to a specific device ordinal, for multi-GPU tensor parallelism
+    /// (<see cref="CudaTensorParallelGroup"/> in the Engine project). Calls <c>cudaSetDevice</c>
+    /// before any other CUDA call, so every allocation and kernel this instance issues lands on
+    /// that device -- CUDA's "current device" is thread-local, so the caller must create and use
+    /// each rank's backend from a dedicated thread (or re-call <c>cudaSetDevice</c> itself before
+    /// interleaving calls to backends on different devices from the same thread). <b>Never run on
+    /// real multi-GPU hardware</b> -- see
+    /// docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md.
+    /// </summary>
+    public static CudaBackend Create(int deviceIndex, SgemmPrecision? forcedPrecision = null) =>
+        Create(precision: forcedPrecision, deviceIndex: deviceIndex);
+
+    private static CudaBackend Create(SgemmPrecision? precision, int deviceIndex)
     {
+        if (deviceIndex != 0)
+        {
+            int setStatus = CuBlasInterop.SetDevice(deviceIndex);
+            if (setStatus != 0)
+                throw new InvalidOperationException($"cudaSetDevice({deviceIndex}) failed: {setStatus}");
+        }
+
         int status = CuBlasInterop.Create(out nint handle);
         if (status != 0)
             throw new InvalidOperationException($"cublasCreate failed: {status}");
 
         int smVersion = 0;
-        if (CuBlasInterop.DeviceGetAttribute(out int major, CuBlasInterop.CudaDevAttrComputeCapabilityMajor, 0) == 0 &&
-            CuBlasInterop.DeviceGetAttribute(out int minor, CuBlasInterop.CudaDevAttrComputeCapabilityMinor, 0) == 0)
+        if (CuBlasInterop.DeviceGetAttribute(out int major, CuBlasInterop.CudaDevAttrComputeCapabilityMajor, deviceIndex) == 0 &&
+            CuBlasInterop.DeviceGetAttribute(out int minor, CuBlasInterop.CudaDevAttrComputeCapabilityMinor, deviceIndex) == 0)
             smVersion = major * 10 + minor;
 
         // SM count drives decode-MMQ tile-size routing (#205): a row tile that yields fewer
         // than ~2 full waves of blocks starves the grid, so those shapes take the BM=32 tile.
         int smCount = 0;
-        CuBlasInterop.DeviceGetAttribute(out smCount, CuBlasInterop.CudaDevAttrMultiProcessorCount, 0);
+        CuBlasInterop.DeviceGetAttribute(out smCount, CuBlasInterop.CudaDevAttrMultiProcessorCount, deviceIndex);
 
         // Dedicated CUDA stream — all memcpy and GEMM are enqueued on this stream,
         // so cudaStreamSynchronize(stream) waits only for our work (not the whole device).
@@ -740,7 +769,7 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         CuBlasInterop.MallocHost(out nint pinnedBuf, InitialPinnedSize);
 
         var resolvedPrecision = precision ?? DetectBestPrecision(smVersion);
-        var backend = new CudaBackend(handle, resolvedPrecision, smVersion, smCount, stream, pinnedBuf, InitialPinnedSize);
+        var backend = new CudaBackend(handle, resolvedPrecision, smVersion, smCount, stream, pinnedBuf, InitialPinnedSize, deviceIndex);
 
         // The 2.5 GiB im2col tile buffer is allocated lazily on the first Conv2d call.
         // Pre-allocating it here used to push LLM contexts that estimated max-context based

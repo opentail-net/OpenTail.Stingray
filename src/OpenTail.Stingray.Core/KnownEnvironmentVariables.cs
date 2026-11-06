@@ -277,6 +277,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_SPLIT_DECODE_GROUPED",
         "STINGRAY_T5_DUMP_PREFIX",
         "STINGRAY_TOOL_GRAMMAR",
+        "STINGRAY_TP_DEGREE",
         "STINGRAY_TQ",
         "STINGRAY_TQ_MODE",
         "STINGRAY_TRACE_DSPARK",

@@ -18,6 +18,7 @@ public static class EnvironmentVariableClasses
         ["STINGRAY_AUDIO_DIAGNOSTIC_DUMP"] = "expert",
         ["STINGRAY_CFG_TRACE"] = "diagnostic",
         ["STINGRAY_COSYVOICE3_TANH_GELU"] = "experimental",
+        ["STINGRAY_TP_DEGREE"] = "experimental",
         ["STINGRAY_DEBUG_COSYVOICE3"] = "diagnostic",
         ["STINGRAY_DUMP_CONVPOST_PATH"] = "diagnostic",
         ["STINGRAY_DUMP_CONVPRE_PATH"] = "diagnostic",

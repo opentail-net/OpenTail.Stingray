@@ -1,4 +1,8 @@
-# `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-10-31)
+# `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-06)
+
+**Reconciled again 2026-11-06 — `KnownEnvironmentVariables.All` now contains **288** names** (added
+`STINGRAY_TP_DEGREE`: the CUDA tensor-parallelism flag,
+docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md)
 
 > **Status, 2026-10-31: name-complete again.** The table below has a row for all **287** names in
 > `KnownEnvironmentVariables.All`. It had fallen behind (192 rows at the 2026-10-31 external review, 95 names missing); the gap was
@@ -338,6 +342,7 @@ dynamically composed names.
 |---|---|---|
 | `STINGRAY_BATCH_DECODE_MMQ` | experimental | Tri-state for the MMQ path in CUDA batched decode. Unset: on for multi-user continuous batching, off for speculative verify (which must stay bit-exact). `0`: off everywhere. `1`: on everywhere including spec-verify (argmax-stable; perf A/B only). |
 | `STINGRAY_PREFILL_MMQ` | experimental | `=0` reverts CUDA prefill from the MMQ path to the cuBLAS GEMM path (MMQ drops the fp16 weight temporary). Default on, under the prefill-GEMM gate. |
+| `STINGRAY_TP_DEGREE` | experimental | Tensor-parallel degree for the CUDA dense path (`CommonForwardPassFactory`). Unset or `1`: ordinary single-GPU path, unchanged. `>1`: currently refused with a clear `NotSupportedException` -- `CudaTensorParallelGroup` and the weight-sharding/AllReduce math exist and are unit tested, but the dense-llama forward pass that wires them into `CudaForwardPass`'s decode loop is not built yet. Never run on real multi-GPU hardware (none on this development machine); see docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md. |
 | `STINGRAY_TRUNK_MATVEC_FAST` | experimental | `=1` enables the fast Q8_0 trunk matvec in the CUDA hybrid-GDN plain-decode path. Default off. |
 
 ## OpenTail.Stingray.Engine

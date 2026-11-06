@@ -11,6 +11,36 @@ using OpenTail.Stingray.Vulkan;
 public static class CommonForwardPassFactory
 {
     /// <summary>
+    /// <c>STINGRAY_TP_DEGREE</c>: the tensor-parallel degree flag for the CUDA dense path
+    /// (docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md). Reading the env var here,
+    /// rather than threading a new field through <see cref="ArchitectureLoadContext"/>/<c>EngineSettings</c>,
+    /// keeps this first slice's surface small; a CLI <c>--tp</c> option and a typed settings field are a
+    /// later increment, not yet built.
+    /// </summary>
+    internal static void CheckTensorParallelDegree()
+    {
+        string? raw = Environment.GetEnvironmentVariable("STINGRAY_TP_DEGREE");
+        if (string.IsNullOrEmpty(raw)) return;
+        if (!int.TryParse(raw, out int degree) || degree < 1)
+            throw new NotSupportedException($"STINGRAY_TP_DEGREE='{raw}' is not a positive integer.");
+        if (degree == 1) return;
+
+        // CudaTensorParallelGroup and CudaTensorParallelSharding (the weight-sharding/AllReduce math,
+        // unit tested) exist; what does not exist yet is the dense-llama forward pass that actually
+        // uploads sharded weights onto the group's ranks and calls AllReduceSumAcrossRanks at the two
+        // reconvergence points (attention output, FFN down). Refusing clearly here, rather than
+        // silently running the ordinary single-GPU CudaForwardPass and ignoring the flag, matches this
+        // project's existing pattern for a requested-but-unimplemented path (e.g. Gemma 2's GPU
+        // soft-capping refusal) instead of claiming a capability that is not there yet.
+        throw new NotSupportedException(
+            $"STINGRAY_TP_DEGREE={degree}: tensor-parallel GPU grouping (CudaTensorParallelGroup) and " +
+            "weight-sharding math (CudaTensorParallelSharding) exist and are unit tested, but the dense-" +
+            "llama forward pass that wires sharded uploads and AllReduce into CudaForwardPass's decode " +
+            "loop is not built yet -- see docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md. " +
+            "Unset STINGRAY_TP_DEGREE (or set it to 1) to use the ordinary single-GPU path.");
+    }
+
+    /// <summary>
     /// Constructs a standard dense forward pass (CPU, SafeTensors, CUDA, Vulkan, or partial GPU offload).
     /// </summary>
     public static IForwardPass CreateDense(ArchitectureLoadContext ctx)
@@ -40,6 +70,8 @@ public static class CommonForwardPassFactory
 
             case ForwardPassKind.CudaDense:
             {
+                CheckTensorParallelDegree();
+
                 var cuda = ctx.CudaBackend ?? CudaBackend.Create();
                 if (ctx.CudaBackend is null) ctx.TrackDisposable(cuda);
 

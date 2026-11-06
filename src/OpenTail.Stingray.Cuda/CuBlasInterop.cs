@@ -101,6 +101,28 @@ internal static partial class CuBlasInterop
     [LibraryImport("cudart64_12", EntryPoint = "cudaDeviceSynchronize")]
     internal static partial int DeviceSync();
 
+    // ── Multi-GPU device management (tensor parallelism) ──────────────────
+    // CUDA's "current device" is thread-local: cudaSetDevice on a thread affects every later
+    // cudart/cuBLAS call on THAT thread until changed again. CudaTensorParallelGroup relies on
+    // this by running each rank's GPU-touching work on its own dedicated thread, set once.
+    // Never run on real multi-GPU hardware (no NVIDIA GPU on this development machine) --
+    // see docs/4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md.
+
+    [LibraryImport("cudart64_12", EntryPoint = "cudaGetDeviceCount")]
+    internal static partial int GetDeviceCount(out int count);
+
+    [LibraryImport("cudart64_12", EntryPoint = "cudaSetDevice")]
+    internal static partial int SetDevice(int device);
+
+    [LibraryImport("cudart64_12", EntryPoint = "cudaGetDevice")]
+    internal static partial int GetDevice(out int device);
+
+    [LibraryImport("cudart64_12", EntryPoint = "cudaDeviceCanAccessPeer")]
+    internal static partial int DeviceCanAccessPeer(out int canAccessPeer, int device, int peerDevice);
+
+    [LibraryImport("cudart64_12", EntryPoint = "cudaDeviceEnablePeerAccess")]
+    internal static partial int DeviceEnablePeerAccess(int peerDevice, uint flags);
+
     [LibraryImport("cudart64_12", EntryPoint = "cudaStreamCreate")]
     internal static partial int StreamCreate(out nint stream);
 
