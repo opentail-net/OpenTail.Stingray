@@ -13,21 +13,41 @@ namespace OpenTail.Stingray.Tests.Cuda;
 /// </summary>
 public sealed class MlxDenseLayerTests
 {
-    private static MlxDenseLayer MakeLayer(int hiddenDim = 4, int headDim = 4, int intermDim = 8) => new()
+    private static MlxDenseLayer MakeLayer(int hiddenDim = 4, int numHeads = 1, int headDim = 4, int intermDim = 8, int? numKvHeads = null)
     {
-        AttnNormWeight = new float[hiddenDim],
-        Wq = new float[hiddenDim * headDim],
-        Wk = new float[hiddenDim * headDim],
-        Wv = new float[hiddenDim * headDim],
-        Wo = new float[headDim * hiddenDim],
-        FfnNormWeight = new float[hiddenDim],
-        WGate = new float[hiddenDim * intermDim],
-        WUp = new float[hiddenDim * intermDim],
-        WDown = new float[intermDim * hiddenDim],
-        HiddenDim = hiddenDim,
-        HeadDim = headDim,
-        IntermDim = intermDim,
-    };
+        int kvHeads = numKvHeads ?? numHeads;
+        return new()
+        {
+            AttnNormWeight = new float[hiddenDim],
+            Wq = new float[hiddenDim * numHeads * headDim],
+            Wk = new float[hiddenDim * kvHeads * headDim],
+            Wv = new float[hiddenDim * kvHeads * headDim],
+            Wo = new float[numHeads * headDim * hiddenDim],
+            FfnNormWeight = new float[hiddenDim],
+            WGate = new float[hiddenDim * intermDim],
+            WUp = new float[hiddenDim * intermDim],
+            WDown = new float[intermDim * hiddenDim],
+            HiddenDim = hiddenDim,
+            NumHeads = numHeads,
+            NumKvHeads = kvHeads,
+            HeadDim = headDim,
+            IntermDim = intermDim,
+        };
+    }
+
+    [Fact]
+    public void Forward_MismatchedKvHeads_ThrowsNotSupported()
+    {
+        var layer = MakeLayer(hiddenDim: 4, numHeads: 2, headDim: 4, numKvHeads: 1);
+        Assert.Throws<NotSupportedException>(() => layer.Forward(new float[3 * 4], seqLen: 3, positions: [0, 1, 2]));
+    }
+
+    [Fact]
+    public void Forward_MultiHead_ValidShapes_WithNoNativeLibraryPresent_ReachesFirstNativeCall_FailsPredictably()
+    {
+        var layer = MakeLayer(hiddenDim: 8, numHeads: 2, headDim: 4, intermDim: 16);
+        Assert.Throws<DllNotFoundException>(() => layer.Forward(new float[3 * 8], seqLen: 3, positions: [0, 1, 2]));
+    }
 
     [Fact]
     public void Forward_HiddenLengthMismatch_Throws()

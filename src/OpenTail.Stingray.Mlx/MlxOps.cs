@@ -309,6 +309,72 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// Flat projection output [seqLen, numHeads*headDim] -> head-first [numHeads, seqLen, headDim],
+    /// the layout <see cref="Attention"/> needs. TensorSharp does this with a custom Metal kernel
+    /// (<c>MlxNative.FlatToHeadFirst</c>, compiled from an embedded shader source); this port
+    /// composes it from two basic ops instead (<c>mlx_reshape</c> then <c>mlx_transpose_axes</c>) --
+    /// faithful to the underlying reshape, not to TensorSharp's specific fused kernel.
+    /// </summary>
+    public static float[] SplitHeads(ReadOnlySpan<float> flat, int seqLen, int numHeads, int headDim)
+    {
+        int expected = seqLen * numHeads * headDim;
+        if (flat.Length != expected) throw new ArgumentException($"flat has {flat.Length} elements, expected seqLen*numHeads*headDim = {expected}.", nameof(flat));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray x = default, reshaped = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            x = UploadFloat32(flat, [seqLen, numHeads * headDim]);
+            Check(MlxInterop.Reshape(out reshaped, x, [seqLen, numHeads, headDim], 3, stream), "mlx_reshape");
+            Check(MlxInterop.TransposeAxes(out result, reshaped, [1, 0, 2], 3, stream), "mlx_transpose_axes");
+
+            var output = new float[expected];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (reshaped.IsValid) MlxInterop.ArrayFree(reshaped);
+            if (x.IsValid) MlxInterop.ArrayFree(x);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
+    /// <summary>The inverse of <see cref="SplitHeads"/>: head-first [numHeads, seqLen, headDim] -> flat [seqLen, numHeads*headDim].</summary>
+    public static float[] MergeHeads(ReadOnlySpan<float> headFirst, int numHeads, int seqLen, int headDim)
+    {
+        int expected = numHeads * seqLen * headDim;
+        if (headFirst.Length != expected) throw new ArgumentException($"headFirst has {headFirst.Length} elements, expected numHeads*seqLen*headDim = {expected}.", nameof(headFirst));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray x = default, transposed = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            x = UploadFloat32(headFirst, [numHeads, seqLen, headDim]);
+            Check(MlxInterop.TransposeAxes(out transposed, x, [1, 0, 2], 3, stream), "mlx_transpose_axes");
+            Check(MlxInterop.Reshape(out result, transposed, [seqLen, numHeads * headDim], 2, stream), "mlx_reshape");
+
+            var output = new float[expected];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (transposed.IsValid) MlxInterop.ArrayFree(transposed);
+            if (x.IsValid) MlxInterop.ArrayFree(x);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     private static unsafe MlxInterop.MlxArray UploadInt32(ReadOnlySpan<int> data, int[] shape)
     {
         fixed (int* ptr = data)

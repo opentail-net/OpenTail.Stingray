@@ -148,11 +148,23 @@ every op's output shape feeding correctly into the next op's input shape, all th
 66 tests passing in `Tests.Cuda` as of this entry (8 ops + the composed layer, each with shape
 validation and a graceful-failure check).
 
+## Multi-head attention (2026-11-06)
+
+`MlxDenseLayer` now does real multi-head attention: `SplitHeads`/`MergeHeads` (new ops, composed from
+`mlx_reshape` + `mlx_transpose_axes`, both plain C# P/Invoke -- not TensorSharp's fused `FlatToHeadFirst`
+Metal kernel; faithful to the reshape, not to that specific kernel) convert between the flat
+`[seqLen, numHeads*headDim]` projection output and the head-first `[numHeads, seqLen, headDim]` layout
+`Attention` needs. RoPE runs per head on a `[seqLen, headDim]` slice, confirmed against TensorSharp's
+own call site (`MlxBasicOps.cs`'s RoPE reshapes to isolate one head-sized feature dimension before
+calling `FastRopeDynamic` -- this was already the right design, not a guess). `NumHeads`/`NumKvHeads`
+added; GQA broadcast (KV heads != query heads) is not implemented, checked explicitly
+(`NotSupportedException`, not a silent wrong answer).
+
+72 tests passing in `Tests.Cuda` as of this entry (9 ops + the composed multi-head layer).
+
 ## Next steps (not started)
 
-1. Multi-head attention (split hidden into heads before Q/K/V projection, concat after attention) --
-   the layer forward's biggest remaining simplification.
-2. A KV cache and an incremental decode step (`Forward` recomputes the whole sequence every call today).
+1. A KV cache and an incremental decode step (`Forward` recomputes the whole sequence every call today).
 3. Weight loading from a real GGUF checkpoint (dequantizing quantized tensors to F32 first) and
    stacking `MlxDenseLayer`s into a full model with embedding + output head -- the `IComputeBackend`/
    `CudaForwardPass`-equivalent integration.

@@ -1,21 +1,21 @@
 namespace OpenTail.Stingray.Mlx;
 
 /// <summary>
-/// One dense (non-MoE, non-hybrid) transformer block's weights -- single-head attention only in this
-/// first wiring (see <see cref="MlxDenseLayer.Forward"/>). <c>CudaForwardPass</c>'s per-layer loop
-/// (QKV -> attention -> output projection -> residual -> FFN -> residual) is the structural reference;
-/// nothing here has been run (no Mac on this development machine), so this is reviewed for structural
-/// correctness only. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
+/// One dense (non-MoE, non-hybrid) transformer block's weights. <c>CudaForwardPass</c>'s per-layer
+/// loop (QKV -> attention -> output projection -> residual -> FFN -> residual) is the structural
+/// reference; nothing here has been run (no Mac on this development machine), so this is reviewed for
+/// structural correctness only. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
 /// </summary>
 public sealed class MlxDenseLayer
 {
     /// <summary>Row-major [hiddenDim] RMSNorm scale before attention.</summary>
     public required float[] AttnNormWeight { get; init; }
-    /// <summary>Row-major [hiddenDim, headDim] (single head: <see cref="HeadDim"/> == attention width).</summary>
+    /// <summary>Row-major [hiddenDim, numHeads*headDim].</summary>
     public required float[] Wq { get; init; }
+    /// <summary>Row-major [hiddenDim, numKvHeads*headDim].</summary>
     public required float[] Wk { get; init; }
     public required float[] Wv { get; init; }
-    /// <summary>Row-major [headDim, hiddenDim] attention output projection.</summary>
+    /// <summary>Row-major [numHeads*headDim, hiddenDim] attention output projection.</summary>
     public required float[] Wo { get; init; }
     /// <summary>Row-major [hiddenDim] RMSNorm scale before the FFN.</summary>
     public required float[] FfnNormWeight { get; init; }
@@ -26,25 +26,38 @@ public sealed class MlxDenseLayer
     public required float[] WDown { get; init; }
 
     public required int HiddenDim { get; init; }
+    public required int NumHeads { get; init; }
+    /// <summary>
+    /// Key/value head count. <b>No GQA/MQA broadcast is implemented yet</b>: must equal
+    /// <see cref="NumHeads"/> for now, checked in <see cref="Forward"/> -- a family whose KV head
+    /// count differs would need K/V repeated across query-head groups before
+    /// <see cref="MlxOps.Attention"/>, not built here.
+    /// </summary>
+    public required int NumKvHeads { get; init; }
     public required int HeadDim { get; init; }
     public required int IntermDim { get; init; }
     public float Eps { get; init; } = 1e-5f;
     public float RopeBase { get; init; } = 10000f;
 
     /// <summary>
-    /// One transformer block over a whole sequence: RMSNorm -> single-head QKV (<see cref="Wq"/>/
-    /// <see cref="Wk"/>/<see cref="Wv"/>) -> RoPE on Q and K -> causal self-attention -> output
-    /// projection -> residual add -> RMSNorm -> SwiGLU FFN (<c>down(silu(gate(x)) * up(x))</c>) ->
-    /// residual add. <paramref name="hidden"/> is row-major [seqLen, HiddenDim]; returns the same
-    /// shape. <paramref name="positions"/> has length seqLen (RoPE position ids).
+    /// One transformer block over a whole sequence: RMSNorm -> QKV -> split into heads -> RoPE on
+    /// each Q/K head -> causal multi-head self-attention -> merge heads -> output projection ->
+    /// residual add -> RMSNorm -> SwiGLU FFN (<c>down(silu(gate(x)) * up(x))</c>) -> residual add.
+    /// <paramref name="hidden"/> is row-major [seqLen, HiddenDim]; returns the same shape.
+    /// <paramref name="positions"/> has length seqLen (RoPE position ids).
     ///
-    /// <para><b>Simplified relative to a real dense-llama layer, named explicitly:</b> single
-    /// attention head only (<see cref="Wq"/>/<see cref="Wk"/>/<see cref="Wv"/> project straight to
-    /// <see cref="HeadDim"/>, no multi-head split/concat); no GQA (one KV "head" only); no bias terms
-    /// (<see cref="MlxOps.AddMm"/> exists for when a family needs one); F32 weights only (a real GGUF
-    /// checkpoint's quantized weights would need dequantizing to F32 first -- not done here); no KV
-    /// cache (every call recomputes attention over the whole sequence, there is no incremental decode
-    /// step yet).</para>
+    /// <para>Head split/merge (<see cref="MlxOps.SplitHeads"/>/<see cref="MlxOps.MergeHeads"/>) is
+    /// composed from <c>mlx_reshape</c> + <c>mlx_transpose_axes</c>, not TensorSharp's fused
+    /// <c>FlatToHeadFirst</c> Metal kernel -- faithful to the reshape, not to that specific kernel.
+    /// RoPE runs per head on a [seqLen, headDim] slice, matching TensorSharp's own call site
+    /// (<c>MlxBasicOps.cs</c>'s RoPE reshapes to isolate one head-sized feature dimension before
+    /// calling <c>FastRopeDynamic</c>).</para>
+    ///
+    /// <para><b>Still simplified, named explicitly:</b> no GQA broadcast (<see cref="NumKvHeads"/>
+    /// must equal <see cref="NumHeads"/>); no bias terms (<see cref="MlxOps.AddMm"/> exists for when a
+    /// family needs one); F32 weights only (a real GGUF checkpoint's quantized weights would need
+    /// dequantizing to F32 first -- not done here); no KV cache (every call recomputes attention over
+    /// the whole sequence, there is no incremental decode step yet).</para>
     /// </summary>
     public float[] Forward(ReadOnlySpan<float> hidden, int seqLen, ReadOnlySpan<int> positions)
     {
@@ -52,20 +65,24 @@ public sealed class MlxDenseLayer
             throw new ArgumentException($"hidden has {hidden.Length} elements, expected seqLen*HiddenDim = {seqLen * HiddenDim}.", nameof(hidden));
         if (positions.Length != seqLen)
             throw new ArgumentException($"positions has {positions.Length} elements, expected seqLen = {seqLen}.", nameof(positions));
+        if (NumKvHeads != NumHeads)
+            throw new NotSupportedException($"NumKvHeads ({NumKvHeads}) != NumHeads ({NumHeads}): GQA broadcast is not implemented.");
 
         float[] normed = MlxOps.RmsNorm(hidden, seqLen, HiddenDim, AttnNormWeight, Eps);
 
-        float[] q = MlxOps.MatMul(normed, seqLen, HiddenDim, Wq, HeadDim);
-        float[] k = MlxOps.MatMul(normed, seqLen, HiddenDim, Wk, HeadDim);
-        float[] v = MlxOps.MatMul(normed, seqLen, HiddenDim, Wv, HeadDim);
+        float[] qFlat = MlxOps.MatMul(normed, seqLen, HiddenDim, Wq, NumHeads * HeadDim);
+        float[] kFlat = MlxOps.MatMul(normed, seqLen, HiddenDim, Wk, NumKvHeads * HeadDim);
+        float[] vFlat = MlxOps.MatMul(normed, seqLen, HiddenDim, Wv, NumKvHeads * HeadDim);
 
-        q = MlxOps.Rope(q, seqLen, HeadDim, HeadDim, traditional: false, RopeBase, scale: 1f, positions);
-        k = MlxOps.Rope(k, seqLen, HeadDim, HeadDim, traditional: false, RopeBase, scale: 1f, positions);
+        float[] q = ApplyRopePerHead(MlxOps.SplitHeads(qFlat, seqLen, NumHeads, HeadDim), NumHeads, seqLen, positions);
+        float[] k = ApplyRopePerHead(MlxOps.SplitHeads(kFlat, seqLen, NumKvHeads, HeadDim), NumKvHeads, seqLen, positions);
+        float[] v = MlxOps.SplitHeads(vFlat, seqLen, NumKvHeads, HeadDim);
 
         float scale = 1f / MathF.Sqrt(HeadDim);
-        float[] attnOut = MlxOps.Attention(q, k, v, numHeads: 1, seqLen, HeadDim, scale, causal: true);
+        float[] attnOut = MlxOps.Attention(q, k, v, NumHeads, seqLen, HeadDim, scale, causal: true);
+        float[] merged = MlxOps.MergeHeads(attnOut, NumHeads, seqLen, HeadDim);
 
-        float[] projected = MlxOps.MatMul(attnOut, seqLen, HeadDim, Wo, HiddenDim);
+        float[] projected = MlxOps.MatMul(merged, seqLen, NumHeads * HeadDim, Wo, HiddenDim);
         float[] afterAttn = Add(hidden, projected);
 
         float[] normed2 = MlxOps.RmsNorm(afterAttn, seqLen, HiddenDim, FfnNormWeight, Eps);
@@ -75,6 +92,20 @@ public sealed class MlxDenseLayer
         float[] down = MlxOps.MatMul(ffnHidden, seqLen, IntermDim, WDown, HiddenDim);
 
         return Add(afterAttn, down);
+    }
+
+    /// <summary>Applies <see cref="MlxOps.Rope"/> independently to each head's [seqLen, headDim] slice of a head-first [numHeads, seqLen, headDim] array.</summary>
+    private float[] ApplyRopePerHead(float[] headFirst, int numHeads, int seqLen, ReadOnlySpan<int> positions)
+    {
+        int headDim = HeadDim;
+        var result = new float[headFirst.Length];
+        for (int h = 0; h < numHeads; h++)
+        {
+            var slice = new ReadOnlySpan<float>(headFirst, h * seqLen * headDim, seqLen * headDim);
+            float[] roped = MlxOps.Rope(slice, seqLen, headDim, headDim, traditional: false, RopeBase, scale: 1f, positions);
+            roped.CopyTo(result.AsSpan(h * seqLen * headDim, seqLen * headDim));
+        }
+        return result;
     }
 
     private static float[] Add(ReadOnlySpan<float> a, ReadOnlySpan<float> b)

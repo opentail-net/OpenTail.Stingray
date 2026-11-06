@@ -156,4 +156,16 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_fast_rope_dynamic")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int FastRopeDynamic(out MlxArray result, MlxArray input, int dims, [MarshalAs(UnmanagedType.I1)] bool traditional, MlxOptionalFloat baseValue, float scale, MlxArray offsets, MlxArray freqs, MlxStream stream);
+
+    // ── Reshape/transpose, for multi-head split/concat (TensorSharp uses a custom Metal kernel,
+    // FlatToHeadFirst, here instead -- composed from these two basic ops; see MlxOps.SplitHeads/
+    // MergeHeads) ────────────────────────────────────────────────────────────
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_reshape")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Reshape(out MlxArray result, MlxArray array, int[] shape, nuint shapeCount, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_transpose_axes")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int TransposeAxes(out MlxArray result, MlxArray array, int[] axes, nuint axesCount, MlxStream stream);
 }

@@ -147,4 +147,28 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.Multiply(new float[4], new float[4]));
     }
+
+    [Fact]
+    public void SplitHeads_ShapeMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.SplitHeads(new float[5], seqLen: 2, numHeads: 2, headDim: 4));
+    }
+
+    [Fact]
+    public void SplitHeads_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.SplitHeads(new float[2 * 2 * 4], seqLen: 2, numHeads: 2, headDim: 4));
+    }
+
+    [Fact]
+    public void MergeHeads_ShapeMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.MergeHeads(new float[5], numHeads: 2, seqLen: 2, headDim: 4));
+    }
+
+    [Fact]
+    public void MergeHeads_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.MergeHeads(new float[2 * 2 * 4], numHeads: 2, seqLen: 2, headDim: 4));
+    }
 }
