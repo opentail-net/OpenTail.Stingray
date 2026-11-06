@@ -70,4 +70,30 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.MatMul(new float[6], m: 2, k: 3, b: new float[6], n: 2));
     }
+
+    [Fact]
+    public void AddMm_BiasLengthMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            MlxOps.AddMm(bias: new float[3], a: new float[6], m: 2, k: 3, b: new float[6], n: 2));
+    }
+
+    [Fact]
+    public void AddMm_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.AddMm(bias: new float[2], a: new float[6], m: 2, k: 3, b: new float[6], n: 2));
+    }
+
+    [Fact]
+    public void Softmax_ShapeMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.Softmax(new float[5], rows: 2, cols: 3));
+    }
+
+    [Fact]
+    public void Softmax_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.Softmax(new float[6], rows: 2, cols: 3));
+    }
 }

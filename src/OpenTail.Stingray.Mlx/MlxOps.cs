@@ -128,6 +128,70 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// Biased linear projection: <c>bias + a@b</c> (<c>mlx_addmm</c> with alpha=1, beta=1), e.g. a
+    /// transformer projection with a bias term. <paramref name="bias"/> broadcasts over rows, length
+    /// <paramref name="n"/>.
+    /// </summary>
+    public static float[] AddMm(ReadOnlySpan<float> bias, ReadOnlySpan<float> a, int m, int k, ReadOnlySpan<float> b, int n)
+    {
+        if (bias.Length != n) throw new ArgumentException($"bias has {bias.Length} elements, expected n = {n}.", nameof(bias));
+        if (a.Length != m * k) throw new ArgumentException($"a has {a.Length} elements, expected m*k = {m * k}.", nameof(a));
+        if (b.Length != k * n) throw new ArgumentException($"b has {b.Length} elements, expected k*n = {k * n}.", nameof(b));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray biasArray = default, aArray = default, bArray = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            biasArray = UploadFloat32(bias, [n]);
+            aArray = UploadFloat32(a, [m, k]);
+            bArray = UploadFloat32(b, [k, n]);
+            Check(MlxInterop.AddMm(out result, biasArray, aArray, bArray, alpha: 1f, beta: 1f, stream), "mlx_addmm");
+
+            var output = new float[m * n];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (bArray.IsValid) MlxInterop.ArrayFree(bArray);
+            if (aArray.IsValid) MlxInterop.ArrayFree(aArray);
+            if (biasArray.IsValid) MlxInterop.ArrayFree(biasArray);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
+    /// <summary>Softmax over the last axis of a row-major <paramref name="rows"/> x <paramref name="cols"/> matrix.</summary>
+    public static float[] Softmax(ReadOnlySpan<float> input, int rows, int cols)
+    {
+        if (input.Length != rows * cols) throw new ArgumentException($"input has {input.Length} elements, expected rows*cols = {rows * cols}.", nameof(input));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray x = default, result = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            x = UploadFloat32(input, [rows, cols]);
+            Check(MlxInterop.SoftmaxAxis(out result, x, axis: -1, precise: true, stream), "mlx_softmax_axis");
+
+            var output = new float[input.Length];
+            DownloadFloat32(result, output);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (x.IsValid) MlxInterop.ArrayFree(x);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     private static unsafe MlxInterop.MlxArray UploadFloat32(ReadOnlySpan<float> data, int[] shape)
     {
         fixed (float* ptr = data)

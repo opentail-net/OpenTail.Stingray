@@ -125,6 +125,11 @@ internal static partial class MlxInterop
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int MatMul(out MlxArray result, MlxArray a, MlxArray b, MlxStream stream);
 
+    /// <summary><c>result = alpha*(m1@m2) + beta*src</c>.</summary>
+    [LibraryImport(LibraryName, EntryPoint = "mlx_addmm")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int AddMm(out MlxArray result, MlxArray src, MlxArray m1, MlxArray m2, float alpha, float beta, MlxStream stream);
+
     [LibraryImport(LibraryName, EntryPoint = "mlx_softmax_axis")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int SoftmaxAxis(out MlxArray result, MlxArray input, int axis, [MarshalAs(UnmanagedType.I1)] bool precise, MlxStream stream);

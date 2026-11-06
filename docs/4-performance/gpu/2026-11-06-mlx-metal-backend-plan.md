@@ -103,12 +103,15 @@ the `mlx_sigmoid`/`mlx_multiply`/`mlx_matmul` bindings added to `MlxInterop.cs`.
 things covered (`MlxOpsTests`): shape validation, and a real call failing predictably with no
 `libmlxc` present.
 
+Ported `AddMm` (biased linear, `mlx_addmm`) and `Softmax` (`mlx_softmax_axis`) the same way. Same two
+testable things per op.
+
 ## Next steps (not started)
 
-1. `mlx_addmm` (biased linear), `mlx_softmax_axis` and `mlx_fast_scaled_dot_product_attention`
-   (bindings already added to `MlxInterop.cs`, not yet wrapped in `MlxOps.cs`) are the next candidates
-   — attention is the big one a dense-llama pass needs. RoPE (`mlx_fast_rope_dynamic`) needs an
-   `MlxOptionalFloat` struct not yet ported.
+1. `mlx_fast_scaled_dot_product_attention` (binding already added to `MlxInterop.cs`, not yet wrapped
+   in `MlxOps.cs`) is the big remaining one a dense-llama pass needs — its mask-mode parameter is a
+   native string pointer, more involved marshaling than the ops ported so far. RoPE
+   (`mlx_fast_rope_dynamic`) needs an `MlxOptionalFloat` struct not yet ported.
 2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
    `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
    skeleton.
