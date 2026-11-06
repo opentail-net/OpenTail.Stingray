@@ -178,6 +178,22 @@ public sealed class ArchitectureRegistryTests
     // (was duplicated verbatim in both files; docs/2-coverage/architecture-admission-followups.md #11).
 
     [Fact]
+    public void PrefillHandoffFamilies_EveryReceiptKey_NamesARegisteredArchitecture()
+    {
+        // "llama+experts" is a synthetic family key (PrefillHandoffFamilies.FamilyKey): a `llama`
+        // GGUF with experts is classified separately from dense llama by design, and has no
+        // registered architecture of its own.
+        var syntheticFamilyKeys = new HashSet<string>(StringComparer.Ordinal) { "llama+experts" };
+
+        foreach (var (family, path) in PrefillHandoffFamilies.Receipts.Keys)
+        {
+            if (syntheticFamilyKeys.Contains(family)) continue;
+            Assert.True(ArchitectureRegistry.Find(family) is not null,
+                $"PrefillHandoffFamilies.Receipts has a key for family '{family}' (path {path}) that names no registered architecture.");
+        }
+    }
+
+    [Fact]
     public void ExperimentalEnvironmentVariables_AreInKnownInventory()
     {
         var environmentVariables = ArchitectureRegistry.All

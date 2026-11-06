@@ -26,7 +26,7 @@ Three 2026-10-08/09 plans are finished and archived verbatim in `docs/done/`; th
 11. ~~**Duplicated admitted-set snapshot** in `ArchitectureDescriptorContractTests` and `ArchitectureRegistryTests`: remove one.~~ Closed 2026-11-06: removed from `ArchitectureRegistryTests` (kept in `ArchitectureDescriptorContractTests`).
 
 ### Small and optional
-12. Capabilities plan 0.3 (deferred, low value): test that every key in `PrefillHandoffFamilies` names a registered architecture.
+12. ~~Capabilities plan 0.3 (deferred, low value): test that every key in `PrefillHandoffFamilies` names a registered architecture.~~ Closed 2026-11-06: `PrefillHandoffFamilies_EveryReceiptKey_NamesARegisteredArchitecture` in `ArchitectureRegistryTests`, excluding the synthetic `llama+experts` family key by design.
 13. Golden plan 1.b: point `Tests.Cuda` and other `FindModelPath` copies at `ModelLocator`.
 14. Golden plan 4.3 untested paths: busy-port race and Ctrl-C during `capture-golden` (not automatable here).
 15. Golden plan decisions D1-D3 were recommendations (goldens under `tests/.../Goldens/`, near-tie tolerance 0.02 logit to revisit with data from the migrated receipts, SHA-256 mandatory for new goldens); confirm they match what shipped before closing.
