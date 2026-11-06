@@ -141,6 +141,35 @@ public sealed class ModelLifecycleTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Regression (2026-11-06 review): <see cref="OpenTail.Stingray.Engine.Runtime.RuntimeInstance.Create(OpenTail.Stingray.Engine.ExecutionPlan, Model, OpenTail.Stingray.Engine.IExecutionTurnGate?)"/>
+    /// must never dispose the caller-supplied <see cref="Model"/> on a failed construction. <see cref="ModelContext.CreateDefaultEngine"/>
+    /// passes its shared <c>_model</c> into exactly this overload — a fix that disposed the model on
+    /// failure (briefly shipped in commit 6b55da7) would invalidate every other context sharing it the
+    /// moment any one context's engine construction failed.
+    /// </summary>
+    [Fact]
+    public void RuntimeInstanceCreate_WithACallerSuppliedModel_LeavesItUsableAfterAFailedConstruction()
+    {
+        using var model = Model.Load(_path);
+        var planningCtx = (ModelContext)model.CreateContext();
+        var plan = planningCtx.ExecutionPlan;
+        planningCtx.Dispose();
+
+        var unexecutablePlan = plan with { IsExecutable = false };
+        Assert.Throws<OpenTail.Stingray.Engine.Runtime.PlanNotExecutableException>(
+            () => OpenTail.Stingray.Engine.Runtime.RuntimeInstance.Create(unexecutablePlan, model));
+
+        // The shared model must not have been disposed by the failed Create() above: a disposed
+        // Model refuses every further CreateContext() with ObjectDisposedException (see
+        // ModelDispose_DisposesLiveContexts_AndRefusesNewOnes above). Stop short of actually
+        // building a real forward pass over this test's deliberately minimal synthetic GGUF
+        // (1 block, garbage tensor bytes) — this file never exercises real compute kernels, only
+        // Model/ModelContext lifecycle semantics.
+        using var ctx = model.CreateContext();
+        Assert.Equal(1, model.ActiveContextCount);
+    }
+
     [Fact]
     public void TurboQuantHeadDim_IsRefused_NotSilentlyIgnored()
     {

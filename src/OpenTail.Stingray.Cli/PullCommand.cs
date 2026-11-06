@@ -270,16 +270,21 @@ public sealed class PullCommand : Command<PullCommand.Settings>
         if (picked.Name is null) return [];
 
         // Sharded GGUF naming: name-00001-of-00005.gguf. Pull every shard once one is selected.
-        var shardMatch = System.Text.RegularExpressions.Regex.Match(picked.Name, @"^(.*-)(\d{5})-of-(\d{5})(\.gguf)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var shardMatch = System.Text.RegularExpressions.Regex.Match(picked.Name, @"^(.*-)(\d{5})-of-(\d{5})\.gguf$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         if (!shardMatch.Success) return [picked];
 
         string prefix = shardMatch.Groups[1].Value;
-        string suffix = shardMatch.Groups[4].Value;
         string totalStr = shardMatch.Groups[3].Value;
+        // Exact, anchored match only: StartsWith/EndsWith/Contains on their own let a sibling
+        // like "Model-00002-of-00003-backup.gguf" slip into the selection (it starts with the
+        // prefix, ends in ".gguf", and contains "-of-00003"), which then defeats
+        // FindMissingShards entirely — a filename it can't parse as a shard makes that check give
+        // up rather than report anything missing. Anchoring the whole name rules that out here.
+        var exactShardPattern = new System.Text.RegularExpressions.Regex(
+            $"^{System.Text.RegularExpressions.Regex.Escape(prefix)}\\d{{5}}-of-{totalStr}\\.gguf$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return files
-            .Where(f => f.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                        && f.Name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-                        && f.Name.Contains($"-of-{totalStr}", StringComparison.OrdinalIgnoreCase))
+            .Where(f => exactShardPattern.IsMatch(f.Name))
             .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }

@@ -67,4 +67,22 @@ public sealed class PullCommandShardCompletenessTests
         Assert.Single(selected);
         Assert.Equal([2, 3], PullCommand.FindMissingShards(selected));
     }
+
+    [Fact]
+    public void SelectFiles_IgnoresABackupFileThatOnlyLooksLikeAShard_AndStillFlagsTheRealMissingShards()
+    {
+        // Regression: the old loose StartsWith/EndsWith/Contains filter let
+        // "Model-00002-of-00003-backup.gguf" slip into the selection (it starts with the shard
+        // prefix, ends in ".gguf", and contains "-of-00003"). FindMissingShards' stricter regex
+        // then failed to parse that filename at all and gave up, reporting nothing missing even
+        // though the real shards 2 and 3 were never present.
+        var files = new List<(string Name, long? Size)>
+        {
+            F("Model-00001-of-00003.gguf"),
+            F("Model-00002-of-00003-backup.gguf"),
+        };
+        var selected = PullCommand.SelectFiles(files, quantHint: null);
+        Assert.Equal(["Model-00001-of-00003.gguf"], selected.Select(f => f.Name).ToArray());
+        Assert.Equal([2, 3], PullCommand.FindMissingShards(selected));
+    }
 }

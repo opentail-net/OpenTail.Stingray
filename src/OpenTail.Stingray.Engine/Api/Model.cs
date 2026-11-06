@@ -177,17 +177,36 @@ public sealed class Model : IModel
             _disposed = true;
             contexts = _activeContexts.ToArray();
             _activeContexts.Clear();
+        }
+
+        // Dispose child contexts outside Model._lock to eliminate lock-order inversion
+        // with ModelContext.Dispose() which calls UnregisterContext under Model._lock. Contexts
+        // must be disposed, and each one's drain outcome checked, BEFORE the tensor source is
+        // freed below: a context's engine can time out draining its worker and deliberately leave
+        // its forward pass (and any raw pointers into this model's mapped weights) allocated rather
+        // than risk a native crash — freeing the mapping underneath that still-live worker would be
+        // exactly the use-after-free the engine's own timeout guard exists to prevent.
+        bool allDrained = true;
+        foreach (var ctx in contexts)
+        {
+            ctx.Dispose();
+            if (!ctx.DrainedOnDispose) allDrained = false;
+        }
+
+        if (!allDrained)
+        {
+            Console.Error.WriteLine(
+                "[Model] a context's engine did not drain its worker before dispose timed out; " +
+                "retaining the mapped weights instead of freeing them under a possibly still-live worker.");
+            return;
+        }
+
+        lock (_lock)
+        {
             if (_tensorSource is IDisposable disposableSource)
             {
                 disposableSource.Dispose();
             }
-        }
-
-        // Dispose child contexts outside Model._lock to eliminate lock-order inversion
-        // with ModelContext.Dispose() which calls UnregisterContext under Model._lock.
-        foreach (var ctx in contexts)
-        {
-            ctx.Dispose();
         }
     }
 }

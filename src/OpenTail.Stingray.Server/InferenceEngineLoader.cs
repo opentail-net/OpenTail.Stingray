@@ -44,7 +44,20 @@ public static class InferenceEngineLoader
             GpuLayerCount = plan.GpuLayers
         });
 
-        var instance = RuntimeInstance.Create(plan, model, turnGate);
+        RuntimeInstance instance;
+        try
+        {
+            instance = RuntimeInstance.Create(plan, model, turnGate);
+        }
+        catch
+        {
+            // RuntimeInstance.Create(plan, model, ...) never disposes model itself (that overload
+            // treats the model as caller-owned, since ModelContext reuses a Model across several
+            // RuntimeInstance.Create calls and must not have one invalidated by another's failure).
+            // This call loaded model for itself alone, so it is the one that must free it here.
+            try { model.Dispose(); } catch { }
+            throw;
+        }
         try
         {
             return BuildLoadedEngine(plan, model, instance, sessionStorageDirectory);

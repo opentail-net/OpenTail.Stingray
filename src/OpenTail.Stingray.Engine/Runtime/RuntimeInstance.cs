@@ -51,10 +51,19 @@ public sealed class RuntimeInstance : IDisposable
     }
 
     /// <summary>
-    /// Constructs a RuntimeInstance from a pre-loaded Model and ExecutionPlan.
+    /// Constructs a RuntimeInstance from a pre-loaded, caller-owned Model and ExecutionPlan.
     /// Strictly validates plan invariants, backend operational status, and architecture admission.
     /// Never reads execution policy from <see cref="Model.Parameters"/>.
     /// </summary>
+    /// <remarks>
+    /// Never disposes <paramref name="model"/>, on success or failure: <see cref="Model"/> is
+    /// explicitly designed to be reused across multiple <see cref="ModelContext"/>s (and callers
+    /// such as <see cref="OpenTail.Stingray.Server.InferenceEngineLoader"/> that load their own
+    /// model), so disposing a caller-supplied model here on one failed construction would break
+    /// every other context/caller still holding it. A caller that loaded the model itself for
+    /// this one call is responsible for disposing it on failure. See <see cref="Create(ExecutionPlan)"/>
+    /// for the overload that owns the model it loads.
+    /// </remarks>
     public static RuntimeInstance Create(ExecutionPlan plan, Model model, IExecutionTurnGate? turnGate = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -278,21 +287,30 @@ public sealed class RuntimeInstance : IDisposable
             {
                 try { d.Dispose(); } catch { }
             }
-            // Create() is the only remaining owner of model on a failed construction — nothing
-            // else holds a reference to dispose it (RuntimeInstance.Dispose() never returns).
-            try { model.Dispose(); } catch { }
+            // model is caller-owned (see the Create(plan, model, ...) remarks above) — never
+            // disposed here, regardless of outcome.
             throw;
         }
     }
 
     /// <summary>
     /// Loads the model from <see cref="ExecutionPlan.ModelPath"/> and creates a RuntimeInstance.
+    /// This overload owns the model it loads: a failed construction disposes it, since nothing
+    /// else holds a reference to a model this call loaded itself.
     /// </summary>
     public static RuntimeInstance Create(ExecutionPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var model = Model.Load(plan.ModelPath);
-        return Create(plan, model);
+        try
+        {
+            return Create(plan, model);
+        }
+        catch
+        {
+            try { model.Dispose(); } catch { }
+            throw;
+        }
     }
 
     public void Dispose()

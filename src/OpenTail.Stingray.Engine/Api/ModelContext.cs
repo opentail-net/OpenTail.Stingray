@@ -24,6 +24,17 @@ public sealed class ModelContext : IModelContext
     private bool _hasExplicitEngine;
     private bool _disposed;
 
+    /// <summary>
+    /// Whether this context's engine (if any) fully drained its worker on <see cref="Dispose"/>,
+    /// mirroring <see cref="InferenceEngine.DrainedOnDispose"/> /
+    /// <see cref="ContinuousBatchingEngine.DrainedOnDispose"/>. <c>true</c> before <see cref="Dispose"/>
+    /// has run, or when no engine was ever created. <see cref="Model.Dispose"/> reads this after
+    /// disposing every context to decide whether it is safe to unmap the shared tensor source — a
+    /// context whose engine deliberately leaked its forward pass under a still-live worker means
+    /// the mapped weights may still be in use.
+    /// </summary>
+    internal bool DrainedOnDispose { get; private set; } = true;
+
     /// <inheritdoc/>
     public IModel Model => _model;
 
@@ -229,14 +240,23 @@ public sealed class ModelContext : IModelContext
             if (_runtimeInstance is not null)
             {
                 _runtimeInstance.Dispose();
+                DrainedOnDispose = EngineDrained(_runtimeInstance.Engine);
                 _runtimeInstance = null;
             }
             else if (_engine is IDisposable disposableEngine)
             {
                 disposableEngine.Dispose();
+                DrainedOnDispose = EngineDrained(_engine);
             }
             _engine = null;
         }
         _model.UnregisterContext(this);
     }
+
+    private static bool EngineDrained(IInferenceEngine engine) => engine switch
+    {
+        InferenceEngine ie => ie.DrainedOnDispose,
+        ContinuousBatchingEngine cbe => cbe.DrainedOnDispose,
+        _ => true,
+    };
 }
