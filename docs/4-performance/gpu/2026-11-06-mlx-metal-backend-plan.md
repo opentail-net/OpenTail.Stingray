@@ -292,12 +292,17 @@ own scope section, not overlooked):
     TensorSharp's `MlxFusedOps.TryMoeRouterTopKSoftmax` (`MlxFusedOps.cs` ~102-182) -- negate, top-K
     via `mlx_argpartition_axis`, slice/reshape/cast the indices, gather the top-K logits, softmax
     them. This is the router/gating decision only (which experts fire, their normalized weights).
-    **Not yet done**: the actual expert FFN gather/compute/scatter-add that consumes the router's
-    output (TensorSharp's `TryGatherRows`/`TryScatterAddWeightedRows`/`TryMoeBiasWeightedSum`,
-    `MlxFusedOps.cs` ~291-701) and the expert-offload LRU memory mechanism (`MoeExpertOffload.cs`,
-    a perf/memory feature orthogonal to correctness, lower priority than the compute path). No MoE
-    model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- the
-    router alone is not a runnable MoE forward pass.
+    **Also ported 2026-11-06**: `MlxOps.GatherRows`, from TensorSharp's `TryGatherRows`
+    (`MlxFusedOps.cs` ~291-333) -- `mlx_take_axis` along axis 0 then `mlx_contiguous`, collecting
+    the tokens routed to one expert before running its FFN.
+    **Not yet done**: `TryScatterAddWeightedRows` (`MlxFusedOps.cs` ~335-392) -- its real
+    implementation is a custom fused Metal kernel (`ScatterAddWeightedRowsSource` in
+    `MlxNative.cs`), which the owner's "stick to C#" instruction means composing from basic ops
+    instead (e.g. a one-hot-times-weights matmul), not yet done -- and `TryMoeBiasWeightedSum`
+    (`MlxFusedOps.cs` ~624-701). The expert-offload LRU memory mechanism (`MoeExpertOffload.cs`) is
+    a perf/memory feature orthogonal to correctness, lower priority than the compute path. No MoE
+    model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- these
+    ops alone are not a runnable MoE forward pass.
   - **Hybrid (MiniMax-H3, `MlxMiniMaxH3Ops.cs`/`MlxMiniMaxH3AttentionOps.cs`, ~540 lines) and vision
     (Gemma 4, `MlxGemma4VisionOps.cs`, ~334 lines)**: not started. Each is its own subsystem-sized
     port, same as the dense-llama path was; scoped to be picked up next, same discipline.

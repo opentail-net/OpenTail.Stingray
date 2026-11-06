@@ -224,4 +224,12 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_take_axis")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int TakeAxis(out MlxArray result, MlxArray input, MlxArray indices, int axis, MlxStream stream);
+
+    // ── Row gather (ported from TensorSharp's TryGatherRows, MlxFusedOps.cs ~291-333: take_axis
+    // along axis 0, then force a contiguous layout so the host download below sees a flat buffer) --
+    // MoE/hybrid/vision architectures item.
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_contiguous")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Contiguous(out MlxArray result, MlxArray array, [MarshalAs(UnmanagedType.I1)] bool allowColMajor, MlxStream stream);
 }

@@ -233,4 +233,16 @@ public sealed class MlxOpsTests
     {
         Assert.Throws<DllNotFoundException>(() => MlxOps.MoeRouterTopKSoftmax(new float[8], numExperts: 8, k: 2));
     }
+
+    [Fact]
+    public void GatherRows_SrcLengthMismatch_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => MlxOps.GatherRows(new float[5], srcRows: 2, cols: 3, indices: [0, 1]));
+    }
+
+    [Fact]
+    public void GatherRows_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        Assert.Throws<DllNotFoundException>(() => MlxOps.GatherRows(new float[2 * 3], srcRows: 2, cols: 3, indices: [1, 0, 1]));
+    }
 }

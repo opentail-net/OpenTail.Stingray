@@ -484,6 +484,47 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// Gathers rows of a row-major <paramref name="srcRows"/> x <paramref name="cols"/> matrix at
+    /// <paramref name="indices"/>, producing <c>indices.Length</c> x <paramref name="cols"/> rows in
+    /// that order -- e.g. collecting the tokens routed to one MoE expert before running its FFN.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxFusedOps.TryGatherRows</c>
+    /// (<c>MlxFusedOps.cs</c> ~291-333): <c>mlx_take_axis</c> along axis 0, then <c>mlx_contiguous</c>
+    /// so the result is a flat, directly-downloadable buffer (TensorSharp calls this before handing
+    /// the array to its device-resident caller; this port's own <c>DownloadFloat32</c> needs the same
+    /// contiguity).</para>
+    /// </summary>
+    public static float[] GatherRows(ReadOnlySpan<float> src, int srcRows, int cols, ReadOnlySpan<int> indices)
+    {
+        if (src.Length != srcRows * cols) throw new ArgumentException($"src has {src.Length} elements, expected srcRows*cols = {srcRows * cols}.", nameof(src));
+
+        var device = MlxInterop.DeviceNewType(MlxInterop.MlxGpu, 0);
+        MlxInterop.MlxStream stream = default;
+        MlxInterop.MlxArray srcArray = default, indicesArray = default, gathered = default, contiguous = default;
+        try
+        {
+            Check(MlxInterop.GetDefaultStream(out stream, device), "mlx_get_default_stream");
+            srcArray = UploadFloat32(src, [srcRows, cols]);
+            indicesArray = UploadInt32(indices, [indices.Length]);
+            Check(MlxInterop.TakeAxis(out gathered, srcArray, indicesArray, axis: 0, stream), "mlx_take_axis");
+            Check(MlxInterop.Contiguous(out contiguous, gathered, allowColMajor: false, stream), "mlx_contiguous");
+
+            var output = new float[indices.Length * cols];
+            DownloadFloat32(contiguous, output);
+            return output;
+        }
+        finally
+        {
+            if (contiguous.IsValid) MlxInterop.ArrayFree(contiguous);
+            if (gathered.IsValid) MlxInterop.ArrayFree(gathered);
+            if (indicesArray.IsValid) MlxInterop.ArrayFree(indicesArray);
+            if (srcArray.IsValid) MlxInterop.ArrayFree(srcArray);
+            if (stream.Ctx != nint.Zero) MlxInterop.StreamFree(stream);
+            MlxInterop.DeviceFree(device);
+        }
+    }
+
     private static unsafe void DownloadInt32(MlxInterop.MlxArray array, Span<int> destination)
     {
         nint src = MlxInterop.ArrayDataInt32(array);
