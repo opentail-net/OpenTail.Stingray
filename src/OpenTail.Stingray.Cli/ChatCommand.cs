@@ -87,7 +87,7 @@ public sealed class ChatCommand : Command<ChatCommand.Settings>
             GpuLayerCount = s.GpuLayers >= 0 ? s.GpuLayers : (s.Backend.Equals("cpu", StringComparison.OrdinalIgnoreCase) ? 0 : 999)
         };
 
-        using var model = Stingray.Model.Load(modelParams);
+        using var model = Model.Load(modelParams);
         using var context = model.CreateContext(new ContextParams { ContextSize = (uint)s.ContextSize });
         var executor = new InteractiveExecutor(context);
         var session = new ChatSession(executor);
