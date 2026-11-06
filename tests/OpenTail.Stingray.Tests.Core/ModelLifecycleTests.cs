@@ -179,6 +179,128 @@ public sealed class ModelLifecycleTests : IDisposable
         Assert.Equal(0, model.ActiveContextCount);
     }
 
+    /// <summary>
+    /// Regression (2026-11-06 review): <see cref="ModelContext.CreateContinuousBatchingEngine"/> used to
+    /// check <c>_disposed</c>, build the whole <see cref="RuntimeInstance"/> against the shared
+    /// <see cref="Model"/> with NO lock held, and only then acquire <c>_lock</c> to register the result.
+    /// <see cref="Model.Dispose"/> disposes every context by calling <c>ctx.Dispose()</c>, which needs
+    /// that same per-context lock — so with the lock held throughout construction (the fix), a
+    /// construction in flight on one thread must make <see cref="Model.Dispose"/> (running on another
+    /// thread, trying to tear down that very context before freeing the shared tensor source) block
+    /// until the construction finishes, rather than letting the model's tensor source be freed while
+    /// construction is still reading it, or letting construction silently attach a fresh engine to a
+    /// context that disposal already tore down.
+    /// </summary>
+    /// <remarks>
+    /// This test cannot safely drive a real <see cref="ModelContext.CreateContinuousBatchingEngine"/>
+    /// call end to end: doing so against this file's deliberately minimal synthetic GGUF crashes the
+    /// process with a native access violation (confirmed while writing this test) — real forward-pass
+    /// construction needs real weight data, which is exactly what the other tests in this file avoid by
+    /// never touching <c>ctx.Engine</c> or the batching-engine APIs. Instead, this simulates "a
+    /// construction is in flight" the way the production code's own fix depends on: holding the
+    /// context's private per-instance lock (the same lock <see cref="ModelContext.CreateContinuousBatchingEngine"/>
+    /// now holds for its whole duration) via reflection, and asserting <see cref="Model.Dispose"/> blocks
+    /// on it rather than proceeding.
+    /// </remarks>
+    [Fact]
+    public async Task ModelDispose_BlocksOnAContextsLock_InsteadOfTearingDownAnInFlightConstruction()
+    {
+        using var model = Model.Load(_path);
+        var ctx = model.CreateContext();
+
+        var lockField = typeof(ModelContext).GetField("_lock", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var ctxLock = lockField.GetValue(ctx)!;
+
+        using var constructionEntered = new ManualResetEventSlim(false);
+        using var releaseConstruction = new ManualResetEventSlim(false);
+
+        var holder = Task.Run(() =>
+        {
+            lock (ctxLock)
+            {
+                constructionEntered.Set();
+                releaseConstruction.Wait(TimeSpan.FromSeconds(10));
+            }
+        });
+
+        Assert.True(constructionEntered.Wait(TimeSpan.FromSeconds(5)), "simulated construction never entered the lock");
+
+        var disposeTask = Task.Run(model.Dispose);
+        var settledEarly = await Task.WhenAny(disposeTask, Task.Delay(300));
+        Assert.NotSame(disposeTask, settledEarly);   // Dispose() must not complete while the lock is held
+
+        releaseConstruction.Set();
+        await holder;
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, model.ActiveContextCount);
+    }
+
+    private sealed class TrackingDisposable(string name, List<string> order) : IDisposable
+    {
+        public void Dispose() => order.Add(name);
+    }
+
+    /// <summary>
+    /// Regression (2026-11-06 review): <see cref="OpenTail.Stingray.Engine.Runtime.RuntimeInstance.DisposeOnConstructionFailure"/>
+    /// (the logic <c>RuntimeInstance.Create</c>'s catch block delegates to) must dispose a resource
+    /// the architecture factory tracked on <c>loadContext.OwnedDisposables</c> even though
+    /// <c>ConstructForwardPass</c> threw before <c>Create</c>'s own
+    /// <c>ownedDisposables.AddRange(loadContext.OwnedDisposables)</c> ever ran — e.g.
+    /// <c>CommonForwardPassFactory.CreateDense</c> tracks the forward pass it just built via
+    /// <c>ctx.TrackDisposable()</c> before calling <c>EnableTurboQuant()</c>, which can then throw.
+    /// Must also dispose in reverse-dependency order (the forward pass before the backends it runs
+    /// on), matching <c>RuntimeInstance.Dispose()</c>'s own successful-teardown order.
+    /// </summary>
+    [Fact]
+    public void DisposeOnConstructionFailure_FreesLoadContextTrackedResources_InReverseOrder()
+    {
+        var order = new List<string>();
+        var backendA = new TrackingDisposable("backendA", order);
+        var backendB = new TrackingDisposable("backendB", order);
+        var owned = new List<IDisposable> { backendA, backendB };
+
+        using var model = Model.Load(_path);
+        var planningCtx = (ModelContext)model.CreateContext();
+        var plan = planningCtx.ExecutionPlan;
+        planningCtx.Dispose();
+
+        var loadContext = new OpenTail.Stingray.Engine.ArchitectureLoadContext
+        {
+            Probe = new OpenTail.Stingray.Engine.ArchitectureProbe
+            {
+                Architecture = model.Architecture,
+                TensorSource = model.TensorSource,
+                IsGguf = model.IsGguf,
+                Gguf = model.IsGguf ? model.Gguf : null,
+            },
+            Hyperparams = model.Hyperparams,
+            Plan = plan,
+        };
+        // Simulates CommonForwardPassFactory.CreateDense tracking the forward pass it just built
+        // and then throwing inside EnableTurboQuant, before Create's own AddRange ever ran — this
+        // entry never made it into `owned`.
+        var densePass = new TrackingDisposable("densePass", order);
+        loadContext.TrackDisposable(densePass);
+
+        OpenTail.Stingray.Engine.Runtime.RuntimeInstance.DisposeOnConstructionFailure(owned, loadContext);
+
+        Assert.Equal(["densePass", "backendB", "backendA"], order);
+    }
+
+    [Fact]
+    public void DisposeOnConstructionFailure_WithNoLoadContextYet_StillFreesOwnedDisposablesInReverseOrder()
+    {
+        var order = new List<string>();
+        var backendA = new TrackingDisposable("backendA", order);
+        var backendB = new TrackingDisposable("backendB", order);
+
+        OpenTail.Stingray.Engine.Runtime.RuntimeInstance.DisposeOnConstructionFailure(
+            [backendA, backendB], loadContext: null);
+
+        Assert.Equal(["backendB", "backendA"], order);
+    }
+
     [Fact]
     public void TurboQuantHeadDim_IsRefused_NotSilentlyIgnored()
     {

@@ -143,19 +143,26 @@ public sealed class ModelContext : IModelContext
     /// </summary>
     public ContinuousBatchingEngine CreateContinuousBatchingEngine(int? maxBatchSize = null)
     {
-        ThrowIfDisposed();
-        int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
-        var plan = Plan(isContinuousBatching: true, maxBatchSize: batchSize);
-        var instance = RuntimeInstance.Create(plan, _model);
-
-        if (instance.Engine is not ContinuousBatchingEngine batchEngine)
-        {
-            instance.Dispose();
-            throw new NotSupportedException($"The architecture '{_model.Architecture}' with forward pass '{plan.ForwardPassKind}' does not support continuous batching.");
-        }
-
+        // Held for the whole construction (matching the Engine getter's own lock scope below),
+        // not just the final registration step: RuntimeInstance.Create(plan, _model) runs against
+        // the shared model, so Dispose() (which needs this same lock to tear this context down and
+        // then may free the model's tensor source once every context is gone) must not be able to
+        // interleave mid-construction — that race let Dispose() see no engine yet to free, the model
+        // get torn down while this call was still reading it, and a construction that finished
+        // afterward silently attach a live engine to an already-disposed context.
         lock (_lock)
         {
+            ThrowIfDisposed();
+            int batchSize = maxBatchSize ?? (_params.BatchSize > 0 ? (int)_params.BatchSize : 8);
+            var plan = Plan(isContinuousBatching: true, maxBatchSize: batchSize);
+            var instance = RuntimeInstance.Create(plan, _model);
+
+            if (instance.Engine is not ContinuousBatchingEngine batchEngine)
+            {
+                instance.Dispose();
+                throw new NotSupportedException($"The architecture '{_model.Architecture}' with forward pass '{plan.ForwardPassKind}' does not support continuous batching.");
+            }
+
             if (_runtimeInstance is not null && !ReferenceEquals(_runtimeInstance, instance))
             {
                 _runtimeInstance.Dispose();
@@ -168,9 +175,9 @@ public sealed class ModelContext : IModelContext
             _runtimeInstance = instance;
             _engine = batchEngine;
             _plan = plan;
-        }
 
-        return batchEngine;
+            return batchEngine;
+        }
     }
 
     /// <summary>

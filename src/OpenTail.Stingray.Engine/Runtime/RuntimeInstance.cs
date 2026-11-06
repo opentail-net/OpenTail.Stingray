@@ -137,6 +137,9 @@ public sealed class RuntimeInstance : IDisposable
         CudaBackend? cudaBackend = null;
         VulkanBackend? vulkanBackend = null;
         ForwardPass? cpuDensePass = null;
+        // Hoisted so the catch below can reach whatever the factory tracked even when
+        // ConstructForwardPass itself threw (see the catch's comment).
+        ArchitectureLoadContext? loadContext = null;
 
         try
         {
@@ -206,7 +209,7 @@ public sealed class RuntimeInstance : IDisposable
                 Gguf = model.IsGguf ? model.Gguf : null,
             };
 
-            var loadContext = new ArchitectureLoadContext
+            loadContext = new ArchitectureLoadContext
             {
                 Probe = probe,
                 Hyperparams = effectiveHp,
@@ -283,13 +286,39 @@ public sealed class RuntimeInstance : IDisposable
         catch
         {
             EngineTelemetry.RecordModelLoad(loadActivity, model.Architecture, plan.ForwardPassKind.ToString(), EngineTelemetry.OutcomeError, System.Diagnostics.Stopwatch.GetElapsedTime(createStart).TotalSeconds, EngineTelemetry.BackendLabel(plan));
-            foreach (var d in ownedDisposables)
-            {
-                try { d.Dispose(); } catch { }
-            }
+            DisposeOnConstructionFailure(ownedDisposables, loadContext);
             // model is caller-owned (see the Create(plan, model, ...) remarks above) — never
             // disposed here, regardless of outcome.
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Cleans up after a failed construction inside <see cref="Create(ExecutionPlan, Model, IExecutionTurnGate?)"/>.
+    /// Merges in whatever the factory tracked on <paramref name="loadContext"/> even when
+    /// <c>ConstructForwardPass</c> itself threw before that method's own
+    /// <c>ownedDisposables.AddRange(loadContext.OwnedDisposables)</c> ran — e.g.
+    /// <c>CommonForwardPassFactory.CreateDense</c> tracks the forward pass it just built via
+    /// <c>ctx.TrackDisposable()</c> before calling <c>EnableTurboQuant()</c>, so a throw inside
+    /// <c>EnableTurboQuant</c> leaves that forward pass registered on <paramref name="loadContext"/>
+    /// but never merged into <paramref name="ownedDisposables"/>. Disposes in reverse-dependency
+    /// order: newest-constructed resources (the forward pass, and anything layered on top of it)
+    /// before the backends underneath them — the same order <see cref="Dispose"/> uses for a
+    /// successful construction's own teardown. Insertion order would dispose backends first,
+    /// which could free a CudaBackend/VulkanBackend/CpuBackend out from under a forward pass still
+    /// holding live handles into it.
+    /// </summary>
+    internal static void DisposeOnConstructionFailure(List<IDisposable> ownedDisposables, ArchitectureLoadContext? loadContext)
+    {
+        var toDispose = new List<IDisposable>(ownedDisposables);
+        if (loadContext is not null)
+        {
+            foreach (var d in loadContext.OwnedDisposables)
+                if (!toDispose.Contains(d)) toDispose.Add(d);
+        }
+        for (int i = toDispose.Count - 1; i >= 0; i--)
+        {
+            try { toDispose[i].Dispose(); } catch { }
         }
     }
 
