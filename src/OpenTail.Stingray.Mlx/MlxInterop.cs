@@ -67,4 +67,47 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_array_free")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ArrayFree(MlxArray array);
+
+    // ── Streams, array-from-data, and fast RMSNorm ─────────────────────────
+    // Ported from MlxNative.cs's DefaultStream()/FastRmsNorm() (lines ~6560, ~3915, and the
+    // LibraryImport declarations ~8800-8854), chosen as the first real op to port end to end
+    // (docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md, "Figure out one port well").
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal readonly struct MlxStream
+    {
+        public readonly nint Ctx;
+    }
+
+    /// <summary>mlx-c's float32 dtype tag (value 10, per MlxNative.cs's DType -> mlx dtype switch).</summary>
+    internal const int MlxFloat32 = 10;
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_get_default_stream")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int GetDefaultStream(out MlxStream stream, MlxDevice device);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_stream_free")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int StreamFree(MlxStream stream);
+
+    /// <summary><paramref name="shape"/>/<paramref name="dim"/> describe <paramref name="data"/>'s
+    /// layout; <paramref name="dtype"/> is an mlx-c dtype tag (<see cref="MlxFloat32"/> for this port).
+    /// MLX copies the data in (TensorSharp's own comment on the "managed" variant notes this one does
+    /// not take ownership of <paramref name="data"/>), so the caller's buffer can be freed/reused
+    /// right after this call returns.</summary>
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_new_data")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MlxArray ArrayNewData(nint data, int[] shape, int dim, int dtype);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_array_data_float32")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial nint ArrayDataFloat32(MlxArray array);
+
+    /// <summary>MLX's fused RMSNorm primitive: <c>x / sqrt(mean(x^2) + eps) * weight</c> in one
+    /// dispatch. <paramref name="weight"/> may be an invalid (default) <see cref="MlxArray"/> for an
+    /// unweighted norm -- mlx-c treats a null/invalid array argument there as "no weight" the same way
+    /// TensorSharp's own call site does (<c>GetOptionalView</c> in MlxBasicOps.cs's RmsNorm).</summary>
+    [LibraryImport(LibraryName, EntryPoint = "mlx_fast_rms_norm")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int FastRmsNorm(out MlxArray result, MlxArray input, MlxArray weight, float eps, MlxStream stream);
 }

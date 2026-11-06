@@ -19,3 +19,37 @@ public sealed class MlxBackendTests
         Assert.False(MlxBackend.IsAvailable());
     }
 }
+
+/// <summary>
+/// <see cref="MlxOps.RmsNorm"/>: the first real op ported from TensorSharp's MLX backend. The
+/// argument-validation logic runs before any native call and is checked directly; the actual
+/// mlx-c dispatch cannot be (no Mac here), so that part only checks it fails predictably rather
+/// than crashing the process.
+/// </summary>
+public sealed class MlxOpsTests
+{
+    [Fact]
+    public void RmsNorm_InputLengthMismatch_Throws()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            MlxOps.RmsNorm(new float[5], rows: 2, hiddenDim: 4, weight: [], eps: 1e-6f));
+        Assert.Equal("input", ex.ParamName);
+    }
+
+    [Fact]
+    public void RmsNorm_WeightLengthMismatch_Throws()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            MlxOps.RmsNorm(new float[8], rows: 2, hiddenDim: 4, weight: new float[3], eps: 1e-6f));
+        Assert.Equal("weight", ex.ParamName);
+    }
+
+    [Fact]
+    public void RmsNorm_ValidShapes_WithNoNativeLibraryPresent_FailsPredictably_DoesNotCrash()
+    {
+        // Honest, expected-here outcome (no libmlxc on this machine), not a mocked success:
+        // the very first real mlx-c call (mlx_device_new_type) throws DllNotFoundException.
+        Assert.Throws<DllNotFoundException>(() =>
+            MlxOps.RmsNorm(new float[8], rows: 2, hiddenDim: 4, weight: new float[4], eps: 1e-6f));
+    }
+}

@@ -66,13 +66,44 @@ Compiles clean (confirmed: CI's `ubuntu-latest`/`windows-latest` runners build t
 reason `CudaBackend.cs` already compiles here with no CUDA runtime installed). Never claimed to run or
 produce correct output; every doc comment says so.
 
+## Revised approach (2026-11-06): port, don't invent
+
+Initially scoped as "write an MLX backend" from the algorithm down, which would mean inventing
+untested logic with zero feedback loop. Revised after discussion: TensorSharp's MLX backend already
+works (presumably verified on real Apple hardware, by its own project); the actual risk in porting it
+is translation fidelity into Stingray's shapes, not whether the underlying op is correct. So each op is
+ported as a close reading of the real TensorSharp source, with every function's doc comment citing the
+exact file and line range it came from and naming anything simplified away — not reinvented from a
+description of what RMSNorm or attention is supposed to do.
+
+## First op ported: RMSNorm (2026-11-06)
+
+`MlxOps.RmsNorm` (`src/OpenTail.Stingray.Mlx/MlxOps.cs`), ported from `MlxBasicOps.RmsNorm` +
+`MlxNative.FastRmsNorm` (`TensorSharp.Backends.MLX/MlxBasicOps.cs` ~893-919,
+`TensorSharp.Backends.MLX/MlxNative.cs` ~3915-3923 and ~6560-6582 for the stream handling). Added the
+`mlx_get_default_stream`/`mlx_array_new_data`/`mlx_array_data_float32`/`mlx_fast_rms_norm` bindings to
+`MlxInterop.cs`, all copied from the same real source, not invented.
+
+Simplified relative to the source, named explicitly in the doc comment so a later port knows what was
+dropped: no per-device stream caching (TensorSharp caches the stream handle to avoid a
+device-new/free round trip per call; this port re-creates one every call), and no beta/bias, F16/BF16
+or quantized input paths (TensorSharp's own `RmsNorm` falls off to a generic path for those; this port
+covers only the fp32 weight-only case `CudaForwardPass`'s RMSNorm calls actually need).
+
+**Tested the two things that are actually testable without a Mac**, via `MlxOpsTests` in `Tests.Cuda`:
+argument-shape validation (pure logic, runs before any native call) and that calling the real op with
+no `libmlxc` present fails predictably (`DllNotFoundException` at the first native call) rather than
+crashing the process. Neither test says the *math* is correct — that genuinely cannot be checked here —
+only that the port's failure mode on this machine is the honest, expected one.
+
 ## Next steps (not started)
 
-1. Pick a minimal real op set from `mlx-c` (array creation from data, basic arithmetic, matmul) and
-   bind those next — still checkable on CPU-only logic (shapes, dtype mapping) even without a Mac to
-   run them, the same way `CudaTensorParallelSharding`'s pure math was unit tested without a GPU.
-2. Implement enough of `IComputeBackend` for a dense-llama forward pass (embedding, attention via MLX
-   ops, RMSNorm, RoPE, SwiGLU FFN, KV cache) — comparable in size to `CudaForwardPass` (~7,000 lines),
-   written blind with no way to run it. Real design work, not a continuation of the skeleton.
+1. Port the next op following the same discipline: read the real TensorSharp source first, copy real
+   signatures, cite file/line ranges, name every simplification. Candidates in rough order of how soon
+   a dense-llama forward pass needs them: array arithmetic/elementwise ops, RoPE, attention
+   (`mlx_fast_scaled_dot_product_attention`), SwiGLU FFN, embedding lookup.
+2. Implement enough of `IComputeBackend` for a dense-llama forward pass (comparable in size to
+   `CudaForwardPass`, ~7,000 lines) once enough ops exist. Real design work, not a continuation of the
+   skeleton.
 3. A flag (`STINGRAY_MLX_*` or similar, registered the same way `STINGRAY_TP_DEGREE` was) once there is
    actual behaviour to gate.
