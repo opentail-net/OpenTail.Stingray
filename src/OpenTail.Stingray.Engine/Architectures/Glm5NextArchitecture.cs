@@ -5,6 +5,12 @@ internal static class Glm5NextArchitecture
     public static readonly ArchitectureDescriptor Descriptor = new()
     {
         Id = "glm5next",
+        // Confirmed 2026-11-07 against a real checkpoint (unsloth/GLM-5.3-Flash-GGUF): its
+        // general.architecture is "glm5-next" (hyphenated), not "glm5next". ArchitectureRegistry.Find
+        // does an exact string match with no normalization, so without this alias the real GGUF
+        // would never match this descriptor at all -- it would hit the generic "architecture not
+        // supported" message instead of this file's specific (and more informative) RefusalReason.
+        Aliases = ["glm5-next"],
         Status = AdmissionStatus.NotAdmitted,
         EvidenceDoc = "docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md",
         // Ported, not verified (CLAUDE.md rule 14); the table in EvidenceDoc is the internal record.

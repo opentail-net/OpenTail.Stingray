@@ -130,8 +130,16 @@ public sealed record Glm5NextHyperparams
         return Convert.ToInt32(v);
     }
 
-    private static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f) =>
-        m.TryGetValue(key, out var v) ? Convert.ToSingle(v) : fallback;
+    private static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f)
+    {
+        if (!m.TryGetValue(key, out var v)) return fallback;
+        // Confirmed on a real checkpoint (2026-11-07, unsloth/GLM-5.3-Flash-GGUF): swiglu_clamp_exp
+        // is a per-layer array ([10, 10, 10, ...], one entry per block), same as deepseek4's
+        // identically-named key -- this crashed with InvalidCastException before, unlike GetInt
+        // just above, which already handles the array case.
+        if (v is System.Collections.IList list) return list.Count > 0 ? Convert.ToSingle(list[0]) : fallback;
+        return Convert.ToSingle(v);
+    }
 
     private static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
         m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
@@ -265,7 +273,10 @@ public sealed unsafe class Glm5NextTensorSet
                 lt.SsmFA = Required($"blk.{i}.ssm_f_a.weight");
                 lt.SsmFB = Required($"blk.{i}.ssm_f_b.weight");
                 lt.SsmBeta = Required($"blk.{i}.ssm_beta.weight");
-                lt.SsmA = Required($"blk.{i}.ssm_a.weight");
+                // Confirmed against the real checkpoint and llama-arch.cpp's LLM_TENSOR_SSM_A
+                // mapping ("blk.%d.ssm_a"): unlike most tensors here, this one has no ".weight"
+                // suffix in the real GGUF.
+                lt.SsmA = Required($"blk.{i}.ssm_a");
                 lt.SsmDtB = Required($"blk.{i}.ssm_dt.bias");
                 lt.SsmGA = Required($"blk.{i}.ssm_g_a.weight");
                 lt.SsmGB = Required($"blk.{i}.ssm_g_b.weight");
@@ -282,13 +293,18 @@ public sealed unsafe class Glm5NextTensorSet
                 lt.WkB = Required($"blk.{i}.attn_k_b.weight");
                 lt.WvB = Required($"blk.{i}.attn_v_b.weight");
                 lt.Wo = Optional($"blk.{i}.attn_output.weight") ?? Required($"blk.{i}.attn_out.weight");
-                lt.IndexerKNorm = Required($"blk.{i}.indexer_k_norm.weight");
-                lt.IndexerKNormBias = Optional($"blk.{i}.indexer_k_norm.bias");
-                lt.IndexerProj = Required($"blk.{i}.indexer_proj.weight");
-                lt.IndexerAttnK = Required($"blk.{i}.indexer_attn_k.weight");
-                lt.IndexerAttnQB = Required($"blk.{i}.indexer_attn_q_b.weight");
-                lt.IndexerKPoolGate = Required($"blk.{i}.indexer_kpool_gate.weight");
-                lt.IndexerKPoolApe = Required($"blk.{i}.indexer_kpool_ape.weight");
+                // Confirmed against the real checkpoint and llama-arch.cpp's LLM_TENSOR_INDEXER_*
+                // mapping: these four are dot-separated ("indexer.xxx"), not underscore
+                // ("indexer_xxx") as previously written. KPOOL_GATE/KPOOL_APE map to the SAME
+                // real tensor names as the compressor gate/ape ("indexer_compressor_gate"/
+                // "indexer_compressor_ape", llama-arch.cpp:699-704), not "indexer_kpool_*".
+                lt.IndexerKNorm = Required($"blk.{i}.indexer.k_norm.weight");
+                lt.IndexerKNormBias = Optional($"blk.{i}.indexer.k_norm.bias");
+                lt.IndexerProj = Required($"blk.{i}.indexer.proj.weight");
+                lt.IndexerAttnK = Required($"blk.{i}.indexer.attn_k.weight");
+                lt.IndexerAttnQB = Required($"blk.{i}.indexer.attn_q_b.weight");
+                lt.IndexerKPoolGate = Required($"blk.{i}.indexer_compressor_gate.weight");
+                lt.IndexerKPoolApe = Required($"blk.{i}.indexer_compressor_ape.weight");
             }
 
             if (i < hp.LeadingDenseBlockCount)

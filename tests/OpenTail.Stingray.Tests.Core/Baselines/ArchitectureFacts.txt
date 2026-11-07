@@ -20,7 +20,7 @@ gemma4|Admitted|Dense|All|batch=True|canBatchPredicate=True|img=True|aud=False|n
 glm-dsa|NotAdmitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 glm4|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 glm4moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
-glm5next|NotAdmitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
+glm5next|NotAdmitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=glm5-next
 gpt-oss|Admitted|GptOss|Cpu, Vulkan|batch=False|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 gpt2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 gptneox|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
