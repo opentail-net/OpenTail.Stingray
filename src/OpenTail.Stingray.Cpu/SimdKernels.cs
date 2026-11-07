@@ -209,6 +209,9 @@ public static unsafe class SimdKernels
         int batchSize, int rows, int cols, DType dtype, bool allowQ8 = false, bool allowBlas = true,
         bool floatActivations = false)
     {
+        // OpenBLAS is opt-in only (STINGRAY_USE_OPENBLAS=1) -- measured materially worse than the
+        // sequential/MicroGemm fallback more often than not, so it is never auto-loaded even when
+        // libopenblas.dll is sitting on disk (owner directive, 2026-11-07; see BlasInterop.cs).
         if (!s_blasLogged)
         {
             Console.Error.WriteLine($"[OpenTail.Stingray] OpenBLAS: {(BlasInterop.IsAvailable ? "LOADED" : "not found (fallback to sequential)")}");
@@ -399,7 +402,9 @@ public static unsafe class SimdKernels
 
     }
 
-    /// <summary>Whether OpenBLAS was found, i.e. whether the SGEMM batched-prefill path is live.</summary>
+    /// <summary>Whether OpenBLAS was found, i.e. whether the SGEMM batched-prefill path is live.
+    /// Opt-in only (STINGRAY_USE_OPENBLAS=1) -- measured materially worse than the fallback on
+    /// every shape/dtype/batch-size tested (docs/done/openblas-elimination-findings-2026-08-20.md).</summary>
     public static bool BlasAvailable => BlasInterop.IsAvailable;
 
     /// <summary>
