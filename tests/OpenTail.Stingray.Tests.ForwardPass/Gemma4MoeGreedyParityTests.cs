@@ -25,7 +25,10 @@ public sealed class Gemma4MoeGreedyParityTests : HeavyTestBase
         var model = modelHandle.Model;
         var hp = OpenTail.Stingray.Engine.ArchitectureModelResolver.ResolveHyperparams(model);
         Assert.True(hp.ParallelDenseMoe);
-        Assert.False(hp.NormalizeMoeTopKWeights);
+        // Confirmed against llama.cpp's real src/models/gemma4.cpp (build_moe_ffn(..., norm_w=true, ...))
+        // that Gemma 4 DOES renormalize its selected top-k router weights -- see
+        // Gemma4ModelSemantics.cs's NormalizeMoeTopKWeights comment.
+        Assert.True(hp.NormalizeMoeTopKWeights);
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         string prompt = $"<|turn>user\n{question}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";

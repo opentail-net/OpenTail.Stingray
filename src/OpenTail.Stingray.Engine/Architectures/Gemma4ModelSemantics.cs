@@ -83,7 +83,13 @@ internal static class Gemma4ModelSemantics
             FfnActivation = FfnActivation.GeluApprox,
             HasPerLayerTokenEmbd = metadata.ContainsKey("_opentailllm.has_ple")
                 || tensors.FindTensor("per_layer_token_embd.weight") is not null,
-            NormalizeMoeTopKWeights = false,
+            // Confirmed against the real reference: llama.cpp's src/models/gemma4.cpp calls
+            // build_moe_ffn(..., /*norm_w=*/true, ...), and llama-graph.cpp's norm_w branch
+            // (~2156-2167) divides the selected top-k router weights by their sum. This was
+            // false here with no sourced justification -- a real correctness defect, not an
+            // intentional backend difference (docs/.../2026-11-06-tensorsharp-gemma4-reference-
+            // comparison.md, WP1).
+            NormalizeMoeTopKWeights = true,
             ParallelDenseMoe = tensors.FindTensor(Gemma4Architecture.FusedExpertTensor) is not null,
             HasLayerOutputScale = metadata.ContainsKey("_opentailllm.has_layer_output_scale")
                 || tensors.FindTensor("blk.0.layer_output_scale.weight") is not null,
