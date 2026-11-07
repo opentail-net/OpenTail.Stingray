@@ -460,9 +460,13 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         var gdnState = _gdnState[layerIdx];
 
         Span<float> gdnOut = stackalloc float[valDim];
+        // qwen4exp gates the GDN output with sigmoid(z), not SiLU(z) -- confirmed 2026-11-07
+        // against TensorSharp's GatedDeltaNetRecurrenceManaged, which documents this exact
+        // one-flag difference from the already-verified Qwen 3.5 hybrid model that this shared
+        // kernel defaults to.
         GdnKernels.GdnRecurrenceDecode(
             qTiled, kTiled, v, alpha, beta, ssmA, ssmDt, normWeight, z,
-            gdnState, gdnOut, _ssmDtRank, _ssmDState, _eps);
+            gdnState, gdnOut, _ssmDtRank, _ssmDState, _eps, useSigmoidGate: true);
 
         // Output projection
         if (layer.SsmOut != null)

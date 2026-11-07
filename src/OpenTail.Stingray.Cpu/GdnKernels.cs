@@ -431,16 +431,17 @@ public static class GdnKernels
         int headDim,
         float normEps = 1e-6f,
         int layer = -1,
-        int position = -1)
+        int position = -1,
+        bool useSigmoidGate = false)
     {
         ValidateRecurrenceArgs(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z, state, output,
             numVHeads, headDim);
 
         if (ShouldTraceGdn(layer, position))
             GdnStepInternal(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z,
-                state, output, numVHeads, headDim, normEps, layer, position);
+                state, output, numVHeads, headDim, normEps, layer, position, useSigmoidGate);
         else
-            GdnStepFast(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z, state, output, numVHeads, headDim, normEps);
+            GdnStepFast(q, k, v, alphaIn, beta, ssmA, dtBias, normWeight, z, state, output, numVHeads, headDim, normEps, useSigmoidGate);
     }
 
     /// <summary>
@@ -815,7 +816,8 @@ public static class GdnKernels
         ReadOnlySpan<float> alphaIn, ReadOnlySpan<float> beta,
         ReadOnlySpan<float> ssmA, ReadOnlySpan<float> dtBias,
         ReadOnlySpan<float> normWeight, ReadOnlySpan<float> z,
-        Span<float> state, Span<float> output, int hv, int d, float normEps)
+        Span<float> state, Span<float> output, int hv, int d, float normEps,
+        bool useSigmoidGate = false)
     {
         fixed (float* qp = q, kp = k, vp = v, ap = alphaIn, bp = beta, sa = ssmA, dtb = dtBias, nw = normWeight, zp = z, st = state, op = output)
         {
@@ -856,10 +858,26 @@ public static class GdnKernels
                 }
                 float scale = 1.0f / MathF.Sqrt((float)(sumSq / d) + normEps);
                 float* zh = zP + h * d;
-                for (int j = 0; j < d; j++)
+                if (useSigmoidGate)
                 {
-                    float zv = zh[j];
-                    oh[j] = oh[j] * scale * nwP[j] * (zv / (1.0f + MathF.Exp(-zv)));
+                    // qwen4exp gates the delta-net output with plain sigmoid(z), not SiLU(z) --
+                    // confirmed against TensorSharp's GatedDeltaNetRecurrenceManaged comment
+                    // ("qwen4exp gates the delta-net output with a SIGMOID where Qwen 3.5 uses
+                    // SiLU. Same kernel, one flag.") and its recurrence formula
+                    // (out = rmsnorm(core) * ssm_norm_w * sigmoid(z)).
+                    for (int j = 0; j < d; j++)
+                    {
+                        float zv = zh[j];
+                        oh[j] = oh[j] * scale * nwP[j] * (1.0f / (1.0f + MathF.Exp(-zv)));
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < d; j++)
+                    {
+                        float zv = zh[j];
+                        oh[j] = oh[j] * scale * nwP[j] * (zv / (1.0f + MathF.Exp(-zv)));
+                    }
                 }
             });
         }
@@ -872,7 +890,8 @@ public static class GdnKernels
         ReadOnlySpan<float> normWeight, ReadOnlySpan<float> z,
         Span<float> state, Span<float> output,
         int hv, int d, float normEps,
-        int layer = -1, int position = -1)
+        int layer = -1, int position = -1,
+        bool useSigmoidGate = false)
     {
         int dd = d * d;
 
@@ -983,13 +1002,28 @@ public static class GdnKernels
             for (int j = 0; j < d; j++)
                 oh[j] = oh[j] * scale * normWeight[j];
 
-            // (7) SiLU(z) gate: o *= z * sigmoid(z).
+            // (7) Output gate: qwen4exp uses plain sigmoid(z); Qwen 3.5 (the default) uses
+            // SiLU(z). See GdnStepFast's useSigmoidGate comment for the source. Each branch
+            // keeps its own original division (not a shared reciprocal-then-multiply) so this
+            // stays bit-identical to GdnStepFast's SiLU path when useSigmoidGate is false --
+            // division and multiply-by-reciprocal round differently in floating point.
             ReadOnlySpan<float> zh = z.Slice(h * d, d);
-            for (int j = 0; j < d; j++)
+            if (useSigmoidGate)
             {
-                float zv = zh[j];
-                float silu = zv / (1.0f + MathF.Exp(-zv));
-                oh[j] *= silu;
+                for (int j = 0; j < d; j++)
+                {
+                    float zv = zh[j];
+                    oh[j] *= 1.0f / (1.0f + MathF.Exp(-zv));
+                }
+            }
+            else
+            {
+                for (int j = 0; j < d; j++)
+                {
+                    float zv = zh[j];
+                    float silu = zv / (1.0f + MathF.Exp(-zv));
+                    oh[j] *= silu;
+                }
             }
         }
     }

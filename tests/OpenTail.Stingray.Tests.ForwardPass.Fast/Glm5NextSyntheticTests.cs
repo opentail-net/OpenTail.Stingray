@@ -157,7 +157,7 @@ public sealed class Glm5NextSyntheticTests : IDisposable
                 AddTensor($"blk.{i}.ssm_f_a.weight", [embedDim, headDimKda]);
                 AddTensor($"blk.{i}.ssm_f_b.weight", [headDimKda, dInner]);
                 AddTensor($"blk.{i}.ssm_beta.weight", [embedDim, numHeads]);
-                AddTensor($"blk.{i}.ssm_a.weight", [numHeads]);
+                AddTensor($"blk.{i}.ssm_a", [numHeads]); // no ".weight" suffix in the real GGUF (see Glm5NextAlpha.cs)
                 AddTensor($"blk.{i}.ssm_dt.bias", [dInner]);
                 AddTensor($"blk.{i}.ssm_g_a.weight", [embedDim, headDimKda]);
                 AddTensor($"blk.{i}.ssm_g_b.weight", [headDimKda, dInner]);
@@ -175,13 +175,15 @@ public sealed class Glm5NextSyntheticTests : IDisposable
                 AddTensor($"blk.{i}.attn_v_b.weight", [kvLoraRank, headDimMla, numHeads]);
                 AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDimMla, embedDim]);
 
-                AddTensor($"blk.{i}.indexer_k_norm.weight", [indexerHeadDim]);
-                AddTensor($"blk.{i}.indexer_k_norm.bias", [indexerHeadDim]);
-                AddTensor($"blk.{i}.indexer_proj.weight", [embedDim, indexerNumHeads]);
-                AddTensor($"blk.{i}.indexer_attn_k.weight", [embedDim, indexerHeadDim]);
-                AddTensor($"blk.{i}.indexer_attn_q_b.weight", [qLoraRank, indexerNumHeads * indexerHeadDim]);
-                AddTensor($"blk.{i}.indexer_kpool_gate.weight", [embedDim, indexerHeadDim]);
-                AddTensor($"blk.{i}.indexer_kpool_ape.weight", [indexerHeadDim, kpool]);
+                // Dot-separated ("indexer.xxx"), and kpool gate/ape map to the compressor tensor
+                // names -- see Glm5NextAlpha.cs's tensor-naming comment.
+                AddTensor($"blk.{i}.indexer.k_norm.weight", [indexerHeadDim]);
+                AddTensor($"blk.{i}.indexer.k_norm.bias", [indexerHeadDim]);
+                AddTensor($"blk.{i}.indexer.proj.weight", [embedDim, indexerNumHeads]);
+                AddTensor($"blk.{i}.indexer.attn_k.weight", [embedDim, indexerHeadDim]);
+                AddTensor($"blk.{i}.indexer.attn_q_b.weight", [qLoraRank, indexerNumHeads * indexerHeadDim]);
+                AddTensor($"blk.{i}.indexer_compressor_gate.weight", [embedDim, indexerHeadDim]);
+                AddTensor($"blk.{i}.indexer_compressor_ape.weight", [indexerHeadDim, kpool]);
             }
 
             if (i == 0)
