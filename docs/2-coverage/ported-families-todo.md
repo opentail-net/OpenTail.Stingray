@@ -11,6 +11,10 @@ table.
 
 Order (user): after the worker-pool experiment, the Q8_K alignment, and `Q1_0` + Bonsai2.
 
+**2026-11-07: cross-cutting programme plan** covering verification (not porting) of
+`qwen4exp`/`glm-dsa`/`glm5next`/`deepseek4` is at
+[2026-11-07-coverage-completion-programme-plan.md](2026-11-07-coverage-completion-programme-plan.md).
+
 ## Per-family plans (one each, 2026-10-03)
 
 References (updated 2026-10-03): the local llama.cpp source (`examples/llama.cpp/llama.cpp`,
