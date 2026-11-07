@@ -150,6 +150,11 @@ public sealed record DeepSeek4Hyperparams
     /// <summary>RoPE base frequency for raw (non-compressed) layers ({arch}.rope.freq_base).</summary>
     public float RopeFreqBase { get; init; } = 10000f;
 
+    /// <summary>YaRN rope scaling factor ({arch}.rope.scaling.factor). Not applied by the forward
+    /// pass -- same gap as deepseek41's identically-named field; a checkpoint declaring YaRN
+    /// (factor &gt; 1) is refused at construction rather than silently run with wrong RoPE.</summary>
+    public float RopeScalingFactor { get; init; } = 1f;
+
     /// <summary>
     /// ALPHA/UNTESTED. Reads the <c>deepseek4</c>-specific GGUF metadata keys per
     /// <c>llama_model_deepseek4::load_arch_hparams</c> (deepseek4.cpp:18-77), using the exact key
@@ -216,6 +221,7 @@ public sealed record DeepSeek4Hyperparams
             CompressRatios = compressRatios,
             RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon", 1e-5f),
             RopeFreqBase = GetFloat(metadata, $"{arch}.rope.freq_base", 10000f),
+            RopeScalingFactor = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f),
         };
     }
 

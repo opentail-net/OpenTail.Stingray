@@ -99,6 +99,15 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
 
     public DeepSeek4ForwardPass(GgufModel model, DeepSeek4Hyperparams hp)
     {
+        // Confirmed by loading a real checkpoint (2026-11-07, unsloth/DeepSeek-V4-Flash-GGUF):
+        // it declares rope.scaling.type=yarn, factor=16, which this port does not apply anywhere
+        // (plain RoPE only). Refuse rather than silently produce wrong attention, same guard
+        // deepseek41 already has for its identically-named field.
+        if (hp.RopeScalingFactor > 1f)
+        {
+            throw new NotSupportedException(
+                $"deepseek4: YaRN rope scaling (factor {hp.RopeScalingFactor}) is not implemented yet.");
+        }
         _model = model;
         _hp = hp;
         _tensors = DeepSeek4TensorSet.Load(model, hp);
