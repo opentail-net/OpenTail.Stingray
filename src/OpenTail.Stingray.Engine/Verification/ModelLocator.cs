@@ -100,8 +100,9 @@ public static class ModelLocator
         return found;
     }
     /// <summary>
-    /// <see cref="Find(string[])"/>, then one sub-folder level under every root: checkpoints are often kept in a folder of their own
-    /// (<c>_models\lfm2-8b-a1b\LFM2-8B-A1B-Q4_K_M.gguf</c>). A direct hit in any root always wins over a nested one.
+    /// <see cref="Find(string[])"/>, then up to two sub-folder levels under every root: checkpoints are often kept in a folder of their
+    /// own (<c>_models\lfm2-8b-a1b\LFM2-8B-A1B-Q4_K_M.gguf</c>), sometimes with a quant-name folder below that
+    /// (<c>_models\qwen38-flash-next\UD-IQ1_S\*.gguf</c>). A direct hit in any root always wins over a nested one.
     /// </summary>
     public static string? FindDeep(params string[] fileNames) => FindDeep(Roots(), fileNames);
 
@@ -121,6 +122,15 @@ public static class ModelLocator
                 {
                     string candidate = Path.Combine(sub, name);
                     if (File.Exists(candidate)) return candidate;
+                    try
+                    {
+                        foreach (var subsub in Directory.EnumerateDirectories(sub))
+                        {
+                            string nested = Path.Combine(subsub, name);
+                            if (File.Exists(nested)) return nested;
+                        }
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
                 }
             }
         return null;

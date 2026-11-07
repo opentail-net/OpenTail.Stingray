@@ -39,10 +39,13 @@ public sealed class ModelLocatorTests : IDisposable
         Assert.Equal(Path.Combine(nested, "model.gguf"), ModelLocator.FindDeep([a], ["model.gguf"]));
         // A direct hit in a later root beats the nested one in an earlier root.
         Assert.Equal(Path.Combine(b, "model.gguf"), ModelLocator.FindDeep([a, b], ["model.gguf"]));
-        // Two levels down is out of scope.
+        // Two levels down (a quant-name folder under a model folder) is also in scope.
         string deeper = Make(Path.Combine("c", "x", "y"), "deep.gguf");
-        Assert.Null(ModelLocator.FindDeep([Path.Combine(_root, "c")], ["deep.gguf"]));
-        Assert.True(File.Exists(Path.Combine(deeper, "deep.gguf")));
+        Assert.Equal(Path.Combine(deeper, "deep.gguf"), ModelLocator.FindDeep([Path.Combine(_root, "c")], ["deep.gguf"]));
+        // Three levels down is still out of scope.
+        string tooDeep = Make(Path.Combine("d", "x", "y", "z"), "toodeep.gguf");
+        Assert.Null(ModelLocator.FindDeep([Path.Combine(_root, "d")], ["toodeep.gguf"]));
+        Assert.True(File.Exists(Path.Combine(tooDeep, "toodeep.gguf")));
     }
     [Fact]
     public void FindAll_ReturnsEveryCopyInSearchOrder_OncePerPath()
