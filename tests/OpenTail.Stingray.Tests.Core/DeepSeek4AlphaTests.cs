@@ -501,5 +501,92 @@ public class DeepSeek4AlphaTests
         Assert.Equal(30, selected[0]);
         Assert.Equal(31, selected[1]);
     }
+
+    // ── MoE hash-routing weight audit (2026-11-07) ──────────────────────────────────────────
+    //
+    // Correcting the "unit weight" assumption found in MoeFfn's hash-routed branch: per
+    // build_moe_ffn (llama-graph.cpp:2129-2146) and deepseek4.cpp:1289-1310, EVERY MoE layer --
+    // hash-routed or not -- gathers each selected expert's weight from the router's sqrt-softplus
+    // PROBABILITY at that expert's index, never a flat 1.0. Hash layers only change how the
+    // indices themselves are chosen (fixed lookup vs top-k argsort); the DeepSeek V3-style
+    // exp_probs_b selection bias is applied post-gating and affects selection only, never the
+    // weight gathered for an already-selected index.
+
+    [Fact]
+    public void WeightSelectedExperts_GathersRawProbsAtFixedIndices_NotUnitWeight()
+    {
+        // Simulates a hash-routed layer: 5 experts total, hash lookup already picked indices
+        // [3, 1, 4] for this token (arbitrary, NOT the top-scoring ones -- hash routing doesn't
+        // rank by score at all). Each has a distinct router probability; the fix under test is
+        // that the gathered weight equals that probability, not 1.0 for every selected expert.
+        float[] unbiasedProbs = [0.1f, 0.9f, 0.4f, 0.6f, 0.05f];
+        int[] expertIndices = [3, 1, 4];
+        const int topK = 3;
+        var weights = new float[topK];
+
+        DeepSeek4Graph.WeightSelectedExperts(expertIndices, unbiasedProbs, topK, normalize: false, scale: 1f, weights);
+
+        Assert.Equal(0.6f, weights[0]); // prob at index 3
+        Assert.Equal(0.9f, weights[1]); // prob at index 1
+        Assert.Equal(0.05f, weights[2]); // prob at index 4
+        Assert.DoesNotContain(1f, weights); // the old bug: every weight would have been exactly 1.0
+    }
+
+    [Fact]
+    public void WeightSelectedExperts_NormalizeAndScale_AppliedIndependently()
+    {
+        float[] unbiasedProbs = [0.1f, 0.9f, 0.4f, 0.6f, 0.05f];
+        int[] expertIndices = [1, 3, 2]; // probs 0.9, 0.6, 0.4
+        const int topK = 3;
+        var weights = new float[topK];
+
+        // Normalization on, scale = 1.0: weights sum to 1, ratios preserved.
+        DeepSeek4Graph.WeightSelectedExperts(expertIndices, unbiasedProbs, topK, normalize: true, scale: 1f, weights);
+        float sum = weights[0] + weights[1] + weights[2];
+        Assert.True(MathF.Abs(sum - 1f) < 1e-5f, $"normalized sum was {sum}, expected 1.0");
+        Assert.Equal(0.9f / 1.9f, weights[0], 5);
+        Assert.Equal(0.6f / 1.9f, weights[1], 5);
+        Assert.Equal(0.4f / 1.9f, weights[2], 5);
+
+        // Normalization off, scale = 2.5 (DeepSeek-V4's real expert_weights_scale): raw probs * scale.
+        DeepSeek4Graph.WeightSelectedExperts(expertIndices, unbiasedProbs, topK, normalize: false, scale: 2.5f, weights);
+        Assert.Equal(0.9f * 2.5f, weights[0], 5);
+        Assert.Equal(0.6f * 2.5f, weights[1], 5);
+        Assert.Equal(0.4f * 2.5f, weights[2], 5);
+
+        // Both on: normalize first, THEN scale (matches build_moe_ffn's order -- norm_w applied
+        // before w_scale, llama-graph.cpp:2156-2174).
+        DeepSeek4Graph.WeightSelectedExperts(expertIndices, unbiasedProbs, topK, normalize: true, scale: 2.5f, weights);
+        float normSum = (0.9f / 1.9f + 0.6f / 1.9f + 0.4f / 1.9f) * 2.5f;
+        float scaledSum = weights[0] + weights[1] + weights[2];
+        Assert.True(MathF.Abs(scaledSum - normSum) < 1e-4f, $"got {scaledSum}, expected {normSum}");
+    }
+
+    [Fact]
+    public void MoeFfn_NormalLayer_SelectionBiasNeverLeaksIntoTheGatheredWeight()
+    {
+        // Reproduces the exact fix in DeepSeek4ForwardPass.MoeFfn's non-hash branch: selection
+        // bias (exp_probs_b) is added to a COPY of the unbiased probs for choosing which experts
+        // to route to, but the weight gathered for each chosen expert must come from the
+        // ORIGINAL unbiased array -- never the biased one. Pick a bias large enough to change
+        // which expert wins top-1 (index 4 only wins once biased), and confirm the winning
+        // expert's weight is its small unbiased prob, not the inflated biased one.
+        float[] logits = [0.1f, 0.2f, 0.15f, 0.05f, 0.08f];
+        var unbiasedProbs = new float[5];
+        DeepSeek4Graph.SqrtSoftplusGate(logits, unbiasedProbs);
+
+        float[] bias = [0f, 0f, 0f, 0f, 5f]; // pushes index 4 to the top post-gating
+        var biasedSelectionProbs = (float[])unbiasedProbs.Clone();
+        for (int e = 0; e < 5; e++) biasedSelectionProbs[e] += bias[e];
+
+        int[] selected = DeepSeek4Graph.SelectTopKIndices(biasedSelectionProbs, topK: 1);
+        Assert.Equal(4, selected[0]); // bias won the selection
+
+        var weights = new float[1];
+        DeepSeek4Graph.WeightSelectedExperts(selected, unbiasedProbs, topK: 1, normalize: false, scale: 1f, weights);
+
+        Assert.Equal(unbiasedProbs[4], weights[0], 6); // weight is the UNBIASED prob at index 4
+        Assert.NotEqual(biasedSelectionProbs[4], weights[0]); // never the biased value
+    }
 }
 

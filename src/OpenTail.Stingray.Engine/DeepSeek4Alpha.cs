@@ -761,19 +761,54 @@ public static class DeepSeek4Graph
         for (int k = 0; k < topK; k++) expertWeightsOut[k] *= scale;
     }
 
+    /// <summary>
+    /// Weights already-selected expert indices (from a hash lookup, or from a separate biased
+    /// selection pass) against the UNBIASED gate probabilities -- <c>build_moe_ffn</c>
+    /// (llama-graph.cpp:2145, <c>ggml_get_rows(probs, selected_experts)</c>) always gathers
+    /// weights from <c>probs</c>, never from the biased <c>selection_probs</c> used only to pick
+    /// WHICH experts to route to. Use this instead of <see cref="SelectAndWeightExperts"/>
+    /// whenever expert selection and expert weighting must read different score arrays (DeepSeek
+    /// V4's <c>exp_probs_b</c> bias, and its hash-routed layers, both need this split).
+    /// </summary>
+    public static void WeightSelectedExperts(
+        ReadOnlySpan<int> expertIndices, ReadOnlySpan<float> unbiasedProbs, int topK,
+        bool normalize, float scale, Span<float> expertWeightsOut)
+    {
+        float sum = 0f;
+        for (int k = 0; k < topK; k++)
+        {
+            expertWeightsOut[k] = unbiasedProbs[expertIndices[k]];
+            sum += expertWeightsOut[k];
+        }
+        if (normalize && sum > 0f)
+        {
+            float inv = 1f / sum;
+            for (int k = 0; k < topK; k++) expertWeightsOut[k] *= inv;
+        }
+        for (int k = 0; k < topK; k++) expertWeightsOut[k] *= scale;
+    }
+
     // ── Hash-layer MoE routing ─────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Hash-layer routing for the leading <c>hashLayerCount</c> layers (uses
-    /// <c>ffn_gate_tid2eid</c> instead of a learned <c>ffn_gate_inp</c> router --
-    /// deepseek4.cpp:154-155). The reference treats this as a lookup table
-    /// ({numExpertsUsed, vocabSize}) indexed by token id, giving each layer's fixed expert set for
-    /// that token directly, with no learned gating weights to combine -- ported here as a direct
-    /// row lookup returning the numExpertsUsed expert indices for token <paramref name="tokenId"/>
-    /// at unit weight each (deepseek4.cpp's build_moe_ffn call site for hash layers was NOT
-    /// directly inspected in this pass -- re-check against the reference's actual build_moe_ffn
-    /// invocation for hash layers before relying on the "unit weight" assumption; this may need a
-    /// softmax/normalize step this port hasn't located yet).
+    /// <c>ffn_gate_tid2eid</c> instead of top-k-by-score selection -- deepseek4.cpp:1289-1291).
+    /// The reference treats this as a lookup table ({numExpertsUsed, vocabSize}) indexed by token
+    /// id, giving each layer's fixed expert set for that token directly -- ported here as a direct
+    /// row lookup returning the numExpertsUsed expert indices for token <paramref name="tokenId"/>.
+    /// <para>
+    /// Audited 2026-11-07 against the actual <c>build_moe_ffn</c> call site (deepseek4.cpp:1289-1310,
+    /// llama-graph.cpp:2129-2146): hash layers still run the SAME router projection (<c>ffn_gate_inp</c>)
+    /// and sqrt-softplus gating as every other MoE layer -- they only swap out HOW the expert
+    /// indices are chosen (hash lookup via <c>selected_experts_in</c> instead of
+    /// <c>ggml_argsort_top_k</c> on the router probs). The weight each selected expert gets is
+    /// still <c>ggml_get_rows(probs, selected_experts)</c> -- the real router probability at that
+    /// index -- never a unit weight. This method therefore returns indices only; callers must
+    /// weight them with <see cref="WeightSelectedExperts"/> against the router's sqrt-softplus
+    /// probabilities, exactly as the non-hash path does. (The previous doc comment here claimed
+    /// "unit weight each" without having checked this call site -- that assumption was wrong and
+    /// is corrected by this audit, not carried forward.)
+    /// </para>
     /// </summary>
     public static void HashLayerSelectExperts(ReadOnlySpan<int> tid2eid, int numExpertsUsed, int vocabSize, int tokenId, Span<int> expertIndicesOut)
     {

@@ -728,13 +728,30 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         var expertIndices = new int[topK];
         var expertWeights = new float[topK];
 
+        // Every MoE layer -- hash-routed or not -- runs the same router projection and
+        // sqrt-softplus gating (build_moe_ffn, llama-graph.cpp:2044-2082); hash layers only swap
+        // out HOW expert indices are chosen (hash lookup vs top-k-by-score), never the weighting.
+        // `probs` here is UNBIASED -- exp_probs_b is added only to pick which experts are
+        // selected (selection_probs = probs + exp_probs_b, llama-graph.cpp:2086-2090), and is
+        // never applied for hash layers at all (deepseek4.cpp:1289-1291 passes exp_probs_b =
+        // nullptr there). The weight each selected expert gets always comes from gathering this
+        // unbiased `probs` at the selected index (ggml_get_rows(probs, selected_experts),
+        // llama-graph.cpp:2145) -- audited 2026-11-07 against both call sites.
+        var logits = new float[numExperts];
+        fixed (float* inPtr = normedInput, outPtr = logits)
+        {
+            SimdKernels.MatVec(outPtr, layer.FfnGateInp!.Value.DataPtr, inPtr, numExperts, _embedDim, layer.FfnGateInp.Value.DType);
+        }
+        var probs = new float[numExperts];
+        DeepSeek4Graph.SqrtSoftplusGate(logits, probs);
+
         if (il < _hp.HashLayerCount)
         {
-            // Hash-routed layer: direct token->expert lookup, unit weight (see
-            // DeepSeek4Graph.HashLayerSelectExperts's doc comment -- the "unit weight" assumption
-            // there is NOT independently re-verified against build_moe_ffn's actual hash-layer
-            // call site).
-            var tid2eidData = new int[topK];
+            // Hash-routed layer: direct token->expert lookup (DeepSeek4Graph.HashLayerSelectExperts),
+            // weighted by the real router probability at each selected index -- not a unit weight
+            // (see that method's 2026-11-07 doc-comment audit; the previous "unit weight"
+            // assumption here was never checked against the actual build_moe_ffn hash-layer call
+            // site and was wrong).
             var tid2eidInfo = layer.FfnGateTid2Eid!.Value;
             // tid2eid is stored as a quantized/float GGUF tensor [numExpertsUsed, vocabSize] --
             // dequantize the one row for this token.
@@ -745,28 +762,28 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
                 byte* rowSrc = tid2eidInfo.DataPtr + (long)token * bytesPerRow;
                 SimdKernels.DequantRow(rowSrc, rowPtr, topK, tid2eidInfo.DType);
             }
-            for (int k = 0; k < topK; k++)
-            {
-                expertIndices[k] = (int)MathF.Round(rowFloat[k]);
-                expertWeights[k] = 1f;
-            }
+            for (int k = 0; k < topK; k++) expertIndices[k] = (int)MathF.Round(rowFloat[k]);
+            DeepSeek4Graph.WeightSelectedExperts(
+                expertIndices, probs, topK, _hp.ExpertWeightsNorm, _hp.ExpertWeightsScale, expertWeights);
         }
         else
         {
-            var logits = new float[numExperts];
-            fixed (float* inPtr = normedInput, outPtr = logits)
-            {
-                SimdKernels.MatVec(outPtr, layer.FfnGateInp!.Value.DataPtr, inPtr, numExperts, _embedDim, layer.FfnGateInp.Value.DType);
-            }
+            // Selection reads the BIASED probs (bias added post-gating, selection only); the
+            // weight each selected expert gets still comes from the UNBIASED probs at that same
+            // index -- fixed 2026-11-07: this used to add the bias to the raw logits BEFORE
+            // sqrt-softplus and then both select AND weight from that biased result, which
+            // doesn't match build_moe_ffn's actual bias placement (post-gating, selection-only).
+            var selectionProbs = probs;
             if (layer.FfnExpProbsB is { } bias)
             {
+                selectionProbs = (float[])probs.Clone();
                 float* biasPtr = (float*)bias.DataPtr;
-                for (int e = 0; e < numExperts; e++) logits[e] += biasPtr[e];
+                for (int e = 0; e < numExperts; e++) selectionProbs[e] += biasPtr[e];
             }
-            var scores = new float[numExperts];
-            DeepSeek4Graph.SqrtSoftplusGate(logits, scores);
-            DeepSeek4Graph.SelectAndWeightExperts(
-                scores, topK, _hp.ExpertWeightsNorm, _hp.ExpertWeightsScale, expertIndices, expertWeights);
+            int[] selected = DeepSeek4Graph.SelectTopKIndices(selectionProbs, topK);
+            selected.CopyTo(expertIndices, 0);
+            DeepSeek4Graph.WeightSelectedExperts(
+                expertIndices, probs, topK, _hp.ExpertWeightsNorm, _hp.ExpertWeightsScale, expertWeights);
         }
 
         var result = new float[_embedDim];
