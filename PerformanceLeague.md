@@ -398,6 +398,21 @@ First real timings for these architectures. C#-only; no llama.cpp ratio was take
 | Phi-3.5-MoE Q3_K_M (`phimoe`) | prefill / decode | CPU | 18.2 / 9.4 | 2026-10-11 | Newest measurement. Decode was 5.7 right after the fix (2026-09-26). Gibberish was from missing RMSNorm bias, output bias, top-k renormalization and LongRoPE (dba59ad). Greedy parity with llama-server (`PhiMoeGreedyParityTests`) |
 | Jais (`jais`, v1) | - | - | Rejected by design: only `jais2` is claimed. The `jais2` checkpoint is gated (401) | 2026-09-13 | Not measured |
 
+## Large alpha MoE ports, correctness-only re-check (2026-11-07)
+
+Not admitted (CLAUDE.md rule 14) — no STATUS.md/README row. All six archs touched during the 2026-11-07 porting session, re-tested fresh this pass. **No throughput numbers**: the real-weight tests use a 5-6 token smoke prompt (`"The capital of France is"`), far too short for a trustworthy t/s figure per the CLAUDE.md perf-pass rule (realistic input, several samples) — reporting one from this prompt would be noise dressed as data. Wall-clock below is whole-process time (model open + construct + forward), not isolated prefill time.
+
+| Arch (GGUF id) | Checkpoint | Test | Result | Performance Check | Notes |
+|---|---|---|---|---|---|
+| `qwen4exp` (Qwen 3.8 Flash Next) | Qwen3.8-Flash-Next UD-IQ1_S, 72.5 GB (paged) | `Qwen4ExpRealWeightsSmokeTests` (2 tests) | **PASS** | 2026-11-07 | Prefill + 1 decode step, finite logits. Whole process 25.7s |
+| `glm5next` / alias `glm5-next` (GLM-5.3-Flash) | GLM-5.3-Flash UD-IQ1_S, 87 GB (paged) | `Glm5NextRealWeightsSmokeTests` (2 tests) | **PASS** | 2026-11-07 | Arch-string alias resolves; prefill produces finite logits. Whole process 29.9s |
+| `deepseek4` (DeepSeek-V4 Flash) | DeepSeek-V4-Flash UD-IQ1_S, 86 GB (paged) | `DeepSeek4RealWeightsSmokeTests` (1 test) | **PASS (refusal by design)** | 2026-11-07 | Checkpoint declares YaRN rope scaling (factor 16), which this alpha port correctly refuses at construction (`NotSupportedException`) instead of running wrong attention. Prefill/decode never reached — this is the intended, safe outcome, not a gap |
+| `deepseek41` (DeepSeek-V4.1 Flash) | none on this machine | — | **untestable** | 2026-11-07 | No checkpoint under any `_models` root; flagged Float32-cast risk (rule 8 list) stays unverified |
+| `deepseek32` (DeepSeek-V3.2) | none on this machine | — | **untestable** | 2026-11-07 | Same — no checkpoint to admit against |
+| `glmdsa` | none on this machine | — | **untestable** | 2026-11-07 | Same |
+
+Found and fixed in this pass: `ModelLocator.FindDeep` only searched one folder level under each root, but these three checkpoints live two levels down (`_models/<name>/<quant>/*.gguf`); all three RealWeights tests were silently skipping before the fix (commit `5d472a3d`).
+
 ## DeepSeek family (`deepseek2`)
 
 | Model | Scenario | Backend | C# t/s | C++ t/s | Ratio | Performance Check | Notes |
