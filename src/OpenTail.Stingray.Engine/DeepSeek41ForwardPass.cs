@@ -20,6 +20,12 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
     private readonly DeepSeek41Hyperparams _hp;
     private readonly DeepSeek41TensorSet _tensors;
     private readonly DeepSeek41Engram _engram;
+    // See AsFloatSpan below: same unguarded Float32 assumption that crashed qwen4exp's and
+    // deepseek4's equivalent HC gate/scale/base tensor helpers on a real checkpoint (2026-11-07).
+    // This architecture's checkpoint (335 GB) cannot be verified on this machine either way, but
+    // the fix is cheap and proven -- applying it pre-emptively rather than leaving a known-risky
+    // cast in place.
+    private readonly Dictionary<nint, float[]> _dequantCache = new();
     private readonly int _hc, _embedDim, _numHeads, _headDim, _ropeDim, _nopeDim, _numLayer;
 
     private readonly List<float[]>[] _kvCache;
@@ -423,11 +429,23 @@ public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
         }
     }
 
-    private static ReadOnlySpan<float> AsFloatSpan(DeepSeek4TensorRef tensor)
+    private ReadOnlySpan<float> AsFloatSpan(DeepSeek4TensorRef tensor)
     {
         int len = 1;
         for (int i = 0; i < tensor.Info.Dimensions.Length; i++) len *= (int)tensor.Info.Dimensions[i];
-        return new ReadOnlySpan<float>(tensor.DataPtr, len);
+        if (tensor.DType == DType.Float32)
+            return new ReadOnlySpan<float>(tensor.DataPtr, len);
+
+        nint key = (nint)tensor.DataPtr;
+        if (!_dequantCache.TryGetValue(key, out var cached))
+        {
+            cached = new float[len];
+            long byteSize = DTypeInfo.ByteSize(len, tensor.DType);
+            var src = new ReadOnlySpan<byte>(tensor.DataPtr, checked((int)byteSize));
+            Dequantize.ToFloat32(src, cached, tensor.DType, len);
+            _dequantCache[key] = cached;
+        }
+        return cached;
     }
 
     public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
