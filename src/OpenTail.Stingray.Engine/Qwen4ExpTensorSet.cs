@@ -131,9 +131,13 @@ public sealed unsafe class Qwen4ExpTensorSet
     {
         var tokEmbd = Require(model, "token_embd.weight");
         var output = Find(model, "output.weight") ?? tokEmbd;
-        var hcHeadNorm = Require(model, "hc_head_norm.weight");
-        var hcHeadDown = Require(model, "hc_head_down.weight");
-        var hcHeadUp = Require(model, "hc_head_up.weight");
+        // Real tensor names (confirmed against a real Qwen3.8-Flash-Next GGUF and against
+        // llama-arch.cpp's LLM_TENSOR_HC_HEAD_NORM/_DOWN/_UP -> "output_hc_norm"/"output_hc_down"/
+        // "output_hc_up" mapping): this port previously looked for "hc_head_*", which never
+        // existed in any real checkpoint and made Load() throw immediately.
+        var hcHeadNorm = Require(model, "output_hc_norm.weight");
+        var hcHeadDown = Require(model, "output_hc_down.weight");
+        var hcHeadUp = Require(model, "output_hc_up.weight");
         var perLayerTokEmbd = Find(model, "per_layer_token_embd.weight");
 
         var layers = new List<Qwen4ExpLayerTensors>(numLayers);

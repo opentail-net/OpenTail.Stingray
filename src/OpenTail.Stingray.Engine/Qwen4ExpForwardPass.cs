@@ -795,6 +795,21 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private static ReadOnlySpan<float> AsFloatSpan(Qwen4ExpTensorRef? tensorRef)
     {
         if (tensorRef is not { } t) return default;
+        // Confirmed by crashing on a real checkpoint (2026-11-07): this cast assumed every tensor
+        // is Float32, with no dtype check at all. Qwen4Exp's real GGUF stores these weights
+        // (hc_attn/ffn_down/up/norm etc.) as Q8_0, so (float*)t.DataPtr with Info.ElementCount read
+        // as float-count massively overran the actual (much smaller, quantized) buffer -> a native
+        // AccessViolationException reading garbage/protected memory inside Qwen4ExpGatedResidual.Mix.
+        // Fail loudly with the dtype named instead of corrupting memory -- dequantizing these
+        // tensors (same as the rest of the engine's Dequantize.ToFloat32 path) is real follow-up
+        // work, not done here: it needs every call site in this file surveyed, not just this one.
+        if (t.DType != DType.Float32)
+        {
+            throw new NotSupportedException(
+                $"qwen4exp: tensor '{t.Name}' is {t.DType}, not Float32 -- this alpha forward pass only " +
+                "handles F32 weights for the hyper-connection gated-residual mixing stage. Dequantizing " +
+                "quantized weights (as the rest of the engine does for other architectures) is not implemented.");
+        }
         int count = (int)t.Info.ElementCount;
         return new ReadOnlySpan<float>((float*)t.DataPtr, count);
     }
