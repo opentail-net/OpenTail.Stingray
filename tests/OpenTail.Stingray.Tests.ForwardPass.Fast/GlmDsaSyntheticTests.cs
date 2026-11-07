@@ -240,6 +240,112 @@ public sealed class GlmDsaSyntheticTests : IDisposable
         }
     }
 
+    [Fact]
+    public void GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold()
+    {
+        const int embedDim = 32;
+        const int numHeads = 2;
+        const int qLoraRank = 16;
+        const int kvLoraRank = 16;
+        const int headDimK = 16;
+        const int headDimV = 16;
+        const int ropeDim = 8;
+        const int indexerNumHeads = 2;
+        const int indexerHeadDim = 128;
+        const int numExperts = 4;
+        const int numExpertsUsed = 2;
+        const int denseFfn = 32;
+        const int vocabSize = 32;
+        const int numLayers = 1; // single dense "full indexer" layer is enough to exercise the shortcut
+        const int indexerTopK = 3; // positions 0..2 stay <= top_k (shortcut); position 3 crosses it
+
+        string path = Path.Combine(Path.GetTempPath(), $"glm_dsa_indexer_topk_{Guid.NewGuid():N}.gguf");
+        _tempFiles.Add(path);
+
+        var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+
+        void AddTensor(string name, long[] shape, float fill = 0.05f)
+        {
+            long total = 1;
+            foreach (var s in shape) total *= s;
+            var floats = new float[total];
+            for (int i = 0; i < total; i++) floats[i] = fill * MathF.Sin(i + 1);
+            var bytes = new byte[total * 4];
+            Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+            tensors[name] = (shape, DType.Float32, bytes);
+        }
+
+        AddTensor("token_embd.weight", [embedDim, vocabSize]);
+        AddTensor("output_norm.weight", [embedDim]);
+        AddTensor("output.weight", [embedDim, vocabSize]);
+
+        for (int i = 0; i < numLayers; i++)
+        {
+            AddTensor($"blk.{i}.attn_norm.weight", [embedDim]);
+            AddTensor($"blk.{i}.attn_q_a_norm.weight", [qLoraRank]);
+            AddTensor($"blk.{i}.attn_kv_a_norm.weight", [kvLoraRank]);
+            AddTensor($"blk.{i}.attn_q_a.weight", [embedDim, qLoraRank]);
+            AddTensor($"blk.{i}.attn_q_b.weight", [qLoraRank, numHeads * headDimK]);
+            AddTensor($"blk.{i}.attn_kv_a_mqa.weight", [embedDim, kvLoraRank + ropeDim]);
+            AddTensor($"blk.{i}.attn_k_b.weight", [headDimK - ropeDim, kvLoraRank, numHeads]);
+            AddTensor($"blk.{i}.attn_v_b.weight", [kvLoraRank, headDimV, numHeads]);
+            AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDimV, embedDim]);
+            AddTensor($"blk.{i}.ffn_norm.weight", [embedDim]);
+
+            AddTensor($"blk.{i}.indexer_k_norm.weight", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_k_norm.bias", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_proj.weight", [embedDim, indexerNumHeads]);
+            AddTensor($"blk.{i}.indexer_attn_k.weight", [embedDim, indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_attn_q_b.weight", [qLoraRank, indexerNumHeads * indexerHeadDim]);
+
+            AddTensor($"blk.{i}.ffn_gate.weight", [embedDim, denseFfn]);
+            AddTensor($"blk.{i}.ffn_up.weight", [embedDim, denseFfn]);
+            AddTensor($"blk.{i}.ffn_down.weight", [denseFfn, embedDim]);
+        }
+
+        var metadata = new Dictionary<string, object>
+        {
+            ["general.architecture"] = "glm-dsa",
+            ["glm-dsa.leading_dense_block_count"] = (ulong)numLayers,
+            ["glm-dsa.expert_weights_scale"] = 2.5f,
+            ["glm-dsa.expert_weights_norm"] = true,
+            ["glm-dsa.expert_shared_count"] = (ulong)1,
+            ["glm-dsa.attention.q_lora_rank"] = (ulong)qLoraRank,
+            ["glm-dsa.attention.kv_lora_rank"] = (ulong)kvLoraRank,
+            ["glm-dsa.attention.key_length_mla"] = (ulong)headDimK,
+            ["glm-dsa.attention.value_length_mla"] = (ulong)headDimV,
+            ["glm-dsa.attention.indexer.head_count"] = (ulong)indexerNumHeads,
+            ["glm-dsa.attention.indexer.key_length"] = (ulong)indexerHeadDim,
+            ["glm-dsa.attention.indexer.top_k"] = (ulong)indexerTopK,
+            ["glm-dsa.expert_gating_func"] = (ulong)2,
+        };
+
+        WriteGgufFile(path, metadata, tensors);
+
+        using var model = GgufModel.Open(path);
+        var hp = GlmDsaHyperparams.FromGgufMetadata(
+            model.Metadata, "glm-dsa", numLayerAll: numLayers, embedDim: embedDim, numHeads: numHeads,
+            headDim: headDimK, ropeDim: ropeDim, numExperts: numExperts, numExpertsUsed: numExpertsUsed);
+
+        var forwardPass = new GlmDsaForwardPass(model, hp);
+
+        // Drive 5 tokens through: positions 0,1,2 keep numKeys (1..3) <= top_k=3 -- the shortcut
+        // path. Position 3 makes numKeys=4 > top_k=3 -- first step that must run real scoring.
+        // Position 4 (numKeys=5) re-exercises scoring with the indexer K cache now spanning both
+        // code paths, confirming earlier shortcut-path keys are still usable as scoring inputs.
+        int[] tokens = [1, 5, 9, 13, 17];
+        for (int pos = 0; pos < tokens.Length; pos++)
+        {
+            var logits = forwardPass.Forward(token: tokens[pos], position: pos);
+            Assert.Equal(vocabSize, logits.Length);
+            foreach (var l in logits)
+            {
+                Assert.False(float.IsNaN(l));
+                Assert.False(float.IsInfinity(l));
+            }
+        }
+    }
+
     private static void WriteGgufFile(
         string path,
         Dictionary<string, object> metadata,

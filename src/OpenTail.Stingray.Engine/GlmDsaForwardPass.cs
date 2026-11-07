@@ -274,6 +274,33 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
         int indexerHeadDim = _hp.IndexerHeadSize; // 128
         int nRot = _hp.RopeDim; // 64
 
+        // The indexer K cache must be kept up to date on every token regardless of whether
+        // scoring runs this step, since a later step (once numKeys exceeds indexer_top_k) needs
+        // every earlier token's indexer K, not just the ones scored since then.
+        var indexerK = new float[indexerHeadDim];
+        fixed (float* inPtr = normedInput, outPtr = indexerK)
+        {
+            SimdKernels.MatVec(outPtr, layer.IndexerAttnK!.Value.DataPtr, inPtr, indexerHeadDim, _embedDim, layer.IndexerAttnK.Value.DType);
+        }
+        LayerNormInPlace(indexerK, layer.IndexerKNorm!.Value, layer.IndexerKNormBias);
+        ApplyRopeNorm(indexerK.AsSpan(0, nRot), position, _hp.RopeFreqBase);
+        fixed (float* kPtr = indexerK)
+        {
+            PrismHadamard.ApplySylvesterHadamard(kPtr, indexerHeadDim, 128);
+        }
+        _indexerKCache[il].Add(indexerK);
+
+        // While every cached key still fits under indexer_top_k, top-k selection can only ever
+        // select all of them -- skip the query projection/RoPE/Hadamard, the per-head weight
+        // projection and the scoring pass entirely (TensorSharp's GlmDsaModel.Attention.cs
+        // SparseAttentionActive()/AppendIndexerKeys() takes the same shortcut).
+        if (numKeys <= _hp.IndexerTopK)
+        {
+            var all = new int[numKeys];
+            for (int t = 0; t < numKeys; t++) all[t] = t;
+            return all;
+        }
+
         var indexerQ = new float[numIndexerHeads * indexerHeadDim];
         fixed (float* inPtr = qrNormed, outPtr = indexerQ)
         {
@@ -291,21 +318,6 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
         {
             PrismHadamard.ApplySylvesterHadamard(qPtr, numIndexerHeads * indexerHeadDim, 128);
         }
-
-        var indexerK = new float[indexerHeadDim];
-        fixed (float* inPtr = normedInput, outPtr = indexerK)
-        {
-            SimdKernels.MatVec(outPtr, layer.IndexerAttnK!.Value.DataPtr, inPtr, indexerHeadDim, _embedDim, layer.IndexerAttnK.Value.DType);
-        }
-        LayerNormInPlace(indexerK, layer.IndexerKNorm!.Value, layer.IndexerKNormBias);
-        ApplyRopeNorm(indexerK.AsSpan(0, nRot), position, _hp.RopeFreqBase);
-
-        // Orthonormal Sylvester-Walsh-Hadamard transform on indexer_k in-place
-        fixed (float* kPtr = indexerK)
-        {
-            PrismHadamard.ApplySylvesterHadamard(kPtr, indexerHeadDim, 128);
-        }
-        _indexerKCache[il].Add(indexerK);
 
         var indexerWeightsPerHead = new float[numIndexerHeads];
         fixed (float* inPtr = normedInput, outPtr = indexerWeightsPerHead)
