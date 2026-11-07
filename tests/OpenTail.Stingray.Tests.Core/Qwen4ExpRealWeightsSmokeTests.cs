@@ -98,4 +98,61 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
         // checkpoint and prompt. Loose tolerance: it sums in a different order/precision path.
         Assert.True(Math.Abs(sum - 2.627300) < 0.01, $"embedding sum {sum:F6} vs llama.cpp's 2.627300 -- tokenization/embedding dequant divergence, not layer math.");
     }
+
+    /// <summary>
+    /// Coverage-programme Phase 1 step 1 (2026-11-07): reproduce the "incoherent continuation"
+    /// claim from ported-families-todo.md's Qwen row with a FIXED prompt and greedy decoding,
+    /// before any root-causing. Writes the exact token IDs and decoded text to the test output so
+    /// they can be recorded verbatim in the plan doc -- this test intentionally makes no pass/fail
+    /// claim about coherence (that's a human/semantic judgement, not something to assert), it only
+    /// pins down what "the bug" actually looks like right now, on this exact checkpoint.
+    /// </summary>
+    [Fact]
+    public void Generate_OnRealCheckpoint_GreedyContinuation_RecordsTokensForReproduction()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = OpenTail.Stingray.Engine.Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = OpenTail.Stingray.Engine.Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+        using var forwardPass = new OpenTail.Stingray.Engine.Qwen4ExpForwardPass(model, hp, tensors);
+
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+        var promptIds = new List<int>();
+        if (tokenizer.AddBosToken) promptIds.Add(tokenizer.BosTokenId);
+        const string prompt = "The capital of France is";
+        promptIds.AddRange(tokenizer.Encode(prompt));
+
+        var generated = new List<int>();
+        var logits = forwardPass.Prefill(promptIds.ToArray());
+
+        int ArgMax(ReadOnlySpan<float> l)
+        {
+            int best = 0; float bestVal = float.NegativeInfinity;
+            for (int i = 0; i < l.Length; i++) if (l[i] > bestVal) { bestVal = l[i]; best = i; }
+            return best;
+        }
+
+        int next = ArgMax(logits);
+        generated.Add(next);
+        for (int pos = promptIds.Count; generated.Count < 20; pos++)
+        {
+            logits = forwardPass.Forward(next, pos);
+            Assert.All(logits.ToArray(), l => Assert.True(float.IsFinite(l)));
+            next = ArgMax(logits);
+            generated.Add(next);
+        }
+
+        string continuationText = tokenizer.Decode(generated);
+        Console.WriteLine(
+            $"PROMPT: \"{prompt}\"" +
+            $"\nPROMPT_IDS: [{string.Join(", ", promptIds)}]" +
+            $"\nGENERATED_IDS: [{string.Join(", ", generated)}]" +
+            $"\nGENERATED_TEXT: \"{continuationText}\"");
+
+        // No coherence assertion: this test's job is reproduction evidence, not a verdict.
+        Assert.Equal(20, generated.Count);
+    }
 }
