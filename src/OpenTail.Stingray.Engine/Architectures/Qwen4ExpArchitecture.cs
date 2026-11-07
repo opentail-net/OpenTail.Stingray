@@ -12,6 +12,6 @@ internal static class Qwen4ExpArchitecture
         // FP32 GDN, fused/separate-tensor MoE, 16-head n-gram PLE with disk mmap, QSA four-section
         // IMRoPE, indexer cache, K-pool sparse selection) -- this comment previously described an
         // earlier, incomplete state and was stale.
-        RefusalReason = "Structurally complete alpha forward pass (GatedResidual HC, FP32 GDN, 512-expert MoE, n-gram PLE, QSA IMRoPE + indexer); real-weight run attempted 2026-11-07 against unsloth/Qwen3.8-Flash-Next-GGUF UD-IQ1_S -- found and fixed two wrong tensor names, then a confirmed native crash (AsFloatSpan cast quantized Q8_0 hyper-connection weights as Float32), now refused loudly instead of corrupting memory. Still blocked on dequantization support for these tensors, not yet implemented.",
+        RefusalReason = "Structurally complete alpha forward pass (GatedResidual HC, FP32 GDN, 512-expert MoE, n-gram PLE, QSA IMRoPE + indexer); real-weight run 2026-11-07 against unsloth/Qwen3.8-Flash-Next-GGUF UD-IQ1_S -- fixed two wrong tensor names and a crash (AsFloatSpan cast quantized Q8_0 weights as Float32; now dequantizes via Dequantize.ToFloat32, cached per tensor), and prefill now runs to completion with finite logits (Qwen4ExpRealWeightsSmokeTests). Not yet a parity test: no reference output (llama.cpp/TensorSharp) has been compared against. MTP and vision remain deferred.",
     };
 }

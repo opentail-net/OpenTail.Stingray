@@ -8,14 +8,17 @@ namespace OpenTail.Stingray.Tests.Core;
 /// here with the real GGUF instead. Not a parity test: there is no reference output pinned yet.
 ///
 /// <para>Found 2026-11-07: tensor loading had two wrong tensor names (fixed, see
-/// Qwen4ExpTensorSet.cs's "output_hc_norm/_down/_up" comment) and metadata/loader worked once that
-/// was fixed. Then a REAL crash: <see cref="Qwen4ExpForwardPass"/>'s <c>AsFloatSpan</c> helper cast
-/// every weight tensor as Float32 with no dtype check -- this checkpoint stores the hyper-connection
-/// weights as Q8_0, so the cast massively overran the real (quantized, much smaller) buffer and
-/// crashed the whole process with a native AccessViolationException. Fixed to fail loudly with a
-/// NotSupportedException instead (AsFloatSpan's own comment has the detail) -- dequantizing these
-/// tensors is real, not-yet-done follow-up work, so this test currently documents that exact,
-/// confirmed blocker rather than asserting a result that can't be produced yet.</para>
+/// Qwen4ExpTensorSet.cs's "output_hc_norm/_down/_up" comment). Then a REAL crash: <see
+/// cref="Qwen4ExpForwardPass"/>'s <c>AsFloatSpan</c> helper cast every weight tensor as Float32
+/// with no dtype check -- this checkpoint stores the hyper-connection weights as Q8_0, so the cast
+/// massively overran the real (quantized, much smaller) buffer and crashed the whole process with
+/// a native AccessViolationException. First fixed to fail loudly with a NotSupportedException
+/// instead of corrupting memory, then (same day) actually fixed by dequantizing via the engine's
+/// existing Dequantize.ToFloat32, cached per tensor pointer (AsFloatSpan's own comment has the
+/// detail) -- these are all small per-layer control tensors, not the large MoE expert matrices, so
+/// caching them as F32 is bounded. This test now checks prefill runs to completion with finite
+/// logits -- still not a parity test (no reference output pinned), just "doesn't crash or produce
+/// NaN/Inf" on a real checkpoint.</para>
 /// </summary>
 public sealed class Qwen4ExpRealWeightsSmokeTests
 {
@@ -23,7 +26,7 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
         "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
 
     [Fact]
-    public void Prefill_OnRealCheckpoint_RefusesQuantizedHcWeightsInsteadOfCorruptingMemory()
+    public void Prefill_OnRealCheckpoint_ProducesFiniteLogits()
     {
         string? path = FindModel();
         Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
@@ -39,7 +42,9 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
         if (tokenizer.AddBosToken) ids.Add(tokenizer.BosTokenId);
         ids.AddRange(tokenizer.Encode("The capital of France is"));
 
-        var ex = Assert.Throws<NotSupportedException>(() => forwardPass.Prefill(ids.ToArray()));
-        Assert.Contains("Q8_0", ex.Message);
+        var logits = forwardPass.Prefill(ids.ToArray());
+
+        Assert.True(logits.Length > 0);
+        Assert.All(logits.ToArray(), l => Assert.True(float.IsFinite(l)));
     }
 }

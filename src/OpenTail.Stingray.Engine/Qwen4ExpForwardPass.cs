@@ -25,6 +25,14 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly GgufModel _model;
     private readonly Qwen4ExpHyperparams _hp;
     private readonly Qwen4ExpTensorSet _tensors;
+    // Dequantized copies of the small "control" tensors AsFloatSpan serves (norm weights, HC
+    // gate/down/up projections, SSM/GDN scalars, conv kernels) -- these are all small per-layer
+    // tensors, not the large MoE expert matrices (those go through DType-aware MatVec dispatch
+    // elsewhere, not this cache), so caching every one of them as F32 is bounded (a few GB at
+    // most across 48 layers) and safe on this machine's RAM even for the full paged 72.5 GB model.
+    // Keyed by the tensor's raw data pointer, which is stable for the model's lifetime (backed by
+    // GgufModel's mmap).
+    private readonly Dictionary<nint, float[]> _dequantCache = new();
     private readonly int _embedDim;
     private readonly int _hc;
     private readonly int _hcDim;
@@ -792,26 +800,31 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
     }
 
-    private static ReadOnlySpan<float> AsFloatSpan(Qwen4ExpTensorRef? tensorRef)
+    private ReadOnlySpan<float> AsFloatSpan(Qwen4ExpTensorRef? tensorRef)
     {
         if (tensorRef is not { } t) return default;
-        // Confirmed by crashing on a real checkpoint (2026-11-07): this cast assumed every tensor
-        // is Float32, with no dtype check at all. Qwen4Exp's real GGUF stores these weights
-        // (hc_attn/ffn_down/up/norm etc.) as Q8_0, so (float*)t.DataPtr with Info.ElementCount read
-        // as float-count massively overran the actual (much smaller, quantized) buffer -> a native
-        // AccessViolationException reading garbage/protected memory inside Qwen4ExpGatedResidual.Mix.
-        // Fail loudly with the dtype named instead of corrupting memory -- dequantizing these
-        // tensors (same as the rest of the engine's Dequantize.ToFloat32 path) is real follow-up
-        // work, not done here: it needs every call site in this file surveyed, not just this one.
-        if (t.DType != DType.Float32)
-        {
-            throw new NotSupportedException(
-                $"qwen4exp: tensor '{t.Name}' is {t.DType}, not Float32 -- this alpha forward pass only " +
-                "handles F32 weights for the hyper-connection gated-residual mixing stage. Dequantizing " +
-                "quantized weights (as the rest of the engine does for other architectures) is not implemented.");
-        }
         int count = (int)t.Info.ElementCount;
-        return new ReadOnlySpan<float>((float*)t.DataPtr, count);
+        // Confirmed by crashing on a real checkpoint (2026-11-07): this used to cast every tensor
+        // as Float32 with no dtype check at all. Qwen4Exp's real GGUF stores these small control
+        // tensors (hc_attn/ffn_down/up/norm etc.) as Q8_0, so (float*)t.DataPtr with
+        // Info.ElementCount read as float-count massively overran the actual (much smaller,
+        // quantized) buffer -> a native AccessViolationException reading garbage/protected memory
+        // inside Qwen4ExpGatedResidual.Mix. Fixed to dequantize via the same Dequantize.ToFloat32
+        // path the rest of the engine uses, cached per tensor pointer since these weights never
+        // change across calls (see _dequantCache's own doc comment for why this is safe here).
+        if (t.DType == DType.Float32)
+            return new ReadOnlySpan<float>((float*)t.DataPtr, count);
+
+        nint key = (nint)t.DataPtr;
+        if (!_dequantCache.TryGetValue(key, out var cached))
+        {
+            cached = new float[count];
+            long byteSize = DTypeInfo.ByteSize(count, t.DType);
+            var src = new ReadOnlySpan<byte>(t.DataPtr, checked((int)byteSize));
+            Dequantize.ToFloat32(src, cached, t.DType, count);
+            _dequantCache[key] = cached;
+        }
+        return cached;
     }
 
     public int VocabSize => _vocabSize;
