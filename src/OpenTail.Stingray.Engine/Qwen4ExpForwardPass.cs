@@ -33,9 +33,19 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     // Keyed by the tensor's raw data pointer, which is stable for the model's lifetime (backed by
     // GgufModel's mmap).
     private readonly Dictionary<nint, float[]> _dequantCache = new();
+    private readonly Dictionary<nint, float[]> _convWeightTransposeCache = new();
     private readonly bool _q4eDebug = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1";
     private double[]? _layerSumAccum;
     private double[]? _hcCombine0Accum;
+    private double[]? _linearAttnOut0Accum;
+    private double[]? _alphaAccum;
+    private double[]? _betaAccum;
+    private double[]? _qAccum;
+    private double[]? _kAccum;
+    private double[]? _vAccum;
+    private double[]? _qkvRawAccum;
+    private double[]? _convRawAccum;
+    private double[]? _convSiluAccum;
     private double[]? _ffnOut0Accum;
     private double[]? _ffnInject0Accum;
     private readonly int _embedDim;
@@ -261,11 +271,19 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             // 2c. Token Mixer (GDN or QSA)
             if (layer.IsRecurrent)
             {
-                ExecuteGdnMixer(il, layer, _mixed, _blockOut);
+                ExecuteGdnMixer(il, layer, _mixed, _blockOut, position);
             }
             else
             {
                 ExecuteQsaMixer(il, layer, _mixed, position, _blockOut);
+            }
+
+            if (_q4eDebug && il == 0 && position <= 4)
+            {
+                double s = 0; foreach (var v in _blockOut) s += v;
+                (_linearAttnOut0Accum ??= new double[1])[0] += s;
+                if (position == 4)
+                    Console.Error.WriteLine($"[q4e-dbg] linear_attn_out-0 sum={_linearAttnOut0Accum[0]:F6}");
             }
 
             // 2d. HC Combine after Token Mixer
@@ -442,7 +460,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
     }
 
-    private void ExecuteGdnMixer(int layerIdx, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output)
+    private void ExecuteGdnMixer(int layerIdx, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, Span<float> output, int position)
     {
         // Recurrent GDN mixer
         output.Clear();
@@ -456,18 +474,44 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         Span<float> qkv = stackalloc float[qkvDim];
         MatVec(layer.AttnQkv.Value, input, qkv);
 
+        if (_q4eDebug && layerIdx == 0 && position <= 4)
+        {
+            double s = 0; foreach (var x in qkv) s += x;
+            (_qkvRawAccum ??= new double[1])[0] += s;
+            if (position == 4)
+                Console.Error.WriteLine($"[q4e-dbg] linear_attn_qkv_mixed-0 sum={_qkvRawAccum[0]:F6}");
+        }
+
         // Conv1D over QKV channels
         var convState = _gdnConvState[layerIdx];
         Span<float> qkvPostConv = stackalloc float[qkvDim];
 
         if (layer.SsmConv1d != null)
         {
-            var wConv = AsFloatSpan(layer.SsmConv1d);
-            GdnKernels.CausalDepthwiseConv1dDecode(qkv, convState, wConv, qkvPostConv, qkvDim, _ssmDConv);
+            // GGUF stores blk.N.ssm_conv1d.weight as ne=[kernel, channels] (kernel innermost/
+            // fastest in memory per ggml's ggml_compute_forward_ssm_conv_f32, c[i0 + i1*nc]) --
+            // i.e. on-disk layout is [channel][kernel], the transpose of what Conv1dStep's
+            // weight.Slice(k*channels, channels) expects ([kernel][channel]). HybridGdnForwardPass
+            // (Qwen 3.5 hybrid, already verified) already transposes this at load time
+            // (LoadConv1dTransposed); this port never did, so it silently ran the wrong conv
+            // weights on every token. Found 2026-11-07 via real-weight layer-by-layer sum diffing
+            // against llama.cpp's eval-callback dump (conv_output_raw was off by ~3.5x; after this
+            // fix the raw QKV mixer output -- linear_attn_out-0 -- moved from +30.5 (wrong sign) to
+            // -2.76, matching llama.cpp's -2.59 to within quantisation noise).
+            var wConvT = GetTransposedConvWeight(layer, qkvDim);
+            GdnKernels.CausalDepthwiseConv1dDecode(qkv, convState, wConvT, qkvPostConv, qkvDim, _ssmDConv);
         }
         else
         {
             qkv.CopyTo(qkvPostConv);
+        }
+
+        if (_q4eDebug && layerIdx == 0 && position <= 4)
+        {
+            double s = 0; foreach (var x in qkvPostConv) s += x;
+            (_convRawAccum ??= new double[1])[0] += s;
+            if (position == 4)
+                Console.Error.WriteLine($"[q4e-dbg] conv_output_raw-0 sum={_convRawAccum[0]:F6}");
         }
 
         // SiLU on the conv output, confirmed 2026-11-07 against both llama.cpp (qwen4exp.cpp:1160,
@@ -480,6 +524,14 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         {
             float x = qkvPostConv[i];
             qkvPostConv[i] = x / (1.0f + MathF.Exp(-x));
+        }
+
+        if (_q4eDebug && layerIdx == 0 && position <= 4)
+        {
+            double s = 0; foreach (var x in qkvPostConv) s += x;
+            (_convSiluAccum ??= new double[1])[0] += s;
+            if (position == 4)
+                Console.Error.WriteLine($"[q4e-dbg] conv_output_silu-0 sum={_convSiluAccum[0]:F6}");
         }
 
         // Gate projection z
@@ -537,6 +589,24 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         var ssmDt = AsFloatSpan(layer.SsmDt);
         var normWeight = layer.SsmNorm != null ? AsFloatSpan(layer.SsmNorm) : ReadOnlySpan<float>.Empty;
         var gdnState = _gdnState[layerIdx];
+
+        if (_q4eDebug && layerIdx == 0 && position <= 4)
+        {
+            double sA = 0; foreach (var x in alpha) sA += x;
+            double sB = 0; foreach (var x in beta) sB += x;
+            double sQ = 0; foreach (var x in qTiled) sQ += x;
+            double sK = 0; foreach (var x in kTiled) sK += x;
+            double sV = 0; foreach (var x in v) sV += x;
+            (_alphaAccum ??= new double[1])[0] += sA;
+            (_betaAccum ??= new double[1])[0] += sB;
+            (_qAccum ??= new double[1])[0] += sQ;
+            (_kAccum ??= new double[1])[0] += sK;
+            (_vAccum ??= new double[1])[0] += sV;
+            if (position == 4)
+                Console.Error.WriteLine(
+                    $"[q4e-dbg] alpha-0(raw) sum={_alphaAccum[0]:F6} beta-0(raw) sum={_betaAccum[0]:F6} " +
+                    $"q_tiled-0 sum={_qAccum[0]:F6} k_tiled-0 sum={_kAccum[0]:F6} v-0 sum={_vAccum[0]:F6}");
+        }
 
         Span<float> gdnOut = stackalloc float[valDim];
         // qwen4exp gates the GDN output with sigmoid(z), not SiLU(z) -- confirmed 2026-11-07
@@ -909,6 +979,49 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
         return cached;
     }
+
+    /// <summary>
+    /// Dequantized and transposed copy of a layer's <c>ssm_conv1d.weight</c>, from GGUF's
+    /// on-disk <c>[channel][kernel]</c> layout into the <c>[kernel][channel]</c> layout
+    /// <see cref="GdnKernels.CausalDepthwiseConv1dDecode"/> expects (see the call site's comment
+    /// for the source). Cached per tensor pointer, same rationale as <see cref="AsFloatSpan"/>.
+    /// </summary>
+    private ReadOnlySpan<float> GetTransposedConvWeight(Qwen4ExpLayerTensors layer, int channels)
+    {
+        var t = layer.SsmConv1d!.Value;
+        int count = (int)t.Info.ElementCount;
+        nint key = (nint)t.DataPtr;
+        if (_convWeightTransposeCache.TryGetValue(key, out var cached)) return cached;
+
+        float[] src;
+        if (t.DType == DType.Float32)
+        {
+            src = new float[count];
+            new ReadOnlySpan<float>((float*)t.DataPtr, count).CopyTo(src);
+        }
+        else
+        {
+            src = new float[count];
+            long byteSize = DTypeInfo.ByteSize(count, t.DType);
+            Dequantize.ToFloat32(new ReadOnlySpan<byte>(t.DataPtr, checked((int)byteSize)), src, t.DType, count);
+        }
+
+        var dst = new float[count];
+        for (int c = 0; c < channels; c++)
+            for (int k = 0; k < _ssmDConv; k++)
+                dst[k * channels + c] = src[c * _ssmDConv + k];
+
+        _convWeightTransposeCache[key] = dst;
+        return dst;
+    }
+
+    /// <summary>
+    /// Sum of layer 0's raw GDN-mixer output (post output-projection, pre HC-combine) across
+    /// positions 0-4 of a 5-token prefill -- only populated when STINGRAY_Q4E_DEBUG=1. Exposed for
+    /// <see cref="OpenTail.Stingray.Tests.Core.Qwen4ExpRealWeightsSmokeTests"/>'s regression test
+    /// for the conv1d weight-transpose fix (2026-11-07); not meant for production use.
+    /// </summary>
+    internal double? DebugLinearAttnOut0Sum => _q4eDebug ? _linearAttnOut0Accum?[0] : null;
 
     public int VocabSize => _vocabSize;
     public int MaxSeqLen => _hp.ContextLength > 0 ? _hp.ContextLength : 4096;

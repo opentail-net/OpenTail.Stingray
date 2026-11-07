@@ -155,4 +155,55 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
         // No coherence assertion: this test's job is reproduction evidence, not a verdict.
         Assert.Equal(20, generated.Count);
     }
+
+    /// <summary>
+    /// Regression test for the real root cause of the above reproduction, found and fixed
+    /// 2026-11-07: <c>blk.N.ssm_conv1d.weight</c> is stored by GGUF as <c>[channel][kernel]</c>
+    /// (kernel innermost per ggml's <c>ggml_compute_forward_ssm_conv_f32</c>), the transpose of
+    /// what <see cref="OpenTail.Stingray.Cpu.GdnKernels.CausalDepthwiseConv1dDecode"/>'s
+    /// <c>weight[k*channels+c]</c> access pattern expects. <see
+    /// cref="HybridGdnForwardPass"/> (Qwen 3.5 hybrid, already verified) already transposes this
+    /// at load time; this port never did. Asserts layer 0's raw GDN-mixer output sum (aggregated
+    /// over the 5-token prefill, before HC-combine) against llama.cpp's independent eval-callback
+    /// dump of the identical checkpoint/prompt (<c>linear_attn_out-0</c>, sum = -2.591775) --
+    /// before the fix this was +30.497038 (wrong sign, ~12x off); reverting
+    /// <see cref="Qwen4ExpForwardPass"/>'s transpose would reproduce that failure.
+    /// </summary>
+    [Fact]
+    public void Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        string? old = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG");
+        try
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_Q4E_DEBUG", "1");
+
+            using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+            int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+            var hp = OpenTail.Stingray.Engine.Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+            var tensors = OpenTail.Stingray.Engine.Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+            using var forwardPass = new OpenTail.Stingray.Engine.Qwen4ExpForwardPass(model, hp, tensors);
+
+            var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+            var ids = tokenizer.Encode("The capital of France is").ToList();
+            Assert.False(tokenizer.AddBosToken);
+
+            forwardPass.Prefill(ids.ToArray());
+
+            double? sum = forwardPass.DebugLinearAttnOut0Sum;
+            Assert.NotNull(sum);
+            // Loose tolerance: quantised real checkpoint, different summation order/precision
+            // path than llama.cpp's ggml graph. What this test actually guards is the sign and
+            // the order of magnitude -- the broken version was +30.5, twelve times the reference
+            // and the wrong sign.
+            Assert.True(sum.Value < 0, $"expected a negative sum (llama.cpp: -2.591775), got {sum.Value:F6} -- conv1d weight transpose may have regressed");
+            Assert.True(Math.Abs(sum.Value - (-2.591775)) < 1.5, $"layer0 GDN mixer output sum {sum.Value:F6} vs llama.cpp's -2.591775 -- outside tolerance");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STINGRAY_Q4E_DEBUG", old);
+        }
+    }
 }
