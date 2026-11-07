@@ -47,14 +47,27 @@ admitted or advertised until it earns that.
 - **`deepseek4`'s YaRN refusal is real and current**, confirmed today
   (`DeepSeek4RealWeightsSmokeTests`, real checkpoint, `rope.scaling.factor=16`). Phase 3 is
   accurately scoped.
+- **Phase 1 found a second, unrelated bug while reproducing the garbled-text claim**: `Qwen4ExpForwardPass.TruncateTo`
+  violated `IForwardPass`'s documented contract (any length besides 0/current must throw
+  `NotSupportedException` when `SupportsPartialRewind` is false) by silently no-opping instead.
+  `InferenceEngine` never hit this path (it only calls an intermediate `TruncateTo` when
+  `SupportsPartialRewind` is true), so it wasn't an observed failure, but it was a live landmine for
+  any future caller. Fixed 2026-11-07 to throw like every sibling GDN-hybrid pass already does;
+  regression test `TruncateTo_RejectsIntermediateLength_OnlyAcceptsZeroOrCurrent`.
+- **Phase 2A got one small optimisation, not a scope change**: TensorSharp's `GlmDsaModel.Attention.cs`
+  skips indexer query/scoring work while the cached key count is still `<= indexer_top_k` (selection
+  can only ever be "all of them" in that regime). Ported into `GlmDsaForwardPass.RunFullIndexer`
+  2026-11-07 -- output is unchanged, only wasted compute on short contexts is removed. This does not
+  change Phase 2A's real-weight ceiling (still metadata-only, see above); it is a correctness-preserving
+  perf fix on the synthetic-verified path, covered by `GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold`.
 
 ## Phases (in order; do not start a later one before the current one's completion criteria)
 
 | # | Family | Checkpoint available? | Status | What's actually left |
 |---|---|---|---|---|
 | 0 | Coverage baseline | n/a | **Already current** -- [ported-families-todo.md](ported-families-todo.md) and this doc's table above are the baseline; no separate pass needed right now | Re-check before each later phase starts, don't re-derive from scratch |
-| 1 | `qwen4exp` (Qwen 3.8 Flash Next) | yes, paged, 62 GB | **ROOT-CAUSED AND FIXED 2026-11-07.** Reproduced the garbled-text claim, then bisected layer-by-layer against a freshly-rebuilt pinned llama.cpp reference (`qwen4exp.cpp` at `bed0a8566`, via `llama-eval-callback`) on the identical prompt/checkpoint: `hc_mixed` and the raw QKV projection matched within ~1%, `alpha`/`beta` projections matched almost exactly, but `conv_output_raw` was off by ~3.5x. Root cause: `blk.N.ssm_conv1d.weight` is stored by GGUF as `[channel][kernel]` (kernel innermost per `ggml_compute_forward_ssm_conv_f32`), the transpose of what `GdnKernels.CausalDepthwiseConv1dDecode`'s `weight[k*channels+c]` access pattern expects. `HybridGdnForwardPass` (Qwen 3.5 hybrid, already verified) already transposes this at load time (`LoadConv1dTransposed`); this port never did. Fixed with the same load-time transpose, cached per layer. After the fix: layer-0 raw GDN-mixer output sum moved from +30.5 (wrong sign, ~12x off) to -2.76, matching llama.cpp's -2.59 within quantisation noise; 20-token greedy continuation of `"The capital of France is"` now reads `"Paris.\nThe capital of France is Paris.\nIs the following sentence true?\n\n<think>\n"` -- correct and coherent. Regression test: `Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`. | Remaining per the original plan: more fixed prompts (incremental decode, a prompt crossing a prefill/decode chunk boundary, one long enough to exercise QSA K-pool selection), and a documented tolerance for the real-weight comparison. MTP and vision remain deferred. Still alpha / not admitted (CLAUDE.md rule 14) until that broader verification is done |
-| 2A | `glm-dsa` (GLM-5.2) | shard-1 metadata only (~9 MB of a much larger checkpoint) | Synthetic-tested + metadata verified against real checkpoint | Real forward-pass/parity work needs the full checkpoint, which doesn't fit here. Rescope: finish synthetic-level correctness checks (MLA absorption, DSA indexer scoring, Hadamard rotation, sigmoid MoE routing, shared-expert contribution) against the llama.cpp source reference, same as the original plan's step 3, but drop the "real-weight comparison" completion criterion unless disk changes |
+| 1 | `qwen4exp` (Qwen 3.8 Flash Next) | yes, paged, 62 GB | **ROOT-CAUSED AND FIXED 2026-11-07.** Reproduced the garbled-text claim, then bisected layer-by-layer against a freshly-rebuilt pinned llama.cpp reference (`qwen4exp.cpp` at `bed0a8566`, via `llama-eval-callback`) on the identical prompt/checkpoint: `hc_mixed` and the raw QKV projection matched within ~1%, `alpha`/`beta` projections matched almost exactly, but `conv_output_raw` was off by ~3.5x. Root cause: `blk.N.ssm_conv1d.weight` is stored by GGUF as `[channel][kernel]` (kernel innermost per `ggml_compute_forward_ssm_conv_f32`), the transpose of what `GdnKernels.CausalDepthwiseConv1dDecode`'s `weight[k*channels+c]` access pattern expects. `HybridGdnForwardPass` (Qwen 3.5 hybrid, already verified) already transposes this at load time (`LoadConv1dTransposed`); this port never did. Fixed with the same load-time transpose, cached per layer. After the fix: layer-0 raw GDN-mixer output sum moved from +30.5 (wrong sign, ~12x off) to -2.76, matching llama.cpp's -2.59 within quantisation noise; 20-token greedy continuation of `"The capital of France is"` now reads `"Paris.\nThe capital of France is Paris.\nIs the following sentence true?\n\n<think>\n"` -- correct and coherent. Regression test: `Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`. Also found and fixed the unrelated `TruncateTo` contract violation noted above the same day. | Remaining per the original plan: more fixed prompts (incremental decode, a prompt crossing a prefill/decode chunk boundary, one long enough to exercise QSA K-pool selection), and a documented tolerance for the real-weight comparison. MTP and vision remain deferred. Still alpha / not admitted (CLAUDE.md rule 14) until that broader verification is done |
+| 2A | `glm-dsa` (GLM-5.2) | shard-1 metadata only (~9 MB of a much larger checkpoint) | Synthetic-tested + metadata verified against real checkpoint; indexer top_k-shortcut optimisation ported 2026-11-07 (no behaviour change) | Real forward-pass/parity work needs the full checkpoint, which doesn't fit here. Rescope: finish synthetic-level correctness checks (MLA absorption, DSA indexer scoring, Hadamard rotation, sigmoid MoE routing, shared-expert contribution) against the llama.cpp source reference, same as the original plan's step 3, but drop the "real-weight comparison" completion criterion unless disk changes |
 | 2B | `glm5next` (GLM-5.3-Flash) | paged, large (Q2_K_XL ~236 GB; have UD-IQ1_S shards) | K-pool selection doesn't drive attention yet (confirmed above) | Implement K-pool selection actually gating attention reads, remove the full-attention/throw shortcut, add the isolated numerical tests the original plan lists (KDA recurrence, Sinkhorn mHC, pool construction/selection, sequence isolation). This is real implementation work, not verification -- size it accordingly |
 | 3 | `deepseek4` (DeepSeek-V4 Flash) | yes, paged, 86 GB | Refuses YaRN correctly; CSA unexercised | Implement YaRN rope scaling for real (factor 16, confirmed from the real checkpoint), remove the refusal only once verified against the pinned llama.cpp reference, then exercise non-zero `compress_ratios` (confirmed present: `[0,0,2,2,...]`-shaped) for the first real CSA test |
 | 4 | Candidate reassessment | n/a | Not started | Survey Muse Spark / MiniMax M3.1 / others per the original plan's instructions; this is a report, not a port, and is cheap -- can run any time, doesn't block 1-3 |
@@ -70,5 +83,15 @@ admitted or advertised until it earns that.
 
 ## Recommended starting point
 
-Phase 1, step 1 only (reproduce the Qwen4Exp claim with a fixed prompt before touching any code).
-It's the cheapest way to find out whether this programme's highest-priority item is still real.
+~~Phase 1, step 1 (reproduce the Qwen4Exp claim with a fixed prompt before touching any code).~~
+Done 2026-11-07 -- the claim was real, root-caused and fixed. Next cheapest items, in order, before
+taking on Phase 2B/3's real implementation work:
+1. Phase 1's remaining broader-verification checklist (more fixed prompts, a prefill/decode chunk
+   boundary, QSA K-pool exercise, a documented tolerance) -- no new disk or implementation, just
+   more test cases against the checkpoint already on disk.
+2. Phase 2A's remaining synthetic-level correctness checklist (MLA absorption, indexer scoring,
+   Hadamard rotation, sigmoid MoE routing, shared-expert contribution against the llama.cpp source) --
+   also no new disk.
+3. Phase 2B (`glm5next` K-pool) or Phase 3 (`deepseek4` YaRN) only after 1-2, since both are real
+   algorithm work, not verification, and should be sized and started deliberately rather than picked
+   up as a side effect of something else.

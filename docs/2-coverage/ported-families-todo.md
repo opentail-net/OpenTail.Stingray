@@ -80,7 +80,7 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 
 - **DeepSeek-V4.1 (`deepseek41`, ~335 GB):** does not fit even on the 279 GB scratch disk; not
   attempted. Stays PORTED + SYNTHETIC only.
-- **Qwen 3.8 Flash Next (~72.5 GB), DeepSeek-V4 (~98.6 GB):** both fit `E:\_models` and can be paged on this host (slow is fine). DeepSeek-V4 is a real candidate (the vendored llama.cpp b10306 knows `deepseek4`); do it after GLM-5.3. Qwen's architecture is fully implemented and accepts real configs; paged Level 4 verification can proceed when disk/checkpoint capacity allows.
+- **Qwen 3.8 Flash Next (~62 GB paged), DeepSeek-V4 (~98.6 GB):** both fit `E:\_models` and can be paged on this host (slow is fine). DeepSeek-V4 is a real candidate (the vendored llama.cpp b10306 knows `deepseek4`); do it after GLM-5.3. **Qwen's Level 4 paged real-weight execution ran 2026-11-07**: found and fixed a conv1d weight-transpose bug (see row 30 and the coverage programme plan's Phase 1), generation is now coherent and matches llama.cpp's reference within quantisation noise on one prompt. Broader verification (more prompts, incremental decode, a chunk-boundary prompt, QSA K-pool exercise, documented tolerance) is still open before promotion past PORTED + SYNTHETIC.
 - **GLM-5.3 (~236 GiB):** fits `E:\_models`; correctness-only runs (hours, paged from disk) are
   acceptable. Slowness is not a failure; a token/logit mismatch is.
 
@@ -117,7 +117,14 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total: 125B lang + 51B PLE + 4B MTP; smallest quant ~72.5 GB; does not fit this PC; synthetic gate only).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [ ] Real-weight verification (paged execution on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S ~72.5 GB)
+- [x] Real-weight verification (paged execution on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S ~62 GB) --
+      2026-11-07, one prompt: found/fixed the conv1d weight-transpose bug, generation now coherent and
+      matches llama.cpp within quantisation noise. Fixed the same day: `TruncateTo` was silently
+      no-opping for intermediate lengths instead of throwing per `IForwardPass`'s contract (unrelated
+      bug found while re-checking state handling against TensorSharp's validation discipline).
+- [ ] Broader real-weight verification before promotion: more fixed prompts, incremental decode, a
+      prompt crossing a prefill/decode chunk boundary, QSA K-pool exercise, a documented tolerance.
+      MTP and vision stay deferred.
 
 ### 2. GLM-5.x (`glm-dsa`, alias `glm_dsa`; GLM-5.3-Flash is `glm5next`)
 - **Design:**
@@ -128,6 +135,18 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **References:**
   - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries know it too and serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
   - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`, includes K-pool, mHC, KDA recurrence, MTP), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
+- [x] `glm-dsa` metadata-only real-weight check, 2026-11-07 (`GlmDsaRealWeightsSmokeTests`): the real
+      GLM-5.2 checkpoint's first shard (~9 MB of a much larger checkpoint) confirmed every hyperparameter
+      in `GlmDsaAlpha.cs`'s spec comment against real metadata. Full forward-pass real-weight parity
+      stays out of reach on this host's disk budget (see the coverage programme plan's Phase 2A).
+- [x] `glm-dsa` indexer top_k-shortcut optimisation ported from TensorSharp's `GlmDsaModel.Attention.cs`
+      (`SparseAttentionActive`/`AppendIndexerKeys`), 2026-11-07: `RunFullIndexer` now skips the query
+      projection/Hadamard transform/scoring pass entirely while the cached key count is `<=
+      indexer_top_k` (selection can only be "all of them" in that regime). Output is unchanged;
+      covered by `GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold`.
+- [ ] `glm-dsa` synthetic-level correctness checks against the llama.cpp source reference (MLA
+      absorption, DSA indexer scoring, Hadamard rotation, sigmoid MoE routing, shared-expert
+      contribution) -- not done yet, see the coverage programme plan's Phase 2A.
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
