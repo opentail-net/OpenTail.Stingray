@@ -25,8 +25,11 @@ namespace OpenTail.Stingray.Engine;
 //     through as "inactive."
 //  2. The Hadamard rotation applied to the indexer's Q/K (`self_k_rot_lid`,
 //     ggml_mul_mat(inp_attn_dsa->self_k_rot_lid, indexer_q/k) in the reference) is NOT
-//     implemented -- same gap as deepseek4, same reason (no Hadamard primitive in this codebase,
-//     unclear whether it's a loaded weight or generated).
+//     implemented here at all (neither Q nor K). A Hadamard primitive does now exist in this
+//     codebase (PrismHadamard.ApplySylvesterHadamard, added for deepseek4/glm-dsa), but is not
+//     wired into this file; deepseek4's own equivalent only rotates its indexer K, not Q, and is
+//     itself flagged incomplete against the reference -- porting that same partial treatment here
+//     was not done, since it would carry the same unverified-correctness risk forward.
 //  3. MTP is not implemented (HasMtpHead defaults to false).
 //  4. The absorption-optimization MLA math (q_nope "absorbed" through wk_b before attention,
 //     Kcur/Vcur built from the SAME kv_lora_rank-wide compressed vector, wv_b decompressing the

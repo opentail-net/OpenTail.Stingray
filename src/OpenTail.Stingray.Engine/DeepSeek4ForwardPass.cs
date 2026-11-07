@@ -20,11 +20,17 @@ namespace OpenTail.Stingray.Engine;
 //    construction (build_overlap_compressed_kv_from_state, deepseek4.cpp:524-606), NOT confirmed
 //    against the reference's actual state_read_idxs construction (llama-kv-cache-dsv4.cpp, never
 //    read this session).
-//  - The Hadamard rotation (`k_rot`, llama_mul_mat_hadamard) that the reference conditionally
-//    applies to Q/kv/output around CSA (and possibly HCA) attention is NOT implemented -- this
-//    codebase has no Hadamard-transform primitive, and whether it's a loaded weight or a
-//    code-generated fixed matrix was never checked. Treated as absent (k_rot == null) throughout;
-//    a real checkpoint that declares it will silently get wrong output, not an error.
+//  - The Hadamard rotation (`k_rot`, llama_mul_mat_hadamard) is only PARTIALLY applied, and only
+//    to the lightning indexer's K (via PrismHadamard.ApplySylvesterHadamard, guarded on
+//    _indexerHeadDim being a power of 2 -- see BuildIndexerScores below). Confirmed by reading
+//    the real reference (examples/llama.cpp/llama.cpp/src/models/deepseek4.cpp:606-619): it
+//    GGML_ASSERT's k_rot is always present (not conditional on head-dim shape) and rotates
+//    indexer_q with the SAME k_rot the indexer K uses (line 619) -- this port's indexer Q is NOT
+//    rotated, which is a real, confirmed-against-reference asymmetry, not a guess. Main
+//    attention's Q/kv/output rotation around CSA/HCA (deepseek4.cpp:724-853) is not implemented
+//    at all. Whether k_rot is a loaded weight or a generated fixed matrix, and whether this port's
+//    power-of-2 guard matches how the reference actually builds/validates it, was never checked --
+//    a real checkpoint will very likely get wrong indexer selection and/or wrong CSA/HCA output.
 //  - The lightning indexer's per-query indexer_weights ([numHeads], one scalar set per QUERY
 //    token, broadcast across every key) is replicated across keys to match
 //    DeepSeek4Graph.LightningIndexerScore's existing [numKeys, numHeads] signature --
@@ -51,8 +57,8 @@ namespace OpenTail.Stingray.Engine;
 /// ALPHA/UNTESTED. See this file's header. Implements <see cref="IForwardPass"/>, driving all
 /// three of DeepSeek-V4's attention variants (raw, HCA, CSA) end to end for a real prompt --
 /// structurally complete, but with several specific, in-file-flagged high-risk/unverified
-/// details (K==V MQA, output-side rope_ext_back, CSA's overlap gather hypothesis, no Hadamard
-/// rotation) that make numerical correctness against a real checkpoint unproven either way.
+/// details (K==V MQA, output-side rope_ext_back, CSA's overlap gather hypothesis, only a partial
+/// Hadamard rotation) that make numerical correctness against a real checkpoint unproven either way.
 /// </summary>
 public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
 {
