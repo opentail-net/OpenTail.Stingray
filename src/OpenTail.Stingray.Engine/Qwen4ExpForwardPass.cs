@@ -33,6 +33,9 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     // Keyed by the tensor's raw data pointer, which is stable for the model's lifetime (backed by
     // GgufModel's mmap).
     private readonly Dictionary<nint, float[]> _dequantCache = new();
+    private readonly bool _q4eDebug = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1";
+    private double[]? _layerSumAccum;
+    private double[]? _hcCombine0Accum;
     private readonly int _embedDim;
     private readonly int _hc;
     private readonly int _hcDim;
@@ -247,6 +250,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 _resHc, hcAttnNorm, hcAttnDown, hcAttnUp, hcAttnInject,
                 _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
 
+            if (il == 0 && Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1")
+            {
+                double s = 0; foreach (var v in _mixed) s += v;
+                Console.Error.WriteLine($"[q4e-dbg] pos={position} hc_mixed(l0,attn) sum={s:F6}");
+            }
+
             // 2c. Token Mixer (GDN or QSA)
             if (layer.IsRecurrent)
             {
@@ -259,6 +268,14 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
             // 2d. HC Combine after Token Mixer
             Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
+
+            if (_q4eDebug && il == 0 && position <= 4)
+            {
+                double s = 0; foreach (var v in _resHc) s += v;
+                (_hcCombine0Accum ??= new double[1])[0] += s;
+                if (position == 4)
+                    Console.Error.WriteLine($"[q4e-dbg] hc_combine-0 sum={_hcCombine0Accum[0]:F6}");
+            }
 
             // 2e. HC Mix before MoE
             var hcFfnNorm = AsFloatSpan(layer.HcFfnNorm);
@@ -275,6 +292,15 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
             // 2g. HC Combine after MoE
             Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
+
+            if (_q4eDebug && position <= 4)
+            {
+                double s = 0; foreach (var v in _resHc) s += v;
+                (_layerSumAccum ??= new double[_numLayers])[il] += s;
+                if (il == _numLayers - 1 && position == 4)
+                    for (int li = 0; li < _numLayers; li++)
+                        Console.Error.WriteLine($"[q4e-dbg] l_last-{li} sum={_layerSumAccum[li]:F6}");
+            }
         }
 
         // 3. Final head mix (acts as output norm, qwen4exp.cpp:515-517)
@@ -288,6 +314,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         // 4. Output projection to logits
         ComputeLogits(_mixed, _logits);
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1")
+        {
+            double s = 0; foreach (var v in _logits) s += v;
+            Console.Error.WriteLine($"[q4e-dbg] pos={position} result_output sum={s:F6}");
+        }
 
         return _logits;
     }
@@ -418,6 +450,18 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         else
         {
             qkv.CopyTo(qkvPostConv);
+        }
+
+        // SiLU on the conv output, confirmed 2026-11-07 against both llama.cpp (qwen4exp.cpp:1160,
+        // "conv_output_silu = ggml_silu(conv_output_proper)") and TensorSharp's own doc comment
+        // ("PrepareGdnInputs has already done ... conv1d + SiLU"). This port had NO activation
+        // here at all -- found via real-weight layer-by-layer sum diffing against llama.cpp's
+        // eval-callback dump: hc_mixed (pre-mixer) matched within 0.4%, but hc_combine (post-GDN-
+        // mixer, same layer) was already off by ~90%, isolating the bug to inside this mixer.
+        for (int i = 0; i < qkvDim; i++)
+        {
+            float x = qkvPostConv[i];
+            qkvPostConv[i] = x / (1.0f + MathF.Exp(-x));
         }
 
         // Gate projection z

@@ -53,4 +53,49 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
         Assert.True(decodeLogits.Length > 0);
         Assert.All(decodeLogits.ToArray(), l => Assert.True(float.IsFinite(l)));
     }
+
+    /// <summary>
+    /// Numeric cross-check against llama.cpp's own eval-callback dump on the identical real
+    /// checkpoint and prompt (2026-11-07 diagnostic): llama.cpp reports "number of input tokens
+    /// = 5" (tokens 760, 6511, 314, 9338, 369, no BOS) and its "model.input_embed" node sum =
+    /// 2.627300. If our tokenization or embedding-table dequant disagrees with llama.cpp's,
+    /// nothing downstream can be right -- so this checks that FIRST, before any layer math.
+    /// </summary>
+    [Fact]
+    public unsafe void Tokenization_And_Embedding_MatchLlamaCppDump()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = OpenTail.Stingray.Engine.Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = OpenTail.Stingray.Engine.Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+        var ids = tokenizer.Encode("The capital of France is");
+
+        Assert.False(tokenizer.AddBosToken, "llama.cpp saw 5 input tokens for this prompt (no BOS); AddBosToken disagreeing means our tokenizer config is the divergence, not layer math.");
+        Assert.Equal(new[] { 760, 6511, 314, 9338, 369 }, ids);
+
+        int embedDim = hp.EmbedDim;
+        var info = tensors.TokEmbd.Info;
+        int bytesPerRow = (embedDim / OpenTail.Stingray.Core.DTypeInfo.BlockSize(info.DType)) * OpenTail.Stingray.Core.DTypeInfo.BytesPerBlock(info.DType);
+
+        double sum = 0;
+        var row = new float[embedDim];
+        foreach (int token in ids)
+        {
+            byte* rowPtr = tensors.TokEmbd.DataPtr + (long)token * bytesPerRow;
+            fixed (float* destPtr = row)
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.DequantRow(rowPtr, destPtr, embedDim, info.DType);
+            }
+            foreach (float v in row) sum += v;
+        }
+
+        // llama.cpp's cb() dump prints "sum = 2.627300" for model.input_embed on this exact
+        // checkpoint and prompt. Loose tolerance: it sums in a different order/precision path.
+        Assert.True(Math.Abs(sum - 2.627300) < 0.01, $"embedding sum {sum:F6} vs llama.cpp's 2.627300 -- tokenization/embedding dequant divergence, not layer math.");
+    }
 }
