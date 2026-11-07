@@ -3,8 +3,10 @@ namespace OpenTail.Stingray.Cpu;
 
 /// <summary>
 /// P/Invoke bindings for OpenBLAS cblas_sgemm via .NET LibraryImport source generator.
-/// Requires libopenblas.dll in the runtime directory or system PATH.
-/// Run scripts/setup-openblas.ps1 to download it.
+/// Opt-in only: set <c>STINGRAY_USE_OPENBLAS=1</c> to probe for and load it. Off by default
+/// (2026-11-07 owner directive) -- an installed libopenblas.dll on a dev machine must never
+/// silently change which GEMM path a measured run takes. Run scripts/setup-openblas.ps1 to
+/// download it once opted in.
 /// </summary>
 internal static unsafe partial class BlasInterop
 {
@@ -44,8 +46,9 @@ internal static unsafe partial class BlasInterop
 
     private static bool ProbeLibrary()
     {
-        // Diagnostic override (perf investigation): force BLAS off regardless of what's on disk.
-        if (Environment.GetEnvironmentVariable("STINGRAY_FORCE_NO_BLAS") == "1")
+        // Opt-in gate: OpenBLAS is never auto-loaded just because a libopenblas.dll happens to be
+        // on PATH or in tools/openblas. Must be explicitly requested.
+        if (Environment.GetEnvironmentVariable("STINGRAY_USE_OPENBLAS") != "1")
             return false;
 
         // Try standard search paths first

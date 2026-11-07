@@ -1,6 +1,8 @@
 # OpenBLAS Performance Troubleshooting & Resolution Guide
 
 > **Status 2026-10-31: the numbers below are historical.** `CpuBackend.MatMul` now uses the in-tree `CpuSgemm` (pure C#, no native library; commit `c9b47c69`), and `libopenblas.dll` no longer ships. Measured on this machine with no OpenBLAS on `PATH` or in `tools/openblas` (Release CLI, Qwen3-4B Q4_K_M, 799-token prompt, `-g 0 --temp 0`, 3 runs): prefill 102.8, 89.4 and 98.3 t/s, decode 12.7, 12.0 and 12.3 t/s. That is nowhere near the ~4 t/s decode quoted in section 1, which was measured on a different model before `CpuSgemm`. `BlasInterop` still probes for the library and uses it only for F32 batched products; the `OpenBLAS: not found (fallback to sequential)` line is only printed from `SimdKernels.MatMulBatched` and no longer signals a large slowdown. Section 3 (the setup script) is optional.
+>
+> **Status 2026-11-07: OpenBLAS is now opt-in only.** `BlasInterop.ProbeLibrary` no longer auto-loads an installed `libopenblas.dll` just because one is found on `PATH` or in `tools/openblas` -- it requires `STINGRAY_USE_OPENBLAS=1` (owner directive: a library sitting on disk must never silently change which GEMM path a measured run takes). Re-measured the "with OpenBLAS present but gate off" case on `gemma4-26b-a4b` (517-tok prompt, CPU, `--temp 0`): 38.2 t/s prefill before `libopenblas.dll` was installed, 38.0 t/s after installing it with the gate still off (noise-level difference, as expected -- MoE prefill doesn't route through `cblas_sgemm` for this model per section 2's F32-batched-products-only scope). Section 3's setup script still installs the DLL; it is inert unless the env var is also set.
 
 ## 1. Symptom
 

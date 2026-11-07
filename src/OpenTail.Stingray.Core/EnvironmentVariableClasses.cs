@@ -145,7 +145,7 @@ public static class EnvironmentVariableClasses
         ["STINGRAY_DISABLE_DUAL_Q8"] = "experimental",
         ["STINGRAY_FLASH64_STRIDED_GEMM"] = "experimental",
         ["STINGRAY_FORCE_CPU_EMBED"] = "experimental",
-        ["STINGRAY_FORCE_NO_BLAS"] = "experimental",
+        ["STINGRAY_USE_OPENBLAS"] = "experimental",
         ["STINGRAY_GDN_CHUNKED_PREFILL"] = "expert",
         ["STINGRAY_GDN_DECODE_FAST"] = "experimental",
         ["STINGRAY_GDN_PREFILL_COMPUTE"] = "experimental",
