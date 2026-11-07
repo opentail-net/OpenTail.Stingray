@@ -494,6 +494,23 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         var k = qkvPostConv.Slice(keyDim, keyDim);
         var v = qkvPostConv.Slice(keyDim * 2, valDim);
 
+        // Per-head L2 norm on Q and K (no learned weight), confirmed 2026-11-07 against
+        // llama.cpp's build_gdn_l2_norm (models.h:14-18: rms_norm(x, eps/n) scaled by
+        // 1/sqrt(n), which works out to x / sqrt(sum(x^2) + eps) -- plain L2 norm, not
+        // RMSNorm-with-gamma). Applied per head, before the K-head tiling below. This port
+        // had no normalization here at all -- found the same way as the GDN conv SiLU fix,
+        // continuing the layer-by-layer diff after that fix narrowed but did not close the gap.
+        for (int h = 0; h < _ssmNGroup; h++)
+        {
+            var qh = q.Slice(h * _ssmDState, _ssmDState);
+            float qSumSq = TensorPrimitives.SumOfSquares(qh);
+            TensorPrimitives.Multiply(qh, 1.0f / MathF.Sqrt(qSumSq + _eps), qh);
+
+            var kh = k.Slice(h * _ssmDState, _ssmDState);
+            float kSumSq = TensorPrimitives.SumOfSquares(kh);
+            TensorPrimitives.Multiply(kh, 1.0f / MathF.Sqrt(kSumSq + _eps), kh);
+        }
+
         // Alpha and Beta projections
         Span<float> alpha = stackalloc float[_ssmDtRank];
         Span<float> beta = stackalloc float[_ssmDtRank];
