@@ -16,12 +16,13 @@ public sealed class MlxGgufDenseModelLoaderTests : IDisposable
 {
     private const string FlagVar = "STINGRAY_MLX_DENSE";
     private readonly string _path = Path.Combine(Path.GetTempPath(), "mlx-gguf-loader-" + Guid.NewGuid().ToString("N") + ".gguf");
+    private readonly string? _originalFlag = Environment.GetEnvironmentVariable(FlagVar);
 
     public MlxGgufDenseModelLoaderTests() => Environment.SetEnvironmentVariable(FlagVar, "1");
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(FlagVar, null);
+        Environment.SetEnvironmentVariable(FlagVar, _originalFlag);
         try { File.Delete(_path); } catch (IOException) { }
     }
 

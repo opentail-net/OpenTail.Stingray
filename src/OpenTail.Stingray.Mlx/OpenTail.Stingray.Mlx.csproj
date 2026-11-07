@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Description>MLX compute backend for OpenTail.Stingray: Apple Silicon inference via mlx-c (libmlxc). Flag-gated and never run on real hardware -- no Mac exists on this development machine. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.</Description>
   </PropertyGroup>
@@ -11,6 +11,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Mlx.Fast" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Update="Microsoft.SourceLink.GitHub" Version="10.0.401" />

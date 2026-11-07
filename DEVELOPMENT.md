@@ -15,7 +15,7 @@ src/
 ├── OpenTail.Stingray.Cpu/        <- Managed SIMD kernels (AVX-512, AVX2, ARM Neon) & thread pool
 ├── OpenTail.Stingray.Vulkan/     <- SPIR-V compute shaders, memory allocator, GPU dispatch
 ├── OpenTail.Stingray.Cuda/       <- Managed CUDA driver interop & custom CUDA kernels
-├── OpenTail.Stingray.Mlx/        <- MLX (Apple Silicon) backend skeleton, flag-gated, never run (no Mac here)
+├── OpenTail.Stingray.Mlx/        <- MLX dense-Llama path, flag-gated and planner/factory integrated; native hardware verification pending
 ├── OpenTail.Stingray.Pipeline/   <- VRAM → pinned RAM → NVMe memory hierarchy, SLRU expert cache, prefetcher
 ├── OpenTail.Stingray.TurboQuant/ <- KV-cache compression (Lloyd-Max codebooks, KVarN)
 ├── OpenTail.Stingray.Engine/     <- Public API facade, Model, ModelContext, Executors, ChatSession
@@ -76,7 +76,10 @@ dotnet test tests/OpenTail.Stingray.Tests.Cli
 Performs forward-pass validation across hundreds of model architectures and quantization layouts using synthetic or lightweight tensor fixtures:
 ```bash
 dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast
+dotnet test tests/OpenTail.Stingray.Tests.Mlx.Fast
 ```
+
+MLX host-side checks (GGUF loading/layout, planning refusal rules, cache state and shape validation) run in `Tests.Mlx.Fast` on ordinary CI. Native numerical MLX tests remain in `Tests.Cuda` and require Apple MLX/Metal; they are not evidence of hardware verification when skipped.
 
 ### Tier 3: Golden Parity & Real Weights Verification (Minutes, requires models)
 Validates token-by-token logits against upstream `llama.cpp` golden captures or real GGUF weights:

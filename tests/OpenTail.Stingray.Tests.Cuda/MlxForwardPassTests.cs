@@ -67,6 +67,45 @@ public sealed class MlxForwardPassTests
     }
 
     [Fact]
+    public void Prefill_EmptyTokensOnFreshInstance_Throws()
+    {
+        using var pass = new MlxForwardPass(MakeModel(), maxSeqLen: 8);
+
+        Assert.Throws<ArgumentException>(() => pass.Prefill(Array.Empty<int>()));
+    }
+
+    [Fact]
+    public void ResetCache_ClearsLastLogitsAndEmptyPrefillStillThrows()
+    {
+        using var pass = new MlxForwardPass(
+            MakeModel(), 8,
+            (_, _) => [1f, 2f, 3f],
+            (_, _, _) => [4f, 5f, 6f]);
+
+        Assert.Equal(new float[] { 1f, 2f, 3f }, pass.Prefill([0]).ToArray());
+        pass.ResetCache();
+
+        Assert.Throws<ArgumentException>(() => pass.Prefill(Array.Empty<int>()));
+        Assert.Throws<NotSupportedException>(() => pass.Forward(0, position: 1));
+        Assert.Equal(new float[] { 4f, 5f, 6f }, pass.Forward(0, position: 0).ToArray());
+    }
+
+    [Fact]
+    public void Prefill_EmptyTokensAfterResetOfPopulatedSequence_Throws()
+    {
+        using var pass = new MlxForwardPass(
+            MakeModel(), 8,
+            (_, _) => [1f, 2f, 3f],
+            (_, _, _) => [4f, 5f, 6f]);
+
+        Assert.Equal(new float[] { 1f, 2f, 3f }, pass.Prefill([0]).ToArray());
+        pass.ResetCache();
+
+        Assert.Throws<ArgumentException>(() => pass.Prefill(Array.Empty<int>()));
+        Assert.Equal(new float[] { 1f, 2f, 3f }, pass.Prefill([1]).ToArray());
+    }
+
+    [Fact]
     public void TruncateTo_NonZeroWhenEmpty_ThrowsNotSupported()
     {
         using var pass = new MlxForwardPass(MakeModel(), maxSeqLen: 8);
@@ -100,5 +139,73 @@ public sealed class MlxForwardPassTests
     {
         using var pass = new MlxForwardPass(MakeModel(), maxSeqLen: 8);
         Assert.Throws<DllNotFoundException>(() => pass.Forward(0, position: 0));
+    }
+
+    [Fact]
+    public void Prefill_FailureAfterEarlierLayerUpdated_ResetsAllCachesAndCanRestart()
+    {
+        Assert.SkipUnless(MlxBackend.IsAvailable(), "Native MLX with a working Metal device is required; this test has not run numerically on this host.");
+        var model = MakeModel(numLayers: 3);
+        int calls = 0;
+        model.LayerForwardForTesting = (layerIndex, hidden, seqLen, positions, cache) =>
+        {
+            calls++;
+            if (layerIndex < 2)
+                cache!.Append(new float[cache.NumHeads * seqLen * cache.HeadDim], new float[cache.NumHeads * seqLen * cache.HeadDim], seqLen);
+            if (layerIndex == 1 && calls == 2)
+                throw new InvalidOperationException("Injected layer failure.");
+            return hidden.ToArray();
+        };
+        using var pass = new MlxForwardPass(model, maxSeqLen: 8);
+
+        var error = Assert.Throws<InvalidOperationException>(() => pass.Prefill([0]));
+
+        Assert.Equal("Injected layer failure.", error.Message);
+        Assert.Equal(0, pass.LengthForTesting);
+        Assert.All(pass.CachesForTesting, cache => Assert.Equal(0, cache.Length));
+
+        model.LayerForwardForTesting = (layerIndex, hidden, seqLen, positions, cache) =>
+        {
+            cache!.Append(new float[cache.NumHeads * seqLen * cache.HeadDim], new float[cache.NumHeads * seqLen * cache.HeadDim], seqLen);
+            return hidden.ToArray();
+        };
+        Assert.Equal(3, pass.Prefill([0]).Length);
+        Assert.Equal(1, pass.LengthForTesting);
+        Assert.All(pass.CachesForTesting, cache => Assert.Equal(1, cache.Length));
+    }
+
+    [Fact]
+    public void Decode_FailureAfterEarlierLayerUpdated_ResetsAllCachesAndLogits()
+    {
+        var model = MakeModel(numLayers: 3);
+        model.LayerForwardForTesting = (layerIndex, hidden, seqLen, positions, cache) =>
+        {
+            cache!.Append(new float[cache.NumHeads * seqLen * cache.HeadDim], new float[cache.NumHeads * seqLen * cache.HeadDim], seqLen);
+            return hidden.ToArray();
+        };
+        model.LayerDecodeForTesting = (layerIndex, hidden, position, cache) =>
+        {
+            if (layerIndex == 0)
+                cache.Append(new float[cache.NumHeads * cache.HeadDim], new float[cache.NumHeads * cache.HeadDim], 1);
+            if (layerIndex == 1)
+                throw new InvalidOperationException("Injected decode failure.");
+            return hidden.ToArray();
+        };
+        using var pass = new MlxForwardPass(model, 8,
+            (tokens, caches) =>
+            {
+                foreach (MlxKvCache cache in caches)
+                    cache.Append(new float[cache.NumHeads * tokens.Length * cache.HeadDim], new float[cache.NumHeads * tokens.Length * cache.HeadDim], tokens.Length);
+                return [1f, 2f, 3f];
+            },
+            model.Decode);
+        Assert.Equal(3, pass.Prefill([0]).Length);
+
+        var error = Assert.Throws<InvalidOperationException>(() => pass.Forward(0, position: 1));
+
+        Assert.Equal("Injected decode failure.", error.Message);
+        Assert.Equal(0, pass.LengthForTesting);
+        Assert.Empty(pass.LastLogitsForTesting);
+        Assert.All(pass.CachesForTesting, cache => Assert.Equal(0, cache.Length));
     }
 }

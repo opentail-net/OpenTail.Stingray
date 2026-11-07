@@ -15,14 +15,27 @@ public sealed class MlxForwardPass : IForwardPass
     private readonly MlxDenseModel _model;
     private readonly MlxKvCache[] _caches;
     private readonly int _maxSeqLen;
+    private readonly Func<int[], MlxKvCache[], float[]> _prefill;
+    private readonly Func<int, int, MlxKvCache[], float[]> _decode;
     private int _length;
     private float[] _lastLogits = [];
 
     public MlxForwardPass(MlxDenseModel model, int maxSeqLen)
+        : this(model, maxSeqLen,
+            (tokens, caches) => model.Prefill(tokens.AsSpan(), caches),
+            (token, position, caches) => model.Decode(token, position, caches))
+    {
+    }
+
+    internal MlxForwardPass(MlxDenseModel model, int maxSeqLen,
+        Func<int[], MlxKvCache[], float[]> prefill,
+        Func<int, int, MlxKvCache[], float[]> decode)
     {
         if (maxSeqLen <= 0) throw new ArgumentOutOfRangeException(nameof(maxSeqLen));
         _model = model;
         _maxSeqLen = maxSeqLen;
+        _prefill = prefill;
+        _decode = decode;
         _caches = MakeCaches();
     }
 
@@ -36,6 +49,9 @@ public sealed class MlxForwardPass : IForwardPass
 
     public int VocabSize => _model.VocabSize;
     public int MaxSeqLen => _maxSeqLen;
+    internal int LengthForTesting => _length;
+    internal MlxKvCache[] CachesForTesting => _caches;
+    internal float[] LastLogitsForTesting => _lastLogits;
 
     /// <summary>Caches are plain host arrays (no native resource to free); see <see cref="MlxKvCache"/>'s own type doc comment for why.</summary>
     public void ResetCache()
@@ -43,6 +59,7 @@ public sealed class MlxForwardPass : IForwardPass
         for (int i = 0; i < _caches.Length; i++)
             _caches[i] = new MlxKvCache(_model.Layers[i].NumKvHeads, _maxSeqLen, _model.Layers[i].HeadDim);
         _length = 0;
+        _lastLogits = [];
     }
 
     /// <summary>
@@ -65,9 +82,19 @@ public sealed class MlxForwardPass : IForwardPass
 
         int[] tokenArray = [.. tokens];
         if (tokenArray.Length == 0)
-            return _lastLogits.AsSpan(_lastLogits.Length - VocabSize);
+            throw new ArgumentException("Prefill requires at least one token.", nameof(tokens));
 
-        _lastLogits = _model.Prefill(tokenArray, _caches);
+        float[] logits;
+        try
+        {
+            logits = _prefill(tokenArray, _caches);
+        }
+        catch
+        {
+            ResetCache();
+            throw;
+        }
+        _lastLogits = logits;
         _length += tokenArray.Length;
         return _lastLogits.AsSpan(_lastLogits.Length - VocabSize);
     }
@@ -81,7 +108,17 @@ public sealed class MlxForwardPass : IForwardPass
         if (_length >= _maxSeqLen)
             throw new InvalidOperationException($"Cache is full ({_maxSeqLen} positions); cannot advance further.");
 
-        _lastLogits = _model.Decode(token, position, _caches);
+        float[] logits;
+        try
+        {
+            logits = _decode(token, position, _caches);
+        }
+        catch
+        {
+            ResetCache();
+            throw;
+        }
+        _lastLogits = logits;
         _length++;
         return _lastLogits;
     }

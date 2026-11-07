@@ -1,0 +1,9 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using Xunit;
+global using OpenTail.Stingray.Core;
+global using OpenTail.Stingray.Engine;
+global using OpenTail.Stingray.Engine.Planning;
+global using OpenTail.Stingray.Mlx;

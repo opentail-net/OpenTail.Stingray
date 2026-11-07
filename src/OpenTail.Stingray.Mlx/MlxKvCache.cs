@@ -20,6 +20,13 @@ public sealed class MlxKvCache
     /// <summary>Number of positions actually written so far.</summary>
     public int Length { get; private set; }
 
+    public void Reset()
+    {
+        Array.Clear(_k);
+        Array.Clear(_v);
+        Length = 0;
+    }
+
     public MlxKvCache(int numHeads, int maxSeqLen, int headDim)
     {
         if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));

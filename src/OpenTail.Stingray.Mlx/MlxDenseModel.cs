@@ -19,6 +19,9 @@ public sealed class MlxDenseModel
     public required int VocabSize { get; init; }
     public float Eps { get; init; } = 1e-5f;
 
+    internal Func<int, float[], int, int[], MlxKvCache?, float[]>? LayerForwardForTesting { get; set; }
+    internal Func<int, float[], int, MlxKvCache, float[]>? LayerDecodeForTesting { get; set; }
+
     private float[] Embed(ReadOnlySpan<int> tokenIds)
     {
         var hidden = new float[tokenIds.Length * HiddenDim];
@@ -45,15 +48,15 @@ public sealed class MlxDenseModel
     /// </summary>
     public float[] Prefill(ReadOnlySpan<int> tokenIds, MlxKvCache[]? caches = null)
     {
-        if (caches is not null && caches.Length != Layers.Length)
-            throw new ArgumentException($"caches has {caches.Length} entries, expected one per layer ({Layers.Length}).", nameof(caches));
         int startPos = 0;
-        if (caches is { Length: > 0 })
+        if (caches is not null)
         {
+            ValidateCaches(caches);
+            if (tokenIds.Length == 0)
+                throw new ArgumentException("Prefill requires at least one token when updating caches.", nameof(tokenIds));
             startPos = caches[0].Length;
-            for (int i = 1; i < caches.Length; i++)
-                if (caches[i].Length != startPos)
-                    throw new ArgumentException($"caches[{i}].Length ({caches[i].Length}) != caches[0].Length ({startPos}) -- every layer's cache must be at the same length.", nameof(caches));
+            if (tokenIds.Length > caches[0].MaxSeqLen - startPos)
+                throw new ArgumentException("Prefill would exceed a KV cache's maximum sequence length.", nameof(tokenIds));
         }
 
         int seqLen = tokenIds.Length;
@@ -61,10 +64,22 @@ public sealed class MlxDenseModel
         int[] positions = new int[seqLen];
         for (int i = 0; i < seqLen; i++) positions[i] = startPos + i;
 
-        for (int i = 0; i < Layers.Length; i++)
-            hidden = Layers[i].Forward(hidden, seqLen, positions, caches?[i]);
+        try
+        {
+            for (int i = 0; i < Layers.Length; i++)
+            {
+                hidden = LayerForwardForTesting is { } testForward
+                    ? testForward(i, hidden, seqLen, positions, caches?[i])
+                    : Layers[i].Forward(hidden, seqLen, positions, caches?[i]);
+            }
 
-        return FinalLogits(hidden, seqLen);
+            return FinalLogits(hidden, seqLen);
+        }
+        catch
+        {
+            ResetCaches(caches);
+            throw;
+        }
     }
 
     /// <summary>
@@ -74,14 +89,53 @@ public sealed class MlxDenseModel
     /// </summary>
     public float[] Decode(int token, int position, MlxKvCache[] caches)
     {
+        ValidateCaches(caches);
+        if (position != caches[0].Length)
+            throw new ArgumentException($"Decode position ({position}) must equal the current KV cache length ({caches[0].Length}).", nameof(position));
+        if (caches.Any(cache => cache.Length >= cache.MaxSeqLen))
+            throw new InvalidOperationException("A KV cache is already at maximum sequence length.");
+
+        try
+        {
+            float[] hidden = Embed([token]);
+            for (int i = 0; i < Layers.Length; i++)
+            {
+                hidden = LayerDecodeForTesting is { } testDecode
+                    ? testDecode(i, hidden, position, caches[i])
+                    : Layers[i].ForwardDecode(hidden, position, caches[i]);
+            }
+
+            return FinalLogits(hidden, 1);
+        }
+        catch
+        {
+            ResetCaches(caches);
+            throw;
+        }
+    }
+
+    private void ValidateCaches(MlxKvCache[] caches)
+    {
+        ArgumentNullException.ThrowIfNull(caches);
         if (caches.Length != Layers.Length)
             throw new ArgumentException($"caches has {caches.Length} entries, expected one per layer ({Layers.Length}).", nameof(caches));
 
-        float[] hidden = Embed([token]);
         for (int i = 0; i < Layers.Length; i++)
-            hidden = Layers[i].ForwardDecode(hidden, position, caches[i]);
+        {
+            MlxKvCache cache = caches[i] ?? throw new ArgumentException($"caches[{i}] is null.", nameof(caches));
+            MlxDenseLayer layer = Layers[i];
+            if (cache.NumHeads != layer.NumKvHeads || cache.HeadDim != layer.HeadDim)
+                throw new ArgumentException($"caches[{i}] dimensions [{cache.NumHeads}, {cache.HeadDim}] do not match layer dimensions [{layer.NumKvHeads}, {layer.HeadDim}].", nameof(caches));
+            if (i > 0 && cache.Length != caches[0].Length)
+                throw new ArgumentException($"caches[{i}].Length ({cache.Length}) != caches[0].Length ({caches[0].Length}) -- every layer's cache must be at the same length.", nameof(caches));
+        }
+    }
 
-        return FinalLogits(hidden, 1);
+    private static void ResetCaches(MlxKvCache[]? caches)
+    {
+        if (caches is null) return;
+        foreach (MlxKvCache? cache in caches)
+            cache?.Reset();
     }
 
     private float[] FinalLogits(ReadOnlySpan<float> hidden, int seqLen)

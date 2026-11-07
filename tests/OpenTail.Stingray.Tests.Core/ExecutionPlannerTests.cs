@@ -171,7 +171,9 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(ForwardPassKind.CpuDense, plan.ForwardPassKind);
     }
 
-    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true, (string name, long[] dims, DType dtype, byte[] data)[]? extraTensors = null)
+    private ExecutionPlan PlanTinyModel(ExecutionRequest request, bool vulkan = true,
+        (string name, long[] dims, DType dtype, byte[] data)[]? extraTensors = null,
+        BackendCapabilities? capabilities = null)
     {
         var metadata = new Dictionary<string, (GgufValueType, object)>
         {
@@ -193,7 +195,7 @@ public sealed class ExecutionPlannerTests : IDisposable
         };
         if (extraTensors is not null) tensors = [.. tensors, .. extraTensors];
         var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
-        var caps = new BackendCapabilities(
+        var caps = capabilities ?? new BackendCapabilities(
             CudaAvailable: false,
             VulkanAvailable: vulkan,
             HardwareProfile: new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false),
@@ -298,6 +300,127 @@ public sealed class ExecutionPlannerTests : IDisposable
 
             Assert.Equal("mlx", plan.Backend);
             Assert.Equal(ForwardPassKind.MlxDense, plan.ForwardPassKind);
+        }
+
+        [Theory]
+        [InlineData("balanced")]
+        [InlineData("quality")]
+        public void Plan_PinnedMlx_Fp32Goal_IsAccepted(string goal)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var plan = new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                Goal = goal,
+                PinnedContextSize = 512,
+                PinnedBackend = "mlx",
+            });
+
+            Assert.Equal("float32", plan.KvDtype);
+        }
+
+        [Fact]
+        public void Plan_PinnedMlx_LowMemoryWithoutDtype_RefusesResolvedQ8()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var ex = Assert.Throws<NotSupportedException>(() => new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                Goal = "low-memory",
+                PinnedContextSize = 512,
+                PinnedBackend = "mlx",
+            }));
+
+            Assert.Contains("FP32 KV cache storage only", ex.Message);
+        }
+
+        [Theory]
+        [InlineData("q8")]
+        [InlineData("bf16")]
+        public void Plan_PinnedMlx_ExplicitNonFp32Dtype_Refuses(string dtype)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var ex = Assert.Throws<NotSupportedException>(() => new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                PinnedContextSize = 512,
+                PinnedBackend = "mlx",
+                PinnedKvDtype = dtype,
+            }));
+
+            Assert.Contains("FP32 KV cache storage only", ex.Message);
+        }
+
+        [Fact]
+        public void Plan_PinnedMlx_EnvironmentBf16Store_Refuses()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var request = new ExecutionRequest { PinnedContextSize = 512, PinnedBackend = "mlx" };
+            var resolvedRequest = ExecutionRequestEnvironment.ApplyTo(request with { KvStore = "bf16" });
+
+            var ex = Assert.Throws<NotSupportedException>(() => new ExecutionPlannerTests().PlanTinyModel(resolvedRequest));
+
+            Assert.Contains("FP32 KV cache storage only", ex.Message);
+        }
+
+        [Fact]
+        public void Plan_CpuLowMemoryQ8_RemainsSupported()
+        {
+            var plan = new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                Goal = "low-memory",
+                PinnedBackend = "cpu",
+                PinnedGpuLayers = 0,
+                PinnedContextSize = 512,
+            });
+
+            Assert.Equal("q8_0", plan.KvDtype);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        public void Plan_PinnedMlx_ZeroOrPartialGpuLayers_Refuses(int gpuLayers)
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var ex = Assert.Throws<NotSupportedException>(() => new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                PinnedBackend = "mlx",
+                PinnedGpuLayers = gpuLayers,
+                PinnedContextSize = 512,
+            }));
+
+            Assert.Contains("executes all model layers", ex.Message);
+        }
+
+        [Fact]
+        public void Plan_PinnedMlx_FullGpuLayers_SelectsMlx()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var plan = new ExecutionPlannerTests().PlanTinyModel(new ExecutionRequest
+            {
+                PinnedBackend = "mlx",
+                PinnedGpuLayers = 2,
+                PinnedContextSize = 512,
+            });
+
+            Assert.Equal(ForwardPassKind.MlxDense, plan.ForwardPassKind);
+            Assert.Equal(2, plan.Placement!.GpuLayers);
+            Assert.Equal(0, plan.Placement.CpuLayers);
+        }
+
+        [Fact]
+        public void Plan_PinnedMlx_AutoPlacementCannotSelectPartialLayers()
+        {
+            Environment.SetEnvironmentVariable(FlagVar, "1");
+            var lowVram = new BackendCapabilities(
+                CudaAvailable: false,
+                VulkanAvailable: false,
+                HardwareProfile: new HardwareProfile(1, 32L << 30, 8, 1, false),
+                RecommendedThreadCount: 8);
+            using var helper = new ExecutionPlannerTests();
+            var ex = Assert.Throws<NotSupportedException>(() => helper.PlanTinyModel(
+                new ExecutionRequest { PinnedBackend = "mlx", PinnedContextSize = 512 },
+                capabilities: lowVram));
+
+            Assert.Contains("executes all model layers", ex.Message);
         }
 
         [Theory]

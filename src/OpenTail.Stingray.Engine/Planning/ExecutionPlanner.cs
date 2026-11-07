@@ -47,6 +47,18 @@ public static class ExecutionPlanner
         // 3. KV DType Selection
         DType kvDtype = ResolveKvDtype(
             resolvedGoal, request.PinnedKvDtype, decisions, warnings);
+        KvStoreMode resolvedKvStore = request.KvStore?.Trim().ToLowerInvariant() switch
+        {
+            "bf16" => KvStoreMode.Bf16,
+            "auto" => KvStoreMode.Auto,
+            _ => KvStoreMode.Fp32,
+        };
+        if (selectedBackend == ForwardPassBackend.Mlx &&
+            (kvDtype != DType.Float32 || resolvedKvStore != KvStoreMode.Fp32))
+        {
+            throw new NotSupportedException(
+                "The MLX backend currently supports FP32 KV cache storage only. Select an FP32-compatible memory goal or explicitly request FP32 KV storage.");
+        }
 
         // 4. Placement & Layer Offload via TierPlanner
         int? requestedGpuLayers = request.PinnedGpuLayers;
@@ -77,6 +89,11 @@ public static class ExecutionPlanner
             pinGpuLayers: requestedGpuLayers);
 
         int resolvedGpuLayers = placementResult.GpuLayers;
+        if (selectedBackend == ForwardPassBackend.Mlx && resolvedGpuLayers != model.PlanningFacts.NumLayers)
+        {
+            throw new NotSupportedException(
+                $"The MLX backend currently executes all model layers. The plan selected {resolvedGpuLayers} of {model.PlanningFacts.NumLayers} layers.");
+        }
         if (request.PinnedGpuLayers.HasValue)
         {
             decisions.Add(new("GPU_LAYERS", resolvedGpuLayers.ToString(),
@@ -130,6 +147,7 @@ public static class ExecutionPlanner
             FlashAttention = request.FlashAttention,
             SnapKvEnabled = request.SnapKvEnabled || request.SnapKvBudget > 0,
             PinnedKvDtype = request.PinnedKvDtype,
+            ResolvedKvDtype = kvDtype.ToString(),
             KvStore = request.KvStore,
             RopeFrequencyBase = request.RopeFrequencyBase,
             RopeFrequencyScale = request.RopeFrequencyScale,

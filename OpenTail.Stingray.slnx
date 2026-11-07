@@ -48,6 +48,7 @@
     <Project Path="tests/OpenTail.Stingray.Tests.Diffusion/OpenTail.Stingray.Tests.Diffusion.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Embeddings/OpenTail.Stingray.Tests.Embeddings.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Mlx.Fast/OpenTail.Stingray.Tests.Mlx.Fast.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj" />
@@ -60,4 +61,5 @@
     <Project Path="tests/OpenTail.Stingray.Tests.Vulkan/OpenTail.Stingray.Tests.Vulkan.csproj" />
   </Folder>
 </Solution>
+
 

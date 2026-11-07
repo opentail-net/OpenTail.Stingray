@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\OpenTail.Stingray.Tests.Cuda\MlxGgufDenseModelLoaderTests.cs" Link="MlxGgufDenseModelLoaderTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Mlx\OpenTail.Stingray.Mlx.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+  </ItemGroup>
+
+</Project>

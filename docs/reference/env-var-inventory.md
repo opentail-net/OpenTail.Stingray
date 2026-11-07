@@ -1,7 +1,7 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-06)
 
 **Reconciled again 2026-11-06, later — `KnownEnvironmentVariables.All` now contains **289** names**
-(added `STINGRAY_MLX_DENSE`: gates `MlxGgufDenseModelLoader.Load`,
+(added `STINGRAY_MLX_DENSE`: gates explicit MLX backend selection in planning and the dense GGUF loader,
 docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md)
 
 **Reconciled again 2026-11-06 — `KnownEnvironmentVariables.All` now contains **288** names** (added
@@ -353,7 +353,7 @@ dynamically composed names.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MLX_DENSE` | experimental | Must be exactly `1` for `MlxGgufDenseModelLoader.Load` to run; any other value (including unset) throws `NotSupportedException`. No engine/planner integration exists yet (no `ForwardPassKind` case, no CLI `--backend mlx`) -- this only gates direct calls to the loader. Never run on real hardware (no Mac on this development machine); see docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. |
+| `STINGRAY_MLX_DENSE` | experimental | Must be exactly `1` to select the explicit `--backend mlx` route and load a supported dense Llama GGUF; unset/other values refuse selection. The engine planner/factory integration and host-side tests exist. Native numerical tests require MLX/Metal; hardware verification has not been demonstrated on this development machine. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. |
 
 ## OpenTail.Stingray.Engine
 

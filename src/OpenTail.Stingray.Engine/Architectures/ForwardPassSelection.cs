@@ -101,6 +101,7 @@ public sealed record ForwardPassRequest
     public bool FlashAttention { get; init; } = true;
     public bool SnapKvEnabled { get; init; }
     public string? PinnedKvDtype { get; init; }
+    public string? ResolvedKvDtype { get; init; }
     public string? KvStore { get; init; }
     public float? RopeFrequencyBase { get; init; }
     public float? RopeFrequencyScale { get; init; }
@@ -212,6 +213,8 @@ public static class ForwardPassSelection
                 return ForwardPassDecision.Refuse("SnapKV is not supported by the MLX backend.");
             if (request.PinnedKvDtype is { } kvDtype && kvDtype.Trim().ToLowerInvariant() is not ("fp32" or "f32" or "float32"))
                 return ForwardPassDecision.Refuse($"The MLX backend supports only FP32 KV cache storage; requested '{kvDtype}'.");
+            if (request.ResolvedKvDtype is { } resolvedKvDtype && resolvedKvDtype.Trim().ToLowerInvariant() is not ("fp32" or "f32" or "float32"))
+                return ForwardPassDecision.Refuse($"The MLX backend supports only FP32 KV cache storage; resolved KV dtype is '{resolvedKvDtype}'.");
             if (request.KvStore is { } kvStore && kvStore.Trim().ToLowerInvariant() is not ("" or "auto" or "fp32" or "float32"))
                 return ForwardPassDecision.Refuse($"The MLX backend supports only FP32 KV cache storage; requested KV store '{kvStore}'.");
             if (!request.FlashAttention)

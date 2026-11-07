@@ -9,17 +9,17 @@ namespace OpenTail.Stingray.Mlx;
 /// not reusing <c>ArchitectureModelResolver</c>'s hyperparameter resolution, which handles many
 /// architecture-specific overrides this dense-only port doesn't need), and dequantizes every
 /// quantized tensor to F32 via Stingray's existing <see cref="Dequantize.ToFloat32"/> -- no new
-/// quantization logic here. Never run on real hardware; see
+/// quantization logic here. This loader is integrated behind the explicit MLX planner/factory route;
+/// successful host-side loading does not establish native numerical or hardware correctness. See
 /// docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
 /// </summary>
 public static class MlxGgufDenseModelLoader
 {
     /// <summary>
-    /// Opt-in flag (same shape as <c>STINGRAY_TP_DEGREE</c> for the CUDA tensor-parallelism plan):
-    /// <see cref="Load"/> refuses unless <c>STINGRAY_MLX_DENSE=1</c> is set, so nothing can reach this
-    /// path by accident. There is no engine/planner integration yet (no <c>ForwardPassKind</c> case,
-    /// no CLI <c>--backend mlx</c> option) -- that is real additional wiring work, not attempted here;
-    /// this flag only gates direct calls to this loader.
+    /// Opt-in flag: <see cref="Load"/> refuses unless <c>STINGRAY_MLX_DENSE=1</c> is set. The same
+    /// flag also gates the explicit planner/factory route. Managed admission and GGUF loading have
+    /// host-side coverage; native numerical inference and hardware execution remain unverified
+    /// without a supported MLX/Metal machine.
     /// </summary>
     public static void CheckEnabled()
     {

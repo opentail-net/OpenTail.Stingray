@@ -1,12 +1,10 @@
 namespace OpenTail.Stingray.Mlx;
 
 /// <summary>
-/// Skeleton for an MLX (Apple Silicon, <c>mlx-c</c>/Metal) compute backend -- see
-/// docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md. <b>Does not implement
-/// <c>IComputeBackend</c> yet</b>: that is the much larger remaining piece (every kernel
-/// <c>CudaForwardPass</c>/<c>CudaBackend</c> have today, written against an API this class cannot
-/// exercise -- no Mac exists on this development machine). This class exists so the project, the
-/// flag, and an honest availability check have somewhere to live before that work starts.
+/// Availability probe for the experimental MLX dense-Llama route. The engine planner/factory can
+/// select and construct that route when explicitly enabled. This check only verifies that mlx-c
+/// reports an available Metal device; it is not evidence that native numerical inference or full
+/// hardware correctness has been verified. See docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
 /// </summary>
 public static class MlxBackend
 {
