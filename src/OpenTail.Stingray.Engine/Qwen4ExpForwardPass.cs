@@ -36,6 +36,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly bool _q4eDebug = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1";
     private double[]? _layerSumAccum;
     private double[]? _hcCombine0Accum;
+    private double[]? _ffnOut0Accum;
+    private double[]? _ffnInject0Accum;
     private readonly int _embedDim;
     private readonly int _hc;
     private readonly int _hcDim;
@@ -287,8 +289,24 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 _resHc, hcFfnNorm, hcFfnDown, hcFfnUp, hcFfnInject,
                 _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
 
+            if (_q4eDebug && il == 0 && position <= 4)
+            {
+                double s = 0; foreach (var v in _inject) s += v;
+                (_ffnInject0Accum ??= new double[1])[0] += s;
+                if (position == 4)
+                    Console.Error.WriteLine($"[q4e-dbg] ffn hc_inject-0 sum={_ffnInject0Accum[0]:F6}");
+            }
+
             // 2f. MoE (routed + shared expert)
             ExecuteMoe(layer, _mixed, _blockOut);
+
+            if (_q4eDebug && il == 0 && position <= 4)
+            {
+                double s = 0; foreach (var v in _blockOut) s += v;
+                (_ffnOut0Accum ??= new double[1])[0] += s;
+                if (position == 4)
+                    Console.Error.WriteLine($"[q4e-dbg] ffn_out-0 sum={_ffnOut0Accum[0]:F6}");
+            }
 
             // 2g. HC Combine after MoE
             Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
