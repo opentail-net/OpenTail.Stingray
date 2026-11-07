@@ -273,4 +273,23 @@ internal static partial class MlxInterop
     [LibraryImport(LibraryName, EntryPoint = "mlx_concatenate_axis")]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ConcatenateAxis(out MlxArray result, MlxVectorArray arrays, int axis, MlxStream stream);
+
+    // ── MoE combine ops (ScatterAddWeightedRows, SwiGluOaiGatherBias, MoeBiasWeightedSum) and the
+    // Gemma 4 vision ops remaining after Gemma4VisionSelfAttention (AddPosition2D, Pool3x3, Rope2D) --
+    // MoE/hybrid/vision architectures item, docs/4-performance/gpu/2026-11-06-mlx-metal-backend-plan.md.
+    // Both are real custom Metal kernels in TensorSharp with no basic-mlx-c-ops composition sourced
+    // there; this port composes them from the ops already bound above instead (one-hot-via-comparison
+    // + matmul for scatter-add, -max(-a,-b) for min, slice/add for the fixed 3x3 pooling window,
+    // slice/concatenate for the per-half rotate-half RoPE) plus these two additional real primitives.
+    // Signatures copied verbatim from TensorSharp's own MlxNative.cs (~9000-9018, its MlxBinaryOp.Add/
+    // Maximum dispatch cases): same shape as mlx_subtract/mlx_greater above, which TensorSharp does
+    // call directly and this port already uses.
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_add")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Add(out MlxArray result, MlxArray lhs, MlxArray rhs, MlxStream stream);
+
+    [LibraryImport(LibraryName, EntryPoint = "mlx_maximum")]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int Maximum(out MlxArray result, MlxArray lhs, MlxArray rhs, MlxStream stream);
 }

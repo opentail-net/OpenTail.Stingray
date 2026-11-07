@@ -295,14 +295,34 @@ own scope section, not overlooked):
     **Also ported 2026-11-06**: `MlxOps.GatherRows`, from TensorSharp's `TryGatherRows`
     (`MlxFusedOps.cs` ~291-333) -- `mlx_take_axis` along axis 0 then `mlx_contiguous`, collecting
     the tokens routed to one expert before running its FFN.
-    **Not yet done**: `TryScatterAddWeightedRows` (`MlxFusedOps.cs` ~335-392) -- its real
-    implementation is a custom fused Metal kernel (`ScatterAddWeightedRowsSource` in
-    `MlxNative.cs`), which the owner's "stick to C#" instruction means composing from basic ops
-    instead (e.g. a one-hot-times-weights matmul), not yet done -- and `TryMoeBiasWeightedSum`
-    (`MlxFusedOps.cs` ~624-701). The expert-offload LRU memory mechanism (`MoeExpertOffload.cs`) is
-    a perf/memory feature orthogonal to correctness, lower priority than the compute path. No MoE
-    model assembly (`MlxDenseModel`-equivalent for an MoE architecture) exists yet either -- these
-    ops alone are not a runnable MoE forward pass.
+    **Combine ops ported 2026-11-07**: `MlxOps.ScatterAddWeightedRows` (from `TryScatterAddWeightedRows`,
+    `MlxFusedOps.cs` ~335-392 -- real implementation a custom fused Metal kernel,
+    `ScatterAddWeightedRowsSource` in `MlxNative.cs`), `MlxOps.SwiGluOaiGatherBias` (from
+    `TrySwiGluOaiGatherBias`, `MlxFusedOps.cs` ~541-602 -- real implementation `SwigluOaiGatherBias`,
+    another custom kernel), and `MlxOps.MoeBiasWeightedSum` (from `TryMoeBiasWeightedSum`,
+    `MlxFusedOps.cs` ~614-680 -- real implementation `MoeBiasWeightedSum`, another custom kernel). Per
+    the owner's "stick to C#" instruction, all three are composed from basic mlx-c ops instead of new
+    kernels: scatter-add as a one-hot-via-comparison selection matrix (`diff = row - index;
+    equal = 1 - (greater(diff,0) + greater(-diff,0))`, since this port's real-signature inventory has
+    no `mlx_equal`) times weights, then one matmul against the expert rows; the SwiGLU-OAI clamp as
+    `min(a,b) = -max(-a,-b)` (no `mlx_minimum`, but `mlx_maximum` is real and bound); the K-wide
+    per-token sum as a batched matmul against a `[1,1,K]` ones row (no `mlx_sum`, but `mlx_matmul`
+    broadcasting its leading batch dim is the same reduction). Two new real `MlxInterop` bindings
+    needed: `mlx_add`, `mlx_maximum` (both copied verbatim from TensorSharp's own dispatch, `MlxNative.cs`
+    ~9000-9018 -- same signature shape as `mlx_subtract`/`mlx_greater`, already bound and used). All
+    three verified independently: their composition was reproduced in plain C# (no MLX) in a scratch
+    program and checked bit-for-bit against each op's own reference semantics before trusting the
+    mlx-c translation, catching any axis/grouping mistake independent of not having a Mac to run the
+    real thing. 6 new tests (skip without hardware, same as every other native MLX test here). The
+    expert-offload LRU memory mechanism (`MoeExpertOffload.cs`) is a perf/memory feature orthogonal to
+    correctness, lower priority than the compute path, still not ported. No MoE model assembly
+    (`MlxDenseModel`-equivalent for an MoE architecture) exists either -- these ops alone are not a
+    runnable MoE forward pass.
+  - **Hybrid architecture (Qwen3.5 Gated-DeltaNet) -- explicitly dropped, 2026-11-07 (owner decision)**:
+    scoped 2026-11-06 (below) but not pursued -- at 4,136 lines of real reference logic, its own
+    subsystem-sized port, larger than the entire dense-llama path, for a backend that cannot be run on
+    this machine either way. Left as the scoping note below for whoever picks it up later, not as an
+    open item on this plan's active backlog.
   - **Hybrid architecture (Qwen3.5 Gated-DeltaNet) -- located and sized, 2026-11-06**: the real
     MLX-relevant GDN hybrid is `TensorSharp.Models/Models/Qwen35/Qwen35Model.GatedDeltaNet.cs`
     (4,136 lines) in `C:\Git-Public\example\TensorSharp`, not anything under
@@ -341,11 +361,24 @@ own scope section, not overlooked):
     exact zeros so MLX's fused SDPA kernel takes its F32 SIMD path instead of narrowing to TF32,
     then crops back -- mathematically a no-op, just a precision-path selection. New `MlxInterop`
     bindings: `mlx_array_new_float32`, `mlx_vector_array_new`/`_free`/`_append_value`, `mlx_full`,
-    `mlx_concatenate_axis`. 3 new tests. **Not done**: `TryAddPosition2D`, `TryPool3x3`, `TryRope2D`
-    (all custom kernels, same as the MiniMax-H3 situation) and `EvaluateForProfile` (a pure
-    diagnostic helper, not inference logic). No vision model assembly (loading a real `mmproj`
-    checkpoint, wiring this op into a `UnifiedVisionPipeline`-equivalent for MLX) exists either --
-    this one op alone is not a runnable vision forward pass.
+    `mlx_concatenate_axis`. 3 new tests.
+    **`TryAddPosition2D`/`TryPool3x3`/`TryRope2D` ported 2026-11-07**: `MlxOps.Gemma4VisionAddPosition2D`,
+    `MlxOps.Gemma4VisionPool3x3`, `MlxOps.Gemma4VisionRope2D` -- all three custom fused Metal kernels
+    in the real source (`Gemma4VisionPosition2D`/`Gemma4VisionPool3x3`/`Gemma4VisionRope2D` in
+    `MlxNative.cs`), composed here from basic ops instead: position-add as two broadcasting adds
+    (reshape the patch grid to `[patchesY, patchesX, channels]`, slice the X/Y tables to shapes that
+    broadcast over the other spatial axis); the 3x3 pool as two strided-slice-and-add passes (pool the
+    3 columns of each box, then the 3 resulting rows, cropping incomplete trailing rows/columns the
+    same way the kernel does) instead of a 9-term single-pass sum -- same 9 terms, different float
+    addition grouping; the 2D RoPE as two ordinary rotate-half RoPE applications (X-half with cos/sin
+    columns `[0,quarter)`, Y-half with `[quarter,halfWidth)`), each via slice/multiply/subtract/add/
+    concatenate. No new `MlxInterop` bindings needed beyond `mlx_add` (already added for the MoE combine
+    ops above). Same independent-verification approach as the MoE ops: each composition was reproduced
+    in plain C# and checked against its own reference semantics before trusting the mlx-c translation.
+    3 new tests (skip without hardware). `EvaluateForProfile` (a pure diagnostic helper, not inference
+    logic) remains unported, correctly -- it has no correctness content to port. No vision model
+    assembly (loading a real `mmproj` checkpoint, wiring these ops into a `UnifiedVisionPipeline`-
+    equivalent for MLX) exists either -- these ops alone are not a runnable vision forward pass.
 - ~~No engine/planner integration~~ -- done 2026-11-06. `ForwardPassBackend.Mlx` and
   `ForwardPassKind.MlxDense` added; `ForwardPassSelection.Select` has an isolated early-return branch
   (`request.Backend == ForwardPassBackend.Mlx`) that refuses unless `STINGRAY_MLX_DENSE=1` and the

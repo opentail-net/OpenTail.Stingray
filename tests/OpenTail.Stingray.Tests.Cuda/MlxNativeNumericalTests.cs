@@ -155,6 +155,226 @@ public sealed class MlxNativeNumericalTests
         AssertClose(decodeReference.AsSpan(decodeReference.Length - model.VocabSize), decode);
     }
 
+    [Fact]
+    public void ScatterAddWeightedRows_MatchesReferenceForSparseSortedIndices()
+    {
+        RequireMlx();
+        float[] inPlace = [1, 2, 3, 4, 5, 6, 7, 8]; // seqLen=4, hiddenDim=2
+        float[] rows = [10, 20, 30, 40]; // batchSize=2, hiddenDim=2
+        int[] indices = [0, 2];
+        float[] weights = [0.5f, 2f];
+
+        float[] actual = MlxOps.ScatterAddWeightedRows(inPlace, seqLen: 4, hiddenDim: 2, rows, indices, weights);
+
+        AssertClose(ReferenceScatterAddWeightedRows(inPlace, 4, 2, rows, indices, weights), actual);
+    }
+
+    [Fact]
+    public void ScatterAddWeightedRows_NoMatchesLeavesInputUnchanged()
+    {
+        RequireMlx();
+        float[] inPlace = [1, 2, 3, 4];
+        float[] rows = [100, 200];
+        int[] indices = [1];
+        float[] weights = [5f];
+
+        float[] actual = MlxOps.ScatterAddWeightedRows(inPlace, seqLen: 2, hiddenDim: 2, rows, indices, weights);
+
+        AssertClose(ReferenceScatterAddWeightedRows(inPlace, 2, 2, rows, indices, weights), actual);
+        AssertClose(inPlace.AsSpan(0, 2), actual.AsSpan(0, 2));
+    }
+
+    [Fact]
+    public void SwiGluOaiGatherBias_MatchesReferenceAcrossClampedAndUnclampedRows()
+    {
+        RequireMlx();
+        float[] gate = [2f, -1f, 0.5f, 3f]; // rows=2, dim=2
+        float[] up = [1f, 2f, -0.5f, 0.2f];
+        float[] gateBias = [0.1f, -0.1f, 0.2f, 0.3f]; // numExperts=2, dim=2
+        float[] upBias = [-0.2f, 0.1f, 0.05f, -0.1f];
+        int[] expertIndices = [1, 0];
+        const float alpha = 1.702f, limit = 2.5f;
+
+        float[] actual = MlxOps.SwiGluOaiGatherBias(gate, up, rows: 2, dim: 2, gateBias, upBias, numExperts: 2, expertIndices, alpha, limit);
+
+        AssertClose(ReferenceSwiGluOaiGatherBias(gate, up, 2, 2, gateBias, upBias, expertIndices, alpha, limit), actual, tolerance: 2e-3f);
+    }
+
+    [Fact]
+    public void MoeBiasWeightedSum_MatchesReferenceWithAndWithoutBias()
+    {
+        RequireMlx();
+        const int tokens = 2, expertsPerToken = 2, dim = 2, numExperts = 2;
+        float[] downRows = [1, 2, 3, 4, 5, 6, 7, 8]; // pairs=4, dim=2, in sorted order
+        float[] downBias = [0.1f, 0.2f, -0.1f, 0.05f]; // numExperts=2, dim=2
+        int[] expertsSorted = [0, 0, 1, 1];
+        int[] invOrder = [2, 0, 3, 1]; // pair p's sorted row
+        float[] routeWeights = [0.6f, 0.4f, 0.3f, 0.7f];
+
+        float[] withBias = MlxOps.MoeBiasWeightedSum(downRows, tokens, expertsPerToken, dim, downBias, numExperts, expertsSorted, invOrder, routeWeights);
+        AssertClose(ReferenceMoeBiasWeightedSum(downRows, tokens, expertsPerToken, dim, downBias, numExperts, expertsSorted, invOrder, routeWeights), withBias);
+
+        float[] withoutBias = MlxOps.MoeBiasWeightedSum(downRows, tokens, expertsPerToken, dim, [], numExperts, expertsSorted, invOrder, routeWeights);
+        AssertClose(ReferenceMoeBiasWeightedSum(downRows, tokens, expertsPerToken, dim, [], numExperts, expertsSorted, invOrder, routeWeights), withoutBias);
+    }
+
+    [Fact]
+    public void Gemma4VisionAddPosition2D_MatchesReferenceAcrossPatchGrid()
+    {
+        RequireMlx();
+        const int patchesX = 2, patchesY = 3, channels = 2, maxPositions = 3;
+        var hidden = new float[patchesX * patchesY * channels];
+        for (int i = 0; i < hidden.Length; i++) hidden[i] = i * 0.1f;
+        var positions = new float[2 * maxPositions * channels];
+        for (int i = 0; i < positions.Length; i++) positions[i] = (i + 1) * 0.01f;
+
+        float[] actual = MlxOps.Gemma4VisionAddPosition2D(hidden, positions, patchesX, patchesY, channels, maxPositions);
+
+        AssertClose(ReferenceAddPosition2D(hidden, positions, patchesX, patchesY, channels, maxPositions), actual);
+    }
+
+    [Fact]
+    public void Gemma4VisionPool3x3_CropsIncompleteTrailingBoxesAndAverages()
+    {
+        RequireMlx();
+        const int patchesX = 4, patchesY = 3, channels = 2; // 4/3=1 merged column (trailing column cropped)
+        var input = new float[patchesX * patchesY * channels];
+        for (int i = 0; i < input.Length; i++) input[i] = i + 1;
+
+        float[] actual = MlxOps.Gemma4VisionPool3x3(input, patchesX, patchesY, channels);
+
+        AssertClose(ReferencePool3x3(input, patchesX, patchesY, channels), actual);
+    }
+
+    [Fact]
+    public void Gemma4VisionRope2D_RotatesXAndYHalvesIndependently()
+    {
+        RequireMlx();
+        const int tokens = 2, heads = 2, headDim = 8; // halfWidth=4, quarter=2
+        var data = new float[tokens * heads * headDim];
+        for (int i = 0; i < data.Length; i++) data[i] = i * 0.1f - 1f;
+        var cosine = new float[tokens * (headDim / 2)];
+        var sine = new float[tokens * (headDim / 2)];
+        for (int i = 0; i < cosine.Length; i++)
+        {
+            double angle = (i + 1) * 0.3;
+            cosine[i] = (float)Math.Cos(angle);
+            sine[i] = (float)Math.Sin(angle);
+        }
+
+        float[] actual = MlxOps.Gemma4VisionRope2D(data, cosine, sine, tokens, heads, headDim);
+
+        AssertClose(ReferenceRope2D(data, cosine, sine, tokens, heads, headDim), actual, tolerance: 2e-3f);
+    }
+
+    private static float[] ReferenceScatterAddWeightedRows(ReadOnlySpan<float> inPlace, int seqLen, int hiddenDim,
+        ReadOnlySpan<float> rows, ReadOnlySpan<int> indices, ReadOnlySpan<float> weights)
+    {
+        var result = inPlace.ToArray();
+        for (int k = 0; k < indices.Length; k++)
+        {
+            int row = indices[k];
+            for (int c = 0; c < hiddenDim; c++)
+                result[row * hiddenDim + c] += weights[k] * rows[k * hiddenDim + c];
+        }
+        return result;
+    }
+
+    private static float[] ReferenceSwiGluOaiGatherBias(ReadOnlySpan<float> gate, ReadOnlySpan<float> up, int rows, int dim,
+        ReadOnlySpan<float> gateBias, ReadOnlySpan<float> upBias, ReadOnlySpan<int> expertIndices, float alpha, float limit)
+    {
+        var result = new float[rows * dim];
+        for (int r = 0; r < rows; r++)
+        {
+            int expert = expertIndices[r];
+            for (int c = 0; c < dim; c++)
+            {
+                float g = gate[r * dim + c] + gateBias[expert * dim + c];
+                float u = up[r * dim + c] + upBias[expert * dim + c];
+                float gMin = Math.Min(g, limit);
+                float uClamped = Math.Clamp(u, -limit, limit);
+                result[r * dim + c] = gMin * (1f / (1f + MathF.Exp(-alpha * gMin))) * (uClamped + 1f);
+            }
+        }
+        return result;
+    }
+
+    private static float[] ReferenceMoeBiasWeightedSum(ReadOnlySpan<float> downRows, int tokens, int expertsPerToken, int dim,
+        ReadOnlySpan<float> downBias, int numExperts, ReadOnlySpan<int> expertsSorted, ReadOnlySpan<int> invOrder, ReadOnlySpan<float> routeWeights)
+    {
+        var result = new float[tokens * dim];
+        bool hasBias = !downBias.IsEmpty;
+        for (int n = 0; n < tokens; n++)
+            for (int k = 0; k < expertsPerToken; k++)
+            {
+                int pair = n * expertsPerToken + k;
+                int sortedRow = invOrder[pair];
+                for (int d = 0; d < dim; d++)
+                {
+                    float value = downRows[sortedRow * dim + d];
+                    if (hasBias) value += downBias[expertsSorted[sortedRow] * dim + d];
+                    result[n * dim + d] += routeWeights[pair] * value;
+                }
+            }
+        return result;
+    }
+
+    private static float[] ReferenceAddPosition2D(ReadOnlySpan<float> hidden, ReadOnlySpan<float> positions,
+        int patchesX, int patchesY, int channels, int maxPositions)
+    {
+        var result = new float[hidden.Length];
+        for (int py = 0; py < patchesY; py++)
+            for (int px = 0; px < patchesX; px++)
+            {
+                int patch = py * patchesX + px;
+                for (int c = 0; c < channels; c++)
+                {
+                    float xv = positions[(0 * maxPositions + px) * channels + c];
+                    float yv = positions[(1 * maxPositions + py) * channels + c];
+                    result[patch * channels + c] = hidden[patch * channels + c] + xv + yv;
+                }
+            }
+        return result;
+    }
+
+    private static float[] ReferencePool3x3(ReadOnlySpan<float> input, int patchesX, int patchesY, int channels)
+    {
+        int mergedX = patchesX / 3, mergedY = patchesY / 3;
+        var result = new float[mergedY * mergedX * channels];
+        for (int my = 0; my < mergedY; my++)
+            for (int mx = 0; mx < mergedX; mx++)
+                for (int c = 0; c < channels; c++)
+                {
+                    float sum = 0;
+                    for (int ky = 0; ky < 3; ky++)
+                        for (int kx = 0; kx < 3; kx++)
+                            sum += input[((my * 3 + ky) * patchesX + mx * 3 + kx) * channels + c];
+                    result[(my * mergedX + mx) * channels + c] = sum / 9f;
+                }
+        return result;
+    }
+
+    private static float[] ReferenceRope2D(ReadOnlySpan<float> data, ReadOnlySpan<float> cosine, ReadOnlySpan<float> sine,
+        int tokens, int heads, int headDim)
+    {
+        var result = data.ToArray();
+        int halfWidth = headDim / 2, quarter = headDim / 4;
+        for (int token = 0; token < tokens; token++)
+            for (int h = 0; h < heads; h++)
+                for (int axis = 0; axis < 2; axis++)
+                    for (int index = 0; index < quarter; index++)
+                    {
+                        int channel = axis * quarter + index;
+                        long baseIndex = (token * (long)heads + h) * headDim + axis * halfWidth + index;
+                        int table = token * halfWidth + channel;
+                        float first = data[(int)baseIndex], second = data[(int)(baseIndex + quarter)];
+                        float cos = cosine[table], sin = sine[table];
+                        result[(int)baseIndex] = first * cos - second * sin;
+                        result[(int)(baseIndex + quarter)] = first * sin + second * cos;
+                    }
+        return result;
+    }
+
     private static void RequireMlx() => Assert.SkipUnless(MlxBackend.IsAvailable(), "Native MLX with a working Metal device is required; this test has not run numerically on this host.");
 
     private static float[] ReferenceRope(ReadOnlySpan<float> input, int seqLen, int headDim, int dims, ReadOnlySpan<int> positions)

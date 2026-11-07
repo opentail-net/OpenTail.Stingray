@@ -632,6 +632,534 @@ public static class MlxOps
         }
     }
 
+    /// <summary>
+    /// MoE combine: <c>output[row] = inPlace[row] + weights[k] * rows[k]</c> for the unique <c>k</c>
+    /// with <c>indices[k] == row</c> (0 contribution if no such <c>k</c>); <paramref name="indices"/>
+    /// must be sorted and unique, matching the real kernel's binary-search assumption.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxFusedOps.TryScatterAddWeightedRows</c>
+    /// (<c>MlxFusedOps.cs</c> ~335-392), whose real implementation is a custom fused Metal kernel
+    /// (<c>ScatterAddWeightedRowsSource</c> in <c>MlxNative.cs</c> ~1475-1495: per output element, a
+    /// binary search over <paramref name="indices"/> for a match, add the matching weighted row if
+    /// found). Per the owner's "stick to C#" instruction (no new Metal kernels), this composes the
+    /// same result from basic ops instead: a one-hot selection matrix built via comparison (no
+    /// <c>mlx_equal</c> exists in this port's real-signature inventory, so equality is derived as
+    /// <c>1 - (greater(diff,0) + greater(-diff,0))</c>, i.e. "not greater either way"), scaled by
+    /// <paramref name="weights"/>, then a single matmul against <paramref name="rows"/> --
+    /// mathematically the scatter-add this kernel performs, since each row has at most one match.</para>
+    /// </summary>
+    public static float[] ScatterAddWeightedRows(ReadOnlySpan<float> inPlace, int seqLen, int hiddenDim,
+        ReadOnlySpan<float> rows, ReadOnlySpan<int> indices, ReadOnlySpan<float> weights)
+    {
+        if (inPlace.Length != seqLen * hiddenDim) throw new ArgumentException($"inPlace has {inPlace.Length} elements, expected seqLen*hiddenDim = {seqLen * hiddenDim}.", nameof(inPlace));
+        int batchSize = indices.Length;
+        if (weights.Length != batchSize) throw new ArgumentException($"weights has {weights.Length} elements, expected indices.Length = {batchSize}.", nameof(weights));
+        if (rows.Length != batchSize * hiddenDim) throw new ArgumentException($"rows has {rows.Length} elements, expected indices.Length*hiddenDim = {batchSize * hiddenDim}.", nameof(rows));
+        if (batchSize == 0) return inPlace.ToArray();
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray inPlaceArray = default, rowsArray = default, indicesIntArray = default, weightsArray = default,
+            rowIdx = default, rowIdxCol = default, indicesF = default, indicesRow = default, diff = default, negDiff = default,
+            gt1 = default, gt1f = default, gt2 = default, gt2f = default, notEqualF = default, equalF = default,
+            weightedMask = default, combined = default, output = default;
+        MlxInterop.MlxArray zero = default, one = default;
+        try
+        {
+            inPlaceArray = UploadFloat32(inPlace, [seqLen, hiddenDim]);
+            rowsArray = UploadFloat32(rows, [batchSize, hiddenDim]);
+            indicesIntArray = UploadInt32(indices, [batchSize]);
+            weightsArray = UploadFloat32(weights, [1, batchSize]);
+            zero = MlxInterop.ArrayNewFloat32(0f);
+            one = MlxInterop.ArrayNewFloat32(1f);
+
+            Check(MlxInterop.Arange(out rowIdx, 0, seqLen, 1, MlxInterop.MlxFloat32, stream), "mlx_arange");
+            Check(MlxInterop.Reshape(out rowIdxCol, rowIdx, [seqLen, 1], 2, stream), "mlx_reshape (rowIdxCol)");
+            Check(MlxInterop.Astype(out indicesF, indicesIntArray, MlxInterop.MlxFloat32, stream), "mlx_astype (indicesF)");
+            Check(MlxInterop.Reshape(out indicesRow, indicesF, [1, batchSize], 2, stream), "mlx_reshape (indicesRow)");
+
+            Check(MlxInterop.Subtract(out diff, rowIdxCol, indicesRow, stream), "mlx_subtract");
+            Check(MlxInterop.Negative(out negDiff, diff, stream), "mlx_negative");
+            Check(MlxInterop.Greater(out gt1, diff, zero, stream), "mlx_greater (diff>0)");
+            Check(MlxInterop.Astype(out gt1f, gt1, MlxInterop.MlxFloat32, stream), "mlx_astype (gt1f)");
+            Check(MlxInterop.Greater(out gt2, negDiff, zero, stream), "mlx_greater (diff<0)");
+            Check(MlxInterop.Astype(out gt2f, gt2, MlxInterop.MlxFloat32, stream), "mlx_astype (gt2f)");
+            Check(MlxInterop.Add(out notEqualF, gt1f, gt2f, stream), "mlx_add (notEqualF)");
+            Check(MlxInterop.Subtract(out equalF, one, notEqualF, stream), "mlx_subtract (equalF)");
+
+            Check(MlxInterop.Multiply(out weightedMask, equalF, weightsArray, stream), "mlx_multiply (weightedMask)");
+            Check(MlxInterop.MatMul(out combined, weightedMask, rowsArray, stream), "mlx_matmul (combined)");
+            Check(MlxInterop.Add(out output, inPlaceArray, combined, stream), "mlx_add (output)");
+
+            var result = new float[seqLen * hiddenDim];
+            DownloadFloat32(output, result, stream);
+            return result;
+        }
+        finally
+        {
+            if (output.IsValid) MlxInterop.ArrayFree(output);
+            if (combined.IsValid) MlxInterop.ArrayFree(combined);
+            if (weightedMask.IsValid) MlxInterop.ArrayFree(weightedMask);
+            if (equalF.IsValid) MlxInterop.ArrayFree(equalF);
+            if (notEqualF.IsValid) MlxInterop.ArrayFree(notEqualF);
+            if (gt2f.IsValid) MlxInterop.ArrayFree(gt2f);
+            if (gt2.IsValid) MlxInterop.ArrayFree(gt2);
+            if (gt1f.IsValid) MlxInterop.ArrayFree(gt1f);
+            if (gt1.IsValid) MlxInterop.ArrayFree(gt1);
+            if (negDiff.IsValid) MlxInterop.ArrayFree(negDiff);
+            if (diff.IsValid) MlxInterop.ArrayFree(diff);
+            if (indicesRow.IsValid) MlxInterop.ArrayFree(indicesRow);
+            if (indicesF.IsValid) MlxInterop.ArrayFree(indicesF);
+            if (rowIdxCol.IsValid) MlxInterop.ArrayFree(rowIdxCol);
+            if (rowIdx.IsValid) MlxInterop.ArrayFree(rowIdx);
+            if (one.IsValid) MlxInterop.ArrayFree(one);
+            if (zero.IsValid) MlxInterop.ArrayFree(zero);
+            if (weightsArray.IsValid) MlxInterop.ArrayFree(weightsArray);
+            if (indicesIntArray.IsValid) MlxInterop.ArrayFree(indicesIntArray);
+            if (rowsArray.IsValid) MlxInterop.ArrayFree(rowsArray);
+            if (inPlaceArray.IsValid) MlxInterop.ArrayFree(inPlaceArray);
+        }
+    }
+
+    /// <summary>
+    /// GPT-OSS "swiglu_oai" clamped SwiGLU over separate gate/up matrices, with each row's gate/up
+    /// bias gathered by its expert id: <c>g = gate[r] + gateBias[experts[r]]; u = up[r] +
+    /// upBias[experts[r]]; out[r] = min(g,limit) * sigmoid(alpha*min(g,limit)) *
+    /// (clamp(u,-limit,limit) + 1)</c>.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxFusedOps.TrySwiGluOaiGatherBias</c>
+    /// (<c>MlxFusedOps.cs</c> ~541-602), a custom fused Metal kernel in the real source. Composed here
+    /// from basic ops instead: <c>mlx_take_axis</c> to gather each row's bias by expert id, then
+    /// <c>min(a,b) = -max(-a,-b)</c> (no <c>mlx_minimum</c> in this port's real-signature inventory, but
+    /// <c>mlx_maximum</c> is) to get both the clamp and the <c>min(g,limit)</c> term.</para>
+    /// </summary>
+    public static float[] SwiGluOaiGatherBias(ReadOnlySpan<float> gate, ReadOnlySpan<float> up, int rows, int dim,
+        ReadOnlySpan<float> gateBias, ReadOnlySpan<float> upBias, int numExperts, ReadOnlySpan<int> expertIndices,
+        float alpha, float limit)
+    {
+        if (gate.Length != rows * dim) throw new ArgumentException($"gate has {gate.Length} elements, expected rows*dim = {rows * dim}.", nameof(gate));
+        if (up.Length != rows * dim) throw new ArgumentException($"up has {up.Length} elements, expected rows*dim = {rows * dim}.", nameof(up));
+        if (gateBias.Length != numExperts * dim) throw new ArgumentException($"gateBias has {gateBias.Length} elements, expected numExperts*dim = {numExperts * dim}.", nameof(gateBias));
+        if (upBias.Length != numExperts * dim) throw new ArgumentException($"upBias has {upBias.Length} elements, expected numExperts*dim = {numExperts * dim}.", nameof(upBias));
+        if (expertIndices.Length != rows) throw new ArgumentException($"expertIndices has {expertIndices.Length} elements, expected rows = {rows}.", nameof(expertIndices));
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray gateArray = default, upArray = default, gateBiasArray = default, upBiasArray = default,
+            expertIndicesArray = default, gatheredGateBias = default, gatheredUpBias = default, g = default, u = default,
+            negLimit = default, negG = default, maxNegGNegLimit = default, gMin = default, alphaScalar = default,
+            sigArg = default, sig = default, uMaxed = default, negUMaxed = default, maxNegUMaxedNegLimit = default,
+            uClamped = default, one = default, onePlusU = default, part1 = default, result = default;
+        try
+        {
+            gateArray = UploadFloat32(gate, [rows, dim]);
+            upArray = UploadFloat32(up, [rows, dim]);
+            gateBiasArray = UploadFloat32(gateBias, [numExperts, dim]);
+            upBiasArray = UploadFloat32(upBias, [numExperts, dim]);
+            expertIndicesArray = UploadInt32(expertIndices, [rows]);
+            negLimit = MlxInterop.ArrayNewFloat32(-limit);
+            alphaScalar = MlxInterop.ArrayNewFloat32(alpha);
+            one = MlxInterop.ArrayNewFloat32(1f);
+
+            Check(MlxInterop.TakeAxis(out gatheredGateBias, gateBiasArray, expertIndicesArray, axis: 0, stream), "mlx_take_axis (gateBias)");
+            Check(MlxInterop.TakeAxis(out gatheredUpBias, upBiasArray, expertIndicesArray, axis: 0, stream), "mlx_take_axis (upBias)");
+            Check(MlxInterop.Add(out g, gateArray, gatheredGateBias, stream), "mlx_add (g)");
+            Check(MlxInterop.Add(out u, upArray, gatheredUpBias, stream), "mlx_add (u)");
+
+            Check(MlxInterop.Negative(out negG, g, stream), "mlx_negative (negG)");
+            Check(MlxInterop.Maximum(out maxNegGNegLimit, negG, negLimit, stream), "mlx_maximum (gMin)");
+            Check(MlxInterop.Negative(out gMin, maxNegGNegLimit, stream), "mlx_negative (gMin)");
+
+            Check(MlxInterop.Multiply(out sigArg, gMin, alphaScalar, stream), "mlx_multiply (sigArg)");
+            Check(MlxInterop.Sigmoid(out sig, sigArg, stream), "mlx_sigmoid");
+
+            Check(MlxInterop.Maximum(out uMaxed, u, negLimit, stream), "mlx_maximum (uMaxed)");
+            Check(MlxInterop.Negative(out negUMaxed, uMaxed, stream), "mlx_negative (negUMaxed)");
+            Check(MlxInterop.Maximum(out maxNegUMaxedNegLimit, negUMaxed, negLimit, stream), "mlx_maximum (uClamped)");
+            Check(MlxInterop.Negative(out uClamped, maxNegUMaxedNegLimit, stream), "mlx_negative (uClamped)");
+            Check(MlxInterop.Add(out onePlusU, uClamped, one, stream), "mlx_add (onePlusU)");
+
+            Check(MlxInterop.Multiply(out part1, gMin, sig, stream), "mlx_multiply (part1)");
+            Check(MlxInterop.Multiply(out result, part1, onePlusU, stream), "mlx_multiply (result)");
+
+            var output = new float[rows * dim];
+            DownloadFloat32(result, output, stream);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (part1.IsValid) MlxInterop.ArrayFree(part1);
+            if (onePlusU.IsValid) MlxInterop.ArrayFree(onePlusU);
+            if (one.IsValid) MlxInterop.ArrayFree(one);
+            if (uClamped.IsValid) MlxInterop.ArrayFree(uClamped);
+            if (maxNegUMaxedNegLimit.IsValid) MlxInterop.ArrayFree(maxNegUMaxedNegLimit);
+            if (negUMaxed.IsValid) MlxInterop.ArrayFree(negUMaxed);
+            if (uMaxed.IsValid) MlxInterop.ArrayFree(uMaxed);
+            if (sig.IsValid) MlxInterop.ArrayFree(sig);
+            if (sigArg.IsValid) MlxInterop.ArrayFree(sigArg);
+            if (alphaScalar.IsValid) MlxInterop.ArrayFree(alphaScalar);
+            if (gMin.IsValid) MlxInterop.ArrayFree(gMin);
+            if (maxNegGNegLimit.IsValid) MlxInterop.ArrayFree(maxNegGNegLimit);
+            if (negG.IsValid) MlxInterop.ArrayFree(negG);
+            if (negLimit.IsValid) MlxInterop.ArrayFree(negLimit);
+            if (u.IsValid) MlxInterop.ArrayFree(u);
+            if (g.IsValid) MlxInterop.ArrayFree(g);
+            if (gatheredUpBias.IsValid) MlxInterop.ArrayFree(gatheredUpBias);
+            if (gatheredGateBias.IsValid) MlxInterop.ArrayFree(gatheredGateBias);
+            if (expertIndicesArray.IsValid) MlxInterop.ArrayFree(expertIndicesArray);
+            if (upBiasArray.IsValid) MlxInterop.ArrayFree(upBiasArray);
+            if (gateBiasArray.IsValid) MlxInterop.ArrayFree(gateBiasArray);
+            if (upArray.IsValid) MlxInterop.ArrayFree(upArray);
+            if (gateArray.IsValid) MlxInterop.ArrayFree(gateArray);
+        }
+    }
+
+    /// <summary>
+    /// Routing-weighted MoE combine: <c>output[n,d] = sum over k in [0,expertsPerToken) of
+    /// routeWeights[n*K+k] * (downRows[invOrder[n*K+k],d] + downBias[expertsSorted[invOrder[n*K+k]],d])</c>
+    /// (the bias term omitted when <paramref name="downBias"/> is empty). <paramref name="downRows"/>
+    /// holds the <c>N*K</c> expert down-projection rows in expert-sorted pair order; <paramref
+    /// name="invOrder"/> maps original pair <c>p = n*K+k</c> to its sorted row.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxFusedOps.TryMoeBiasWeightedSum</c>
+    /// (<c>MlxFusedOps.cs</c> ~614-680), a custom fused Metal kernel in the real source. Composed here
+    /// from basic ops: gather the down-projection rows and (by a further expert-id gather) their bias
+    /// rows at <paramref name="invOrder"/>, scale by <paramref name="routeWeights"/>, then sum the
+    /// <paramref name="expertsPerToken"/> terms per token -- done via a batched matmul against a
+    /// <c>[1, expertsPerToken]</c> ones row (no <c>mlx_sum</c> in this port's real-signature inventory,
+    /// but <c>mlx_matmul</c> broadcasting its leading batch dim is the same reduction).</para>
+    /// </summary>
+    public static float[] MoeBiasWeightedSum(ReadOnlySpan<float> downRows, int tokens, int expertsPerToken, int dim,
+        ReadOnlySpan<float> downBias, int numExperts, ReadOnlySpan<int> expertsSorted, ReadOnlySpan<int> invOrder,
+        ReadOnlySpan<float> routeWeights)
+    {
+        int pairs = checked(tokens * expertsPerToken);
+        if (downRows.Length != pairs * dim) throw new ArgumentException($"downRows has {downRows.Length} elements, expected tokens*expertsPerToken*dim = {pairs * dim}.", nameof(downRows));
+        bool hasBias = !downBias.IsEmpty;
+        if (hasBias && downBias.Length != numExperts * dim) throw new ArgumentException($"downBias has {downBias.Length} elements, expected numExperts*dim = {numExperts * dim}.", nameof(downBias));
+        if (expertsSorted.Length != pairs) throw new ArgumentException($"expertsSorted has {expertsSorted.Length} elements, expected pairs = {pairs}.", nameof(expertsSorted));
+        if (invOrder.Length != pairs) throw new ArgumentException($"invOrder has {invOrder.Length} elements, expected pairs = {pairs}.", nameof(invOrder));
+        if (routeWeights.Length != pairs) throw new ArgumentException($"routeWeights has {routeWeights.Length} elements, expected pairs = {pairs}.", nameof(routeWeights));
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray downRowsArray = default, downBiasArray = default, expertsSortedArray = default, invOrderArray = default,
+            routeWeightsArray = default, gatheredDown = default, gatheredExpertsForBias = default, gatheredBias = default,
+            combined = default, weightsCol = default, weighted = default, weighted3d = default, ones = default,
+            summedBatched = default, result = default;
+        try
+        {
+            downRowsArray = UploadFloat32(downRows, [pairs, dim]);
+            if (hasBias) downBiasArray = UploadFloat32(downBias, [numExperts, dim]);
+            expertsSortedArray = UploadInt32(expertsSorted, [pairs]);
+            invOrderArray = UploadInt32(invOrder, [pairs]);
+            routeWeightsArray = UploadFloat32(routeWeights, [pairs, 1]);
+
+            Check(MlxInterop.TakeAxis(out gatheredDown, downRowsArray, invOrderArray, axis: 0, stream), "mlx_take_axis (down)");
+            if (hasBias)
+            {
+                Check(MlxInterop.TakeAxis(out gatheredExpertsForBias, expertsSortedArray, invOrderArray, axis: 0, stream), "mlx_take_axis (experts)");
+                Check(MlxInterop.TakeAxis(out gatheredBias, downBiasArray, gatheredExpertsForBias, axis: 0, stream), "mlx_take_axis (bias)");
+                Check(MlxInterop.Add(out combined, gatheredDown, gatheredBias, stream), "mlx_add (combined)");
+            }
+            else
+            {
+                combined = gatheredDown;
+            }
+
+            Check(MlxInterop.Multiply(out weighted, combined, routeWeightsArray, stream), "mlx_multiply (weighted)");
+            Check(MlxInterop.Reshape(out weighted3d, weighted, [tokens, expertsPerToken, dim], 3, stream), "mlx_reshape (weighted3d)");
+
+            var onesData = new float[expertsPerToken];
+            Array.Fill(onesData, 1f);
+            ones = UploadFloat32(onesData, [1, 1, expertsPerToken]);
+            Check(MlxInterop.MatMul(out summedBatched, ones, weighted3d, stream), "mlx_matmul (summedBatched)");
+            Check(MlxInterop.Reshape(out result, summedBatched, [tokens, dim], 2, stream), "mlx_reshape (result)");
+
+            var output = new float[tokens * dim];
+            DownloadFloat32(result, output, stream);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (summedBatched.IsValid) MlxInterop.ArrayFree(summedBatched);
+            if (ones.IsValid) MlxInterop.ArrayFree(ones);
+            if (weighted3d.IsValid) MlxInterop.ArrayFree(weighted3d);
+            if (weighted.IsValid) MlxInterop.ArrayFree(weighted);
+            if (weightsCol.IsValid) MlxInterop.ArrayFree(weightsCol);
+            if (hasBias && combined.IsValid) MlxInterop.ArrayFree(combined);
+            if (gatheredBias.IsValid) MlxInterop.ArrayFree(gatheredBias);
+            if (gatheredExpertsForBias.IsValid) MlxInterop.ArrayFree(gatheredExpertsForBias);
+            if (gatheredDown.IsValid) MlxInterop.ArrayFree(gatheredDown);
+            if (routeWeightsArray.IsValid) MlxInterop.ArrayFree(routeWeightsArray);
+            if (invOrderArray.IsValid) MlxInterop.ArrayFree(invOrderArray);
+            if (expertsSortedArray.IsValid) MlxInterop.ArrayFree(expertsSortedArray);
+            if (downBiasArray.IsValid) MlxInterop.ArrayFree(downBiasArray);
+            if (downRowsArray.IsValid) MlxInterop.ArrayFree(downRowsArray);
+        }
+    }
+
+    /// <summary>
+    /// Adds the Gemma 4 vision encoder's learned X/Y position tables to the patch hidden states:
+    /// for patch row-major index <c>patch = py*patchesX+px</c> and channel <c>c</c>,
+    /// <c>y[patch,c] = hidden[patch,c] + positions[0,px,c] + positions[1,py,c]</c>.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxGemma4VisionOps.TryAddPosition2D</c>
+    /// (<c>MlxGemma4VisionOps.cs</c> ~28-53), a custom fused Metal kernel
+    /// (<c>Gemma4VisionPosition2D</c> in <c>MlxNative.cs</c>) in the real source, with a
+    /// vector/scalar-channel split that only matters for SIMD width, not the result -- this port
+    /// always does <c>value + xv + yv</c>, mathematically identical to both of that kernel's branches.
+    /// Composed here via broadcasting add: reshape <paramref name="hidden"/> to
+    /// <c>[patchesY, patchesX, channels]</c>, slice the X table to <c>[1, patchesX, channels]</c> and
+    /// the Y table to <c>[patchesY, 1, channels]</c> so each broadcasts over the other's axis.</para>
+    /// </summary>
+    public static float[] Gemma4VisionAddPosition2D(ReadOnlySpan<float> hidden, ReadOnlySpan<float> positions,
+        int patchesX, int patchesY, int channels, int maxPositions)
+    {
+        int rows = checked(patchesX * patchesY);
+        if (hidden.Length != rows * channels) throw new ArgumentException($"hidden has {hidden.Length} elements, expected patchesX*patchesY*channels = {rows * channels}.", nameof(hidden));
+        if (positions.Length != 2 * maxPositions * channels) throw new ArgumentException($"positions has {positions.Length} elements, expected 2*maxPositions*channels = {2 * maxPositions * channels}.", nameof(positions));
+        if (maxPositions < patchesX || maxPositions < patchesY) throw new ArgumentException("maxPositions must be >= both patchesX and patchesY.", nameof(maxPositions));
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray hidden3 = default, positionsArray = default, posXSlice = default, posYSlice = default,
+            posYReshaped = default, sum1 = default, sum2 = default, result = default;
+        try
+        {
+            var hiddenArray = UploadFloat32(hidden, [rows, channels]);
+            try
+            {
+                Check(MlxInterop.Reshape(out hidden3, hiddenArray, [patchesY, patchesX, channels], 3, stream), "mlx_reshape (hidden3)");
+            }
+            finally
+            {
+                MlxInterop.ArrayFree(hiddenArray);
+            }
+            positionsArray = UploadFloat32(positions, [2, maxPositions, channels]);
+
+            Check(MlxInterop.Slice(out posXSlice, positionsArray, starts: [0, 0, 0], startCount: 3,
+                stops: [1, patchesX, channels], stopCount: 3, strides: [1, 1, 1], strideCount: 3, stream), "mlx_slice (posX)");
+            Check(MlxInterop.Slice(out posYSlice, positionsArray, starts: [1, 0, 0], startCount: 3,
+                stops: [2, patchesY, channels], stopCount: 3, strides: [1, 1, 1], strideCount: 3, stream), "mlx_slice (posY)");
+            Check(MlxInterop.Reshape(out posYReshaped, posYSlice, [patchesY, 1, channels], 3, stream), "mlx_reshape (posYReshaped)");
+
+            Check(MlxInterop.Add(out sum1, hidden3, posXSlice, stream), "mlx_add (sum1)");
+            Check(MlxInterop.Add(out sum2, sum1, posYReshaped, stream), "mlx_add (sum2)");
+            Check(MlxInterop.Reshape(out result, sum2, [rows, channels], 2, stream), "mlx_reshape (result)");
+
+            var output = new float[rows * channels];
+            DownloadFloat32(result, output, stream);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (sum2.IsValid) MlxInterop.ArrayFree(sum2);
+            if (sum1.IsValid) MlxInterop.ArrayFree(sum1);
+            if (posYReshaped.IsValid) MlxInterop.ArrayFree(posYReshaped);
+            if (posYSlice.IsValid) MlxInterop.ArrayFree(posYSlice);
+            if (posXSlice.IsValid) MlxInterop.ArrayFree(posXSlice);
+            if (positionsArray.IsValid) MlxInterop.ArrayFree(positionsArray);
+            if (hidden3.IsValid) MlxInterop.ArrayFree(hidden3);
+        }
+    }
+
+    /// <summary>
+    /// Non-overlapping 3x3 average pooling over the Gemma 4 vision encoder's patch grid: for merged
+    /// row-major index <c>merged = my*mergedX+mx</c> (<c>mergedX = patchesX/3</c>, <c>mergedY =
+    /// patchesY/3</c>), <c>y[merged,c] = mean of input[(my*3+ky)*patchesX + mx*3+kx, c]</c> over
+    /// <c>ky,kx in [0,3)</c>. Incomplete trailing rows/columns are cropped, matching the real kernel.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxGemma4VisionOps.TryPool3x3</c>
+    /// (<c>MlxGemma4VisionOps.cs</c> ~61-77), a custom fused Metal kernel
+    /// (<c>Gemma4VisionPool3x3</c> in <c>MlxNative.cs</c>) in the real source, which accumulates the 9
+    /// terms in a fixed <c>ky</c>-outer/<c>kx</c>-inner order. Composed here via two strided-slice
+    /// passes instead (pool the 3 columns of each box, then pool the 3 resulting rows) -- the same 9
+    /// terms summed in a different grouping, mathematically equal up to float addition order.</para>
+    /// </summary>
+    public static float[] Gemma4VisionPool3x3(ReadOnlySpan<float> input, int patchesX, int patchesY, int channels)
+    {
+        if (patchesX < 3 || patchesY < 3) throw new ArgumentException("patchesX and patchesY must each be >= 3.", nameof(patchesX));
+        int rows = checked(patchesX * patchesY);
+        if (input.Length != rows * channels) throw new ArgumentException($"input has {input.Length} elements, expected patchesX*patchesY*channels = {rows * channels}.", nameof(input));
+        int mergedX = patchesX / 3, mergedY = patchesY / 3;
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray reshaped = default, sliceX0 = default, sliceX1 = default, sliceX2 = default,
+            sumX01 = default, sumX = default, sliceY0 = default, sliceY1 = default, sliceY2 = default,
+            sumY01 = default, sumXY = default, oneNinth = default, scaled = default, result = default;
+        try
+        {
+            var inputArray = UploadFloat32(input, [rows, channels]);
+            try
+            {
+                Check(MlxInterop.Reshape(out reshaped, inputArray, [patchesY, patchesX, channels], 3, stream), "mlx_reshape (reshaped)");
+            }
+            finally
+            {
+                MlxInterop.ArrayFree(inputArray);
+            }
+
+            Check(MlxInterop.Slice(out sliceX0, reshaped, [0, 0, 0], 3, [patchesY, mergedX * 3, channels], 3, [1, 3, 1], 3, stream), "mlx_slice (x0)");
+            Check(MlxInterop.Slice(out sliceX1, reshaped, [0, 1, 0], 3, [patchesY, mergedX * 3, channels], 3, [1, 3, 1], 3, stream), "mlx_slice (x1)");
+            Check(MlxInterop.Slice(out sliceX2, reshaped, [0, 2, 0], 3, [patchesY, mergedX * 3, channels], 3, [1, 3, 1], 3, stream), "mlx_slice (x2)");
+            Check(MlxInterop.Add(out sumX01, sliceX0, sliceX1, stream), "mlx_add (sumX01)");
+            Check(MlxInterop.Add(out sumX, sumX01, sliceX2, stream), "mlx_add (sumX)");
+
+            Check(MlxInterop.Slice(out sliceY0, sumX, [0, 0, 0], 3, [mergedY * 3, mergedX, channels], 3, [3, 1, 1], 3, stream), "mlx_slice (y0)");
+            Check(MlxInterop.Slice(out sliceY1, sumX, [1, 0, 0], 3, [mergedY * 3, mergedX, channels], 3, [3, 1, 1], 3, stream), "mlx_slice (y1)");
+            Check(MlxInterop.Slice(out sliceY2, sumX, [2, 0, 0], 3, [mergedY * 3, mergedX, channels], 3, [3, 1, 1], 3, stream), "mlx_slice (y2)");
+            Check(MlxInterop.Add(out sumY01, sliceY0, sliceY1, stream), "mlx_add (sumY01)");
+            Check(MlxInterop.Add(out sumXY, sumY01, sliceY2, stream), "mlx_add (sumXY)");
+
+            oneNinth = MlxInterop.ArrayNewFloat32(1f / 9f);
+            Check(MlxInterop.Multiply(out scaled, sumXY, oneNinth, stream), "mlx_multiply (scaled)");
+            Check(MlxInterop.Reshape(out result, scaled, [mergedY * mergedX, channels], 2, stream), "mlx_reshape (result)");
+
+            var output = new float[mergedY * mergedX * channels];
+            DownloadFloat32(result, output, stream);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            if (scaled.IsValid) MlxInterop.ArrayFree(scaled);
+            if (oneNinth.IsValid) MlxInterop.ArrayFree(oneNinth);
+            if (sumXY.IsValid) MlxInterop.ArrayFree(sumXY);
+            if (sumY01.IsValid) MlxInterop.ArrayFree(sumY01);
+            if (sliceY2.IsValid) MlxInterop.ArrayFree(sliceY2);
+            if (sliceY1.IsValid) MlxInterop.ArrayFree(sliceY1);
+            if (sliceY0.IsValid) MlxInterop.ArrayFree(sliceY0);
+            if (sumX.IsValid) MlxInterop.ArrayFree(sumX);
+            if (sumX01.IsValid) MlxInterop.ArrayFree(sumX01);
+            if (sliceX2.IsValid) MlxInterop.ArrayFree(sliceX2);
+            if (sliceX1.IsValid) MlxInterop.ArrayFree(sliceX1);
+            if (sliceX0.IsValid) MlxInterop.ArrayFree(sliceX0);
+            if (reshaped.IsValid) MlxInterop.ArrayFree(reshaped);
+        }
+    }
+
+    /// <summary>
+    /// Gemma 4 vision's 2D RoPE: each head's <paramref name="headDim"/> channels split into an X half
+    /// and a Y half (each <c>headDim/2</c> wide), each half further split into rotate-half pairs
+    /// (<c>headDim/4</c>-wide first/second). <paramref name="cosine"/>/<paramref name="sine"/> are
+    /// <c>[tokens, headDim/2]</c>: columns <c>[0, headDim/4)</c> rotate the X half, columns
+    /// <c>[headDim/4, headDim/2)</c> rotate the Y half.
+    ///
+    /// <para><b>Ported from</b> TensorSharp's <c>MlxGemma4VisionOps.TryRope2D</c>
+    /// (<c>MlxGemma4VisionOps.cs</c> ~164-183), a custom fused Metal kernel
+    /// (<c>Gemma4VisionRope2D</c> in <c>MlxNative.cs</c>) in the real source. Composed here as two
+    /// ordinary rotate-half RoPE applications (slice the half, split first/second quarter, <c>first*cos
+    /// - second*sin</c> / <c>first*sin + second*cos</c>, concatenate) using the matching quarter of the
+    /// cos/sin table for each half.</para>
+    /// </summary>
+    public static float[] Gemma4VisionRope2D(ReadOnlySpan<float> data, ReadOnlySpan<float> cosine, ReadOnlySpan<float> sine,
+        int tokens, int heads, int headDim)
+    {
+        if (headDim <= 0 || headDim % 4 != 0) throw new ArgumentException("headDim must be a positive multiple of 4.", nameof(headDim));
+        int halfWidth = headDim / 2, quarter = headDim / 4;
+        if (data.Length != tokens * heads * headDim) throw new ArgumentException($"data has {data.Length} elements, expected tokens*heads*headDim = {tokens * heads * headDim}.", nameof(data));
+        if (cosine.Length != tokens * halfWidth) throw new ArgumentException($"cosine has {cosine.Length} elements, expected tokens*headDim/2 = {tokens * halfWidth}.", nameof(cosine));
+        if (sine.Length != tokens * halfWidth) throw new ArgumentException($"sine has {sine.Length} elements, expected tokens*headDim/2 = {tokens * halfWidth}.", nameof(sine));
+
+        var stream = GetCachedStream();
+        MlxInterop.MlxArray reshaped = default, cosArray = default, sinArray = default, result = default;
+        var toFree = new List<MlxInterop.MlxArray>();
+        try
+        {
+            var dataArray = UploadFloat32(data, [tokens, heads * headDim]);
+            try
+            {
+                Check(MlxInterop.Reshape(out reshaped, dataArray, [tokens, heads, headDim], 3, stream), "mlx_reshape (reshaped)");
+            }
+            finally
+            {
+                MlxInterop.ArrayFree(dataArray);
+            }
+            cosArray = UploadFloat32(cosine, [tokens, halfWidth]);
+            sinArray = UploadFloat32(sine, [tokens, halfWidth]);
+
+            MlxInterop.MlxArray xRotated = RotateHalf(reshaped, cosArray, sinArray, tokens, heads, halfWidth, quarter, halfStart: 0, quarterStart: 0, stream, toFree);
+            MlxInterop.MlxArray yRotated = RotateHalf(reshaped, cosArray, sinArray, tokens, heads, halfWidth, quarter, halfStart: halfWidth, quarterStart: quarter, stream, toFree);
+
+            MlxInterop.MlxArray result3d = ConcatenateAxis(xRotated, yRotated, axis: 2, stream);
+            toFree.Add(result3d);
+            Check(MlxInterop.Reshape(out result, result3d, [tokens, heads * headDim], 2, stream), "mlx_reshape (result)");
+
+            var output = new float[tokens * heads * headDim];
+            DownloadFloat32(result, output, stream);
+            return output;
+        }
+        finally
+        {
+            if (result.IsValid) MlxInterop.ArrayFree(result);
+            for (int i = toFree.Count - 1; i >= 0; i--)
+                if (toFree[i].IsValid) MlxInterop.ArrayFree(toFree[i]);
+            if (sinArray.IsValid) MlxInterop.ArrayFree(sinArray);
+            if (cosArray.IsValid) MlxInterop.ArrayFree(cosArray);
+            if (reshaped.IsValid) MlxInterop.ArrayFree(reshaped);
+        }
+    }
+
+    /// <summary>One rotate-half RoPE application over a <c>halfWidth</c>-wide slice of the head
+    /// dimension starting at <paramref name="halfStart"/>, using the <paramref name="quarter"/>-wide
+    /// cos/sin columns starting at <paramref name="quarterStart"/>. Every intermediate array is
+    /// appended to <paramref name="toFree"/> for the caller to free after downloading the final
+    /// result (this helper's own arrays must outlive its return value's consumers).</summary>
+    private static MlxInterop.MlxArray RotateHalf(MlxInterop.MlxArray reshaped, MlxInterop.MlxArray cosArray, MlxInterop.MlxArray sinArray,
+        int tokens, int heads, int halfWidth, int quarter, int halfStart, int quarterStart, MlxInterop.MlxStream stream,
+        List<MlxInterop.MlxArray> toFree)
+    {
+        Check(MlxInterop.Slice(out var half, reshaped, [0, 0, halfStart], 3, [tokens, heads, halfStart + halfWidth], 3, [1, 1, 1], 3, stream), "mlx_slice (half)");
+        toFree.Add(half);
+        Check(MlxInterop.Slice(out var first, half, [0, 0, 0], 3, [tokens, heads, quarter], 3, [1, 1, 1], 3, stream), "mlx_slice (first)");
+        toFree.Add(first);
+        Check(MlxInterop.Slice(out var second, half, [0, 0, quarter], 3, [tokens, heads, halfWidth], 3, [1, 1, 1], 3, stream), "mlx_slice (second)");
+        toFree.Add(second);
+
+        Check(MlxInterop.Slice(out var cosSlice, cosArray, [0, quarterStart], 2, [tokens, quarterStart + quarter], 2, [1, 1], 2, stream), "mlx_slice (cos)");
+        toFree.Add(cosSlice);
+        Check(MlxInterop.Slice(out var sinSlice, sinArray, [0, quarterStart], 2, [tokens, quarterStart + quarter], 2, [1, 1], 2, stream), "mlx_slice (sin)");
+        toFree.Add(sinSlice);
+        Check(MlxInterop.Reshape(out var cosReshaped, cosSlice, [tokens, 1, quarter], 3, stream), "mlx_reshape (cos)");
+        toFree.Add(cosReshaped);
+        Check(MlxInterop.Reshape(out var sinReshaped, sinSlice, [tokens, 1, quarter], 3, stream), "mlx_reshape (sin)");
+        toFree.Add(sinReshaped);
+
+        Check(MlxInterop.Multiply(out var firstCos, first, cosReshaped, stream), "mlx_multiply (firstCos)");
+        toFree.Add(firstCos);
+        Check(MlxInterop.Multiply(out var secondSin, second, sinReshaped, stream), "mlx_multiply (secondSin)");
+        toFree.Add(secondSin);
+        Check(MlxInterop.Subtract(out var rotatedFirst, firstCos, secondSin, stream), "mlx_subtract (rotatedFirst)");
+        toFree.Add(rotatedFirst);
+
+        Check(MlxInterop.Multiply(out var firstSin, first, sinReshaped, stream), "mlx_multiply (firstSin)");
+        toFree.Add(firstSin);
+        Check(MlxInterop.Multiply(out var secondCos, second, cosReshaped, stream), "mlx_multiply (secondCos)");
+        toFree.Add(secondCos);
+        Check(MlxInterop.Add(out var rotatedSecond, firstSin, secondCos, stream), "mlx_add (rotatedSecond)");
+        toFree.Add(rotatedSecond);
+
+        var rotated = ConcatenateAxis(rotatedFirst, rotatedSecond, axis: 2, stream);
+        toFree.Add(rotated);
+        return rotated;
+    }
+
+    private static MlxInterop.MlxArray ConcatenateAxis(MlxInterop.MlxArray first, MlxInterop.MlxArray second, int axis, MlxInterop.MlxStream stream)
+    {
+        var vector = MlxInterop.VectorArrayNew();
+        try
+        {
+            Check(MlxInterop.VectorArrayAppendValue(vector, first), "mlx_vector_array_append_value (first)");
+            Check(MlxInterop.VectorArrayAppendValue(vector, second), "mlx_vector_array_append_value (second)");
+            Check(MlxInterop.ConcatenateAxis(out var result, vector, axis, stream), "mlx_concatenate_axis");
+            return result;
+        }
+        finally
+        {
+            if (vector.IsValid) MlxInterop.VectorArrayFree(vector);
+        }
+    }
+
     private static MlxInterop.MlxArray UploadFullZero(int[] shape, MlxInterop.MlxStream stream)
     {
         var scalar = MlxInterop.ArrayNewFloat32(0f);
