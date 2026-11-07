@@ -206,4 +206,45 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
             Environment.SetEnvironmentVariable("STINGRAY_Q4E_DEBUG", old);
         }
     }
+
+    /// <summary>
+    /// GDN conv/recurrent and QSA state are destructively updated per token -- SupportsPartialRewind
+    /// correctly defaults to false (never overridden in Qwen4ExpForwardPass), so InferenceEngine never
+    /// routes an intermediate-length TruncateTo call here. But TruncateTo itself used to silently no-op
+    /// for ANY non-zero length instead of enforcing that contract (IForwardPass.TruncateTo's documented
+    /// "must throw NotSupportedException" for any value besides 0/current-length) -- fixed 2026-11-07.
+    /// This guards against that regressing back to a silent no-op, which would leave state unchanged
+    /// while a caller believed a rewind had happened.
+    /// </summary>
+    [Fact]
+    public void TruncateTo_RejectsIntermediateLength_OnlyAcceptsZeroOrCurrent()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = OpenTail.Stingray.Engine.Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = OpenTail.Stingray.Engine.Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+        using var forwardPass = new OpenTail.Stingray.Engine.Qwen4ExpForwardPass(model, hp, tensors);
+
+        Assert.False(((OpenTail.Stingray.Core.IForwardPass)forwardPass).SupportsPartialRewind);
+
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+        var ids = tokenizer.Encode("The capital of France is").ToList();
+        forwardPass.Prefill(ids.ToArray());
+        int current = ids.Count;
+
+        // Current length: no-op, must not throw.
+        var noop = Record.Exception(() => forwardPass.TruncateTo(current));
+        Assert.Null(noop);
+
+        // Any intermediate length: must throw, not silently no-op.
+        var ex = Record.Exception(() => forwardPass.TruncateTo(current - 1));
+        Assert.IsType<NotSupportedException>(ex);
+
+        // Full reset: always accepted.
+        var reset = Record.Exception(() => forwardPass.TruncateTo(0));
+        Assert.Null(reset);
+    }
 }

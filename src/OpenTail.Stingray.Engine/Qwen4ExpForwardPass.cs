@@ -1038,7 +1038,19 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     public void TruncateTo(int length)
     {
-        if (length == 0) ResetCache();
+        if (length == 0) { ResetCache(); return; }
+        if (length != _pleTokensSeen)
+        {
+            // GDN conv/recurrent state and the QSA raw-key/pool caches are destructively updated
+            // per token (SupportsPartialRewind defaults to false and is not overridden here), so
+            // only a full reset or a no-op at the current length is representable -- any other
+            // value previously fell through silently instead of rejecting the call, which left
+            // whatever state existed unchanged while callers believed the rewind had happened.
+            throw new NotSupportedException(
+                $"Qwen4ExpForwardPass (alpha): TruncateTo({length}) is not supported -- only " +
+                $"full reset (TruncateTo(0)) or a no-op (current length {_pleTokensSeen}) is " +
+                "representable, because GDN/QSA state is destructively updated per token.");
+        }
     }
 
     public void ResetCache()
