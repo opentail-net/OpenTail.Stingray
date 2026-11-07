@@ -1,0 +1,16 @@
+# Plan 8 (2026-11-03): what remains after plan 7 - completed items
+
+Ticked items moved from [docs/2026-11-03-plan-8.md](../2026-11-03-plan-8.md) on 2026-11-07. Each keeps its section heading and nested lines.
+
+## Checklist
+
+- [x] **B1** *(closed 2026-11-03 without a new run: the gap is stale, see the leads plan A11 and pickup guide row 8; 0.93-0.98x measured 2026-11-01)* `4-performance/2026-10-10-inference-improvement-leads-plan.md` A11: CPU decode falls from 0.88x to 0.67x of llama.cpp as context grows (267 to 3,218 tokens). Profile first (where does the extra time per token go as context grows), reference is ggml's CPU flash attention; vendored llama-bench b10306 `-d` gives the comparison. Idle machine, interleaved, 3+ runs.
+
+- [x] **B4a** Hub 429/503 retry with Retry-After in `ExternalHttpClient` (part of the scout backlog "rate behaviour" box): done, 7 tests, mutation checked.
+
+## Done in this plan
+
+- [x] **B7** `00-current-work.md` item 20 (why MTP loses on Qwen3.6-27B UD-Q3_K_XL): two causes found and fixed. (1) No Q3_K case in `MatVec2In`/`MatVec4In` (PR 217: 2.0-2.1 to 2.3 t/s). (2) Q3_K missing from `IsWidthIndependentMultiInput`, so k=2 verify ran a padded 4-input FFN (2.3 to 2.7-2.8 t/s). Plain decode is 2.6 t/s, so MTP now wins by about 4-8%; text identical in every configuration (3 runs each).
+- [x] **B8** Qwen3.8-27B MTP re-measured after B7 (00-current-work item 17): plain 2.4 t/s, MTP 2.8 t/s (+17%, was +12%), 3 runs each, identical text.
+- [x] **B14** Duplicate model names across drives, audited 2026-11-03 (byte comparison with `cmp`): eight same-name pairs of the same size are byte-identical (jais-590m, mmproj-deepseek-ocr-2, Qwen3VL-2B and its mmproj, ggml-model-q4_k, LFM2-8B-A1B, s2-pro-q8_0, Qwen3.6-35B-A3B-UD-Q6_K); the exception is Phi-3.5-MoE (B13). `bge-small-en-v1.5-q8_0.gguf` exists in two sizes (36,685,152 bytes on `F:\_models`, 36,806,944 in `F:\_models\encoder-gguf`); only header-inspection tests use it from the locator.
+- [x] **B15** (plan 6 G7 remainder, seen again on PR 231's Windows run, 2026-11-03: the whole test ran 501 ms) `ServingRequestTimingTests.MarkGenerationComplete_ExcludesTimeSpentAfterItFromGenerationDuration` asserted a fixed 0.15 s ceiling after a 30 ms sleep. It now bounds the generation sample by the wall time the test itself measured between `MarkFirstToken` and `MarkGenerationComplete` (plus 10 ms for the clock reads) and the request sample by the measured delivery time, with the 200 ms delivery and 30 ms decode sleeps checked as non-vacuous. Mutation: moving `MarkGenerationComplete` after the delivery sleep fails it (251.3 ms sample against a 45.5 ms window). 40 runs of the class at `DOTNET_PROCESSOR_COUNT=2` with four busy loops running: 0 failures.
