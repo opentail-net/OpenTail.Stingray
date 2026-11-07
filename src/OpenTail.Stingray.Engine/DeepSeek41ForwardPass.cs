@@ -7,9 +7,12 @@ namespace OpenTail.Stingray.Engine;
 
 /// <summary>
 /// Forward pass implementation for DeepSeek-V4.1 Flash (deepseek41).
-/// Evaluates the 40-layer trunk with compression ratios 0 / 1 / 2, dual Engram tables (layers 1 and 14),
+/// Evaluates the 40-layer trunk for compression ratio 0 (raw attention) only -- the constructor
+/// below refuses any layer with compress ratio 1 or 2 (compressed attention/the V4.1 DSA indexer
+/// are not implemented) and refuses YaRN rope scaling, rather than silently evaluating a
+/// configuration it can't yet get right. Dual Engram tables (layers 1 and 14),
 /// 384 routed experts + 1 shared expert (sqrtsoftplus routing with scale 1.5), 8-group output LoRA,
-/// and 4-stream mHC hyper-connections.
+/// and 4-stream mHC hyper-connections are implemented and do run.
 /// </summary>
 public sealed unsafe class DeepSeek41ForwardPass : IForwardPass
 {
