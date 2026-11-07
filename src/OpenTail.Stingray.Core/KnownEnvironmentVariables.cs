@@ -241,6 +241,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_Q4KX8_CACHE_MB",
         "STINGRAY_Q4K_Q8K",
         "STINGRAY_Q4K_SOA",
+        "STINGRAY_Q4E_DEBUG",
         "STINGRAY_Q6K_DECODE_MMQ",
         "STINGRAY_Q6K_GEMM",
         "STINGRAY_Q6K_SOA",

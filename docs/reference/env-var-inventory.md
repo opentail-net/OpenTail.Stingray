@@ -1,4 +1,7 @@
-# `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-06)
+# `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-07)
+
+**Reconciled again 2026-11-07 — `KnownEnvironmentVariables.All` now contains **290** names**
+(added `STINGRAY_Q4E_DEBUG`: diagnostic, Qwen4Exp real-weight layer-by-layer sum diffing)
 
 **Reconciled again 2026-11-06, later — `KnownEnvironmentVariables.All` now contains **289** names**
 (added `STINGRAY_MLX_DENSE`: gates explicit MLX backend selection in planning and the dense GGUF loader,
@@ -175,6 +178,7 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_ASR_PROFILE` | diagnostic | `=1` prints the prefill and decode wall time (and the raw decoded text) of the VibeVoice ASR generator to stdout. |
+| `STINGRAY_Q4E_DEBUG` | diagnostic | `=1` prints per-layer and final-logits sums from the Qwen4Exp (qwen4exp, "ported, not verified") forward pass to stderr, for diffing against a reference (llama.cpp eval-callback / TensorSharp) layer by layer while hunting a numerical bug. |
 | `STINGRAY_AUDIO_DIAGNOSTIC_DUMP` | expert | Enables `Generate()` timing-breakdown diagnostic logging in `ChatterboxPipeline`/`ChatterboxDecoder` (`=1`). |
 | `STINGRAY_CFG_TRACE` | diagnostic | `=1` prints classifier-free-guidance trace output to stderr from the CosyVoice 3 flow encoder, DiT model and pipeline (the pipeline reports the frame with the largest deviation). |
 | `STINGRAY_COSYVOICE3_TANH_GELU` | experimental | `=1` uses the tanh GELU approximation instead of the exact erf GELU in the CosyVoice 3 DiT feed-forward. Added for A/B listening because two reference implementations disagree; off by default and not to become a default without a listening decision. |

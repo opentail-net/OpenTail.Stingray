@@ -15,6 +15,7 @@ public static class EnvironmentVariableClasses
     private static readonly FrozenDictionary<string, string> Map = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["STINGRAY_ASR_PROFILE"] = "diagnostic",
+        ["STINGRAY_Q4E_DEBUG"] = "diagnostic",
         ["STINGRAY_AUDIO_DIAGNOSTIC_DUMP"] = "expert",
         ["STINGRAY_CFG_TRACE"] = "diagnostic",
         ["STINGRAY_COSYVOICE3_TANH_GELU"] = "experimental",
