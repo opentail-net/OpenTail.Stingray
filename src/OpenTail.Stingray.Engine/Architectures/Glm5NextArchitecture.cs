@@ -14,6 +14,6 @@ internal static class Glm5NextArchitecture
         Status = AdmissionStatus.NotAdmitted,
         EvidenceDoc = "docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md",
         // Ported, not verified (CLAUDE.md rule 14); the table in EvidenceDoc is the internal record.
-        RefusalReason = "Hybrid KDA + MLA trunk ported 2026-10-03 (mHC, K-pool indexer, 288-expert MoE); smoke tests only, K-pool sparse selection missing, no numeric oracle run. Also carries the same unguarded Float32-cast risk confirmed on a real checkpoint for qwen4exp/deepseek4/deepseek41 (2026-11-07) -- this file's norm/scale/conv weight casts are scattered across many individual call sites rather than one helper, so the same fix wasn't ported here yet.",
+        RefusalReason = "Hybrid KDA + MLA trunk ported 2026-10-03 (mHC, K-pool indexer, 288-expert MoE); K-pool sparse selection missing, no numeric oracle run. 2026-11-07: real-weight load attempted against unsloth/GLM-5.3-Flash-GGUF UD-IQ1_S -- fixed the real architecture-string mismatch (\"glm5-next\" vs this id) and four tensor-naming bugs (ssm_a's missing .weight suffix, indexer.* dot-vs-underscore naming, indexer_kpool_gate/_ape's wrong name). Prefill on a short prompt now succeeds with finite logits; the scattered Float32-cast risk flagged earlier did not materialize for this checkpoint (its norm/scale/conv tensors are genuinely F32). Not a parity receipt: no reference output compared, and K-pool selection still blocks any context longer than indexer.top_k.",
     };
 }

@@ -52,5 +52,14 @@ public sealed class Glm5NextRealWeightsSmokeTests
             metadata, arch, numLayerAll, embedDim, numHeads, headDim, numExperts, numExpertsUsed);
 
         using var forwardPass = new OpenTail.Stingray.Engine.Glm5NextForwardPass(model, hp);
+
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+        var ids = new List<int>();
+        if (tokenizer.AddBosToken) ids.Add(tokenizer.BosTokenId);
+        ids.AddRange(tokenizer.Encode("The capital of France is"));
+
+        var logits = forwardPass.Prefill(ids.ToArray());
+        Assert.True(logits.Length > 0);
+        Assert.All(logits.ToArray(), l => Assert.True(float.IsFinite(l)));
     }
 }
