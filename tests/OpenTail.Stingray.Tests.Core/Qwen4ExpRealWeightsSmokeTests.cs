@@ -46,5 +46,11 @@ public sealed class Qwen4ExpRealWeightsSmokeTests
 
         Assert.True(logits.Length > 0);
         Assert.All(logits.ToArray(), l => Assert.True(float.IsFinite(l)));
+
+        int best = 0; float bestVal = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++) if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
+        var decodeLogits = forwardPass.Forward(best, ids.Count);
+        Assert.True(decodeLogits.Length > 0);
+        Assert.All(decodeLogits.ToArray(), l => Assert.True(float.IsFinite(l)));
     }
 }
