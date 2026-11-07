@@ -22,9 +22,6 @@ As of 2026-11-05. Start with **Start here**: nothing in it waits on the owner. I
 
 Items 1 to 5 are open and need no owner input. Pick them in order. Each finishes as a merged PR with its own test or report, and its own STATUS or backlog line. Do not start a model-family port, a UI, or a second backend.
 
-- [x] **E1. Long-running inference stability.** Done 2026-11-05: `LongRunSoakTests` (opt-in, `STINGRAY_SOAK=1`) passed on real Qwen3-0.6B Q8_0 on CPU, 30 greedy repeats in one process, identical output, working set flat after warm-up. Repeated prompts, long contexts and several sessions, looking for memory growth, stale state, and KV-cache corruption over time. Done when a soak run at temperature 0 gives identical output on every repeat, and resident memory is flat after warm-up.
-  First step: write a soak test on the fake engine in `tests/OpenTail.Stingray.Tests.Core` that loops N prompts and asserts identical output and flat allocations. Then the same loop against a real small model on CPU.
-- [x] **E2. CPU performance regression gate.** Done 2026-11-05, as a local gate: `scripts/perf-gate.ps1` measures prefill and decode for qwen2.5-0.5b and 1.5b (median of 3) and fails on a drop of more than 15% against `scripts/perf-baseline.json`, per machine. Hosted CI has no model files, so it cannot run this gate; run it before a release or after a kernel change. Checked: unchanged code passes (exit 0); a baseline inflated 2x fails all four metrics (exit 1).
 - [x] **E3. Model admission reliability.** Done 2026-11-05. Failure classes and their tests: interrupted download resumed, Range ignored, 416, 503 keeps the partial (`ModelDownloaderResumeTests`, 3); hash mismatch on a download (discarded, says so) and on a file already on disk (says to delete it), oversized partial verified and discarded (`ModelCatalogTests`, 9); offline with a missing file (`ModelCatalogTests`); stale revision (`ModelCatalogTests`); non-JSON listing from the Hub, for pull (`PullListingFailureTests`, 4) and for scout (`HubListingFailureTests`, 2); a listing without a commit SHA (`HubListingFailureTests`); empty listing, gated repo and a repo name hint (`PullCommandListingTests`, 10); incompatible or unknown architecture (`ArchitectureRegistryTests`, `ExecutionPlannerTests`, others). Remaining gap, not a failure class: no end-to-end pull against a live Hub, and the messages are checked by substring, not by a full golden.
 - [ ] **E4. Memory and resource accounting.** Check that the RAM and VRAM the catalog and planner advertise match what the runtime peaks at, and that unloading and cancellation release memory. Done when a table of advertised against measured peak exists for the supported models.
   First step: pick one small CPU model from the catalog and measure its peak against its advertised figure.
@@ -55,7 +52,6 @@ Deferred (not in this batch): Vulkan parity expansion, telemetry usefulness, cat
 
 ## Owner action (does not block the list above)
 
-- [x] **Run once:** `pwsh scripts/qualify-tasks.ps1`. Run 2026-11-06: chat, speak and transcribe all PASS with no licence flag (the default speak model is Kokoro, Apache-2.0; the Piper licence applies only if Piper is chosen with `-m piper-lessac`).
 - [ ] **Release 1.0.10:** not ready. No tag, no version bump, no pack for publication. Everything since 1.0.9 stays unpublished until the owner says otherwise.
 
 ## Pointers to work owned elsewhere
