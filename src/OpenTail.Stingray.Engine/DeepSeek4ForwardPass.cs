@@ -66,6 +66,12 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
     private readonly DeepSeek4Hyperparams _hp;
     private readonly DeepSeek4TensorSet _tensors;
     private readonly int _hc, _embedDim, _numHeads, _headDim, _ropeDim, _nopeDim, _numLayer;
+    // See AsFloatSpan: this port's own prior comment flagged the Float32 assumption as "not
+    // independently re-verified against a real GGUF's actual on-disk dtype" -- confirmed a real
+    // risk 2026-11-07, when the identical assumption for qwen4exp's equivalent HC gate tensors
+    // crashed (AccessViolationException) against a real checkpoint storing them quantized. Same
+    // fix here, pre-emptively: dequantize and cache rather than wait for the same crash.
+    private readonly Dictionary<nint, float[]> _dequantCache = new();
 
     // Simplified single-sequence, no-rewind raw KV cache: one n_embd_head-wide vector per token
     // per layer (see this file's header point 1 -- K and V are the SAME vector in the raw path).
@@ -869,15 +875,23 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         }
     }
 
-    private static ReadOnlySpan<float> AsFloatSpan(DeepSeek4TensorRef? tensorRef)
+    private ReadOnlySpan<float> AsFloatSpan(DeepSeek4TensorRef? tensorRef)
     {
         if (tensorRef is not { } t) return default;
         int count = (int)t.Info.ElementCount;
-        return new ReadOnlySpan<float>((float*)t.DataPtr, count);
-        // NOTE: assumes the tensor is stored Float32 (true for every HC gate/scale/base tensor
-        // per the reference's create_tensor calls, which never specify a quantized type for
-        // these small per-layer gate tensors -- not independently re-verified against a real
-        // GGUF's actual on-disk dtype).
+        if (t.DType == DType.Float32)
+            return new ReadOnlySpan<float>((float*)t.DataPtr, count);
+
+        nint key = (nint)t.DataPtr;
+        if (!_dequantCache.TryGetValue(key, out var cached))
+        {
+            cached = new float[count];
+            long byteSize = DTypeInfo.ByteSize(count, t.DType);
+            var src = new ReadOnlySpan<byte>(t.DataPtr, checked((int)byteSize));
+            Dequantize.ToFloat32(src, cached, t.DType, count);
+            _dequantCache[key] = cached;
+        }
+        return cached;
     }
 
     // ── IForwardPass minimal surface (defaults handle the rest) ────────────────────────────
