@@ -424,7 +424,7 @@ public static class OpenAiEndpoints
         RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true);
+            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true, req.Tools);
         }
         else
         {
@@ -566,7 +566,7 @@ public static class OpenAiEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false)
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false, OaiTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -587,6 +587,7 @@ public static class OpenAiEndpoints
         string pendingText = "";
         int toolCallIndex = 0;       // monotonic index into delta.tool_calls
         bool hasToolCalls = false;
+        bool invalidToolCall = false;
         long tokenCount = 0;
         int streamPromptTokens = 0;
 
@@ -606,7 +607,17 @@ public static class OpenAiEndpoints
 
         async Task EmitToolCallsFromBlock(string blockContent)
         {
+            if (invalidToolCall) return;
             var calls = adapter.ParseBlock(blockContent);
+            if (calls.Count > 0 && ToolCallValidation.Errors(calls, declaredTools) is { Count: > 0 } errors)
+            {
+                // Owner decision D3: the status is already 200 here, so an invalid call becomes an error event.
+                invalidToolCall = true;
+                await WriteEvent(ctx.Response, JsonSerializer.Serialize(
+                    new ErrorResponse("invalid_tool_call", string.Join("; ", errors)),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse));
+                return;
+            }
             foreach (var tc in calls)
             {
                 hasToolCalls = true;

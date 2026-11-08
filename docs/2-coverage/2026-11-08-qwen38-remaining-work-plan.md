@@ -20,10 +20,12 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       APPROVED by the owner on 2026-11-08 ("yes"). Local build only; nothing from the fork is committed or published.
       The classifier had denied this earlier the same day. Unblocks: Phase 4 per-step oracle.
 - [x] **D3. Decide whether the server acts on tool-argument validator failures** (reject, return error, or pass through).
-      DECIDED by the owner 2026-11-08: return as errors. Done for the OpenAI NON-STREAMING path: `ToolCallValidation`
+      DECIDED by the owner 2026-11-08: return as errors. DONE on all three paths: OpenAI non-streaming (HTTP 422),
+      OpenAI streaming (an error event, since the status is already 200), and Anthropic (422 non-streaming, error event
+      streaming). Tests: ToolCallValidationEndpointTests (4). Server fast suite: 685 passed, 0 failed, 2 skipped.
+      Earlier note: OpenAI non-streaming path only: `ToolCallValidation`
       checks parsed calls against the request's declared tools (undeclared tool or schema failure), and the endpoint
-      returns HTTP 422 with `invalid_tool_call`. Server fast suite: 681 passed, 0 failed, 2 skipped. Still open under D3:
-      the OpenAI streaming path and the Anthropic endpoint are not validated yet. No direct test of the 422 path yet.
+      returns HTTP 422 with `invalid_tool_call`.
       Blocks: Phase 6 server wiring and the server round trip.
 - [ ] **D4. Approve admission** (Phase 8). Needs Phases 0-7 closed or explicitly waived.
       2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met (Phase 0.3 open, the image step-1

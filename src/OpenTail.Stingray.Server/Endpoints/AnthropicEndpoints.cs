@@ -254,18 +254,18 @@ public static class AnthropicEndpoints
         string[]? stops = req.StopSequences is { Length: > 0 } configuredStops ? configuredStops : null;
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, stops);
+            await HandleStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, stops, req.Tools);
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, req.OpentailTiming == true, stops);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, req.OpentailTiming == true, stops, req.Tools);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId,
-        bool includeTiming = false, string[]? stops = null)
+        bool includeTiming = false, string[]? stops = null, AnthropicTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -325,6 +325,18 @@ public static class AnthropicEndpoints
         }
 
         var rawText = textSb.ToString();
+        // Owner decision D3: a call that does not match the declared tools is an error, not a tool_use block.
+        var declared = declaredTools?.Where(t => t.Name is not null).Select(t => (t.Name!, t.InputSchema)) ?? [];
+        var toolProblems = ToolCallValidation.Errors(adapter.Parse(rawText).Calls, declared);
+        if (toolProblems.Count > 0)
+        {
+            ctx.Response.StatusCode = 422;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new AErrorResponse("invalid_tool_call", string.Join("; ", toolProblems)),
+                    OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
+            return;
+        }
         var (plainText, toolCalls, truncatedCall) = ParseToolCalls(adapter, rawText);
 
         if (plainText.Length > 0)
@@ -364,7 +376,7 @@ public static class AnthropicEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId, string[]? stops = null)
+        string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string msgId, string modelId, string[]? stops = null, AnthropicTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("anthropic.messages", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -391,6 +403,7 @@ public static class AnthropicEndpoints
         int outputTokens = 0;
         int promptTokens = 0;
         bool hasToolCalls = false;
+        bool invalidToolCall = false;
 
         // Tool-call streaming state machine — adapter-driven so the open/close markers
         // match the loaded model's wire format (Qwen3 <tool_call>, Qwen3-Coder <function=>,
@@ -441,7 +454,18 @@ public static class AnthropicEndpoints
 
         async Task EmitToolCallsFromBlock(string blockContent)
         {
+            if (invalidToolCall) return;
             var calls = adapter.ParseBlock(blockContent);
+            var declared = declaredTools?.Where(t => t.Name is not null).Select(t => (t.Name!, t.InputSchema)) ?? [];
+            if (calls.Count > 0 && ToolCallValidation.Errors(calls, declared) is { Count: > 0 } problems)
+            {
+                // Owner decision D3: the status is already 200 here, so an invalid call becomes an error event.
+                invalidToolCall = true;
+                await WriteAnthropicEvent(ctx.Response, "error", JsonSerializer.Serialize(
+                    new AErrorResponse("invalid_tool_call", string.Join("; ", problems)),
+                    OpenTailStingrayJsonContext.Default.AErrorResponse));
+                return;
+            }
             foreach (var tc in calls)
             {
                 string name    = tc.Name;
