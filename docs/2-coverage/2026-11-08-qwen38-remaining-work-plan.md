@@ -208,7 +208,12 @@ Runnable now. Test cases only, no new disk or implementation.
       Not tested: stage-level additivity (the patch stage is private and the later layers are nonlinear, so it is not
       additive at the output). Still open: (c) M-RoPE temporal index per merged chunk, (d) prompt layout with the reference
       timestamps, (e) comparison with `llama-mtmd-cli --video` on a short clip, and the frame-input path (frame sequence).
-      The decoder question is still open for the owner.
+      DECIDED by the owner 2026-11-08: ffmpeg executable behind a frame-source seam (the TensorSharp pattern: managed core
+      takes frames; a host supplies the decoder). Design: `IVideoFrameSource` (probe the clip; read RGB24 frames at a
+      given fps and size). `FfmpegVideoFrameSource` runs an operator-installed ffmpeg found by `STINGRAY_FFMPEG`, then PATH;
+      it is never bundled or downloaded. Probe parses `ffmpeg -i` output; frames come from `-f rawvideo -pix_fmt rgb24`
+      on stdout. Frames are paired into temporal patches for `ForwardVideo`. Test: generate a short clip with ffmpeg from
+      the test image (test only), decode it, and run the pairs through the real projector; skipped if ffmpeg is missing.
       Step (c), checked 2026-11-08 (`tools/mtmd/mtmd.cpp`, read only): mergeable frames are grouped in pairs
       (`n_temporal_merge == 2` for Qwen-VL) and each pair is one embedding and one image-token chunk. Its position is
       `t = pos_0` for every token of the pair, `x` and `y` as for an image, and the text position advances by
