@@ -175,6 +175,11 @@ Checked against `Qwen4ExpForwardPass.cs` and the descriptor's `RefusalReason` (`
   low-rank HC matmuls, or activation rounding in the reference's quantised kernels.
 - Phase 0.3 (FFN injection gate) is still open. These numbers do not yet settle it.
 
+### Parked by owner, 2026-11-08
+
+- **Browser UI** (phase 7F of the Qwen 3.8 plan: a separate browser front end for the local server). Parked.
+  This does not affect model image input. Image and video input for Qwen (phase 5) stays active.
+
 ## Phases (in order; do not start a later one before the current one's completion criteria)
 
 | # | Family | Checkpoint available? | Status | What's actually left |
