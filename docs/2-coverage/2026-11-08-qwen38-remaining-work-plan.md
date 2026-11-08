@@ -184,7 +184,23 @@ Runnable now. Test cases only, no new disk or implementation.
       than a new image break. Phase 0.3 stays open.
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
-- [ ] 5.3 Video input. Untested; deferred by the owner. Leave unchecked until the owner reopens it.
+- [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
+      Design, recorded before code (investigation 2026-11-08):
+      - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
+        two patch embeddings, but for a still image both kernels see the same pixels. Video needs the two kernels on two
+        different frames: `out = conv0(frame_t0) + conv1(frame_t1)` per patch. Nothing else in the vision path is video-aware
+        (`VisionOps.cs` has only a RoPE comment; `ChatProtocol.CapsVideoFrames` is off).
+      - Reference layout to match (`tools/mtmd/mtmd-helper.cpp`, pinned bed0a8566): frames come from a decoder pipe as raw
+        RGB, each marked mergeable (consecutive frames merge into one temporal patch); a text timestamp `[%dm%.2fs]` is
+        inserted between chunks every `--video-timestamp-interval` ms (default 5000), computed from `frame_index / fps`.
+        Default `--video-fps` is 4.0.
+      - Stingray plan, in order: (a) frame-sequence input (PNG/RGB frames) with pairing into temporal patches; (b) the
+        two-frame patch embedding; (c) M-RoPE temporal index per merged chunk; (d) the prompt layout with the same text
+        timestamps; (e) a short clip (a few seconds, generated with ffmpeg in the test only) compared with
+        `llama-mtmd-cli --video`: the answer text first, then per-chunk embeddings if the text is ambiguous.
+      - Not in scope for the first step: decoding video files inside the product. That needs a decoder decision (an
+        ffmpeg dependency, or a managed decoder under NativeAOT). Question for the owner: which, or frame input only for now.
+      - Admission is unaffected: video is not part of the current admitted scope (qwen2vl is text-only, see QwenArchitectures).
 
 ## Phase 6. Tool calls
 
