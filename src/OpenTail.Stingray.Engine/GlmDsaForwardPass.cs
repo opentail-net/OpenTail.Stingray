@@ -387,34 +387,35 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
         {
             SimdKernels.MatVec(outPtr, layer.FfnGateInp!.Value.DataPtr, inPtr, numExperts, _embedDim, layer.FfnGateInp.Value.DType);
         }
-        if (layer.FfnExpProbsB is { } biasRef)
-        {
-            float* bias = (float*)biasRef.DataPtr;
-            for (int e = 0; e < numExperts; e++) logits[e] += bias[e];
-        }
 
-        // 2. Sigmoid gating
-        var scores = new float[numExperts];
+        // 2. Sigmoid gating -- on the UNBIASED logits. build_moe_ffn (llama-graph.cpp:2044-2090,
+        // shared by glm-dsa.cpp:468-483 and deepseek4.cpp) adds exp_probs_b AFTER the gating
+        // function, to a COPY used only for selecting which experts to route to
+        // (selection_probs = probs + exp_probs_b); the weight gathered for each selected expert
+        // always comes from the unbiased probs. Fixed 2026-11-08 to match -- this used to add the
+        // bias to raw logits before sigmoid and then both select AND weight from that biased
+        // result (the same bug independently found and fixed in DeepSeek4ForwardPass.MoeFfn the
+        // same week).
+        var probs = new float[numExperts];
         for (int e = 0; e < numExperts; e++)
         {
-            scores[e] = 1f / (1f + MathF.Exp(-logits[e]));
+            probs[e] = 1f / (1f + MathF.Exp(-logits[e]));
         }
 
-        // 3. Top-k selection
-        int[] topIndices = DeepSeek4Graph.SelectTopKIndices(scores, topK);
+        // 3. Top-k selection from the BIASED probs (selection only).
+        var selectionProbs = probs;
+        if (layer.FfnExpProbsB is { } biasRef)
+        {
+            selectionProbs = (float[])probs.Clone();
+            float* bias = (float*)biasRef.DataPtr;
+            for (int e = 0; e < numExperts; e++) selectionProbs[e] += bias[e];
+        }
+        int[] topIndices = DeepSeek4Graph.SelectTopKIndices(selectionProbs, topK);
+
+        // 4. Weight each selected expert from the UNBIASED probs, then normalize/scale.
         var weights = new float[topK];
-        float sumWeight = 0f;
-        for (int k = 0; k < topK; k++)
-        {
-            weights[k] = scores[topIndices[k]];
-            sumWeight += weights[k];
-        }
-        if (_hp.ExpertWeightsNorm && sumWeight > 0f)
-        {
-            float inv = 1f / sumWeight;
-            for (int k = 0; k < topK; k++) weights[k] *= inv;
-        }
-        for (int k = 0; k < topK; k++) weights[k] *= _hp.ExpertWeightsScale;
+        DeepSeek4Graph.WeightSelectedExperts(
+            topIndices, probs, topK, _hp.ExpertWeightsNorm, _hp.ExpertWeightsScale, weights);
 
         // 4. Routed experts accumulation
         var accumulated = new float[_embedDim];

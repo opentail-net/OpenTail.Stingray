@@ -240,8 +240,35 @@ public sealed class GlmDsaSyntheticTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Proves the shortcut's actual correctness property: when <c>numKeys == topK</c>, the
+    /// shortcut returns <c>[0..numKeys-1]</c> directly, while the full-scoring path would select
+    /// the top-<c>numKeys</c> indices by score from exactly <c>numKeys</c> candidates -- which, by
+    /// the pigeonhole principle, is every index regardless of the actual score VALUES (only their
+    /// relative order could matter, and with <c>topK == count</c> there is no cut to make). Sorting
+    /// either result yields the identical array. This complements (does not replace)
+    /// <see cref="GlmDsa_IndexerTopKShortcut_RunsAcrossThreshold_ProducesFiniteLogits"/>, which only
+    /// proves the code path executes without crashing -- flagged correctly as a gap on review
+    /// (2026-11-08): that test's old name implied an output comparison it never made.
+    /// </summary>
+    [Theory]
+    [InlineData(new float[] { 0.9f, 0.1f, 0.5f, -3f, 2f })] // arbitrary scores, any order
+    [InlineData(new float[] { 5f, 5f, 5f, 5f, 5f })] // tied scores (stresses sort stability)
+    [InlineData(new float[] { -1f, -2f, -3f, -4f, -5f })] // strictly descending already
+    public void SelectTopKIndices_WhenTopKEqualsItemCount_AlwaysSelectsEveryIndexRegardlessOfScores(float[] scores)
+    {
+        int n = scores.Length;
+        int[] fullScoringResult = DeepSeek4Graph.SelectTopKIndices(scores, n);
+        Array.Sort(fullScoringResult);
+
+        int[] shortcutResult = new int[n];
+        for (int t = 0; t < n; t++) shortcutResult[t] = t; // GlmDsaForwardPass.RunFullIndexer's shortcut branch
+
+        Assert.Equal(shortcutResult, fullScoringResult);
+    }
+
     [Fact]
-    public void GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold()
+    public void GlmDsa_IndexerTopKShortcut_RunsAcrossThreshold_ProducesFiniteLogits()
     {
         const int embedDim = 32;
         const int numHeads = 2;
@@ -344,6 +371,36 @@ public sealed class GlmDsaSyntheticTests : IDisposable
                 Assert.False(float.IsInfinity(l));
             }
         }
+    }
+
+    /// <summary>
+    /// Reproduces the exact fix in GlmDsaForwardPass.MoeFfn (2026-11-08): the sigmoid MoE's
+    /// selection bias (<c>exp_probs_b</c>) is added to a COPY of the unbiased sigmoid probs for
+    /// choosing which experts to route to, but the weight gathered for each chosen expert must
+    /// come from the ORIGINAL unbiased array -- same bug shape, same fix
+    /// (<c>DeepSeek4Graph.WeightSelectedExperts</c>), as the one found and fixed in
+    /// <c>DeepSeek4ForwardPass.MoeFfn</c> the same week. Picks a bias large enough to flip which
+    /// expert wins top-1, then confirms the winner's weight is its small unbiased sigmoid prob.
+    /// </summary>
+    [Fact]
+    public void MoeFfn_SigmoidGating_SelectionBiasNeverLeaksIntoTheGatheredWeight()
+    {
+        float[] logits = [0.1f, 0.2f, 0.15f, 0.05f, 0.08f];
+        var unbiasedProbs = new float[5];
+        for (int e = 0; e < 5; e++) unbiasedProbs[e] = 1f / (1f + MathF.Exp(-logits[e]));
+
+        float[] bias = [0f, 0f, 0f, 0f, 5f]; // pushes index 4 to the top post-sigmoid
+        var biasedSelectionProbs = (float[])unbiasedProbs.Clone();
+        for (int e = 0; e < 5; e++) biasedSelectionProbs[e] += bias[e];
+
+        int[] selected = DeepSeek4Graph.SelectTopKIndices(biasedSelectionProbs, topK: 1);
+        Assert.Equal(4, selected[0]); // bias won the selection
+
+        var weights = new float[1];
+        DeepSeek4Graph.WeightSelectedExperts(selected, unbiasedProbs, topK: 1, normalize: false, scale: 1f, weights);
+
+        Assert.Equal(unbiasedProbs[4], weights[0], 6); // weight is the UNBIASED prob at index 4
+        Assert.NotEqual(biasedSelectionProbs[4], weights[0]); // never the biased value
     }
 
     private static void WriteGgufFile(
