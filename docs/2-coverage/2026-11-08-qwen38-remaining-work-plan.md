@@ -16,11 +16,16 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 - [ ] **D1. Confirm the working parity criterion** (adopted by Claude 2026-11-08 under standing delegation, reversible).
       Blocks: Phase 0.3 closure, and the final "parity verified" wording.
-- [ ] **D2. Allow building the unsloth fork `mtp/qwen4exp-nextn` as a local reference** (third-party code, not in this repo).
-      The auto-mode classifier denied this on 2026-11-08 and nothing was retried. Blocks: Phase 4 per-step oracle.
+- [x] **D2. Allow building the unsloth fork `mtp/qwen4exp-nextn` as a local reference** (third-party code, not in this repo).
+      APPROVED by the owner on 2026-11-08 ("yes"). Local build only; nothing from the fork is committed or published.
+      The classifier had denied this earlier the same day. Unblocks: Phase 4 per-step oracle.
 - [ ] **D3. Decide whether the server acts on tool-argument validator failures** (reject, return error, or pass through).
       Blocks: Phase 6 server wiring and the server round trip.
 - [ ] **D4. Approve admission** (Phase 8). Needs Phases 0-7 closed or explicitly waived.
+      2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met (Phase 0.3 open, the image step-1
+      cause unexplained, Phase 4 oracle not run, Phase 6 round trip not done, Phase 7 not started). No admission action
+      (ModelCompatibility, STATUS, README) is taken until the owner states whether that "yes" waives the open phases, or
+      the phases are closed. Question to the owner is recorded in the loop summary.
 
 ---
 
