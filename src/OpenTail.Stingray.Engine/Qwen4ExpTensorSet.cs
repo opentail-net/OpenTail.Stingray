@@ -146,81 +146,87 @@ public sealed unsafe class Qwen4ExpTensorSet
             bool isRecr = hp.IsRecurrentLayer(il);
             bool isPle = hp.IsPleLayer(il);
 
-            var layer = new Qwen4ExpLayerTensors
-            {
-                LayerIndex = il,
-                IsRecurrent = isRecr,
-                IsPle = isPle,
-
-                // Hyper-connections
-                HcAttnNorm = Find(model, $"blk.{il}.hc_attn_norm.weight"),
-                HcAttnDown = Find(model, $"blk.{il}.hc_attn_down.weight"),
-                HcAttnUp = Find(model, $"blk.{il}.hc_attn_up.weight"),
-                HcAttnInject = Find(model, $"blk.{il}.hc_attn_inject.weight"),
-                HcFfnNorm = Find(model, $"blk.{il}.hc_ffn_norm.weight"),
-                HcFfnDown = Find(model, $"blk.{il}.hc_ffn_down.weight"),
-                HcFfnUp = Find(model, $"blk.{il}.hc_ffn_up.weight"),
-                HcFfnInject = Find(model, $"blk.{il}.hc_ffn_inject.weight"),
-
-                // MoE
-                FfnGateInp = Find(model, $"blk.{il}.ffn_gate_inp.weight"),
-                FfnDownExps = Find(model, $"blk.{il}.ffn_down_exps.weight"),
-                FfnGateExps = Find(model, $"blk.{il}.ffn_gate_exps.weight"),
-                FfnUpExps = Find(model, $"blk.{il}.ffn_up_exps.weight"),
-                FfnGateUpExps = Find(model, $"blk.{il}.ffn_gate_up_exps.weight"),
-                FfnGateInpShexp = Find(model, $"blk.{il}.ffn_gate_inp_shexp.weight"),
-                FfnGateShexp = Find(model, $"blk.{il}.ffn_gate_shexp.weight"),
-                FfnUpShexp = Find(model, $"blk.{il}.ffn_up_shexp.weight"),
-                FfnDownShexp = Find(model, $"blk.{il}.ffn_down_shexp.weight"),
-            };
-
-            if (isRecr)
-            {
-                // GDN (Linear Attention)
-                layer.AttnQkv = Find(model, $"blk.{il}.attn_qkv.weight");
-                layer.AttnGate = Find(model, $"blk.{il}.attn_gate.weight");
-                layer.SsmConv1d = Find(model, $"blk.{il}.ssm_conv1d.weight");
-                layer.SsmDt = Find(model, $"blk.{il}.ssm_dt.bias");
-                layer.SsmA = Find(model, $"blk.{il}.ssm_a");
-                layer.SsmBeta = Find(model, $"blk.{il}.ssm_beta.weight");
-                layer.SsmAlpha = Find(model, $"blk.{il}.ssm_alpha.weight");
-                layer.SsmNorm = Find(model, $"blk.{il}.ssm_norm.weight");
-                layer.SsmOut = Find(model, $"blk.{il}.ssm_out.weight");
-            }
-            else
-            {
-                // QSA (Full Attention)
-                layer.AttnQ = Find(model, $"blk.{il}.attn_q.weight");
-                layer.AttnK = Find(model, $"blk.{il}.attn_k.weight");
-                layer.AttnV = Find(model, $"blk.{il}.attn_v.weight");
-                layer.AttnOut = Find(model, $"blk.{il}.attn_output.weight");
-                layer.AttnQNorm = Find(model, $"blk.{il}.attn_q_norm.weight");
-                layer.AttnKNorm = Find(model, $"blk.{il}.attn_k_norm.weight");
-                layer.IndexQProj = Find(model, $"blk.{il}.index_q_proj.weight");
-                layer.IndexKProj = Find(model, $"blk.{il}.index_k_proj.weight");
-                layer.IndexQNorm = Find(model, $"blk.{il}.index_q_norm.weight");
-                layer.IndexKNorm = Find(model, $"blk.{il}.index_k_norm.weight");
-            }
-
-            if (isPle)
-            {
-                // PLE
-                layer.PleKey = Find(model, $"blk.{il}.ple_key.weight");
-                layer.PleValue = Find(model, $"blk.{il}.ple_value.weight");
-                layer.PleNormKey = Find(model, $"blk.{il}.ple_norm_key.weight");
-                layer.PleNormQuery = Find(model, $"blk.{il}.ple_norm_query.weight");
-                layer.PleNormConv = Find(model, $"blk.{il}.ple_norm_conv.weight");
-                layer.PleConv1d = Find(model, $"blk.{il}.ple_conv1d.weight");
-            }
-
-            layers.Add(layer);
+            layers.Add(LoadLayer(model, il, isRecr, isPle));
         }
 
         return new Qwen4ExpTensorSet(
             tokEmbd, output, hcHeadNorm, hcHeadDown, hcHeadUp, perLayerTokEmbd, layers);
     }
 
-    private static Qwen4ExpTensorRef Require(GgufModel model, string name)
+    /// <summary>Loads the tensors of one transformer block (index <paramref name="il"/>) from <paramref name="model"/>.</summary>
+    internal static Qwen4ExpLayerTensors LoadLayer(GgufModel model, int il, bool isRecr, bool isPle)
+    {
+        var layer = new Qwen4ExpLayerTensors
+        {
+            LayerIndex = il,
+            IsRecurrent = isRecr,
+            IsPle = isPle,
+
+            // Hyper-connections
+            HcAttnNorm = Find(model, $"blk.{il}.hc_attn_norm.weight"),
+            HcAttnDown = Find(model, $"blk.{il}.hc_attn_down.weight"),
+            HcAttnUp = Find(model, $"blk.{il}.hc_attn_up.weight"),
+            HcAttnInject = Find(model, $"blk.{il}.hc_attn_inject.weight"),
+            HcFfnNorm = Find(model, $"blk.{il}.hc_ffn_norm.weight"),
+            HcFfnDown = Find(model, $"blk.{il}.hc_ffn_down.weight"),
+            HcFfnUp = Find(model, $"blk.{il}.hc_ffn_up.weight"),
+            HcFfnInject = Find(model, $"blk.{il}.hc_ffn_inject.weight"),
+
+            // MoE
+            FfnGateInp = Find(model, $"blk.{il}.ffn_gate_inp.weight"),
+            FfnDownExps = Find(model, $"blk.{il}.ffn_down_exps.weight"),
+            FfnGateExps = Find(model, $"blk.{il}.ffn_gate_exps.weight"),
+            FfnUpExps = Find(model, $"blk.{il}.ffn_up_exps.weight"),
+            FfnGateUpExps = Find(model, $"blk.{il}.ffn_gate_up_exps.weight"),
+            FfnGateInpShexp = Find(model, $"blk.{il}.ffn_gate_inp_shexp.weight"),
+            FfnGateShexp = Find(model, $"blk.{il}.ffn_gate_shexp.weight"),
+            FfnUpShexp = Find(model, $"blk.{il}.ffn_up_shexp.weight"),
+            FfnDownShexp = Find(model, $"blk.{il}.ffn_down_shexp.weight"),
+        };
+
+        if (isRecr)
+        {
+            // GDN (Linear Attention)
+            layer.AttnQkv = Find(model, $"blk.{il}.attn_qkv.weight");
+            layer.AttnGate = Find(model, $"blk.{il}.attn_gate.weight");
+            layer.SsmConv1d = Find(model, $"blk.{il}.ssm_conv1d.weight");
+            layer.SsmDt = Find(model, $"blk.{il}.ssm_dt.bias");
+            layer.SsmA = Find(model, $"blk.{il}.ssm_a");
+            layer.SsmBeta = Find(model, $"blk.{il}.ssm_beta.weight");
+            layer.SsmAlpha = Find(model, $"blk.{il}.ssm_alpha.weight");
+            layer.SsmNorm = Find(model, $"blk.{il}.ssm_norm.weight");
+            layer.SsmOut = Find(model, $"blk.{il}.ssm_out.weight");
+        }
+        else
+        {
+            // QSA (Full Attention)
+            layer.AttnQ = Find(model, $"blk.{il}.attn_q.weight");
+            layer.AttnK = Find(model, $"blk.{il}.attn_k.weight");
+            layer.AttnV = Find(model, $"blk.{il}.attn_v.weight");
+            layer.AttnOut = Find(model, $"blk.{il}.attn_output.weight");
+            layer.AttnQNorm = Find(model, $"blk.{il}.attn_q_norm.weight");
+            layer.AttnKNorm = Find(model, $"blk.{il}.attn_k_norm.weight");
+            layer.IndexQProj = Find(model, $"blk.{il}.index_q_proj.weight");
+            layer.IndexKProj = Find(model, $"blk.{il}.index_k_proj.weight");
+            layer.IndexQNorm = Find(model, $"blk.{il}.index_q_norm.weight");
+            layer.IndexKNorm = Find(model, $"blk.{il}.index_k_norm.weight");
+        }
+
+        if (isPle)
+        {
+            // PLE
+            layer.PleKey = Find(model, $"blk.{il}.ple_key.weight");
+            layer.PleValue = Find(model, $"blk.{il}.ple_value.weight");
+            layer.PleNormKey = Find(model, $"blk.{il}.ple_norm_key.weight");
+            layer.PleNormQuery = Find(model, $"blk.{il}.ple_norm_query.weight");
+            layer.PleNormConv = Find(model, $"blk.{il}.ple_norm_conv.weight");
+            layer.PleConv1d = Find(model, $"blk.{il}.ple_conv1d.weight");
+        }
+
+        return layer;
+    }
+
+    internal static Qwen4ExpTensorRef Require(GgufModel model, string name)
     {
         var tensor = Find(model, name);
         if (tensor == null)
@@ -230,7 +236,7 @@ public sealed unsafe class Qwen4ExpTensorSet
         return tensor.Value;
     }
 
-    private static Qwen4ExpTensorRef? Find(GgufModel model, string name)
+    internal static Qwen4ExpTensorRef? Find(GgufModel model, string name)
     {
         var info = model.FindTensor(name);
         if (!info.HasValue) return null;

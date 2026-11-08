@@ -527,3 +527,14 @@ Stingray plan:
 - Forward: `Qwen4ExpForwardPass.ForwardMtp(draftToken, h, position, state)` implementing steps 1-8, reusing the existing
   QSA, HC and MoE kernels. Verification plan: compare each step's `hn`, `en`, `res`, logits with a llama.cpp run of the
   MTP head over the same inputs before any speed claim. Qwen 3.8 stays unadmitted.
+
+### Phase 4 progress, 2026-11-08: head loads from its own file
+
+- The shared Q4_K_M head is downloaded: `E:\_models\qwen38-flash-next\MTP\mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf`
+  (1907151936 bytes).
+- `Qwen4ExpTensorSet.LoadLayer` is extracted from `Load` (trunk outputs bit-identical after the change: logits and `l_last_24`).
+- `Qwen4ExpMtpHead.Load` loads block 48 and the `nextn` tensors from the MTP file, with the trunk's shared token embedding and
+  output, and checks the reference shapes (eh_proj [5120, 2560], enorm [2560], hnorm and hc_head_norm [10240],
+  hc_head_down [10240, 320], hc_head_up [320, 10240]).
+- `Qwen4ExpMtpLoadTests` (2 tests, real files): the head loads with reference shapes; a trunk file without NextN tensors is rejected.
+- Not yet: `ForwardMtp` (the planned graph) and any verification of its output. No speed claim.
