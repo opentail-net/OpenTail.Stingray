@@ -1284,12 +1284,23 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     /// <summary>A new, empty sequence state for this model (its own PLE token history and caches).</summary>
     public Qwen4ExpSequenceState CreateSequenceState() => new(
-        _numLayers + 1, // + the MTP head's block, whose attention cache lives at index _numLayers
-        l => l < _numLayers && _hp.IsRecurrentLayer(l),
-        (_ssmDConv - 1) * _convDim,
-        _ssmDtRank * _ssmDState * _ssmDState,
-        _pleHistSlots * _hcDim,
+        SeqNumLayers,
+        SeqIsRecurrent,
+        SeqGdnConvLength,
+        SeqGdnStateLength,
+        SeqPleHistoryLength,
         _hp.PleLayers != null && _hp.PleLayers.Count > 0 ? new Qwen4ExpPleHasher(_hp) : null);
+
+    /// <summary>Bytes every sequence holds before its first token (see <see cref="Qwen4ExpSequenceState.FixedFloatBytes"/>).</summary>
+    public long FixedStateBytesPerSequence => Qwen4ExpSequenceState.FixedFloatBytes(
+        SeqNumLayers, SeqIsRecurrent, SeqGdnConvLength, SeqGdnStateLength, SeqPleHistoryLength);
+
+    // Sequence-state sizing: one definition, used by both the allocation and the byte count above.
+    private int SeqNumLayers => _numLayers + 1; // + the MTP head's block, whose attention cache lives at index _numLayers
+    private bool SeqIsRecurrent(int l) => l < _numLayers && _hp.IsRecurrentLayer(l);
+    private int SeqGdnConvLength => (_ssmDConv - 1) * _convDim;
+    private int SeqGdnStateLength => _ssmDtRank * _ssmDState * _ssmDState;
+    private int SeqPleHistoryLength => _pleHistSlots * _hcDim;
 
     /// <summary>Hyperparameters this pass was built with.</summary>
     public Qwen4ExpHyperparams Hyperparameters => _hp;

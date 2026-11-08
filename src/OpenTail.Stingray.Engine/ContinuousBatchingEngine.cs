@@ -1136,7 +1136,13 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     {
         if (p.RetainedState is not null || p.CacheablePrefixLength <= 0 || p.InitialConsumed != 0
             || _prefixFwd is null || _prefixCacheBytes <= 0) return;
-        long bytes = checked((long)p.CacheablePrefixLength * _fwd.KvBytesPerToken);
+        // An exact-boundary adapter can only snapshot while it stands at the boundary. Later calls (the
+        // prompt finishing) must not capture: if the entry was evicted in the meantime, a missed entry is
+        // just a cache miss, but a capture at the wrong position throws.
+        if (_prefixFwd is { RequiresExactPrefixBoundary: true } && p.Consumed != p.CacheablePrefixLength) return;
+        // A snapshot holds the per-token KV plus the sequence's fixed state (recurrent buffers); the fixed part
+        // is charged too, or a model with large fixed state would be cached at near-zero cost per entry.
+        long bytes = checked((long)p.CacheablePrefixLength * _fwd.KvBytesPerToken + _fwd.FixedBytesPerSequence);
         if (bytes > _prefixCacheBytes) return;
         // The prefix might have been populated from an existing snapshot. Keeping another copy
         // would waste a retained handle; the LRU hit above already moved that entry to MRU.

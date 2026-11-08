@@ -680,3 +680,27 @@ fixtures). Not re-run in full after the count fix; the count test is the only te
 Still open for Phase 6: the server round trip (blocked on admission), and whether the server should act on the validator's
 result (an owner decision; the validator exists, the server does not call it). The streaming reasoning split is covered at
 the engine level (see the table); its one limit is stated there. Qwen 3.8 is still not admitted or advertised.
+
+## Phase 3 (memory accounting for retained prefixes), result 2026-11-08
+
+- Gap: the prefix cache charged an entry as prefix length x `KvBytesPerToken`. For qwen4exp that leaves out the fixed
+  per-sequence state (recurrent conv and state for each recurrent layer, and the PLE history), so a cached prefix cost
+  almost nothing in the budget.
+- Change: `IBatchedForwardPass.FixedBytesPerSequence` (default 0, so other backends are unchanged). `Qwen4ExpForwardPass`
+  computes it from the same helpers that `CreateSequenceState` uses (`Qwen4ExpSequenceState.FixedFloatBytes`). The engine
+  charges length x `KvBytesPerToken` + fixed.
+- Regression found by the full Core run, and fixed: `Qwen4ExpBatchingTests.ConcurrentAndStaggeredRequests_MatchIsolatedRuns`
+  failed with "prefix capture at 4 but the sequence stands at 5" once entries were larger. An entry was evicted while its
+  prompt was still prefilling. When the prompt finished, `RetainPrefix` captured at the wrong position. Fix: `RetainPrefix`
+  returns unless an exact-boundary adapter is at its boundary. A missed entry is now only a cache miss.
+- Tests, `ContinuousBatchingFixedStateTests` (5, synthetic, all pass):
+  - a cached prefix charges the fixed state (mutation check: removing the charge fails it with "prefix cache used 1 bytes");
+  - the sizing equals the arrays a state actually allocates (2 tests);
+  - a backend without fixed state reports 0;
+  - a concurrent eviction property check.
+- Not reproduced synthetically: the concurrent eviction test still passes with the guard removed (two variants checked).
+  Its comment says so. The regression guard is `Qwen4ExpBatchingTests` on the real checkpoint.
+- Full Core run after the fix: 1366 tests, 0 failed, 95 skipped (fixtures not present).
+- Not measured: the real Qwen 3.8 fixed bytes per sequence. This needs the loaded pass, and no number is quoted here.
+- Still open in Phase 3: a `RetainedSequenceState` is not charged to any budget, and its turn-start snapshot doubles the
+  per-sequence state. Copy-on-write sharing is not done. Qwen 3.8 remains unadmitted.

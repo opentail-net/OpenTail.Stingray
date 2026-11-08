@@ -81,6 +81,20 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         QsaPooledKeys = CopyLists(source.QsaPooledKeys);
     }
 
+    /// <summary>
+    /// Bytes a sequence holds before its first token, with the same sizing rule as the constructor: the GDN conv and
+    /// recurrent state of each recurrent layer, and the PLE conv history. The QSA caches and the PLE hasher grow with
+    /// tokens and are not included. Used to charge a retained prefix's fixed state against its cache budget.
+    /// </summary>
+    public static long FixedFloatBytes(
+        int numLayers, Func<int, bool> isRecurrent, int gdnConvLength, int gdnStateLength, int pleHistoryLength)
+    {
+        long floats = pleHistoryLength;
+        for (int l = 0; l < numLayers; l++)
+            if (isRecurrent(l)) floats += Math.Max(1, gdnConvLength) + Math.Max(1, gdnStateLength);
+        return floats * sizeof(float);
+    }
+
     /// <summary>Deep copy: the clone and this sequence can continue independently.</summary>
     public Qwen4ExpSequenceState Clone()
     {

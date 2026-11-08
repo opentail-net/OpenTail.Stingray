@@ -133,6 +133,13 @@ public interface IBatchedForwardPass : IThreadAffineBackend
     /// </summary>
     long KvBytesPerToken { get; }
 
+    /// <summary>
+    /// Bytes of state every sequence holds regardless of its length (for example a recurrent model's conv and state
+    /// buffers). A retained prefix is charged this once, on top of <see cref="KvBytesPerToken"/> times its length, so a
+    /// short prefix of a model with large fixed state is not admitted to the cache as if it were free. Zero by default.
+    /// </summary>
+    long FixedBytesPerSequence => 0;
+
     /// <summary>Maximum supported sequence length; caps each request's projected KV reservation.</summary>
     int MaxSeqLen { get; }
 

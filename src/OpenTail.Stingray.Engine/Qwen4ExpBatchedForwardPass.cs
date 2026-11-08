@@ -69,6 +69,9 @@ public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass, IPrefixCac
 
     public long KvBytesPerToken => _kvBytesPerToken;
 
+    /// <summary>Recurrent conv and state plus PLE history, held by every sequence whatever its length.</summary>
+    public long FixedBytesPerSequence => _pass.FixedStateBytesPerSequence;
+
     public int MaxSeqLen => _maxSeqLen;
 
     public bool PrefillDequantCacheActive => false;
