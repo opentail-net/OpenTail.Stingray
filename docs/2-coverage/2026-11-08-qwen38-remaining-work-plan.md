@@ -245,7 +245,12 @@ Runnable now. Test cases only, no new disk or implementation.
       `mtmd-helper.cpp`) and a decoder subprocess, so both sides need one. When unblocked: a short clip, its prompt built from
       `VideoPromptLayout` (text parts and chunks tokenized as the reference does), compared with `llama-mtmd-cli --video` at
       the same settings.
-      The frame-input path (a frame sequence instead of a decoder) is not started either.
+      Frame-input path, done 2026-11-08 (`FrameSequenceVideoSource`: a directory of PNG frames in name order, the rate stated by
+      the caller, frames of another size resized bicubic, another rate refused; no decoder). Tests: `FrameSequenceVideoSourceTests`,
+      6 tests. The projector-path test runs the frames through `ForwardVideo` with the real mmproj and passes, not skipped.
+      Correction found on the way: at 224 px the encoder gives 49 tokens per pair (7x7), which means the mmproj's patch size is 16,
+      not the 14 assumed by the decode test and by the encoder's `// 14` comment. Both tests now take the size from
+      `QwenVlVisionModel.PatchSize`. The decode test has never run here (it skips without ffmpeg).
 
 ## Phase 6. Tool calls
 

@@ -166,7 +166,8 @@ Input #0, mov,mp4, from 'clip.mp4':
             }
 
             Assert.Equal(Frames / 2, pairs);
-            Assert.Equal((Side / 28) * (Side / 28), firstTokens); // 16x16 patches merged 2x2
+            int merged = vision.PatchSize * 2; // patch size from the mmproj, times the 2x2 merge
+            Assert.Equal((Side / merged) * (Side / merged), firstTokens);
         }
         finally { File.Delete(clip); }
     }
