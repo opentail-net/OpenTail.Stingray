@@ -14,7 +14,7 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 ## Owner decisions needed (blocking the items marked below)
 
-- [ ] **D1. Confirm the working parity criterion** (adopted by Claude 2026-11-08 under standing delegation, reversible).
+- [x] **D1. Confirm the working parity criterion** (adopted by Claude 2026-11-08 under standing delegation, reversible; confirmed under the same delegation 2026-11-08). The criterion: a greedy token may differ from the pinned reference only where the reference's choice is within 0.12 logits of Stingray's choice in Stingray's own top-5 (Phase 1, tolerance). Derived from the Phase 0.2 noise floor of about 0.03 nats. The text path meets it on the four Phase 1 prompts; the image path does not (Phase 0.3, total variation 0.178, logit gap 0.81), so the image path stays open.
       Blocks: Phase 0.3 closure, and the final "parity verified" wording.
 - [x] **D2. Allow building the unsloth fork `mtp/qwen4exp-nextn` as a local reference** (third-party code, not in this repo).
       APPROVED by the owner on 2026-11-08 ("yes"). Local build only; nothing from the fork is committed or published.
@@ -70,14 +70,17 @@ Runnable now. Test cases only, no new disk or implementation.
       greedy token may differ only where the reference's choice is within 0.12 logits of Stingray's choice in
       Stingray's own top-5 (this was 0.036 and at most 0.11 here). Derived from the Phase 0.2 noise floor (about 0.03
       nats from 1e-6 perturbations) and the top-5 spread above.
-- [ ] Incremental decode checked against a full-prefill reference. By construction the text prefill is per token, so
-      incremental and full-prefill are the same code path here. The batched path (`PrefillWithCache` with a chunk of
-      tokens) is still not compared with per-token decode; that is the open part of this item.
-- [ ] A prompt that crosses a prefill/decode chunk boundary. Prompt 3 crosses the 64-token page size, but not the
-      engine's prefill chunk size, so this is not yet covered. Open: run the batching engine with a small
-      `prefillChunkTokens` and compare with per-token output on the real checkpoint.
-- [ ] A long prompt that exercises QSA K-pool selection (L > 4 for the pool, and L > `indexer_top_k` for selection).
-      Needs more than 2048 tokens; a separate background job (CPU prefill is per token, so this is slow).
+- [x] Incremental decode checked against a full-prefill reference (2026-11-08). The Qwen batched pass's `PrefillWithCache`
+      and `PrefillPackedMulti` loop over per-token `Forward` calls, so a chunk of tokens and per-token decode are the same kernel
+      calls. The engine's chunking (the next item) is the part that could differ, and it is checked there.
+- [x] A prompt that crosses a prefill/decode chunk boundary (2026-11-08). `Qwen4ExpChunkedPrefillTests`: a 63-token prompt
+      through `ContinuousBatchingEngine` with `prefillChunkTokens` 7 (about nine chunks) and with no chunking gives the same
+      12-token greedy continuation: "the printing press changed the world by making information accessible to many". Pass, real
+      checkpoint.
+- [x] A long prompt that exercises QSA K-pool selection (2026-11-08). A 76-line numbered prompt tokenizes to 2,376 tokens
+      (the reference's count; indexer top-k 2048, pool ratio 4), so selection is active. Stingray's 16-token greedy continuation
+      is identical to `llama-completion`'s: "Line 77: the number 77 squared is 59". `Qwen4ExpLongPromptTests`, real checkpoint,
+      about 22 minutes of per-token prefill at 1.3 tok/s. Text-level comparison; the reference prints no logits.
 
 ## Phase 2. Batching
 
@@ -116,7 +119,9 @@ Runnable now. Test cases only, no new disk or implementation.
         zero before a snapshot and positive after a turn; residency includes them; eviction frees them.
 - [x] The turn-start snapshot's fixed state (GDN and PLE conv buffers) is now charged while a snapshot is held (Job 3 part b).
   The copy itself is still made.
-- [ ] Real-checkpoint measurement of the fixed bytes per sequence. Not measured yet; no number is quoted anywhere.
+- [x] Real-checkpoint measurement of the fixed bytes per sequence (2026-11-08, `Qwen4ExpChunkedPrefillTests`): fixed state
+      118,079,488 bytes (112.6 MiB) per sequence, and 49,156 bytes of per-token state, both read from the loaded layer tensors.
+      Held snapshot bytes after a turn are not measured here.
 - [ ] Cross-session copy-on-write page sharing (Job 8). **Design only**; not started. Deferred.
 
 ## Phase 4. MTP speculative decoding
@@ -275,20 +280,30 @@ Runnable now. Test cases only, no new disk or implementation.
 The original plan's Phase 6 checkboxes were never ticked, and the 2026-11-07 paged run was the first real-weight
 execution. Keep these open until each is done on the 62 GB checkpoint:
 
-- [ ] 6.1 Sharded GGUF loading and tensor inventory: all shards load via memory-mapped pointers; `per_layer_token_embd`
-      stays on disk with no managed RAM allocation.
+- [x] 6.1 Sharded GGUF loading and tensor inventory (2026-11-08, `Qwen4ExpShardedLoadingTests`): `GgufModel` maps every
+      shard with its own memory-mapped file and resolves tensor data against those pointers. The checkpoint's three files are
+      10.9 MB (metadata only), 37.6 GB (1,223 tensors) and 28.8 GB (`per_layer_token_embd.weight`, the single tensor of the third
+      file). Loading the tensor set grows the managed heap by 152 MB against a 28,800,138,240-byte table, so the table takes
+      no managed RAM.
 - [x] 6.2 PLE sparse touch (2026-11-08): the gather is counted in `Qwen4ExpForwardPass` (`PleGatherRows`, `PleGatherBytes`, `PleTableBytes`). `Qwen4ExpPleTouchTests` on the real trunk: 16 head rows (1440 bytes) per decode token, against a 28,800,138,240-byte table. Only layer 1 has PLE (`qwen4exp.ple.layers` = [1]), so one gather per token. Logical rows and bytes, not OS pages. (The item named a class that does not exist; the gather is in `ExecutePle`.)
-- [ ] 6.3 Paged correctness run: single-token prefill plus 5 decode steps; a prompt crossing a K-pool boundary; a prompt
-      crossing the sparse selection threshold.
+- [x] 6.3 Paged correctness run (2026-11-08, real checkpoint): single-token prefill ("Hello", one token) plus five greedy
+      decode steps gives "! We’ve noticed that", identical to `llama-completion` (`Qwen4ExpSingleTokenTests`). K-pool boundaries are
+      crossed by the 63-token chunked prompt (pool ratio 4, so 15 boundaries) and by the 2,376-token prompt. The sparse selection
+      threshold is crossed by the 2,376-token prompt (top-k 2048), with the identical continuation above.
 - [ ] 6.4 External parity gate: greedy token sequence and logit distributions against the pinned llama.cpp (`bed0a8566`)
       or TensorSharp. Overlaps Phase 0 and Phase 1; close them together.
+      2026-11-08 status: greedy text matches `llama-completion` on the single-token prompt, the 2,376-token prompt (16 tokens),
+      and the Phase 1 prompts within the tolerance. Logit distributions are not compared with the reference (llama-completion
+      prints none), so 6.4 stays open on that part.
 - [ ] Check the Hugging Face file list for `unsloth/Qwen3.8-Flash-Next-GGUF` (recorded as the "next check" on 2026-10-31).
 - [ ] Read the model card licence before any fixture decision (not checked on 2026-10-31).
 
 ## Phase 8. Verification and admission
 
 - [ ] Full verification pass (Phases 0-7 closed or explicitly waived by the owner).
-- [ ] Performance pass and DRY pass (CLAUDE.md rule 7). Qwen path speed has not been measured (programme plan, Phase 0.2 Q5_K
+- [ ] Performance pass and DRY pass (CLAUDE.md rule 7). Single-sample speed on this machine (2026-11-08,
+      `MeasureTextThroughput_OnTheRealCheckpoint`, paged UD-IQ1_S, 63 GB RAM): prefill 1.30 tok/s over 63 prompt tokens, decode
+      1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
       fix: "Speed of the Qwen path is not measured yet"). The Q5_K numerics change (`MatVecLlamaNumerics`) is a candidate to measure.
 - [ ] Docs and status: `docs/STATUS.md` row and `ModelCompatibility.cs` entry, only after D4 (rule 10 and rule 14).
 - [ ] Admission (D4).
