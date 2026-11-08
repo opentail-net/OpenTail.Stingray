@@ -316,3 +316,22 @@ Greedy, 12 tokens, Stingray against `llama-completion` at `bed0a8566`. Full text
   reference's top-two margin exceeds a noise threshold. The threshold should come from the measured logit error, not be
   set by hand. The two observed divergences are below 0.12 logits; the noise is not yet measured as a number.
 - Owner confirmation of the parity criterion: not given. Phase 0 stays open.
+
+### Phase 0.2 result, 2026-11-08: the logit noise floor, measured
+
+- Probe (env `STINGRAY_Q4E_PERTURB_EPS`, default 0, off): a deterministic relative perturbation of the input embedding,
+  applied to the 5-token prompt "The capital of France is", last position.
+- Baseline vs perturbed next-token distribution (last position):
+  - eps 1e-6 (float-level): KL 0.033 nats, total variation 0.100, top-1 probability 0.568 -> 0.649.
+  - eps 1e-5: KL 0.039 nats, TV 0.109.
+  - eps 1e-4: KL 0.014 nats, TV 0.052.
+- Raw logits move by about 8.6% relative at eps 1e-6 (max 1.17 per logit). That is the same size as the Stingray-vs-llama
+  logit gap (6.5%). So raw-logit comparison cannot separate a correct port from an incorrect one at this level.
+- Stingray against llama.cpp's own last-token distribution (from the reference dump, same position):
+  - baseline KL(llama || Stingray) = 0.015 nats, TV 0.052, top-1 probability 0.567 (llama 0.550).
+  - under the float-level perturbations the same KL is 0.016 to 0.050 nats.
+  - So the baseline sits at the low end of the noise envelope. The remaining gap is within float-noise.
+- Caveat: one position of one prompt. A noise threshold needs more positions and prompts.
+- Proposed criterion (owner to confirm, not agreed): per-token KL against llama.cpp's distribution, with the threshold set by
+  the perturbation envelope on the same prompts, plus greedy agreement except where the top-two margin is inside that envelope.
+  Phase 0 stays open until the owner confirms it.

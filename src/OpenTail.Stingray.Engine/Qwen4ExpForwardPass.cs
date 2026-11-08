@@ -40,6 +40,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly string? _dumpDir = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_DIR");
     private readonly int _dumpPos = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_POS"), out int p) ? p : -1;
     private bool _dumpActive;
+    // Noise probe (Phase 0.2): relative embedding perturbation, 0 by default.
+    private static readonly float PerturbEps = float.TryParse(Environment.GetEnvironmentVariable("STINGRAY_Q4E_PERTURB_EPS"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pe) ? pe : 0f;
     // Phase 0.2 experiment: ssm_out as an f32 dot instead of the quantised MatVec. Off by default.
     private static readonly bool SsmOutF32Experiment = Environment.GetEnvironmentVariable("STINGRAY_Q4E_SSMOUT_F32") == "1";
     // Phase 0.2 experiment: routed experts as dequantised f32 dots. Off by default.
@@ -246,6 +248,16 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         // 1. Embed token
         EmbedToken(token, _tokEmbdScratch);
         if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, "model_input_embed.bin"), _tokEmbdScratch);
+        if (PerturbEps != 0f)
+        {
+            // Noise probe (Phase 0.2): deterministic relative perturbation of the embedding.
+            for (int i = 0; i < _tokEmbdScratch.Length; i++)
+            {
+                double u = Math.Sin(i * 12.9898 + position * 78.233) * 43758.5453;
+                u -= Math.Floor(u);
+                _tokEmbdScratch[i] *= 1f + PerturbEps * (float)(2 * u - 1);
+            }
+        }
 
         // Wide residual starts as hc identical copies of the embedding (qwen4exp.cpp:443-445)
         for (int c = 0; c < _hc; c++)
