@@ -791,3 +791,14 @@ approve admission later (Phase 8). Qwen 3.8 stays unadmitted and unadvertised un
 - Full Core suite: 1370 tests, 0 failed, 95 skipped (fixtures not present).
 - Still open: the snapshot's fixed state (recurrent buffers, PLE history) is still copied per snapshot and is charged once at
   the session layer, not twice. The per-token doubling is removed by this change; the fixed-state doubling is not.
+
+## Phase 2 (admission and memory of cancelled requests), result 2026-11-08
+
+- `ContinuousBatchingCancellationMemoryTests` (2, synthetic, counting fake pass): a cancelled request and a finished request
+  each dispose their sequence cache and release their KV reservation (`CommittedKvTokens` returns to 0). Both pass.
+- `ContinuousBatchingBackpressureTests` (1, synthetic): under a 12-token budget, three concurrent requests (about 8 tokens
+  each) queue rather than being admitted over budget. Committed KV is polled throughout and never exceeds 12. Every
+  request finishes with the same output as a solo run. Passes.
+- Not mutation-checked: removing the cache disposal or the budget check. The tests were not run against a broken engine.
+- Still open in Phase 2: the real-checkpoint cancellation memory check (the Qwen batching test checks reservations, not
+  cache disposal), and queue limits beyond the single budget case (maximum queue length, rejection when full).
