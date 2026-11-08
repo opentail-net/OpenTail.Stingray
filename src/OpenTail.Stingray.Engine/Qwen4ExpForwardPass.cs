@@ -333,6 +333,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                     Console.Error.WriteLine($"[q4e-dbg] ffn hc_inject-0 sum={_ffnInject0Accum[0]:F6}");
             }
 
+            if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"hc_mixed_occ2_{il}.bin"), _mixed);
+
             // 2f. MoE (routed + shared expert)
             ExecuteMoe(layer, _mixed, _blockOut);
 
@@ -899,6 +901,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         {
             ExecuteRoutedExperts(layer, input, output);
         }
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"ffn_moe_out_{layer.LayerIndex}.bin"), output);
 
         // 1. Shared expert
         if (layer.FfnGateShexp != null && layer.FfnUpShexp != null && layer.FfnDownShexp != null)
@@ -927,9 +930,15 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 var wShexp = AsFloatSpan(layer.FfnGateInpShexp);
                 float dot = TensorPrimitives.Dot(wShexp, input);
                 float scale = 1.0f / (1.0f + MathF.Exp(-dot));
+                if (_dumpActive)
+                {
+                    DumpFloats(Path.Combine(_dumpDir!, $"ffn_shexp_{layer.LayerIndex}.bin"), shOut);
+                    DumpFloats(Path.Combine(_dumpDir!, $"shared_expert_gate_sigmoid_{layer.LayerIndex}.bin"), new[] { scale });
+                }
                 TensorPrimitives.Multiply(shOut, scale, shOut);
             }
 
+            if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"ffn_shexp_gated_{layer.LayerIndex}.bin"), shOut);
             TensorPrimitives.Add(output, shOut, output);
         }
     }
