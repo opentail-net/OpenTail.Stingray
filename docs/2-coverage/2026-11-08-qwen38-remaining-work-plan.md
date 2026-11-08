@@ -214,6 +214,13 @@ Runnable now. Test cases only, no new disk or implementation.
       it is never bundled or downloaded. Probe parses `ffmpeg -i` output; frames come from `-f rawvideo -pix_fmt rgb24`
       on stdout. Frames are paired into temporal patches for `ForwardVideo`. Test: generate a short clip with ffmpeg from
       the test image (test only), decode it, and run the pairs through the real projector; skipped if ffmpeg is missing.
+      Implemented 2026-11-08: `IVideoFrameSource`, `FfmpegVideoFrameSource` (Locate: STINGRAY_FFMPEG, then PATH; Probe via
+      `ffmpeg -i` stderr through `ParseProbeOutput`; ReadFrames via rawvideo rgb24 on stdout), and `VideoTemporalPairs`
+      (RGB24 to CHW, consecutive pairs). Tests: `ProbeParser_ReadsSizeAndRateFromFfmpegStderr` passes;
+      the three decode tests skip. Blocker: the `ffmpeg` on PATH is a scoop shim whose target
+      (`scoopppsfmpeg\currentinfmpeg.exe`) is missing, so nothing decodes on this machine. Not used: an Audacity
+      FFmpeg installer found in Downloads (an installer, not a standalone binary). Needed from the owner: a working
+      ffmpeg (install, or set STINGRAY_FFMPEG to a binary).
       Step (c), checked 2026-11-08 (`tools/mtmd/mtmd.cpp`, read only): mergeable frames are grouped in pairs
       (`n_temporal_merge == 2` for Qwen-VL) and each pair is one embedding and one image-token chunk. Its position is
       `t = pos_0` for every token of the pair, `x` and `y` as for an image, and the text position advances by
