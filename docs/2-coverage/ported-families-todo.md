@@ -162,8 +162,14 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
       (`YarnRope_DivergesFromPlainRopeOnlyWhenYarnIsActive`,
       `GlmDsa_FullIndexerScoring_WithYarnActive_ProducesFiniteLogits`). Hadamard rotation's own
       correctness was already covered by an existing invariant test.
-- [ ] `glm-dsa` shared-expert contribution test against the llama.cpp source reference -- the only
-      item still open on the synthetic-level checklist, see the coverage programme plan's Phase 2A.
+- [x] `glm-dsa` shared-expert contribution check, 2026-11-08 (vs `glm-dsa.cpp:486-498`): a plain
+      SwiGLU added to the routed MoE output, no extra scale, matching `MoeFfn`'s shared-expert
+      block exactly. No bug found (`SharedExpertSwiGlu_MatchesHandComputedValues`,
+      `MoeFfn_SharedExpertContribution_SurvivesWhenRoutedExpertsAreZeroed`). This closes Phase 2A's
+      synthetic-correctness checklist (MLA absorption, DSA scoring, Hadamard rotation, sigmoid MoE
+      weighting, shared-expert contribution) -- two bugs found and fixed along the way (sigmoid MoE
+      bias ordering, indexer YaRN-RoPE), three already correct. Real-weight parity remains out of
+      reach on this machine's disk budget, see the coverage programme plan's Phase 2A.
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
