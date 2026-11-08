@@ -131,6 +131,11 @@ Runnable now. Test cases only, no new disk or implementation.
       - Open: cause not isolated. Candidates: the decode step after the image chunk (the QSA cache rows appended by
         `ForwardImageChunk` versus `QsaAppend`), or the text positions after the image (Stingray uses 11). Next:
         compare per-layer values at step 1 with the reference's eval-callback.
+      Investigation, 2026-11-08 (a): positions do not explain it. The reference (`tools/mtmd/mtmd.cpp`, read only) uses
+      `t = pos_0`, `x = pos_0 + col`, `y = pos_0 + row` for each Qwen-VL image token, and advances the text position by
+      `max(nx, ny)` after the image (`n_past += get_n_pos`). Stingray uses the same values (`posT = pos0`, `posX/posY`
+      as above, text resumes at 4 + 7 = 11), and the first decode position is 24 on both sides. These match, so the
+      discrepancy is not a position error.
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. Untested; deferred by the owner. Leave unchecked until the owner reopens it.
