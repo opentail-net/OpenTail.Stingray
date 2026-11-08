@@ -150,9 +150,20 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
       after gating, for selection only. Same bug shape and fix as `deepseek4`'s MoE weighting fix
       above, reusing `DeepSeek4Graph.WeightSelectedExperts`
       (`MoeFfn_SigmoidGating_SelectionBiasNeverLeaksIntoTheGatheredWeight`).
-- [ ] `glm-dsa` synthetic-level correctness checks against the llama.cpp source reference (MLA
-      absorption, DSA indexer scoring, Hadamard rotation, shared-expert contribution) -- not done
-      yet, see the coverage programme plan's Phase 2A.
+- [x] `glm-dsa` MLA absorption check, 2026-11-08 (`MlaAttention` vs `glm-dsa.cpp:369-444`): Qcur/Kcur
+      concat order, the YaRN kq_scale pre-scale formula, wv_b decompression, and the NORM-type
+      adjacent-pair RoPE convention (confirmed `GLM_DSA` uses NORM, not NEOX, via `llama-model.cpp`'s
+      `rope_type` table) all match. No bug found.
+- [x] `glm-dsa` DSA indexer scoring check, 2026-11-08 (`RunFullIndexer` vs `glm-dsa.cpp:263-359`):
+      found and fixed a real bug -- the indexer's own RoPE must be YaRN-scaled with the same params
+      as the main attention's RoPE, but this port used a plain, non-YaRN rotation there (invisible
+      on every checkpoint verified so far, since YaRN has been inactive on all of them). Fixed to use
+      the same `ApplyYarnRope` the main attention path already used
+      (`YarnRope_DivergesFromPlainRopeOnlyWhenYarnIsActive`,
+      `GlmDsa_FullIndexerScoring_WithYarnActive_ProducesFiniteLogits`). Hadamard rotation's own
+      correctness was already covered by an existing invariant test.
+- [ ] `glm-dsa` shared-expert contribution test against the llama.cpp source reference -- the only
+      item still open on the synthetic-level checklist, see the coverage programme plan's Phase 2A.
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
