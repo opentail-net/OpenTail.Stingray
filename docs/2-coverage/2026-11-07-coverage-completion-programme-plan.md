@@ -353,3 +353,18 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   measured here.
 - Proposed criterion (owner to confirm, not agreed): KL to llama.cpp at every checked position below the prompt's noise
   envelope plus a fixed margin, and greedy agreement except at near-ties inside that envelope. Phase 0 stays open.
+
+### Phase 0.2 result, 2026-11-08: the planet divergence is a near-tie that the reference itself does not resolve consistently
+
+- Token IDs decoded: 8964 = " Earth", 48017 = " Jupiter".
+- Prefix "The largest planet in the solar system is\n\nA." (11 tokens, identical IDs in llama.cpp and Stingray):
+  - llama.cpp batched forward: top-1 " Earth" (0.218) over " Jupiter" (0.209), margin 0.041 nats.
+  - Stingray: top-1 " Earth" (0.211) over " Jupiter" (0.207), margin 0.018 nats.
+  - KL(llama || Stingray) = 0.0036 nats, TV 0.030. Noise envelope KL(base || eps 1e-6) = 0.0019 nats.
+- llama.cpp's own greedy text depends on the path:
+  - one greedy step after the prefix processed as one batch: " Earth".
+  - the 12-token greedy run, where the prefix is built token by token during generation: "A. Jupiter".
+  So llama.cpp's batched-prefill and token-by-token numerics disagree at this near-tie. Stingray's token-by-token path
+  picked " Earth", which differs from llama.cpp's token-by-token path.
+- Consequence for the criterion: greedy text is not a path-invariant parity signal at near-ties, even within llama.cpp.
+  The criterion must allow near-tie flips. KL at each checked position is the signal that matters.

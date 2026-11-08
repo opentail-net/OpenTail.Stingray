@@ -137,6 +137,12 @@ public sealed class Qwen4ExpRefDumpTests
             : OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(tokModel).Encode(customPrompt).ToArray();
         int last = toks.Length - 1;
         Console.WriteLine("DUMP_TOKENS " + string.Join(",", toks));
+        if (Environment.GetEnvironmentVariable("QWEN_DECODE") == "1")
+        {
+            var tk = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(tokModel);
+            foreach (int id in new[] { 8964, 48017, 20403, 42120, 271, 198, 32, 13, 33 })
+                Console.WriteLine($"DECODE {id} => [{tk.Decode(new[] { id })}]");
+        }
         Environment.SetEnvironmentVariable("STINGRAY_Q4E_DUMP_DIR", outDir);
         Environment.SetEnvironmentVariable("STINGRAY_Q4E_DUMP_POS", last.ToString());
         try
