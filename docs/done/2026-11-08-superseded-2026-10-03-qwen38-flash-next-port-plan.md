@@ -3,7 +3,7 @@
 > Completed items moved to [done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-10.md](../done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 > Ticked items moved to [done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-11.md](../done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-11.md) on 2026-11-08 (matrix rows A to N). Rows O and P stay here.
 
-**Status (revised 2026-10-03): IMPLEMENTED (SYNTHETICALLY VERIFIED, AWAITING REAL-WEIGHT QUALIFICATION).**
+**Status (revised 2026-10-03): IMPLEMENTED (SYNTHETICALLY VERIFIED, AWAITING REAL-WEIGHT QUALIFICATION).** **Status as of 2026-11-08:** real-weight qualification is tracked in `docs/2-coverage/2026-11-08-qwen38-remaining-work-plan.md`; the model is still not admitted.
 The full structural and semantic implementation (HC, GDN, MoE with fused/separate expert tensors, 16-head n-gram grouped PLE with 160-wide row concatenation, 4-section IMRoPE with partial rotary factor 0.25 and theta 10M, and QSA K-pooling/scoring with unconditional active tail retention) is complete and verified with synthetic tests. Real-weight qualification on the 72.5 GB UD-IQ1_S checkpoint is deferred.
 
 **Policy:** port now, prove later; not admitted, not advertised (CLAUDE.md rule 14; [ported-families-todo](ported-families-todo.md)).
@@ -163,4 +163,4 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 - **Runtime memory:** one blog says the 1-bit build runs in about 75 GB of RAM or unified memory. That is above this machine's 64 GB, which matches the plan's paged-only policy.
 - **Licence:** not checked in this pass. Read the model card before any fixture decision.
 
-**Next check:** the Hub file list for `unsloth/Qwen3.8-Flash-Next-GGUF`.
+**Next check:** superseded. The Hub file list and licence check are tracked in `docs/2-coverage/2026-11-08-qwen38-remaining-work-plan.md` (Phase 6, real-weight qualification).

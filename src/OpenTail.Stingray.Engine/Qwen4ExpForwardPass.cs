@@ -94,6 +94,19 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly Qwen4ExpPleHasher? _pleHasher;
     private readonly long[]? _pleHeadRows;
 
+    // Phase 6.2 instrumentation: logical PLE table reads by the gather (rows and bytes), not OS pages.
+    private long _pleGatherRows;
+    private long _pleGatherBytes;
+
+    /// <summary>Head rows read from the PLE table by the gather, summed over every token and layer so far.</summary>
+    public long PleGatherRows => _pleGatherRows;
+
+    /// <summary>Bytes of the PLE table covered by those gathered rows (rows x bytes per row).</summary>
+    public long PleGatherBytes => _pleGatherBytes;
+
+    /// <summary>Size in bytes of the whole PLE table (<c>per_layer_token_embd.weight</c>), or 0 when absent.</summary>
+    public long PleTableBytes => _tensors.PerLayerTokEmbd?.Info.ByteSize ?? 0;
+
     // Recurrent & State buffers
     private readonly float[] _resHc;             // [hc * embedDim]
     private Qwen4ExpSequenceState _seq = null!; // per-sequence state, see Qwen4ExpSequenceState
@@ -412,6 +425,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 {
                     SimdKernels.DequantRow(rowPtr, pHead, pleHeadDim, info.DType);
                 }
+                _pleGatherRows++;
+                _pleGatherBytes += bytesPerRow;
             }
             gatheredFromTable = true;
         }
