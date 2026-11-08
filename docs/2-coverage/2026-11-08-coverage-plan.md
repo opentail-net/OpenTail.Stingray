@@ -58,6 +58,7 @@ These were the open items of the admission follow-ups, now collected here:
 - **Next step:** check each against its source, or delete the line with a note.
 - **Done when:** no unchecked line remains in the file.
 - **Doc:** [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+- **Status 2026-11-08:** 8 of 9 checks closed, each with its source (HF tree listings, licence texts, the Llama 4 mirror config). One stays open: the llama-server logprob field names, which need the pinned `bed0a8566` source or a real build. The local `llama-server.exe` is a 9 KB stub, so that item is blocked on the source, not on work here.
 
 ---
 
