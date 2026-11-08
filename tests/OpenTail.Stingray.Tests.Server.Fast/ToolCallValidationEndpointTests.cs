@@ -132,4 +132,36 @@ public sealed class ToolCallValidationEndpointTests : IDisposable
         Assert.Contains("invalid_tool_call", body, StringComparison.Ordinal);
         Assert.DoesNotContain("tool_use", body, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Anthropic_Streaming_UndeclaredTool_EmitsAnErrorEvent_NotAToolUseBlock()
+    {
+        var fake = new FakeInferenceEngine("qwen3-coder", [
+            (GenerateChunkKind.Text, "<function=delete_file>"),
+            (GenerateChunkKind.Text, "<parameter=path>/tmp/x</parameter>"),
+            (GenerateChunkKind.Text, "</function>"),
+        ]);
+        var client = CreateClient(fake, "qwen3coder");
+
+        var response = await client.PostAsJsonAsync("/v1/messages", new
+        {
+            model = "qwen3-coder",
+            messages = new[] { new { role = "user", content = "Weather?" } },
+            max_tokens = 50,
+            stream = true,
+            tools = new[] { new
+            {
+                name = "get_weather",
+                description = "Get weather",
+                input_schema = new { type = "object", properties = new { city = new { type = "string" } } }
+            } }
+        });
+
+        // The stream is already open with status 200, so the error arrives as an event in the body.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("event: error", body, StringComparison.Ordinal);
+        Assert.Contains("invalid_tool_call", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("tool_use", body, StringComparison.Ordinal);
+    }
 }
