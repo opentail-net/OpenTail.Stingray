@@ -232,7 +232,13 @@ public static class InferenceEngineLoader
                 : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL"),
             MmprojPath = opts.MmprojPath,
             DSparkPlace = opts.DSparkPlace,
-            DSparkRequired = true,   // the server never silently drops a configured head
+            // The server never silently drops a configured head: required only when one is configured. Required
+            // unconditionally, the planner refused every request ("--spec-type dspark requires --dspark-model").
+            // Local investigation only: the same diagnostic switch that bypasses the text-generation allowlist also lets the
+            // planner execute an un-admitted architecture. Never set in a served or production context.
+            AllowUnverifiedArchitecture = Environment.GetEnvironmentVariable("STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH") == "1",
+            DSparkRequired = !string.IsNullOrWhiteSpace(opts.DSparkModelPath)
+                || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL")),
             CpuMoe = opts.CpuMoe,
             GpuMoePrefill = opts.GpuMoePrefill,
             MoeWarmPin = opts.MoeWarmPin,

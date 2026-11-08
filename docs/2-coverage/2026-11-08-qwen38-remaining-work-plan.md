@@ -266,7 +266,7 @@ Runnable now. Test cases only, no new disk or implementation.
 ## Phase 6. Tool calls
 
 - [x] Server wiring (D3, 12e961a2; streaming output stopped after an invalid call in 78579880): the validator runs on all four paths (OpenAI and Anthropic, streaming and non-streaming). Tests: `ToolCallValidationEndpointTests` (10): OpenAI non-streaming invalid and valid; OpenAI streaming invalid, invalid then text, invalid then valid; Anthropic non-streaming undeclared tool and missing required argument; Anthropic streaming undeclared tool, invalid then text, invalid then valid. Not covered: an argument type mismatch on Anthropic (only missing required and undeclared tool are tested). Server fast suite: 691 passed, 2 skipped.
-- [ ] Round trip through the server tool pipeline. Waits on admission (rule 14).
+- [ ] Round trip through the server tool pipeline. Waits on admission (rule 14). **Model side verified 2026-11-08** (`Qwen4ExpToolCallModelTests`, real trunk, greedy, 161-token tool prompt): the model wrote `<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>`, which the adapter (`ToolCallAdapterRegistry`, qwen2) parses and `ToolCallArgumentValidator` accepts against the declared schema. **Server side open:** the server cannot load qwen4exp yet, because the descriptor has no `CreateForwardPass` factory, and the server needs an engine adapter for that forward pass (estimate 1-2 hours). Diagnostic-only changes made for this (each gated on `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH=1` or documented as such): the server loader honours the diagnostic switch for the planner, and `ArchitectureDescriptor.IsUsable` accepts an un-admitted descriptor under it. Admission status unchanged.
 
 ## Phase 7. Serving and product
 

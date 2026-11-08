@@ -186,7 +186,9 @@ public sealed class ArchitectureDescriptor
     {
         AdmissionStatus.Admitted => true,
         AdmissionStatus.Experimental => Environment.GetEnvironmentVariable(ExperimentalEnvVar ?? "") == "1",
-        _ => false,
+        // Local investigation only: the diagnostic switch that bypasses the text-generation allowlist also runs an
+        // un-admitted descriptor. The admission status itself is unchanged. Never set in a served context.
+        _ => Environment.GetEnvironmentVariable("STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH") == "1",
     };
 
     public string GetRefusalMessage(string architecture) => Status switch
