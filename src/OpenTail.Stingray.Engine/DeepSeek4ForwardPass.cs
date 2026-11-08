@@ -132,6 +132,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
                     "See docs/2-coverage/058-deepseek-full-lineage-implementation-plan.md Phase 0.");
             }
             _compressRatio[il] = ratio;
+            RequireCompressorTensors(il, ratio, _tensors.Layers[il]);
         }
 
         _kvCache = new List<float[]>[_numLayer];
@@ -157,7 +158,39 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         VocabSize = (int)_tensors.Output.Info.Dimensions[1];
     }
 
+    // DeepSeek4TensorSet.Load resolves compressor and indexer tensors as null when a checkpoint lacks
+    // them, because it does not yet know the trunk/MTP layout. A layer whose compress ratio needs them
+    // must have them here; otherwise the first token would fail with a bare null dereference.
+    private static void RequireCompressorTensors(int il, int ratio, DeepSeek4LayerTensors layer)
+    {
+        if (ratio == 0) return;
+        RequireTensor(il, layer.AttnCompWkv, $"blk.{il}.attn_compressor_kv.weight");
+        RequireTensor(il, layer.AttnCompWgate, $"blk.{il}.attn_compressor_gate.weight");
+        RequireTensor(il, layer.AttnCompApe, $"blk.{il}.attn_compressor_ape.weight");
+        RequireTensor(il, layer.AttnCompNorm, $"blk.{il}.attn_compressor_norm.weight");
+        if (ratio != 4) return;
+        RequireTensor(il, layer.IndexerCompWkv, $"blk.{il}.indexer_compressor_kv.weight");
+        RequireTensor(il, layer.IndexerCompWgate, $"blk.{il}.indexer_compressor_gate.weight");
+        RequireTensor(il, layer.IndexerCompApe, $"blk.{il}.indexer_compressor_ape.weight");
+        RequireTensor(il, layer.IndexerCompNorm, $"blk.{il}.indexer_compressor_norm.weight");
+        RequireTensor(il, layer.IndexerProj, $"blk.{il}.indexer.proj.weight");
+        RequireTensor(il, layer.IndexerAttnQB, $"blk.{il}.indexer.attn_q_b.weight");
+    }
+
+    private static void RequireTensor(int il, DeepSeek4TensorRef? tensor, string name)
+    {
+        if (tensor is null)
+        {
+            throw new InvalidOperationException(
+                $"deepseek4: layer {il} has a non-zero compress_ratio but the checkpoint has no {name}.");
+        }
+    }
+
     public int VocabSize { get; private set; }
+
+    /// <summary>Read-only view of the CSA, HCA and LID compressed streams built so far (diagnostics and tests).</summary>
+    public DeepSeek4CompressedState CompressedState => _compressedState;
+
     public int MaxSeqLen => 1 << 20; // no structural limit in this simplified cache; not tuned.
 
     public ReadOnlySpan<float> Forward(int token, int position)

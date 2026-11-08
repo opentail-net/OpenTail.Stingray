@@ -7,8 +7,28 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
+// Synthetic deepseek4 models: tiny dimensions, deterministic weights, no checkpoint.
+// These check that every attention variant runs and builds its compressed streams. They are not a
+// numeric oracle: the CSA overlap and indexer selection still need the b10306 comparison (plan Phase 2).
 public sealed class DeepSeek4SyntheticTests : IDisposable
 {
+    private const int EmbedDim = 32;
+    private const int NumHeads = 2;
+    private const int HeadDim = 16;
+    private const int RopeDim = 8;
+    private const int QLoraRank = 16;
+    private const int OutLoraRank = 16;
+    private const int OutGroupCount = 2;
+    private const int NumExperts = 4;
+    private const int NumExpertsUsed = 2;
+    private const int ExpertFfn = 16;
+    private const int VocabSize = 32;
+    private const int HcMult = 4;
+    private const int HcMixDim = (2 + HcMult) * HcMult; // 24
+    private const int IndexerNumHeads = 2;
+    private const int IndexerHeadSize = 8;
+    private const int IndexerTopK = 2;
+
     private readonly List<string> _tempFiles = [];
 
     public void Dispose()
@@ -22,19 +42,105 @@ public sealed class DeepSeek4SyntheticTests : IDisposable
     [Fact]
     public void DeepSeek4_SyntheticForwardPass_ExecutesWithMhcAndGroupedOutput()
     {
-        const int embedDim = 32;
-        const int numHeads = 2;
-        const int headDim = 16;
-        const int ropeDim = 8;
-        const int qLoraRank = 16;
-        const int outLoraRank = 16;
-        const int outGroupCount = 2;
-        const int numExperts = 4;
-        const int numExpertsUsed = 2;
-        const int expertFfn = 16;
-        const int vocabSize = 32;
-        const int numLayers = 2;
+        // Two raw (ratio 0) layers: the baseline that the compressed variants are compared with.
+        string path = WriteSyntheticModel([0, 0]);
+        using var model = GgufModel.Open(path);
+        var forwardPass = new DeepSeek4ForwardPass(model, HyperparamsFor(model, 2));
+        Assert.Equal(VocabSize, forwardPass.VocabSize);
 
+        AssertFinite(forwardPass.Forward(token: 5, position: 0));
+        AssertFinite(forwardPass.Forward(token: 9, position: 1));
+    }
+
+    [Fact]
+    public void DeepSeek4_CsaAndHcaLayers_BuildTheirCompressedStreams()
+    {
+        // Layer 0 is CSA (ratio 4), layer 1 is HCA (ratio 128). After 130 tokens, CSA has finalised
+        // floor(130 / 4) = 32 blocks and HCA has finalised floor(130 / 128) = 1 block.
+        string path = WriteSyntheticModel([4, 128]);
+        using var model = GgufModel.Open(path);
+        var forwardPass = new DeepSeek4ForwardPass(model, HyperparamsFor(model, 2));
+
+        for (int pos = 0; pos < 130; pos++)
+        {
+            AssertFinite(forwardPass.Forward(token: pos % VocabSize, position: pos));
+        }
+
+        Assert.Equal(32, forwardPass.CompressedState.Csa(0)!.BlockCount);
+        Assert.Equal(1, forwardPass.CompressedState.Hca(1)!.BlockCount);
+    }
+
+    [Fact]
+    public void DeepSeek4_CompressedAttention_ChangesTheOutputOnlyOnceABlockExists()
+    {
+        // Same weights for both models; only the attention variant differs. CSA (ratio 4) finalises
+        // its first block at position 3, so for positions 0 to 2 both models attend over raw keys only
+        // and must agree exactly. From position 3 on, the compressed key must change the logits.
+        float[][] compressed = LogitsPerPosition([4, 128], 4);
+        float[][] raw = LogitsPerPosition([0, 0], 4);
+
+        for (int p = 0; p < 3; p++)
+        {
+            Assert.True(compressed[p].AsSpan().SequenceEqual(raw[p]), $"position {p} differs before any compressed block exists.");
+        }
+
+        float scale = 0f;
+        foreach (var l in raw[3]) scale = MathF.Max(scale, MathF.Abs(l));
+        float maxDiff = 0f;
+        for (int i = 0; i < raw[3].Length; i++)
+        {
+            maxDiff = MathF.Max(maxDiff, MathF.Abs(compressed[3][i] - raw[3][i]));
+        }
+        // Measured 2026-11-08: max diff 3.66e-7 on a logit scale of 1.0e-3 (relative 3.7e-4). The
+        // threshold is 1e-4 relative, well above float32 noise and below the measured value.
+        Assert.True(maxDiff > 1e-4f * scale, $"compressed and raw logits differ by only {maxDiff} at position 3 (scale {scale}); the compressed key had no effect.");
+    }
+
+    [Fact]
+    public void DeepSeek4_CsaLayerWithoutItsCompressor_IsRefusedAtConstruction()
+    {
+        // The checkpoint declares a CSA layer but omits its compressor: refuse with the tensor's name,
+        // not with a null dereference on the first token.
+        string path = WriteSyntheticModel([4, 128], omit: ["blk.0.attn_compressor_kv.weight"]);
+        using var model = GgufModel.Open(path);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => new DeepSeek4ForwardPass(model, HyperparamsFor(model, 2)));
+        Assert.Contains("blk.0.attn_compressor_kv.weight", ex.Message, StringComparison.Ordinal);
+    }
+
+    private float[][] LogitsPerPosition(int[] ratios, int tokens)
+    {
+        string path = WriteSyntheticModel(ratios);
+        using var model = GgufModel.Open(path);
+        var forwardPass = new DeepSeek4ForwardPass(model, HyperparamsFor(model, ratios.Length));
+        var result = new float[tokens][];
+        for (int pos = 0; pos < tokens; pos++)
+        {
+            result[pos] = forwardPass.Forward(token: pos % VocabSize, position: pos).ToArray();
+            AssertFinite(result[pos]);
+        }
+        return result;
+    }
+
+    private static DeepSeek4Hyperparams HyperparamsFor(GgufModel model, int numLayers) =>
+        DeepSeek4Hyperparams.FromGgufMetadata(
+            model.Metadata, "deepseek4", numLayerAll: numLayers, embedDim: EmbedDim, numHeads: NumHeads,
+            headDim: HeadDim, ropeDim: RopeDim, numExperts: NumExperts, numExpertsUsed: NumExpertsUsed);
+
+    private static void AssertFinite(ReadOnlySpan<float> logits)
+    {
+        Assert.Equal(VocabSize, logits.Length);
+        foreach (var l in logits)
+        {
+            Assert.False(float.IsNaN(l));
+            Assert.False(float.IsInfinity(l));
+        }
+    }
+
+    // Writes a synthetic GGUF with one layer per compress ratio and returns its path (removed on Dispose).
+    private string WriteSyntheticModel(int[] compressRatios, string[]? omit = null)
+    {
+        int numLayers = compressRatios.Length;
         string path = Path.Combine(Path.GetTempPath(), $"deepseek4_synthetic_{Guid.NewGuid():N}.gguf");
         _tempFiles.Add(path);
 
@@ -42,6 +148,7 @@ public sealed class DeepSeek4SyntheticTests : IDisposable
 
         void AddTensor(string name, long[] shape, float fill = 0.05f)
         {
+            if (omit is not null && Array.IndexOf(omit, name) >= 0) return;
             long total = 1;
             foreach (var s in shape) total *= s;
             var floats = new float[total];
@@ -51,94 +158,95 @@ public sealed class DeepSeek4SyntheticTests : IDisposable
             tensors[name] = (shape, DType.Float32, bytes);
         }
 
-        const int hcMult = 4;
-        const int hcMixDim = (2 + hcMult) * hcMult; // 24
-
-        AddTensor("token_embd.weight", [embedDim, vocabSize]);
-        AddTensor("output_norm.weight", [embedDim]);
-        AddTensor("output.weight", [embedDim, vocabSize]);
-        AddTensor("output_hc_fn.weight", [hcMult * embedDim, hcMult]);
-        AddTensor("output_hc_base.weight", [hcMult]);
+        AddTensor("token_embd.weight", [EmbedDim, VocabSize]);
+        AddTensor("output_norm.weight", [EmbedDim]);
+        AddTensor("output.weight", [EmbedDim, VocabSize]);
+        AddTensor("output_hc_fn.weight", [HcMult * EmbedDim, HcMult]);
+        AddTensor("output_hc_base.weight", [HcMult]);
         AddTensor("output_hc_scale.weight", [1]);
 
         for (int i = 0; i < numLayers; i++)
         {
-            AddTensor($"blk.{i}.attn_norm.weight", [embedDim]);
-            AddTensor($"blk.{i}.ffn_norm.weight", [embedDim]);
+            AddTensor($"blk.{i}.attn_norm.weight", [EmbedDim]);
+            AddTensor($"blk.{i}.ffn_norm.weight", [EmbedDim]);
 
             // HyperConnection tensors
-            AddTensor($"blk.{i}.hc_attn_fn.weight", [hcMult * embedDim, hcMixDim]);
-            AddTensor($"blk.{i}.hc_attn_base.weight", [hcMixDim]);
+            AddTensor($"blk.{i}.hc_attn_fn.weight", [HcMult * EmbedDim, HcMixDim]);
+            AddTensor($"blk.{i}.hc_attn_base.weight", [HcMixDim]);
             AddTensor($"blk.{i}.hc_attn_scale.weight", [3]);
-            AddTensor($"blk.{i}.hc_ffn_fn.weight", [hcMult * embedDim, hcMixDim]);
-            AddTensor($"blk.{i}.hc_ffn_base.weight", [hcMixDim]);
+            AddTensor($"blk.{i}.hc_ffn_fn.weight", [HcMult * EmbedDim, HcMixDim]);
+            AddTensor($"blk.{i}.hc_ffn_base.weight", [HcMixDim]);
             AddTensor($"blk.{i}.hc_ffn_scale.weight", [3]);
 
             // Attention tensors
-            AddTensor($"blk.{i}.attn_q_a.weight", [embedDim, qLoraRank]);
-            AddTensor($"blk.{i}.attn_q_a_norm.weight", [qLoraRank]);
-            AddTensor($"blk.{i}.attn_q_b.weight", [qLoraRank, numHeads * headDim]);
-            AddTensor($"blk.{i}.attn_kv.weight", [embedDim, headDim]);
-            AddTensor($"blk.{i}.attn_kv_a_norm.weight", [headDim]);
-            AddTensor($"blk.{i}.attn_output_a.weight", [numHeads * headDim, outLoraRank]);
-            AddTensor($"blk.{i}.attn_output_b.weight", [outLoraRank, embedDim]);
+            AddTensor($"blk.{i}.attn_q_a.weight", [EmbedDim, QLoraRank]);
+            AddTensor($"blk.{i}.attn_q_a_norm.weight", [QLoraRank]);
+            AddTensor($"blk.{i}.attn_q_b.weight", [QLoraRank, NumHeads * HeadDim]);
+            AddTensor($"blk.{i}.attn_kv.weight", [EmbedDim, HeadDim]);
+            AddTensor($"blk.{i}.attn_kv_a_norm.weight", [HeadDim]);
+            AddTensor($"blk.{i}.attn_output_a.weight", [NumHeads * HeadDim, OutLoraRank]);
+            AddTensor($"blk.{i}.attn_output_b.weight", [OutLoraRank, EmbedDim]);
 
             // MoE tensors
-            AddTensor($"blk.{i}.ffn_gate_inp.weight", [embedDim, numExperts]);
-            AddTensor($"blk.{i}.ffn_gate_exps.weight", [embedDim, expertFfn, numExperts]);
-            AddTensor($"blk.{i}.ffn_up_exps.weight", [embedDim, expertFfn, numExperts]);
-            AddTensor($"blk.{i}.ffn_down_exps.weight", [expertFfn, embedDim, numExperts]);
-            AddTensor($"blk.{i}.ffn_gate_shexp.weight", [embedDim, expertFfn]);
-            AddTensor($"blk.{i}.ffn_up_shexp.weight", [embedDim, expertFfn]);
-            AddTensor($"blk.{i}.ffn_down_shexp.weight", [expertFfn, embedDim]);
+            AddTensor($"blk.{i}.ffn_gate_inp.weight", [EmbedDim, NumExperts]);
+            AddTensor($"blk.{i}.ffn_gate_exps.weight", [EmbedDim, ExpertFfn, NumExperts]);
+            AddTensor($"blk.{i}.ffn_up_exps.weight", [EmbedDim, ExpertFfn, NumExperts]);
+            AddTensor($"blk.{i}.ffn_down_exps.weight", [ExpertFfn, EmbedDim, NumExperts]);
+            AddTensor($"blk.{i}.ffn_gate_shexp.weight", [EmbedDim, ExpertFfn]);
+            AddTensor($"blk.{i}.ffn_up_shexp.weight", [EmbedDim, ExpertFfn]);
+            AddTensor($"blk.{i}.ffn_down_shexp.weight", [ExpertFfn, EmbedDim]);
+
+            // Compressor tensors for a non-zero ratio: CSA (4) overlaps, so its width is 2 * headDim;
+            // HCA (128) is 1 * headDim. The APE table has one row per position in a block.
+            int ratio = compressRatios[i];
+            if (ratio != 0)
+            {
+                int coff = ratio == 4 ? 2 * HeadDim : HeadDim;
+                AddTensor($"blk.{i}.attn_compressor_kv.weight", [EmbedDim, coff]);
+                AddTensor($"blk.{i}.attn_compressor_gate.weight", [EmbedDim, coff]);
+                AddTensor($"blk.{i}.attn_compressor_ape.weight", [coff, ratio]);
+                AddTensor($"blk.{i}.attn_compressor_norm.weight", [HeadDim]);
+            }
+
+            // CSA also has the lightning indexer, whose compressor is overlapped like CSA's.
+            if (ratio == 4)
+            {
+                AddTensor($"blk.{i}.indexer_compressor_kv.weight", [EmbedDim, 2 * IndexerHeadSize]);
+                AddTensor($"blk.{i}.indexer_compressor_gate.weight", [EmbedDim, 2 * IndexerHeadSize]);
+                AddTensor($"blk.{i}.indexer_compressor_ape.weight", [2 * IndexerHeadSize, ratio]);
+                AddTensor($"blk.{i}.indexer_compressor_norm.weight", [IndexerHeadSize]);
+                AddTensor($"blk.{i}.indexer.proj.weight", [EmbedDim, IndexerNumHeads]);
+                AddTensor($"blk.{i}.indexer.attn_q_b.weight", [QLoraRank, IndexerNumHeads * IndexerHeadSize]);
+            }
         }
+
+        var ratiosMeta = new object[compressRatios.Length];
+        for (int i = 0; i < compressRatios.Length; i++) ratiosMeta[i] = (ulong)compressRatios[i];
 
         var metadata = new Dictionary<string, object>
         {
             ["general.architecture"] = "deepseek4",
             ["deepseek4.block_count"] = (ulong)numLayers,
             ["deepseek4.nextn_predict_layers"] = (ulong)0,
-            ["deepseek4.embedding_length"] = (ulong)embedDim,
-            ["deepseek4.attention.head_count"] = (ulong)numHeads,
-            ["deepseek4.attention.key_length"] = (ulong)headDim,
-            ["deepseek4.rope.dimension_count"] = (ulong)ropeDim,
-            ["deepseek4.attention.q_lora_rank"] = (ulong)qLoraRank,
-            ["deepseek4.attention.output_lora_rank"] = (ulong)outLoraRank,
-            ["deepseek4.attention.output_group_count"] = (ulong)outGroupCount,
-            ["deepseek4.expert_count"] = (ulong)numExperts,
-            ["deepseek4.expert_used_count"] = (ulong)numExpertsUsed,
+            ["deepseek4.embedding_length"] = (ulong)EmbedDim,
+            ["deepseek4.attention.head_count"] = (ulong)NumHeads,
+            ["deepseek4.attention.key_length"] = (ulong)HeadDim,
+            ["deepseek4.rope.dimension_count"] = (ulong)RopeDim,
+            ["deepseek4.attention.q_lora_rank"] = (ulong)QLoraRank,
+            ["deepseek4.attention.output_lora_rank"] = (ulong)OutLoraRank,
+            ["deepseek4.attention.output_group_count"] = (ulong)OutGroupCount,
+            ["deepseek4.expert_count"] = (ulong)NumExperts,
+            ["deepseek4.expert_used_count"] = (ulong)NumExpertsUsed,
             ["deepseek4.expert_weights_scale"] = 1.0f,
             ["deepseek4.expert_weights_norm"] = true,
-            ["deepseek4.attention.compress_ratios"] = new object[] { 0UL, 0UL },
+            ["deepseek4.attention.compress_ratios"] = ratiosMeta,
+            ["deepseek4.attention.indexer.head_count"] = (ulong)IndexerNumHeads,
+            ["deepseek4.attention.indexer.key_length"] = (ulong)IndexerHeadSize,
+            ["deepseek4.attention.indexer.top_k"] = (ulong)IndexerTopK,
         };
 
         WriteGgufFile(path, metadata, tensors);
-
-        using var model = GgufModel.Open(path);
-        var hp = DeepSeek4Hyperparams.FromGgufMetadata(
-            model.Metadata, "deepseek4", numLayerAll: numLayers, embedDim: embedDim, numHeads: numHeads,
-            headDim: headDim, ropeDim: ropeDim, numExperts: numExperts, numExpertsUsed: numExpertsUsed);
-
-        var forwardPass = new DeepSeek4ForwardPass(model, hp);
-        Assert.Equal(vocabSize, forwardPass.VocabSize);
-
-        // Step 0 forward pass
-        var logits0 = forwardPass.Forward(token: 5, position: 0);
-        Assert.Equal(vocabSize, logits0.Length);
-        foreach (var l in logits0)
-        {
-            Assert.False(float.IsNaN(l));
-            Assert.False(float.IsInfinity(l));
-        }
-
-        // Step 1 forward pass
-        var logits1 = forwardPass.Forward(token: 9, position: 1);
-        Assert.Equal(vocabSize, logits1.Length);
-        foreach (var l in logits1)
-        {
-            Assert.False(float.IsNaN(l));
-            Assert.False(float.IsInfinity(l));
-        }
+        return path;
     }
 
     private static void WriteGgufFile(

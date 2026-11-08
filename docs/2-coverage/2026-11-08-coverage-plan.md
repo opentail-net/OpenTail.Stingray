@@ -14,6 +14,7 @@ Status 2026-11-08. This is the one plan for model coverage: what to do next for 
 - **Next step:** (1) add the synthetic specification test with non-zero `compress_ratios`, against the reference's attention. (2) Only then the paged real-weight run, correctness only, on the checkpoint on disk.
 - **Done when:** the synthetic test passes against the reference, and the paged run either matches a recorded reference output or names the first divergent step.
 - **Owner doc:** [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md). Rule 14 applies until verified.
+- **Status 2026-11-08 (step 1 partly done):** the synthetic test with non-zero ratios is in (`DeepSeek4SyntheticTests`, 4 tests, all passing). It checks CSA and HCA block counts and that the compressed key changes the logits. It also found a real gap: a CSA layer without its compressor tensors crashed on the first token. The constructor now refuses that with the tensor's name. Still open: the comparison against the b10306 reference, which the "done when" line requires. The paged real-weight run is not started.
 
 ### A2. DiffusionGemma: the enc_layer_output_scale question
 

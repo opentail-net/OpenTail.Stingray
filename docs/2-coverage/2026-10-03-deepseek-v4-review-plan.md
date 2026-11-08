@@ -58,9 +58,9 @@ This plan governs the review of existing V4 alpha code and the architectural def
 ## Existing V4 Alpha Status in Stingray
 
 Per plan [058](../reference/058-deepseek-full-lineage-implementation-plan.md), Stingray's existing `DeepSeek4ForwardPass.cs` has:
-- **Implemented**: Raw attention, HCA (ratio 128), basic mHC Sinkhorn, MoE routing, indexer scoring.
+- **Implemented**: Raw attention, HCA (ratio 128), CSA (ratio 4, overlap compressor and lightning indexer; checked 2026-11-08 in `DeepSeek4ForwardPass.cs`), basic mHC Sinkhorn, MoE routing, indexer scoring. The earlier "CSA unimplemented" note was stale.
 - **Gaps & Uncertainties to Resolve**:
-  - CSA (ratio 4) is currently unimplemented.
+  - CSA (ratio 4) is implemented but not numerically verified (overlap boundaries and indexer top-k are hypotheses until the b10306 comparison).
   - Grouped output LoRA (8 groups) is unverified.
   - `rope_ext_back` semantics need alignment with `deepseek4.cpp`.
   - Non-rewindable compressed state must be upgraded to support standard cache rewind/decode.
@@ -81,8 +81,12 @@ Tests: `DeepSeek4AlphaTests` / `DeepSeek41AlphaTests` (component and metadata ch
 - [~] **Phase 1: Resolve V4 alpha uncertainties.** CSA ratio 4 and the 8-group output LoRA are in the code. Unverified:
   CSA overlap boundaries, indexer top-k selection, `rope_ext_back`, mHC equations, and the grouped-LoRA pointer arithmetic on
   quantised dtypes (offsets assume a dense stride).
-- [ ] **Phase 2: V4 synthetic specification test.** The one synthetic test uses `compress_ratios = [0, 0]` and 2 output
-  groups: **CSA is not exercised at all**. The planned tiny `deepseek4` GGUF against vendored llama.cpp b10306 was never run.
+- [~] **Phase 2: V4 synthetic specification test.** 2026-11-08: `DeepSeek4SyntheticTests` now runs CSA (ratio 4) and HCA
+  (ratio 128) layers. After 130 tokens, CSA has 32 blocks and HCA has 1. Before the first CSA block (position 3) the model
+  matches the raw-only model exactly. From position 3 it differs (max diff 3.66e-7 on a logit scale of 1.0e-3). A CSA layer
+  whose compressor or indexer tensors are missing is refused at construction, naming the tensor; before this, it crashed on
+  the first token with a null dereference. Still open: the planned tiny `deepseek4` GGUF against vendored llama.cpp b10306
+  (a numeric oracle). These tests check structure and behaviour, not values.
 - [~] **Phase 3: V4 gate & audit record.** Gate [x] (`// deepseek4 - NOT admitted`). Plan 058's audit notes not updated.
 
 ### Part 2: DeepSeek-V4.1 Architecture Definition & Core Port
