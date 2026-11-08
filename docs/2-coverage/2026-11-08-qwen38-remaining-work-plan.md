@@ -19,7 +19,11 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 - [x] **D2. Allow building the unsloth fork `mtp/qwen4exp-nextn` as a local reference** (third-party code, not in this repo).
       APPROVED by the owner on 2026-11-08 ("yes"). Local build only; nothing from the fork is committed or published.
       The classifier had denied this earlier the same day. Unblocks: Phase 4 per-step oracle.
-- [ ] **D3. Decide whether the server acts on tool-argument validator failures** (reject, return error, or pass through).
+- [x] **D3. Decide whether the server acts on tool-argument validator failures** (reject, return error, or pass through).
+      DECIDED by the owner 2026-11-08: return as errors. Done for the OpenAI NON-STREAMING path: `ToolCallValidation`
+      checks parsed calls against the request's declared tools (undeclared tool or schema failure), and the endpoint
+      returns HTTP 422 with `invalid_tool_call`. Server fast suite: 681 passed, 0 failed, 2 skipped. Still open under D3:
+      the OpenAI streaming path and the Anthropic endpoint are not validated yet. No direct test of the 422 path yet.
       Blocks: Phase 6 server wiring and the server round trip.
 - [ ] **D4. Approve admission** (Phase 8). Needs Phases 0-7 closed or explicitly waived.
       2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met (Phase 0.3 open, the image step-1
@@ -115,7 +119,9 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 4. MTP speculative decoding
 
-- [ ] **Per-step oracle against the reference.** Blocked: the pinned llama.cpp `bed0a8566` has a stub embedding-state
+- [ ] **Per-step oracle against the reference.** 2026-11-08: owner approved the fork build (D2). Fork driver
+      `llama-mtp-check.exe` (Debug) run on the saved hand-off: it exits with code 139 (segfault) during graph reservation,
+      after the recurrent memory is allocated, and writes no reference logits. Still blocked by the fork crash. Blocked: the pinned llama.cpp `bed0a8566` has a stub embedding-state
       setter, so the MTP context cannot receive the trunk state. Next oracle is the unsloth fork (see D2). Also
       recorded: fork builds crash on the head's null recurrent memory (`build_rs_inp_impl`) and fork `llama-server`
       with `-md` segfaults during draft setup.

@@ -428,14 +428,14 @@ public static class OpenAiEndpoints
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true, stops);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true, stops, req.Tools);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
         bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
-        bool includeTiming = false, string[]? stops = null)
+        bool includeTiming = false, string[]? stops = null, OaiTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -510,6 +510,17 @@ public static class OpenAiEndpoints
             // structured calls. Surfaces raw text identically to the pre-tools behaviour.
             plainText = rawText;
             parsedCalls = [];
+        }
+
+        if (parsedCalls.Count > 0 && ToolCallValidation.Errors(parsedCalls, declaredTools) is { Count: > 0 } errors)
+        {
+            // Owner decision D3: an invalid call is an error, not a tool call.
+            ctx.Response.StatusCode = 422;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("invalid_tool_call", string.Join("; ", errors)),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+            return;
         }
 
         OaiToolCall[]? toolCalls = null;
