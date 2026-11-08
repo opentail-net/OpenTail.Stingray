@@ -660,7 +660,7 @@ run). Tests: `Qwen4ExpToolCallParseTests` (Tests.Core), 15 cases, all pass. `Too
 | Streaming fragments | Done for the reasoning split; the tool-call scan is text-only, by design | `StreamingPrefixes_NeverYieldACallTheFullOutputDoesNotHave` (non-streaming parse of every prefix). `ContinuousBatchingThinkingSplitTests` (2, synthetic, batching engine): a call quoted inside a think block streams as `Thinking`, and the same call after `</think>` streams as `Text`. The server's `ProcessTextChunk` (OpenAiEndpoints, AnthropicEndpoints) only scans `Text` chunks, so the reasoning split happens before the tool-call scan. **Limit:** the engine splits on the think token IDs (`RuntimeInstance` takes them from `tokenizer.ReasoningTokens`); a model whose think markers are plain text, not special tokens, gets no split, so a quoted call would stream as text. The Qwen tokenizer's `<think>`/`</think>` are special tokens, but I have not confirmed that against the real Qwen 3.8 vocabulary, because qwen4exp is not loaded through the server |
 | Finish reasons | Done in the server, not re-tested here | `OpenAiEndpoints` maps a truncated call to `finish_reason: length` through `Parse(...).Truncated` |
 | IDs | Server-assigned, not model-assigned | `OpenAiEndpoints` sets `call_<guid>` for each call. The model emits no ID, so none is parsed |
-| Safety: no execution on incomplete calls, validate arguments against the schema | Partly done | Incomplete and malformed calls are not executed. **Not done:** argument validation against the tool's declared schema (no validator exists in Core; the grammar constraints are the only schema path) |
+| Safety: no execution on incomplete calls, validate arguments against the schema | Done as a library; not wired into the server | Incomplete and malformed calls are not executed. `ToolCallArgumentValidator` (Core/Grammar) checks a parsed call against its `ToolSchema`: missing required arguments, undeclared arguments (closed schemas only), type (string, number, integer, boolean, null, array items, nested objects), enum values, and the tool name. Qwen's XML text values are accepted when they read as the declared type. `ToolCallArgumentValidatorTests` (12, synthetic, all pass). **Not wired:** the server returns parsed calls to the client without validating them. Changing that is a product decision (drop, flag or error), so it is left to the owner |
 | Round trip through the server tool pipeline | **Not done** | qwen4exp is not admitted (CLAUDE.md rule 14), so the server cannot load it and no real round trip can run. Waiting on admission |
 
 Registry: `qwen4exp` has no registry entry. The architecture id must not appear outside `Engine/Architectures/` (the baseline test
@@ -677,6 +677,6 @@ Full Core suite: 1347 tests, 1 failure before the inventory count fix (the failu
 After the fix, the failing class passes; the rest of the suite ran clean in the same run (1346 passing, 95 skipped for missing
 fixtures). Not re-run in full after the count fix; the count test is the only test that reads the doc.
 
-Still open for Phase 6: argument schema validation, and the server round trip (blocked on admission). The streaming reasoning
-split is covered at the engine level (see the table); its one limit is stated there. Qwen 3.8 is still not admitted or
-advertised.
+Still open for Phase 6: the server round trip (blocked on admission), and whether the server should act on the validator's
+result (an owner decision; the validator exists, the server does not call it). The streaming reasoning split is covered at
+the engine level (see the table); its one limit is stated there. Qwen 3.8 is still not admitted or advertised.
