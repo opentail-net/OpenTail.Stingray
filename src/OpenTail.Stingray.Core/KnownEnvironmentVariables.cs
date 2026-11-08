@@ -115,6 +115,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_FA_DUMP_DIR",
         "STINGRAY_FA_READ_SHIFT",
         "STINGRAY_FA_TRACE",
+        "STINGRAY_FFMPEG",
         "STINGRAY_FLASH64_STRIDED_GEMM",
         "STINGRAY_FLUX2_DUMP_COND_PATH",
         "STINGRAY_FLUX2_DUMP_LATENT_PATH",

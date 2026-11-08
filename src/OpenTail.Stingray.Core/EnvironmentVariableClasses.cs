@@ -33,6 +33,7 @@ public static class EnvironmentVariableClasses
         ["STINGRAY_FA_DUMP_DIR"] = "diagnostic",
         ["STINGRAY_FA_READ_SHIFT"] = "diagnostic",
         ["STINGRAY_FA_TRACE"] = "diagnostic",
+        ["STINGRAY_FFMPEG"] = "expert",
         ["STINGRAY_FORCEDALIGNER_PERF"] = "diagnostic",
         ["STINGRAY_FORCEDALIGNER_TRACE"] = "diagnostic",
         ["STINGRAY_QWENASR_DIAG"] = "diagnostic",

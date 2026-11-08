@@ -1,5 +1,8 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-07)
 
+**Reconciled again 2026-11-08, later — `KnownEnvironmentVariables.All` now contains **296** names**
+(added `STINGRAY_FFMPEG`: the operator-installed ffmpeg executable that `FfmpegVideoFrameSource` runs for video frames, read before PATH; classified expert. It was read in `src/` but unlisted, which failed `ListMatchesSource` in CI.)
+
 **Reconciled again 2026-11-08 — `KnownEnvironmentVariables.All` now contains **295** names**
 (added the five Qwen4Exp switches that were read in source but unlisted since 01369e35 and 563ec1b4: `STINGRAY_Q4E_DUMP_DIR`, `STINGRAY_Q4E_DUMP_POS`, `STINGRAY_Q4E_PERTURB_EPS` as diagnostic; `STINGRAY_Q4E_SSMOUT_F32`, `STINGRAY_Q4E_EXPERT_F32` as experimental. The count was 290 before, after `STINGRAY_Q4E_DEBUG` on 2026-11-07.)
 
@@ -193,6 +196,7 @@ dynamically composed names.
 | `STINGRAY_DUMP_STAGE0_PATH` | diagnostic | Path. The HiFT vocoder writes the stage-0 tensor of its first iteration there (parity debugging against the reference). |
 | `STINGRAY_FA_DUMP_DIR` | diagnostic | Directory. The Qwen ASR audio encoder and forced aligner write intermediate tensors there (mel, conv-position and transformer outputs) for parity debugging. |
 | `STINGRAY_FA_READ_SHIFT` | diagnostic | Integer (default 0). Shifts the position from which the forced aligner reads its timestamp class logits; an experiment handle for alignment-offset debugging. |
+| `STINGRAY_FFMPEG` | expert | Path to an operator-installed ffmpeg executable for the video frame source (`FfmpegVideoFrameSource`, Vision). Read before PATH; never bundled or downloaded. Not used by any admitted model path. |
 | `STINGRAY_FA_TRACE` | diagnostic | `=1` enables per-layer hidden-state taps and logit statistics tracing in the Qwen forced aligner (needs a forward pass that supports hidden taps). |
 | `STINGRAY_FORCEDALIGNER_PERF` | diagnostic | `=1` prints timing stages of the Qwen audio encoder used by the forced aligner (convolution stages and others) to stdout. |
 | `STINGRAY_FORCEDALIGNER_TRACE` | diagnostic | `=1` prints forced-aligner trace output; the audio encoder also treats it, like `STINGRAY_FORCEDALIGNER_PERF`, as a reason to print its stage trace. |
