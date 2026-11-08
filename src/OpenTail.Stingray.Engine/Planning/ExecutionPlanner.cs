@@ -135,9 +135,10 @@ public static class ExecutionPlanner
             unsupportedBackendName: unsupportedBackend,
             hasDSparkModel: !string.IsNullOrEmpty(request.DSparkModelPath)) with
         {
+            // DSparkRequired only says a configured head must be used. Without a head nothing is requested,
+            // matching BuildSpeculationPlan, which ignores the flag when there is no DSparkModelPath.
             DsParkRequested = !string.IsNullOrEmpty(request.DSparkModelPath)
-                || request.SpeculationMode == SpeculationMode.DSpark
-                || request.DSparkRequired,
+                || request.SpeculationMode == SpeculationMode.DSpark,
             HasMtpSpecType = model.PlanningFacts.MtpHeadGpuBytes > 0 && (request.MtpEnabled ?? true),
             SessionsRequested = request.EnableSessions,
             HasImageInput = !string.IsNullOrWhiteSpace(request.MmprojPath),

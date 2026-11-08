@@ -882,6 +882,26 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Contains(plan.Decisions, d => d.Code == "DSPARK_PLACEMENT");
     }
 
+    [Fact]
+    public void Plan_DSparkRequiredWithoutAHead_IsNotRequested()
+    {
+        // The server loader sets DSparkRequired for every load. With no head configured, nothing is requested,
+        // so the planner must not refuse the forward pass for a missing head.
+        var plan = PlanTinyModel(new ExecutionRequest { PinnedContextSize = 512, DSparkRequired = true }, vulkan: false);
+
+        Assert.False(plan.Speculation?.DSparkEnabled ?? false);
+        Assert.NotEqual(SpeculationMode.DSpark, plan.Speculation?.Mode);
+    }
+
+    [Fact]
+    public void Plan_ExplicitDSparkSpecTypeWithoutAHead_IsRefused()
+    {
+        // An explicit request for DSpark still needs a head. The refusal stays, so the user is told what is missing.
+        var ex = Assert.Throws<NotSupportedException>(() => PlanTinyModel(
+            new ExecutionRequest { PinnedContextSize = 512, SpeculationMode = SpeculationMode.DSpark }, vulkan: false));
+        Assert.Contains("--dspark-model", ex.Message);
+    }
+
     private string CreateGguf(
         Dictionary<string, (GgufValueType type, object value)> metadata,
         (string name, long[] dims, DType dtype, byte[] data)[] tensors)
