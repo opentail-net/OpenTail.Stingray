@@ -61,3 +61,19 @@ From the llama.cpp server history ([PR #10783, "server : fix logprobs, make it O
 - By default the per-token fields are `logprob` and `top_logprobs`.
 - With `post_sampling_probs` true, the same fields are renamed to `prob` and `top_probs`, and they are probabilities, not log-probabilities.
 - The golden capture must keep `post_sampling_probs` false. The golden plan's margins depend on that.
+
+## Open checks from this research
+
+- [x] DiffusionGemma config values and model-card numbers recorded (section 1), 2026-10-31
+- [x] Qwen3.8-Flash-Next UD-IQ1_S size (72.5 GB) confirmed from two sources
+- [x] Qwen1.5-MoE-A2.7B-Chat licence tag confirmed (`tongyi-qianwen-research`); read the LICENSE file before any commercial decision
+- [x] Trinity-Mini (Apache 2.0) and Phi-3.5-MoE (MIT) licences confirmed from the repo cards
+- [ ] GLM-5.3 UD-Q2_K_XL size (~236.4 GiB): not found online; Unsloth lists 239 GB for UD-IQ2_M
+- [ ] DeepSeek-V4-Flash Q2_K size: sources conflict (98.6 vs 102 vs 103 GB); no official V4-Flash GGUF confirmed
+- [ ] Hunyuan-A13B-Instruct licence: territory terms not confirmed for A13B
+- [ ] MiniMax-H3 licence text (Applicable Territory): not retrieved
+- [ ] Muse-Glimmer-30B licence: secondary sources say Apache 2.0; Hub card not fetched
+- [ ] GLM-4.5-Air licence: secondary sources say MIT; GLM-5.3 licence differs per one source, unverified
+- [ ] Llama 4 attention defaults: taken from library source (vLLM, Transformers mirror), not Meta's card; check upstream
+- [ ] llama-server logprob field names: taken from a mirror of PR #10783; re-check against the pinned llama.cpp `bed0a8566`
+- [ ] Next checks from the plan: file lists of `unsloth/GLM-5.3-GGUF`, `unsloth/DeepSeek-V4-Flash-GGUF`, `unsloth/Qwen3.8-Flash-Next-GGUF`, recorded with their licence files

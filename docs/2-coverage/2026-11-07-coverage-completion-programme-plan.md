@@ -126,17 +126,34 @@ admitted or advertised until it earns that.
 - CUDA work, new GPU requirements, vision towers, MTP/speculative drafting, batching -- all
   explicitly out per the original plan and CLAUDE.md's existing scope rules.
 
+## Checklist (state as of 2026-11-08)
+
+- [x] Phase 0: coverage baseline current (`ported-families-todo.md` + the table above)
+- [x] Phase 1, step 1: reproduce the Qwen4Exp garbled-text claim with a fixed prompt (2026-11-07; claim was real)
+- [x] Phase 1 root cause and fix: conv1d weight transpose; regression test `Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`
+- [x] Phase 1 side fix: `TruncateTo` contract violation (`TruncateTo_RejectsIntermediateLength_OnlyAcceptsZeroOrCurrent`)
+- [ ] Phase 1 broader verification: more fixed prompts, incremental decode, a prefill/decode chunk-boundary prompt, QSA K-pool exercise, documented tolerance
+- [x] Phase 2A: `glm-dsa` metadata-only real-weight check (`GlmDsaRealWeightsSmokeTests`, 2026-11-07)
+- [x] Phase 2A: indexer top_k-shortcut optimisation (output unchanged, 2026-11-07)
+- [x] Phase 2A: synthetic-correctness checklist complete 2026-11-08 (MLA absorption, DSA scoring, Hadamard rotation, sigmoid MoE weighting, shared-expert contribution); two bugs fixed, three already correct
+- [ ] Phase 2A: real-weight parity. Rescoped to hyperparameter parsing (done); full parity blocked on disk, not missing work
+- [ ] Phase 2B `glm5next`: K-pool selection gating attention reads; remove the full-attention/throw shortcut; isolated numerical tests (KDA recurrence, Sinkhorn mHC, pool construction/selection, sequence isolation). Real implementation work
+- [x] Phase 3 side fix: `deepseek4` MoE hash-routing weight and selection-bias ordering (2026-11-07/08)
+- [ ] Phase 3: implement YaRN rope scaling (factor 16) for real; remove the refusal only after verification against the pinned llama.cpp reference
+- [ ] Phase 3: exercise non-zero `compress_ratios` (first real CSA test)
+- [ ] Phase 4: candidate reassessment (report only; Muse Spark / MiniMax M3.1 / others)
+
 ## Recommended starting point
 
 ~~Phase 1, step 1 (reproduce the Qwen4Exp claim with a fixed prompt before touching any code).~~
 Done 2026-11-07 -- the claim was real, root-caused and fixed. Next cheapest items, in order, before
 taking on Phase 2B/3's real implementation work:
-1. Phase 1's remaining broader-verification checklist (more fixed prompts, a prefill/decode chunk
+- [ ] 1. Phase 1's remaining broader-verification checklist (more fixed prompts, a prefill/decode chunk
    boundary, QSA K-pool exercise, a documented tolerance) -- no new disk or implementation, just
    more test cases against the checkpoint already on disk.
-2. Phase 2A's remaining synthetic-level correctness checklist (MLA absorption, indexer scoring,
+- [x] 2. Phase 2A's remaining synthetic-level correctness checklist (MLA absorption, indexer scoring,
    Hadamard rotation, sigmoid MoE routing, shared-expert contribution against the llama.cpp source) --
-   also no new disk.
-3. Phase 2B (`glm5next` K-pool) or Phase 3 (`deepseek4` YaRN) only after 1-2, since both are real
+   done 2026-11-08 (see Checklist above).
+- [ ] 3. Phase 2B (`glm5next` K-pool) or Phase 3 (`deepseek4` YaRN) only after 1-2, since both are real
    algorithm work, not verification, and should be sized and started deliberately rather than picked
    up as a side effect of something else.
