@@ -111,7 +111,21 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 5. Image and video input
 
-- [ ] Logit-level comparison with the reference (not only text).
+- [ ] Logit-level comparison with the reference (not only text). Partly done 2026-11-08 (two attempts):
+      - Attempt 1 is invalid and is not a result: the Stingray prompt ended with the empty think block, but the
+        reference's generation prompt does not (its step-0 top token is `<think>` 248068, Stingray's was 760 "The").
+      - Attempt 2 uses the same prompt (13 tokens after the image; `QWEN_IMAGE_NO_THINK_BLOCK=1`, reference
+        `llama-mtmd-cli` with per-step full-logit dumps, a local diagnostic patch that is reverted).
+      - Step 0 (valid): same top-1 (248068 `<think>`), same top-5 set and order, total variation about 0.
+      - Step 1 (valid, same context): top-1 differs. The reference picks 271 (p 0.660); Stingray picks 198 (p 0.518,
+        271 at p 0.482). TV distance 0.178; the logit of 271 differs by 0.81. This is far outside the Phase 0.2
+        noise envelope (about 0.03 nats), so it is a real discrepancy on the image path.
+      - Steps 2 onward compare different contexts (the greedy paths split at step 1) and are not reported.
+      - The text match recorded above used the think-block prompt, which is not the reference's prompt, so it was
+        not like-for-like.
+      - Open: cause not isolated. Candidates: the decode step after the image chunk (the QSA cache rows appended by
+        `ForwardImageChunk` versus `QsaAppend`), or the text positions after the image (Stingray uses 11). Next:
+        compare per-layer values at step 1 with the reference's eval-callback.
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. Untested; deferred by the owner. Leave unchecked until the owner reopens it.

@@ -52,8 +52,12 @@ public sealed class Qwen4ExpImageAnswerTests
 
         int[] pre = tok.Encode("<|im_start|>user\n<|vision_start|>").ToArray();
         int[] pad = tok.Encode("<|image_pad|>").ToArray();
-        // The reference's default (no-thinking) template ends the assistant turn with an empty think block.
-        int[] post = tok.Encode("<|vision_end|>What shapes are in the image?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n").ToArray();
+        // Default: the prompt ends with an empty think block. QWEN_IMAGE_NO_THINK_BLOCK=1 drops it, to match llama-mtmd-cli's
+        // generation prompt (the model then generates the think block itself).
+        string postText = Environment.GetEnvironmentVariable("QWEN_IMAGE_NO_THINK_BLOCK") == "1"
+            ? "<|vision_end|>What shapes are in the image?<|im_end|>\n<|im_start|>assistant\n"
+            : "<|vision_end|>What shapes are in the image?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+        int[] post = tok.Encode(postText).ToArray();
         Assert.Single(pad);
         Console.WriteLine($"PROMPT pre={pre.Length} image={nImg} grid={nx}x{ny} post={post.Length} pre_ids={string.Join(",", pre)} post_ids={string.Join(",", post)}");
 
@@ -74,6 +78,12 @@ public sealed class Qwen4ExpImageAnswerTests
         var generated = new List<int>();
         for (int s = 0; s < 40; s++)
         {
+            if (Environment.GetEnvironmentVariable("QWEN_LOGIT_DIR") is { } dir)
+            {
+                var buf = new byte[logits.Length * sizeof(float)];
+                System.Runtime.InteropServices.MemoryMarshal.AsBytes(logits).CopyTo(buf);
+                File.WriteAllBytes(Path.Combine(dir, $"step_{s}.bin"), buf);
+            }
             int best = 0;
             for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
             if (tok.EogTokenIds.Contains(best)) break;
