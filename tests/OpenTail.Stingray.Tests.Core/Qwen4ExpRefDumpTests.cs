@@ -64,6 +64,46 @@ public sealed class Qwen4ExpRefDumpTests
         Console.WriteLine($"ssm_out(ref final_output) vs ref linear_attn_out: rel={Math.Sqrt(num / den):G6} cos={dot / Math.Sqrt(ny * den):F6}");
     }
 
+    /// <summary>
+    /// Phase 0.2 acceptance check: greedy continuation of "The capital of France is" for QWEN_GREEDY_STEPS tokens.
+    /// Prints token IDs and text so they can be compared with llama.cpp's greedy output. Opt-in.
+    /// </summary>
+    [Fact]
+    public void GreedyContinuation_PrintsTokensForComparison()
+    {
+        string? stepsText = Environment.GetEnvironmentVariable("QWEN_GREEDY_STEPS");
+        Assert.SkipUnless(int.TryParse(stepsText, out int steps) && steps > 0,
+            "Set QWEN_GREEDY_STEPS to the number of greedy tokens to generate.");
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+        using var forwardPass = new Qwen4ExpForwardPass(model, hp, tensors);
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(model);
+
+        string prompt = Environment.GetEnvironmentVariable("QWEN_GREEDY_PROMPT") ?? "The capital of France is";
+        var ids = tokenizer.Encode(prompt).ToList();
+        int pos = 0;
+        ReadOnlySpan<float> logits = default;
+        foreach (int t in ids) logits = forwardPass.Forward(t, pos++);
+
+        var generated = new List<int>();
+        for (int s = 0; s < steps; s++)
+        {
+            int best = 0;
+            for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
+            generated.Add(best);
+            logits = forwardPass.Forward(best, pos++);
+        }
+
+        Console.WriteLine("GREEDY_PROMPT " + prompt);
+        Console.WriteLine("GREEDY_IDS " + string.Join(",", generated));
+        Console.WriteLine("GREEDY_TEXT " + tokenizer.Decode(generated));
+    }
+
     private static float[] ReadLastToken(string path, int width)
     {
         var all = File.ReadAllBytes(path);

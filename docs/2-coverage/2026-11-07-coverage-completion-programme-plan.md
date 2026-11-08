@@ -284,3 +284,16 @@ taking on Phase 2B/3's real implementation work:
   cosine >= 0.998 and top-1 agreement on several fixed prompts with greedy decoding. Until confirmed, Phase 0 stays open.
 - Open: the layer-1 MoE error (2.2%) is inherited from the FFN input (1.3%) and amplified by the quantised expert and shared-expert
   matmuls; it is not a separate defect.
+
+### Phase 0.2 result, 2026-11-08: greedy continuations agree with llama.cpp on three prompts
+
+- Stingray: `Qwen4ExpRefDumpTests.GreedyContinuation_PrintsTokensForComparison` (env `QWEN_GREEDY_STEPS`, `QWEN_GREEDY_PROMPT`),
+  greedy argmax, no sampling, prefill token by token.
+- llama.cpp: `llama-completion.exe` at `bed0a8566` (build-ref), CPU, `--temp 0 --top-k 1 --repeat-penalty 1.0 --seed 0 -no-cnv`.
+- Results (12 tokens each):
+  - "The capital of France is": identical text " Paris. The capital of Germany is Berlin. The capital of".
+  - "Once upon a time,": identical text " in a magical land of music, there lived a group of".
+  - "2 + 2 =": identical first token " 4"; llama stops at end-of-text, Stingray's loop does not stop at EOS (its later
+    tokens decode to nothing). The EOS stop is not implemented in the test.
+- This is an acceptance-criterion check on three prompts, not the tolerance criterion. Per-layer and logit errors above
+  still stand (cosine 0.998 at the logits). Phase 0 stays open until the criterion is confirmed by the owner.
