@@ -285,11 +285,11 @@ public static class Qwen4ExpGatedResidual
     /// <param name="embedDim">Hidden dimension per stream (e.g. 2560).</param>
     /// <param name="hcLowRank">Low-rank bottleneck rank (typically 320).</param>
     /// <param name="eps">RMSNorm epsilon.</param>
-    // Phase 0.2 experiment switch, read once. Off by default.
-    private static readonly bool Q8ActExperiment = Environment.GetEnvironmentVariable("STINGRAY_Q4E_HC_Q8ACT") == "1";
+    // llama.cpp rounds the input of Q8_0 matmuls to the Q8 grid (Phase 0.2: HC mix 1.08% -> 0.005%).
+    private const bool RoundActivations = true;
 
     /// <summary>Rounds each 32-wide block to the int8 grid (d = amax/127), as llama.cpp's Q8_1 activation does.</summary>
-    internal static void RoundToQ8Blocks(Span<float> x)
+    public static void RoundToQ8Blocks(Span<float> x)
     {
         for (int b = 0; b < x.Length; b += 32)
         {
@@ -357,7 +357,7 @@ public static class Qwen4ExpGatedResidual
                 float invHc = 1.0f / hc;
                 // Experiment (Phase 0.2): llama.cpp feeds Q8_0 matmuls a Q8_1-rounded activation.
                 ReadOnlySpan<float> matIn = xn;
-                if (Q8ActExperiment)
+                if (RoundActivations)
                 {
                     var rounded = new float[hcDim];
                     xn.CopyTo(rounded);
@@ -373,7 +373,7 @@ public static class Qwen4ExpGatedResidual
                     lo[r] = dot * sig;
                 }
 
-                if (Q8ActExperiment) RoundToQ8Blocks(lo);
+                if (RoundActivations) RoundToQ8Blocks(lo);
 
                 // 3. Up-projection: gate = wUp * lo (shape [hcDim])
                 // Gating: gated = xn * sigmoid(gate)

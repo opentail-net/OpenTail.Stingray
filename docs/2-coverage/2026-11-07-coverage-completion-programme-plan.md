@@ -368,3 +368,24 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   picked " Earth", which differs from llama.cpp's token-by-token path.
 - Consequence for the criterion: greedy text is not a path-invariant parity signal at near-ties, even within llama.cpp.
   The criterion must allow near-tie flips. KL at each checked position is the signal that matters.
+
+### Phase 0.2 result, 2026-11-08: residual drift is noise amplification; HC rounding is now the default
+
+- Per-layer residual drift (last token, France prompt): a 1e-6 relative embedding perturbation grows to
+  0.6% (layer 1), 1.1% (layer 8), 6.4% (layer 16), 9.0% (layer 20), 14.5% (layer 30), 19.4% (layer 40), 12.6% (layer 47).
+  Stingray against llama.cpp: 2.7% (layer 1), 6.0% (layer 8), 9.1% (layer 16), 12.2% (layer 20), 16.8% (layer 30),
+  18.7% (layer 40), 13.7% (layer 47). The drift against llama.cpp is the same size as drift from a float-level input change.
+  So the drift is explained by the pipeline's own noise amplification, not by a logic error.
+- The Q8 activation rounding for the HC mix (`Qwen4ExpGatedResidual.Mix`, Q8_0 down and up projections) is now the default,
+  not an env flag. Regression tests `Qwen4ExpHcActivationTests` (2 tests): the helper matches Stingray's Q8_0 quantiser
+  (`SimdKernels.QuantizeRowToQ8_0`) and is idempotent. Real checkpoint, default build: hc_mixed-0 0.0048%, linear_attn_out-0 0.36%,
+  France last-position KL to llama.cpp 0.0146 nats, top-1 match.
+- Phase 0 acceptance criteria, against the evidence so far:
+  - All 48 layers compared: yes (per-layer tables above).
+  - Logits within a documented tolerance: not yet; the tolerance is the owner decision (see the proposed criterion).
+  - No unexplained large residual drift: drift explained by the measured noise amplification (above).
+  - Multi-token greedy agreement on several fixed prompts: three prompts identical or near-tie divergent; divergences explained
+    as near-ties that llama.cpp's own paths disagree on.
+  - Every fix has a regression test: PLE conv layout (`Qwen4ExpPleLayoutTests`), Q5_K activation numerics
+    (`Qwen4ExpQ5KDispatchTests`), HC activation rounding (`Qwen4ExpHcActivationTests`).
+- Phase 0 is therefore waiting on the owner's tolerance decision, not on further implementation work. Qwen 3.8 stays unadmitted.
