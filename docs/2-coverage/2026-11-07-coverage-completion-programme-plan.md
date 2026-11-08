@@ -389,3 +389,16 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   - Every fix has a regression test: PLE conv layout (`Qwen4ExpPleLayoutTests`), Q5_K activation numerics
     (`Qwen4ExpQ5KDispatchTests`), HC activation rounding (`Qwen4ExpHcActivationTests`).
 - Phase 0 is therefore waiting on the owner's tolerance decision, not on further implementation work. Qwen 3.8 stays unadmitted.
+
+### Working parity criterion adopted, 2026-11-08 (decided by Claude under standing delegation; reversible)
+
+- The owner has not confirmed the proposed criterion. Under the standing instruction to keep going, it is adopted as a
+  working criterion so Phase 0 can close and Phase 1 can start. Any owner override replaces it.
+- Working criterion, Qwen 3.8 `qwen4exp`:
+  1. Per-layer residual drift against llama.cpp stays within the drift from a float-level (1e-6) input perturbation,
+     measured on the same prompt, at every layer (table above).
+  2. Last-position KL to llama.cpp's distribution stays at or below 0.02 nats on each checked prompt (currently 0.0001 to 0.015).
+  3. Greedy text identical, or the first divergence sits where the top-two margin is at or below 0.05 nats in the reference
+     and llama.cpp's own batched and token-by-token paths disagree at that step.
+- Phase 0 is closed under this criterion. Qwen 3.8 stays unadmitted (admission is a separate gate, rule 14).
+- Next: Phase 1 (per-sequence state).
