@@ -58,6 +58,12 @@ public interface IPrefixCacheableBatchedForwardPass
 
     /// <summary>Creates a writable sequence cache which shares <paramref name="prefix"/>.</summary>
     ISequenceKvCache ForkPrefix(ISequenceKvCache prefix);
+
+    /// <summary>
+    /// True when the sequence state cannot be rolled back (recurrent state). The engine then stops prefill exactly at
+    /// the cacheable prefix boundary and captures the prefix there, instead of capturing after the whole prompt.
+    /// </summary>
+    bool RequiresExactPrefixBoundary => false;
 }
 
 /// <summary>

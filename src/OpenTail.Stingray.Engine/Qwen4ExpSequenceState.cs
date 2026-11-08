@@ -22,6 +22,9 @@ public sealed class Qwen4ExpSequenceState : IDisposable
     /// <summary>Number of tokens pushed through the PLE path so far.</summary>
     public int PleTokensSeen { get; set; }
 
+    /// <summary>Absolute position after the last forwarded token (0 for a fresh sequence).</summary>
+    public int TokensProcessed { get; set; }
+
     /// <summary>PLE n-gram token history (null when the model has no PLE table).</summary>
     public Qwen4ExpPleHasher? PleHasher { get; private set; }
 
@@ -70,6 +73,7 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         GdnState = CopyArrays(source.GdnState);
         PleConvHistory = (float[])source.PleConvHistory.Clone();
         PleTokensSeen = source.PleTokensSeen;
+        TokensProcessed = source.TokensProcessed;
         PleHasher = source.PleHasher?.Clone();
         QsaKeyCache = CopyLists(source.QsaKeyCache);
         QsaValCache = CopyLists(source.QsaValCache);
@@ -96,6 +100,7 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         GdnState = copy.GdnState;
         PleConvHistory = copy.PleConvHistory;
         PleTokensSeen = copy.PleTokensSeen;
+        TokensProcessed = copy.TokensProcessed;
         PleHasher = copy.PleHasher;
         QsaKeyCache = copy.QsaKeyCache;
         QsaValCache = copy.QsaValCache;
@@ -108,6 +113,7 @@ public sealed class Qwen4ExpSequenceState : IDisposable
     {
         ThrowIfDisposed();
         PleTokensSeen = 0;
+        TokensProcessed = 0;
         PleHasher?.Reset();
         Array.Clear(PleConvHistory);
         for (int l = 0; l < GdnConvState.Length; l++)

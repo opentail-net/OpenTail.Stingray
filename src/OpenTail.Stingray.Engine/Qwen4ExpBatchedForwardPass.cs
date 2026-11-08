@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Engine;
 /// version runs the requests of a batch one after another through the per-sequence forward pass, which is the
 /// sequential path the plan asks for. Batched GEMM is not used, so no numerics change relative to single-sequence runs.
 /// </summary>
-public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass
+public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
 {
     private readonly Qwen4ExpForwardPass _pass;
     private readonly int _kvBytesPerToken;
@@ -68,6 +68,28 @@ public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass
     public int MaxSeqLen => _maxSeqLen;
 
     public bool PrefillDequantCacheActive => false;
+
+    /// <summary>Recurrent state has no pages: a prefix is any token count, captured as a deep copy.</summary>
+    public int PrefixCacheBlockSize => 1;
+
+    /// <summary>Recurrent state cannot be rolled back, so the engine must capture at the exact boundary.</summary>
+    public bool RequiresExactPrefixBoundary => true;
+
+    /// <summary>
+    /// Deep copy of the sequence at exactly <paramref name="prefixLength"/> tokens. The recurrent GDN state cannot be
+    /// rolled back, so capture is only valid when the sequence stands at that position.
+    /// </summary>
+    public ISequenceKvCache CapturePrefix(ISequenceKvCache cache, int prefixLength)
+    {
+        var state = ToState(cache);
+        if (state.TokensProcessed != prefixLength)
+            throw new InvalidOperationException(
+                $"qwen4exp prefix capture at {prefixLength} but the sequence stands at {state.TokensProcessed}.");
+        return new Cache(state.Clone());
+    }
+
+    /// <summary>A writable sequence starting from a copy of the retained prefix.</summary>
+    public ISequenceKvCache ForkPrefix(ISequenceKvCache prefix) => new Cache(ToState(prefix).Clone());
 
     public void BindToCurrentThread() { }
 

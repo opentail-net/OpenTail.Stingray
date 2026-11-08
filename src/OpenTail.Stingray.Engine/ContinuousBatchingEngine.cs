@@ -1188,6 +1188,13 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             float[] logits;
             try
             {
+                if (_prefixFwd is { RequiresExactPrefixBoundary: true } exact && p.CacheablePrefixLength > p.Consumed)
+                {
+                    var head = new ArraySegment<int>(p.Tokens, p.Consumed, p.CacheablePrefixLength - p.Consumed);
+                    _fwd.PrefillWithCache(head, p.Cache, startPos: p.StartPosition + p.Consumed);
+                    p.Consumed = p.CacheablePrefixLength;
+                    RetainPrefix(p);
+                }
                 var remaining = new ArraySegment<int>(p.Tokens, p.Consumed, p.Tokens.Length - p.Consumed);
                 logits = _fwd.PrefillWithCache(remaining, p.Cache, startPos: p.StartPosition + p.Consumed).ToArray();
             }
@@ -1218,6 +1225,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         {
             var p = prefilling[s];
             int take = Math.Min(p.Tokens.Length - p.Consumed, perSeq);
+            if (_prefixFwd is { RequiresExactPrefixBoundary: true } && p.CacheablePrefixLength > p.Consumed)
+                take = Math.Min(take, p.CacheablePrefixLength - p.Consumed);
             chunks[s] = p.Tokens.AsMemory(p.Consumed, take);
             startPos[s] = p.StartPosition + p.Consumed;
             caches[s] = p.Cache;
@@ -1256,6 +1265,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         {
             var p = prefilling[s];
             p.Consumed += takes[s];
+            if (_prefixFwd is { RequiresExactPrefixBoundary: true } && p.Consumed == p.CacheablePrefixLength)
+                RetainPrefix(p);
             if (logitsPerSeq[s] is { } logits)
             {
                 RetainPrefix(p);

@@ -444,3 +444,19 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
 - Added 2026-11-08: a tight KV budget (about one request at a time) with three requests. All three equal their
   isolated outputs, and `CommittedKvTokens` is 0 afterwards. `Qwen4ExpBatchingTests` now has 4 tests, all passing (128 s).
 - Still open in Phase 2: memory checks for cancelled requests specifically (the finish-order test covers normal finish).
+
+## Phase 3 (prefix reuse), status 2026-11-08
+
+- Engine change (opt-in): `IPrefixCacheableBatchedForwardPass.RequiresExactPrefixBoundary` (default false). When true, the
+  engine stops prefill at the cacheable prefix boundary and retains the prefix there, instead of after the whole prompt.
+  The first Phase 3 run showed the need: the capture was requested at 18 while the sequence stood at 19.
+- `Qwen4ExpBatchedForwardPass` implements prefix capture and fork as deep copies. Capture is valid only when the sequence
+  stands at exactly the prefix length (`TokensProcessed`); otherwise it throws. The Qwen adapter sets the flag.
+- `Qwen4ExpPrefixReuseTests` (2 tests, passing, 72 s):
+  - a repeated prompt reuses its prefix (`PrefillTokensReused > 0`) and matches a cold run;
+  - branching prompts (A, B, A) each match cold runs.
+- Regression: `Qwen4ExpBatchingTests` (4 tests) still pass; `ContinuousBatchingRetainedStateTests` (4) and
+  `ContinuousBatchingConstraintTests` (7) in the Fast project pass.
+- Still open in Phase 3: retained conversation state across turns (turn-level snapshots), memory budgeting and eviction for
+  retained state, and copy-on-write page sharing. The current fork copies the whole state; that is correct but not
+  memory-efficient. Qwen 3.8 remains unadmitted.

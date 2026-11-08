@@ -207,6 +207,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     public ReadOnlySpan<float> Forward(int token, int position)
     {
         _dumpActive = _dumpDir != null && position == _dumpPos;
+        _seq.TokensProcessed = position + 1;
 
         // 1. Embed token
         EmbedToken(token, _tokEmbdScratch);
@@ -1188,6 +1189,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _hp.PleLayers != null && _hp.PleLayers.Count > 0 ? new Qwen4ExpPleHasher(_hp) : null);
 
     /// <summary>Forward pass for one token of a given sequence. Calls on different sequences may be interleaved.</summary>
+    /// <summary>Hyperparameters this pass was built with.</summary>
+    public Qwen4ExpHyperparams Hyperparameters => _hp;
+
+    /// <summary>Number of transformer layers.</summary>
+    public int NumLayers => _numLayers;
+
     public ReadOnlySpan<float> Forward(int token, int position, Qwen4ExpSequenceState sequence)
     {
         sequence.ThrowIfDisposed();
