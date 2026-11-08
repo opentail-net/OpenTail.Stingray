@@ -1236,7 +1236,7 @@ This is the architectural work worth retaining after DiffusionGemma itself is co
 
 - [ ] Download the real Q4_K_M GGUF (16.8 GB) and run the Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler)
 - [ ] Level 4 paged real-weight run (00-current-work item 14)
-- [ ] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass), from the HF or vLLM source. 2026-10-31: the HF `config.json` has no such keys, so they are GGUF tensors and their semantics are still undocumented in the config. Open.
+- [x] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass). Answered 2026-11-08 (coverage plan, item A2): both are the same per-layer scalar. Sources, all read without a weight download. (1) Upstream `google/diffusiongemma-26B-A4B-it`, revision `f7f5b7f5fa82ffc52addd066915886d497f5517b`: `model.safetensors.index.json` has `layer_scalar` for 30 layers under both `model.encoder.language_model.layers.N` and `model.decoder.layers.N`; the BF16 values match in all 30 layers. (2) vLLM `vllm/model_executor/models/diffusion_gemma.py`, commit `de05fd1db93f712288e654bc28a8480a67a7a8e2`: "Single Gemma4 backbone run in two modes ... Same weights, same layers"; `gemma4.py` applies one `layer_scalar` to every text layer in both modes. (3) GGUF `unsloth/diffusiongemma-26B-A4B-it-GGUF`, revision `f4183a2c7a354128d02545752303c4354d165bf0`, Q4_K_M: has both `blk.N.enc_layer_output_scale.weight` and `blk.N.layer_output_scale.weight` (F32, shape [1], N = 0..29); the values match in all 30 layers and match the upstream values. Consequence: prefill and canvas decode multiply by the same value, so TensorSharp's split (`_encScale` for prefill, `_decScale` for canvas) gives the same numbers. Recommendation for the port: read the value from the GGUF and fail when either tensor is missing or the two disagree. Do not default a missing scale to 1.0, which is what TensorSharp's loader does.
 
 ---
 
@@ -1247,8 +1247,8 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 - **Config matches the plan:** 30 layers, sliding window 1024, hidden 2816, MoE width 704 per expert (1408 fused), 128 experts with top-8, head dims 256 and 512, final logit softcap 30. These were read from the HF `config.json` (2026-10-31).
 - **Canvas and sampler match the card:** canvas length 256; entropy bound 0.1; stop threshold 0.005. The card's licence is `apache-2.0`.
 - **Temperature endpoint conflicts:** the card says "Linear decay from 0.8 → 0.4"; the plan's formula ends at 0.408 (step 1 of 48). Pick one before the sampler test, and record which one the reference uses.
-- **Open item answered in part:** the HF config has no `layer_output_scale` or `enc_layer_output_scale` keys, so those are GGUF tensors and their meaning (prefill or canvas) is still open.
+- **Output scale answered (2026-11-08):** the HF config still has no `layer_output_scale` or `enc_layer_output_scale` keys, as expected. The meaning comes from the safetensors index, vLLM, and the GGUF tensor values; see the checklist item above.
 - **Self-conditioning width not established:** the 2112 in the plan's test name is the config's dense FFN width; the self-conditioning MLP width is not in the config.
 - **GGUF size:** Q4_K_M 16.8 GB (listing), so the RAM plan (64 GB host, fits in memory) holds.
 
-**Next checks:** read the `enc_layer_output_scale` tensors from the Q4_K_M GGUF (their values and shapes settle the semantics better than the config); confirm the self-conditioning width from the tensor shapes.
+**Next checks:** the enc and dec scale values are settled (2026-11-08, above). Still open: confirm the self-conditioning width from the tensor shapes. The GGUF header can be read with a 16 MB HTTP range request, so this does not need the 16.8 GB download.

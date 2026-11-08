@@ -21,6 +21,7 @@ Status 2026-11-08. This is the one plan for model coverage: what to do next for 
 - **Next step:** read the HF or vLLM source for those names, and write down the answer with its source. If it is not there, record that and ask the owner.
 - **Done when:** the meaning is recorded with its source, and the parity ladder step that depends on it is unblocked or documented as blocked.
 - **Owner doc:** [2026-10-03-diffusiongemma-port-plan.md](2026-10-03-diffusiongemma-port-plan.md).
+- **Status 2026-11-08: done.** Both are the same per-layer scalar. The upstream safetensors index, vLLM, and the GGUF tensor values (30 of 30 layers equal) agree, read by range request with no download. The GGUF has the scale as tensors, not metadata. The port should fail on a missing scale, not default it to 1.0. The parity ladder step is unblocked. Details, revisions, and the consequence are in the owner doc. The Q4_K_M download and the parity ladder itself are still open.
 
 ### A3. Muse-Glimmer: independent synthetic comparison (level 3)
 
