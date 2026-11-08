@@ -865,3 +865,22 @@ Each point was checked against the code. Status is as of ae47d135.
   `Architectures/Qwen4ExpArchitecture.cs` still describes wrong logit magnitudes; the current measurements do not support that.
 - CI: the earlier red runs (11:51 on 43e981fe, 11:59 on 77685279) were the first version of the backpressure test, which was
   timing-flaky on CI (6 tokens finished before the poll). Fixed in ae47d135; the 12:08 run is green.
+
+## Jobs 1 and 2 (tool-call safety), result 2026-11-08
+
+- JOB 1, JSON tool-call parsing. Before: 16 of 20 new cases failed. Non-object roots (`[]`, scalars) and non-string names
+  threw `InvalidOperationException`. A duplicate property threw `ArgumentException` from `ToDictionary`. An array or scalar
+  `arguments`, and DeepSeek arguments that failed to parse, came back as a call with empty arguments. After: a call must be
+  a JSON object with one string name. Its arguments must be an object (directly or as a JSON string). A repeated property
+  is refused. A malformed block is dropped, and its raw text stays in the plain text. `ObjectToDictionary` throws
+  `JsonException` for duplicates, so every caller's existing handler catches it.
+  - Tests: `ToolCallJsonHardeningTests` (20). Existing `ToolCallAdapterTests` (50) and the Phase 6 tests (15) still pass.
+- JOB 2, validator edge cases. Before: `NaN` and `Infinity` were accepted as Number text; an infinite double passed the
+  Integer check; a boolean enum failed because `Convert.ToString(true)` is `"True"`. After: non-finite values are refused in
+  every form, and a boolean is compared as the JSON literal `true`/`false`.
+  - Tests: `ToolCallValidatorEdgeCaseTests` (16). `ToolCallArgumentValidatorTests` (12) still pass.
+- Gate. The first full Core run had two failures, both in batching tests and both timing-dependent, not in the parser. The
+  backpressure test's poll could miss a reservation, and the queue-limit test's first request could finish before the second
+  was submitted. The counting fake now takes an optional per-step delay. The two tests use it, and each passed three runs in a row.
+  Full Core after the fix: 1411 tests, 0 failed, 95 skipped (fixtures not present).
+- Still open: the server does not yet use the validator, and an invalid tool call is still returned as-is (owner decision).

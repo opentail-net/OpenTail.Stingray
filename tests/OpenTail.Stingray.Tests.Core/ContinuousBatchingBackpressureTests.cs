@@ -12,6 +12,9 @@ public sealed class ContinuousBatchingBackpressureTests
 {
     private const long BudgetTokens = 250;    // one request needs 202 (prompt 2 + 200 new), so two cannot fit
 
+    // 200 steps at 1 ms each keep a request running for about 200 ms, long enough for the poll to observe the budget.
+    private static readonly TimeSpan StepDelay = TimeSpan.FromMilliseconds(1);
+
     [Fact]
     public async Task QueuedRequests_NeverExceedTheKvBudget_AndAllFinishUnchanged()
     {
@@ -21,14 +24,14 @@ public sealed class ContinuousBatchingBackpressureTests
 
         // Baseline: the same request alone, with the same budget.
         using (var solo = new ContinuousBatchingEngine(
-            new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(), tok, "solo",
+            new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(stepDelay: StepDelay), tok, "solo",
             maxBatchSize: 2, kvBudgetBytes: BudgetTokens))
         {
             string baseline = await CollectAsync(solo, "QR", sp, cts.Token);
             Assert.Equal(200, baseline.Length);
 
             using var engine = new ContinuousBatchingEngine(
-                new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(), tok, "queued",
+                new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(stepDelay: StepDelay), tok, "queued",
                 maxBatchSize: 2, kvBudgetBytes: BudgetTokens);
 
             long maxCommitted = 0;

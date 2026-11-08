@@ -53,7 +53,13 @@ public static class ToolCallArgumentValidator
     {
         if (node.EnumValues is { } allowed)
         {
-            string text = value is null ? "null" : Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+            // Enum literals are JSON text, so a boolean is compared as true/false, not the .NET "True"/"False".
+            string text = value switch
+            {
+                null => "null",
+                bool b => b ? "true" : "false",
+                _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
+            };
             if (!allowed.Contains(text, StringComparer.Ordinal))
                 errors.Add($"{path}: value '{text}' is not one of the allowed values");
             return;
@@ -70,14 +76,17 @@ public static class ToolCallArgumentValidator
                 return;
 
             case JsonSchemaKind.Number:
-                if (value is long or double) return;
-                if (value is string s && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out _)) return;
+                // NaN and infinity are not JSON numbers, so they are refused in both forms.
+                if (value is long) return;
+                if (value is double dn && double.IsFinite(dn)) return;
+                if (value is string s && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed)
+                    && double.IsFinite(parsed)) return;
                 errors.Add($"{path}: expected a number");
                 return;
 
             case JsonSchemaKind.Integer:
                 if (value is long) return;
-                if (value is double d && Math.Floor(d) == d) return;
+                if (value is double d && double.IsFinite(d) && Math.Floor(d) == d) return;
                 if (value is string si && long.TryParse(si, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)) return;
                 errors.Add($"{path}: expected an integer");
                 return;

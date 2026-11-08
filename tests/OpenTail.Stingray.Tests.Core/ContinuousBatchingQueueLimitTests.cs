@@ -14,9 +14,10 @@ public sealed class ContinuousBatchingQueueLimitTests
     {
         var tok = new ContinuousBatchingCancellationMemoryTests.ByteTokenizer();
         using var engine = new ContinuousBatchingEngine(
-            new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(), tok, "queue-limit",
-            maxBatchSize: 1, maxQueuedRequests: 1);
-        // Long enough that the first request keeps the only batch slot until it is cancelled.
+            new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(stepDelay: TimeSpan.FromMilliseconds(2)),
+            tok, "queue-limit", maxBatchSize: 1, maxQueuedRequests: 1);
+        // Paced (2 ms a step) and long, so the first request keeps the only batch slot until it is cancelled;
+        // without pacing it can finish before the second request is submitted.
         var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 4000 };
         using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 

@@ -81,7 +81,7 @@ public sealed class ContinuousBatchingCancellationMemoryTests
     }
 
     /// <summary>Counts cache creation and disposal. Emits 'a' each step, or end-of-generation after <paramref name="stopAfter"/> steps.</summary>
-    internal sealed class CountingForwardPass(int? stopAfter = null) : IBatchedForwardPass
+    internal sealed class CountingForwardPass(int? stopAfter = null, TimeSpan? stepDelay = null) : IBatchedForwardPass
     {
         private const int Token = ByteBase + 'a';
         private int _created, _disposed;
@@ -126,6 +126,8 @@ public sealed class ContinuousBatchingCancellationMemoryTests
 
         public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
+            // Optional pacing, so timing-sensitive tests can observe a request while it is still running.
+            if (stepDelay is { } pace) Thread.Sleep(pace);
             var result = new float[tokens.Length][];
             for (int i = 0; i < tokens.Length; i++)
             {

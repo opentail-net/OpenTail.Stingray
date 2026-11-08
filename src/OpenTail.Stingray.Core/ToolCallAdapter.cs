@@ -359,8 +359,11 @@ internal static class ToolCallParseHelpers
         try
         {
             using var doc = JsonDocument.Parse(block);
-            var root  = doc.RootElement;
-            string name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            var root = doc.RootElement;
+            // A call is a JSON object with one string name. Anything else is malformed, not an empty call.
+            if (root.ValueKind != JsonValueKind.Object || HasDuplicateNames(root)) return null;
+            if (!root.TryGetProperty("name", out var n) || n.ValueKind != JsonValueKind.String) return null;
+            string name = n.GetString() ?? "";
             if (name.Length == 0) return null;
 
             var args = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -378,7 +381,9 @@ internal static class ToolCallParseHelpers
                 {
                     parsed = JsonElementToObject(argsElem);
                 }
-                if (parsed is Dictionary<string, object?> d) args = d;
+                // Arguments must be an object. An array or scalar is malformed; it is not an empty argument list.
+                if (parsed is not Dictionary<string, object?> d) return null;
+                args = d;
             }
 
             return new ParsedToolCall(name, args);
@@ -389,12 +394,33 @@ internal static class ToolCallParseHelpers
         }
     }
 
+    /// <summary>True when an object repeats a property name. JSON allows it; a call must not be ambiguous about it.</summary>
+    private static bool HasDuplicateNames(JsonElement obj)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in obj.EnumerateObject())
+            if (!seen.Add(p.Name)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Object to dictionary. A repeated property throws <see cref="JsonException"/>, so every caller's existing
+    /// JSON error handling catches it, rather than an <see cref="ArgumentException"/> escaping from ToDictionary.
+    /// </summary>
+    private static Dictionary<string, object?> ObjectToDictionary(JsonElement el)
+    {
+        var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var p in el.EnumerateObject())
+        {
+            if (!dict.TryAdd(p.Name, JsonElementToObject(p.Value)))
+                throw new JsonException($"Duplicate property '{p.Name}'.");
+        }
+        return dict;
+    }
+
     public static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
     {
-        JsonValueKind.Object => el.EnumerateObject()
-                                  .ToDictionary(p => p.Name,
-                                                p => JsonElementToObject(p.Value),
-                                                StringComparer.Ordinal),
+        JsonValueKind.Object => ObjectToDictionary(el),
         JsonValueKind.Array  => el.EnumerateArray()
                                   .Select(JsonElementToObject)
                                   .ToList<object?>(),
@@ -878,14 +904,18 @@ public sealed class DeepSeekToolCallAdapter : IToolCallAdapter
             string argsJson = inner[(sep + Separator.Length)..].Trim();
             if (name.Length == 0) continue;
 
-            var argDict = new Dictionary<string, object?>(StringComparer.Ordinal);
+            Dictionary<string, object?>? argDict;
             try
             {
                 using var doc = JsonDocument.Parse(argsJson);
-                if (ToolCallParseHelpers.JsonElementToObject(doc.RootElement) is Dictionary<string, object?> d)
-                    argDict = d;
+                argDict = ToolCallParseHelpers.JsonElementToObject(doc.RootElement) as Dictionary<string, object?>;
             }
-            catch (JsonException) { /* keep empty arg dict for malformed JSON */ }
+            catch (JsonException)
+            {
+                argDict = null;
+            }
+            // Malformed or non-object arguments: the call is dropped, not returned with empty arguments.
+            if (argDict is null) continue;
 
             results.Add(new ParsedToolCall(name, argDict));
         }
