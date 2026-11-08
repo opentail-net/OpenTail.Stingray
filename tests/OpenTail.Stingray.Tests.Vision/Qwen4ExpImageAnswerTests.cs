@@ -36,6 +36,18 @@ public sealed class Qwen4ExpImageAnswerTests
                 for (int c = 0; c < 3; c++)
                     chw[c * w * h + y * w + x] = 2f * rgb[(y * w + x) * 3 + c] / 255f - 1f;
 
+        // Noise probe (Phase 0.3): a deterministic relative perturbation of the input pixels, as the text probe does.
+        if (double.TryParse(Environment.GetEnvironmentVariable("QWEN_IMAGE_PERTURB_EPS"), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double eps) && eps != 0)
+        {
+            for (int i = 0; i < chw.Length; i++)
+            {
+                double u = Math.Sin(i * 12.9898) * 43758.5453;
+                u -= Math.Floor(u);
+                chw[i] *= (float)(1.0 + eps * (2 * u - 1));
+            }
+        }
+
         using var vision = QwenVlVisionModel.Open(mmprojPath!);
         float[] soft = new QwenVlVisionEncoder(vision).Forward(chw, w, h, out int nImg);
         int nx = w / 32, ny = h / 32; // patch 16, spatial merge 2

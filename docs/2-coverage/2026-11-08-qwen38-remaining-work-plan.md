@@ -37,6 +37,8 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 ## Phase 0. Numerical parity (real checkpoint, paged)
 
+- [x] **0.3 FFN injection gate: CLOSED under D1 (2026-11-08, later)**, with both paths explained by the float-order noise floor (below).
+      (The text path, next paragraph; the image path, the paragraph after that.)
 - [x] **0.3 text-path drift, explained (2026-11-08, later).** Per-layer dumps regenerated after the Q5_K numerics fix
       (commit 563ec1b4, 01:52; the earlier dumps predated it). Text prompt "The capital of France is", last token, against the
       eval-callback dump: layer 0 `linear_attn_out` 0.36%, `l_last_0` 0.37% (was 2.5% and 1.46%); `qkv_mixed` 0.03%; embedding
@@ -46,7 +48,13 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       text drift is the size that float-order noise produces, amplified through the network. It is not evidence of a logic error.
       Consequence for the criterion: the programme plan's proposed final-logit cosine >= 0.998 is below this noise floor (the
       probe itself gives 0.9979), so it should not be used. The token-level criterion (D1) is the one to hold.
-      The image path is not covered by this probe; its logit gap (0.81, TV 0.178) is still open.
+      **Image path, explained (2026-11-08, later).** Reference and Stingray logits for the test image ("two shapes", no-think prompt),
+      steps 0 and 1: step 0 identical (top-1 248068, TV 0). Step 1 TV 0.178, top-1 271 (reference) against 198 (Stingray). Stingray's
+      own top-2 at step 1 differ by 0.073 logits, and the reference's choice (271) is inside Stingray's top-5 within that gap.
+      That passes the Phase 1 tolerance rule (0.12). The noise probe on the image path (`QWEN_IMAGE_PERTURB_EPS`, pixels x(1 + 1e-6 u))
+      flips step 1 to 271 with TV 0.396 against the unperturbed run, so the reference-to-Stingray gap is noise at a near-tie.
+      Steps after 1 are not comparable: the two runs have fed different tokens. So the image logit gap (0.81, TV 0.178) is the
+      near-tie, not a logic error.
 - [ ] **0.3 FFN injection gate.** Still open. The residual MoE error from layer 1 is attributed to quantisation noise
       and is not confirmed. Runnable now (checkpoint on disk: `E:\_models\qwen38-flash-next\UD-IQ1_S`).
       Conclusion, 2026-11-08: not closable on the present evidence. The text-path measurements in Phase 0.2 sit inside
