@@ -163,6 +163,16 @@ Checked against `Qwen4ExpForwardPass.cs` and the descriptor's `RefusalReason` (`
   near-tie routing then amplifies this. Next step: find the source of the layer-0 error (the GDN mixer is the largest
   contributor) before any further change, and check whether the error is intrinsic (activation rounding) or a
   remaining port bug.
+- **Narrowed further (same day):** the layer-0 error is inherited from the attention-side HC mix, not added by the
+  GDN projections. Measured at position 4 (relative error, cosine):
+  - `model_input_embed` (embedding): exact (0).
+  - `hc_mixed_0` (GDN mixer input, after the attention HC mix): 1.08%, cosine 0.99995.
+  - `linear_attn_qkv_mixed_0` 0.86%, `conv_output_raw_0` 0.87%, `conv_output_silu_0` 1.2%, `z_0` 0.79%,
+    `alpha_0` 0.55%, raw beta vs `beta_0` 0.66%. All of these track the 1% input error.
+  - The reference `beta-0` is not a sigmoid (range -3.7 to 7.7), so compare raw beta to it.
+- **Next:** dump the intermediates inside `Qwen4ExpGatedResidual.Mix` (grouped RMS norm output = reference
+  `hc_norm-0`, `hc_gate-0` and `hc_inject-0`), then find which step introduces the 1%. Candidate, not verified: the
+  low-rank HC matmuls, or activation rounding in the reference's quantised kernels.
 - Phase 0.3 (FFN injection gate) is still open. These numbers do not yet settle it.
 
 ## Phases (in order; do not start a later one before the current one's completion criteria)

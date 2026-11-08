@@ -241,6 +241,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         // 1. Embed token
         EmbedToken(token, _tokEmbdScratch);
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, "model_input_embed.bin"), _tokEmbdScratch);
 
         // Wide residual starts as hc identical copies of the embedding (qwen4exp.cpp:443-445)
         for (int c = 0; c < _hc; c++)
@@ -511,6 +512,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     {
         // Recurrent GDN mixer
         output.Clear();
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"hc_mixed_{layerIdx}.bin"), input);
         if (layer.AttnQkv == null) return;
 
         // QKV projection
@@ -520,6 +522,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         Span<float> qkv = stackalloc float[qkvDim];
         MatVec(layer.AttnQkv.Value, input, qkv);
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"linear_attn_qkv_mixed_{layerIdx}.bin"), qkv);
 
         if (_q4eDebug && layerIdx == 0 && position <= 4)
         {
@@ -561,6 +564,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 Console.Error.WriteLine($"[q4e-dbg] conv_output_raw-0 sum={_convRawAccum[0]:F6}");
         }
 
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"conv_output_raw_{layerIdx}.bin"), qkvPostConv);
+
         // SiLU on the conv output, confirmed 2026-11-07 against both llama.cpp (qwen4exp.cpp:1160,
         // "conv_output_silu = ggml_silu(conv_output_proper)") and TensorSharp's own doc comment
         // ("PrepareGdnInputs has already done ... conv1d + SiLU"). This port had NO activation
@@ -581,12 +586,15 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 Console.Error.WriteLine($"[q4e-dbg] conv_output_silu-0 sum={_convSiluAccum[0]:F6}");
         }
 
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"conv_output_silu_{layerIdx}.bin"), qkvPostConv);
+
         // Gate projection z
         Span<float> z = stackalloc float[valDim];
         if (layer.AttnGate != null)
         {
             MatVec(layer.AttnGate.Value, input, z);
         }
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"z_{layerIdx}.bin"), z);
 
         // Slice Q, K, V
         var q = qkvPostConv.Slice(0, keyDim);
@@ -615,6 +623,12 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         Span<float> beta = stackalloc float[_ssmDtRank];
         if (layer.SsmAlpha != null) MatVec(layer.SsmAlpha.Value, input, alpha);
         if (layer.SsmBeta != null) MatVec(layer.SsmBeta.Value, input, beta);
+
+        if (_dumpActive)
+        {
+            DumpFloats(Path.Combine(_dumpDir!, $"alpha_{layerIdx}.bin"), alpha);
+            DumpFloats(Path.Combine(_dumpDir!, $"beta_raw_{layerIdx}.bin"), beta);
+        }
 
         // Tile Q and K to numVHeads if needed
         Span<float> qTiled = stackalloc float[valDim];
