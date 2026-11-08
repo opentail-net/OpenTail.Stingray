@@ -502,3 +502,28 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   the token embedding of the drafted token.
 - Consequence: Phase 4 needs (a) the MTP head file in `models/_models` (about 1.8 GB for shared Q4_K_M), (b) the key fix,
   (c) a `graph_mtp` port checked against llama.cpp, then (d) verification and speed measurement. Qwen 3.8 stays unadmitted.
+
+### Phase 4 planned graph (reference `graph_mtp`, qwen4exp.cpp ~529-612, pinned `bed0a8566`), recorded before code
+
+Inputs per draft step: the draft token `t` (position p+1) and the trunk's HC residual `h` (the `h_nextn` tensor, the
+residual before the trunk's final head mixer, `qwen4exp.cpp` ~502). Shared with the trunk: `token_embd`, `output`.
+
+1. `tok = token_embd[t]` (shared).
+2. `hn = RMSnorm(h reshaped [n_embd, hc, n], blk.48.nextn.hnorm)` (weight is [hc*n_embd], applied per stream).
+3. `en = RMSnorm(tok, blk.48.nextn.enorm)`, repeated across the `hc` streams.
+4. `res = eh_proj( concat0(en, hn) )`, `eh_proj` is [2*n_embd, n_embd], giving `[n_embd, hc, n]`.
+5. Attention: `hc_mix(res, blk.48.hc_attn_norm/down/up/inject)` -> `cur`, `inject`; `cur = attn_block(cur)` using
+   blk.48's QSA weights, the head's own KV cache and indexer cache (a single attention layer); `res = hc_combine(res, cur, inject)`.
+6. FFN: `hc_mix(res, blk.48.hc_ffn_*)` -> `cur`; `cur = moe_block(cur)` using blk.48's experts and shared expert;
+   `res = hc_combine(res, cur, inject)`.
+7. Next-step residual `h' = res` (flat), returned as `h_nextn` for the following draft step.
+8. Logits: `z = hc_mix(res, blk.48.nextn.hc_head_norm/down/up)` (no inject), then `logits = output(z)` (shared).
+
+Stingray plan:
+- Load blk.48 tensors from the MTP file (a second GGUF, same tensor names) into the layer structure used for the trunk
+  layers; load shared `token_embd`/`output` from the trunk; no tensors from the trunk's blk.48 (there are none).
+- Add the head as layer index 48 of the sequence state for its QSA caches (no recurrent state at 48); the trunk's
+  per-layer arrays keep 48 trunk layers.
+- Forward: `Qwen4ExpForwardPass.ForwardMtp(draftToken, h, position, state)` implementing steps 1-8, reusing the existing
+  QSA, HC and MoE kernels. Verification plan: compare each step's `hn`, `en`, `res`, logits with a llama.cpp run of the
+  MTP head over the same inputs before any speed claim. Qwen 3.8 stays unadmitted.
