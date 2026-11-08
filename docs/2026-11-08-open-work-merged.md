@@ -44,6 +44,11 @@ Status 2026-11-08. This is the single plan for work that is still open. Finished
 - **Already done:** ForwardPass, ForwardPass.Fast, Tests.Server (5 finders), Tests.Vulkan (4), and sampled classes in Audio and Diffusion.
 - **Next step, in this order:** Core, Embeddings, Cli, then the rest of Server and Vulkan. For each project, run with `STINGRAY_RUN_HEAVY_TESTS=1` and list every skip with its reason. Point each finder at `ModelLocator`. Then Audio and Diffusion in full (hours of runtime; run last).
 - **Done when:** every heavy project's skips are listed with a reason, and no finder duplicates the shared one.
+- **Status 2026-11-08: started, one file.**
+  - **Confirmed bug.** `DeepSeek2GpuParityTests.FindModelPath` (Vulkan) walked up from the test binary and checked only `<repo>/models` and `<repo>/models/_models`. The checkpoint `DeepSeek-V2-Lite-Chat.Q2_K.gguf` (6.4 GB) is on `F:\_models`. In the 2026-11-08 Vulkan run the test reported "not present", so it silently skipped a real checkpoint. Changed to `ModelLocator.FindDeep`, the same call `Gemma4GpuForwardPassTests` uses.
+  - **Verified:** build is clean; the class still skips by default with the heavy-gate message. **Not verified:** that the new lookup finds the `F:` file. That needs a heavy run, which loads the 6.4 GB model, so it is left for a quiet-machine run.
+  - **Scope, strict definition:** 95 test files build their own `"models"` path and do not use `ModelLocator`. By project: Diffusion 29, Cuda 28, Vulkan 18, Core 9, Audio 4, Server.Fast 3, Cli 2, Server 1, ForwardPass.Fast 1. The plan's 161 used a broader definition.
+  - **Before changing the others:** check each project's gate first. Vulkan, Diffusion and Audio use `HeavyTestBase`, so a finder change there only runs in heavy mode. Core, Cli and Server.Fast were not checked, and a finder change there could start real model runs in default runs. Core is next to check.
 
 ### A4. Non-finite logits in hybrid MoE decode
 
@@ -116,6 +121,8 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 
 - **a. No-listener overhead:** show it is within the plan's bound (1%, and the baseline noise band), with a method that can isolate it. Also measure the NativeAOT CLI size and start-up effect, using the overhead procedure in the plan's section 8. Quiet machine, interleaved.
 - **b. Cost tiers:** every instrument has a cost tier (plan section 4.1). Test that only tier 1 does work with no listener attached, and that tier 3 output is labelled as perturbed.
+  - **Status 2026-11-08: met by a passing test.** `EngineTelemetryTierGatingTests` (ForwardPass.Fast, 1 test, 0 skipped, 0.21 s) checks that the tier-2 gate is closed with no listener, with a tier-1-only listener, and that it opens with a tier-2 listener and closes again after it. It also checks that tier-3 instruments are absent without diagnostic mode and that their definitions start with "DIAGNOSTIC". Not re-checked here: that every instrument in code has a row in the tier table; `EngineTelemetryContractTests` is the place for that.
+  - **a is not done:** the overhead bound needs a quiet machine and a method that isolates the no-listener cost. Left open.
 - **c. Growth seams:** the seams in plan section 14. Add each one when a new metric needs it. Do not add them speculatively.
 - **Done when:** a and b have measured or tested evidence on their line, and c is met or deferred with a reason.
 

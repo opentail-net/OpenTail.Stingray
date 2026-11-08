@@ -99,15 +99,7 @@ public sealed class DeepSeek2GpuParityTests : HeavyTestBase
         return d / (Math.Sqrt(na) * Math.Sqrt(nb));
     }
 
-    private static string? FindModelPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", ModelFile), Path.Combine(dir.FullName, "models", "_models", ModelFile) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    // The shared finder also checks STINGRAY_MODEL_DIRS and the _models folder on each drive. The local walk
+    // here found only <repo>/models, so a checkpoint on another drive was reported as "not present".
+    private static string? FindModelPath() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(ModelFile);
 }

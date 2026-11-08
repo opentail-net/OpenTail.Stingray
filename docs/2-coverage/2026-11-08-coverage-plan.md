@@ -44,6 +44,7 @@ These were the open items of the admission follow-ups, now collected here:
 
 - **Heavy suites never run:** the Cuda, Vulkan, Sessions and Server heavy projects, and the ForwardPass classes outside the migrated architectures. Run each on this machine where it can run; list each skip with its reason. Merged plan item A3 covers the finder part.
   - **Status 2026-11-08:** all four projects build (Release, 0 warnings). Test counts: Server 24 facts, Sessions 13, Vulkan 201, Cuda 463. The heavy gate is inconsistent: only Sessions and Vulkan check `STINGRAY_RUN_HEAVY_TESTS`; Server and Cuda have no such check, so they run whatever they contain. Runs use `STINGRAY_RUN_HEAVY_TESTS=1`, one project at a time, with free RAM at 42-44 GB and no other test process running. Outputs are in the scratchpad, `a5/`.
+    **Caveat on the skip counts:** the runs were made from the worktree `C:/Git-Public/OpenTail.Stingray-backlog`, which has no `models/` folder. The main checkout's `models/` holds `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`, and the shared locator does not search it from the worktree, so SmolLM2 "missing" skips are an artifact of the location. The Server and Sessions counts need a rerun with `STINGRAY_MODEL_DIRS=C:/Git-Public/OpenTail.Stingray/models`. That rerun is a real-model run, so it waits for a quiet machine.
 
     | Project | Gate in code | Total | Passed | Failed | Skipped | Time | Skip reasons |
     |---|---|---|---|---|---|---|---|
