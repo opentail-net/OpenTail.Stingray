@@ -149,7 +149,7 @@ Runnable now. Test cases only, no new disk or implementation.
       setter, so the MTP context cannot receive the trunk state. Next oracle is the unsloth fork (see D2). Also
       recorded: fork builds crash on the head's null recurrent memory (`build_rs_inp_impl`) and fork `llama-server`
       with `-md` segfaults during draft setup.
-- [ ] Acceptance rate, multi-token acceptance, rollback on rejection.
+- [ ] Acceptance rate, multi-token acceptance, rollback on rejection. **Acceptance measured 2026-11-08** (`Qwen4ExpMtpAcceptanceTests`, real trunk and shared Q4_K_M head): 31 of 40 greedy positions (**77.5%**), one prompt (21 prompt tokens, 40 decode steps). The head's draft for the next token equals the trunk's own greedy token. Chance is about zero for a 248k vocabulary, so the head is doing real work. Still open: multi-token (chained) acceptance, rollback on rejection (needs the MTP decoder wired to the qwen4exp pass: `HasMtpHead`, `MtpForward`, `MtpLastHidden`, `PrefillMtp`, `MtpTruncateTo`, `MtpResetCache`, and a per-position hidden history), and more prompts.
 - [ ] Separate speed measurement (rule 7 applies later).
 
 ## Phase 5. Image and video input
