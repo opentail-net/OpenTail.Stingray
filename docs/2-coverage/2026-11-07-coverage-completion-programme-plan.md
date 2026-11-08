@@ -269,3 +269,18 @@ taking on Phase 2B/3's real implementation work:
   `l_last_0` 1.46% -> 0.37%, logits relative error 11% -> 6.5% (cosine 0.9979), top-1 still 11751 (matches reference).
 - Still open: the MoE error from layer 1 on (`ffn_out` 2%, growing to 19-27% at layers 5-11). Routed experts computed in
   f32 give the same error, so it is not the expert matvec's activation rounding.
+
+### Phase 0.2 finding, 2026-11-08: remaining error is quantisation-flip amplification (noise floor)
+
+- Layer-0 chain with the HC rounding experiment on: embedding exact; attention HC mix 0.005%; GDN projections 0.03%;
+  gated GDN output 0.03%; `linear_attn_out_0` 0.36%; FFN-side HC mix input 0.62% (layer 0), 1.3% (layer 1), 2.3% (layer 5).
+- Test: perturb llama.cpp's own `final_output-0` by 0.03% random noise and push it through the Q5_K weights with llama.cpp's Q8_K
+  rounding. The `ssm_out` output moves by 0.26%. With f32 activations the same perturbation moves it by 0.025%.
+  So each quantised matmul amplifies a small float-order difference by about 10x (one input value crosses a Q8_K rounding
+  boundary and moves by one quantisation step).
+- Conclusion: the growing error is cumulative noise from quantised matmuls at every layer, consistent with llama.cpp's own
+  arithmetic. Not evidence of a logic error. Bit-exact parity is not a reachable criterion.
+- Proposed parity criterion (for the owner to confirm): per-layer relative error bounded at the level above, final logits
+  cosine >= 0.998 and top-1 agreement on several fixed prompts with greedy decoding. Until confirmed, Phase 0 stays open.
+- Open: the layer-1 MoE error (2.2%) is inherited from the FFN input (1.3%) and amplified by the quantised expert and shared-expert
+  matmuls; it is not a separate defect.
