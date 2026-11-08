@@ -146,7 +146,21 @@ public sealed unsafe class QwenVlVisionEncoder
     /// Executes the full Qwen-VL ViT encoder pipeline:
     /// Preprocessed CHW pixels -> Dual Conv2D Patch Embeddings -> ViT Layers with M-RoPE -> Post-Norm -> 2x2 Spatial Merge MLP -> LLM Visual Tokens.
     /// </summary>
-    public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, out int tokenCount)
+    public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, out int tokenCount) =>
+        ForwardCore(chw, chw, targetWidth, targetHeight, out tokenCount);
+
+    /// <summary>
+    /// Video: two consecutive frames (CHW, values in [-1, 1]) form one temporal patch. Frame 0 meets the first temporal
+    /// kernel and frame 1 the second. Frames of the same size as the target are required.
+    /// </summary>
+    public float[] ForwardVideo(ReadOnlySpan<float> frame0Chw, ReadOnlySpan<float> frame1Chw, int targetWidth, int targetHeight, out int tokenCount)
+    {
+        if (frame1Chw.Length != frame0Chw.Length)
+            throw new ArgumentException("Both video frames must have the same size.", nameof(frame1Chw));
+        return ForwardCore(frame0Chw, frame1Chw, targetWidth, targetHeight, out tokenCount);
+    }
+
+    private float[] ForwardCore(ReadOnlySpan<float> chw, ReadOnlySpan<float> chw1, int targetWidth, int targetHeight, out int tokenCount)
     {
         int patchSize = _m.PatchSize; // 14
         int mergeFactor = _m.SpatialMergeFactor; // 2
@@ -159,7 +173,7 @@ public sealed unsafe class QwenVlVisionEncoder
 
         // 1. Conv2D Patch Embeddings: (3 x 14 x 14 -> 1280)
         var hiddenStates = new float[numPatches * _embd];
-        ExtractPatchEmbeddings(chw, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
+        ExtractPatchEmbeddings(chw, chw1, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
 
         // Windowed/local attention (real qwen2vl.cpp, shared with exaone4_5.cpp): layer il gets
         // FULL attention only when (il+1) % waPattern == 0; every other layer only attends within
@@ -383,7 +397,7 @@ public sealed unsafe class QwenVlVisionEncoder
         return output;
     }
 
-    private void ExtractPatchEmbeddings(ReadOnlySpan<float> chw, int width, int height, int patchesX, int patchesY, float[] output)
+    private void ExtractPatchEmbeddings(ReadOnlySpan<float> chw, ReadOnlySpan<float> chw1, int width, int height, int patchesX, int patchesY, float[] output)
     {
         int patchSize = _m.PatchSize; // 14
         int patchArea = patchSize * patchSize;
@@ -412,11 +426,11 @@ public sealed unsafe class QwenVlVisionEncoder
                                 for (int dx = 0; dx < patchSize; dx++)
                                 {
                                     int x = px * patchSize + dx;
-                                    float pixel = chw[c * totalPixels + (y * width + x)];
+                                    int pixelIdx = c * totalPixels + (y * width + x);
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * _patchEmbd0WF32[weightIdx];
+                                    sum += chw[pixelIdx] * _patchEmbd0WF32[weightIdx];
                                     if (_patchEmbd1WF32.Length > 0)
-                                        sum += pixel * _patchEmbd1WF32[weightIdx];
+                                        sum += chw1[pixelIdx] * _patchEmbd1WF32[weightIdx];
                                 }
                             }
                         }

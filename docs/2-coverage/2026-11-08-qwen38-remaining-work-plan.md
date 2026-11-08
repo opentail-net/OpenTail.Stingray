@@ -201,6 +201,14 @@ Runnable now. Test cases only, no new disk or implementation.
       - Not in scope for the first step: decoding video files inside the product. That needs a decoder decision (an
         ffmpeg dependency, or a managed decoder under NativeAOT). Question for the owner: which, or frame input only for now.
       - Admission is unaffected: video is not part of the current admitted scope (qwen2vl is text-only, see QwenArchitectures).
+      Progress 2026-11-08: steps (a) and (b) done for the encoder. `QwenVlVisionEncoder.ForwardVideo(frame0, frame1, w, h)`
+      feeds frame 0 to the first temporal kernel and frame 1 to the second; `Forward` is `ForwardCore(chw, chw)`, so the image
+      path is unchanged. Tests: `QwenVlVideoFrameTests` (3: identical frames equal the still path bit-for-bit; the second
+      frame changes the output; mismatched frame sizes are rejected). The Rainbow reference parity test still passes.
+      Not tested: stage-level additivity (the patch stage is private and the later layers are nonlinear, so it is not
+      additive at the output). Still open: (c) M-RoPE temporal index per merged chunk, (d) prompt layout with the reference
+      timestamps, (e) comparison with `llama-mtmd-cli --video` on a short clip, and the frame-input path (frame sequence).
+      The decoder question is still open for the owner.
 
 ## Phase 6. Tool calls
 
