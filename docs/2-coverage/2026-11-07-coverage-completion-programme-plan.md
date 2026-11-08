@@ -760,3 +760,22 @@ is still dropped and its fixed bytes freed.
   - Copy-on-write page sharing between sessions.
   - The real Qwen 3.8 fixed size is not measured.
 - Qwen 3.8 remains unadmitted and unadvertised.
+
+## Qwen 3.8 remaining work, tabled 2026-11-08
+
+Status as of this table. Each open item names its blocker. "Runnable now" means no owner decision or external dependency.
+
+| Phase | Remaining | Blocked on |
+|---|---|---|
+| 0. Numerical parity | Phase 0.3 (FFN injection gate) still open. The residual MoE error from layer 1 is attributed to quantisation noise, not confirmed | Owner confirmation of the working parity criterion (adopted by Claude, reversible) |
+| 1. Per-sequence state | Broader verification: more fixed prompts, incremental decode, a prompt crossing a prefill/decode chunk, a long prompt exercising QSA K-pool selection, a documented tolerance for the real-weight comparison | Runnable now |
+| 2. Batching | Queue limits and admission under backpressure; memory checks for cancelled requests (the finish-order test covers normal completion only) | Runnable now |
+| 3. Prefix and retained state | Copy-on-write for QSA history rows (in progress; sequence-level tests added). Still open: the turn-start snapshot's fixed state stays resident and uncharged; copy-on-write page sharing across sessions; real-checkpoint measurement of fixed bytes | Runnable now |
+| 4. MTP | Per-step oracle against the reference; acceptance rate, multi-token acceptance, rollback on rejection, separate speed measurement | The reference's MTP API at the pinned revision is a stub (`llama-batch.cpp` ~1230); the fork build segfaults on the head's null recurrent memory |
+| 5. Image and video | Logit-level comparison with the reference; exact 40-token equality (the current test compares text only); image input through the tool and server paths; video input (5.3), last | Video input untested; deferred by the owner |
+| 6. Tool calls | Server round trip; whether the server acts on the schema validator's result | Admission (CLAUDE.md rule 14); owner decision on the validator |
+| 7. Serving and product | Telemetry, knowledge collections, developer workflows. Browser UI (7F) parked by the owner | Not started |
+| 8. Verification and admission | Verification pass, docs, admission | Phases 4 to 7; owner confirmation |
+
+Owner decisions needed: confirm the parity criterion (Phase 0); decide whether the server acts on validator failures (Phase 6);
+approve admission later (Phase 8). Qwen 3.8 stays unadmitted and unadvertised until then.
