@@ -206,8 +206,7 @@ Runnable now. Test cases only, no new disk or implementation.
       path is unchanged. Tests: `QwenVlVideoFrameTests` (3: identical frames equal the still path bit-for-bit; the second
       frame changes the output; mismatched frame sizes are rejected). The Rainbow reference parity test still passes.
       Not tested: stage-level additivity (the patch stage is private and the later layers are nonlinear, so it is not
-      additive at the output). Still open: (c) M-RoPE temporal index per merged chunk, (d) prompt layout with the reference
-      timestamps, (e) comparison with `llama-mtmd-cli --video` on a short clip, and the frame-input path (frame sequence).
+      additive at the output). At that point (c), (d), (e) and the frame-input path were still open; see below.
       DECIDED by the owner 2026-11-08: ffmpeg executable behind a frame-source seam (the TensorSharp pattern: managed core
       takes frames; a host supplies the decoder). Design: `IVideoFrameSource` (probe the clip; read RGB24 frames at a
       given fps and size). `FfmpegVideoFrameSource` runs an operator-installed ffmpeg found by `STINGRAY_FFMPEG`, then PATH;
@@ -218,15 +217,35 @@ Runnable now. Test cases only, no new disk or implementation.
       `ffmpeg -i` stderr through `ParseProbeOutput`; ReadFrames via rawvideo rgb24 on stdout), and `VideoTemporalPairs`
       (RGB24 to CHW, consecutive pairs). Tests: `ProbeParser_ReadsSizeAndRateFromFfmpegStderr` passes;
       the three decode tests skip. Blocker: the `ffmpeg` on PATH is a scoop shim whose target
-      (`scoopppsfmpeg\currentinfmpeg.exe`) is missing, so nothing decodes on this machine. Not used: an Audacity
+      (`scoop\apps\ffmpeg\current\bin\ffmpeg.exe`) is missing, so nothing decodes on this machine. Not used: an Audacity
       FFmpeg installer found in Downloads (an installer, not a standalone binary). Needed from the owner: a working
       ffmpeg (install, or set STINGRAY_FFMPEG to a binary).
-      Step (c), checked 2026-11-08 (`tools/mtmd/mtmd.cpp`, read only): mergeable frames are grouped in pairs
-      (`n_temporal_merge == 2` for Qwen-VL) and each pair is one embedding and one image-token chunk. Its position is
-      `t = pos_0` for every token of the pair, `x` and `y` as for an image, and the text position advances by
-      `max(nx, ny)` once per pair (`n_past += get_n_pos`). So Stingray's video layout must advance the text position per
-      pair, not per frame, and give every token of a pair the same temporal index. `ForwardVideo` takes one pair, so the
-      encoder side already matches this.
+      Step (c), done 2026-11-08 (no code change; pinned by `MRopeVideoPairTests`, 3 passing, ForwardPass.Fast, no weights).
+      Reference (`tools/mtmd/mtmd.cpp`, `mtmd_image_tokens_get_decoder_pos` and `mtmd_image_tokens_get_n_pos`): a pair is one
+      image-token chunk of nx x ny tokens. Every token has t = pos_0, x and y follow the grid, and the text position advances
+      by max(nx, ny) once per chunk. `MRopeImageLayout` already does this for a chunk registered with `AddMRopeImage`, and the
+      caller must register one chunk per pair, not one per frame. Tests: a pair shares t; text after a 3x2 chunk advances by 3;
+      two pairs each advance once.
+
+      Step (d), done 2026-11-08 (layout only; pinned by `VideoPromptLayoutTests`, 5 passing, Vision, no weights).
+      Reference order (`tools/mtmd/mtmd-helper.cpp` `read_next`, ~797-845; `tools/mtmd/mtmd.cpp` `expand_lazy_bitmaps`,
+      ~1208-1240): "Video:", then each frame. After a frame that reaches the next threshold (elapsed = frame index / fps;
+      thresholds 0, 5000, 10000 ... ms) comes a text "[%dm%.2fs]", before the next frame. Chunking
+      (`mtmd_group_mergeable_bitmaps`, ~1108-1125) pairs two frames only when they are adjacent parts, so a text part between
+      two frames leaves each of them alone. Each chunk is wrapped in `<|vision_start|>` ... `<|vision_end|>` (`add_media`; Qwen
+      `img_beg` / `img_end`, `mtmd.cpp` ~701), and each text part is passed to `add_text` on its own.
+      From that rule: with the default 5000 ms, frame 0 is a single chunk (the first timestamp follows it) and the rest pair as
+      (1,2), (3,4), ... The 8-frame test clip gives 5 chunks [0] [1,2] [3,4] [5,6] [7], not 4 pairs. So
+      `VideoTemporalPairs.Pair` (consecutive pairs, no text) is not the reference layout once timestamps are in the prompt.
+      Stingray: `VideoPromptLayout.Parts`, `Chunks` and `Timestamp` (src/OpenTail.Stingray.Vision/VideoPromptLayout.cs).
+      A single-frame chunk runs both temporal kernels on that frame (`tools/mtmd/models/qwen2vl.cpp`, `n_batch == 1`), which is
+      what `ForwardVideo(f, f)` does, so it matches the still path.
+
+      Step (e), not started: blocked on a working ffmpeg. The reference also runs ffprobe (`probe`, `ffprobe_bin` in
+      `mtmd-helper.cpp`) and a decoder subprocess, so both sides need one. When unblocked: a short clip, its prompt built from
+      `VideoPromptLayout` (text parts and chunks tokenized as the reference does), compared with `llama-mtmd-cli --video` at
+      the same settings.
+      The frame-input path (a frame sequence instead of a decoder) is not started either.
 
 ## Phase 6. Tool calls
 
