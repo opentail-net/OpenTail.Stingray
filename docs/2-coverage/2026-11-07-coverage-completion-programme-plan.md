@@ -106,6 +106,43 @@ admitted or advertised until it earns that.
   shared-expert contribution (no bug). Phase 2A's only remaining gap is real-weight parity, which
   stays out of reach on this machine's disk budget (see above).
 
+## Qwen 3.8 (`qwen4exp`) reconciliation, 2026-11-08 (Phase 0.1 of the Qwen 3.8 correctness plan)
+
+Checked against `Qwen4ExpForwardPass.cs` and the descriptor's `RefusalReason` (`Qwen4ExpArchitecture.cs`).
+
+- **Fixed, verified in code:** the conv1d weight transpose (`LoadConv1dTransposed`-equivalent cache,
+  `_convWeightTransposeCache`); SiLU on the GDN conv output (`conv_output_silu`); sigmoid, not SiLU, on the GDN output gate
+  (`useSigmoidGate: true`); per-head L2 norm on Q and K before the recurrence. The two regression tests named in this
+  file (`Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`,
+  `TruncateTo_RejectsIntermediateLength_OnlyAcceptsZeroOrCurrent`) both exist in `Qwen4ExpRealWeightsSmokeTests.cs`.
+- **Measurement points differ, not contradict:** the transpose fix was measured at the layer-0 **GDN mixer output**
+  (matches llama.cpp within quantisation noise). The descriptor's later figure (layer-0 **post-GDN-and-FFN residual**
+  still ~46% off) is a different measurement point. Both hold.
+- **Not established:** full-stack numerical parity. Final logits are still off by order of magnitude per the descriptor;
+  the layer-by-layer `l_last` trace still grows faster than llama.cpp's reference across the 48 layers.
+- **Open, inconclusive:** the FFN injection gate (`hc_ffn_inject`). The tensor loads at full length with sane values; the
+  per-stream gates diverge from llama.cpp beyond the known GDN imprecision, and one stream flips sign. Could be a
+  remaining bug or amplified upstream error.
+- **Paris continuation:** one prompt, 20 greedy tokens. Encouraging, not full-model correctness.
+- **Admission:** unchanged. The architecture refusal stays. Qwen 3.8 is not admitted or advertised.
+- **Debug output:** the layer-sum prints in `Qwen4ExpForwardPass.cs` are gated by `STINGRAY_Q4E_DEBUG=1`, but the
+  gate is read from the environment inside the per-layer loop (lines 265, 354). Phase 0.2 replaces them with the
+  structured diagnostic.
+
+### Phase 0.2 progress, 2026-11-08: reference side
+
+- Built `llama-eval-callback` from the pinned reference (`bed0a8566`, `build-ref`, Release, CPU).
+- Checkpoint: `E:\_models\qwen38-flash-next\UD-IQ1_S`, shards 1-3 of 3 (62 GB). Prompt `"The capital of France is"`
+  (5 tokens), one decode step, `-ngl 0`.
+- The stock callback prints only edge values, so it cannot give full vectors. A local dump callback in the git-ignored
+  `examples/eval-callback/eval-callback.cpp` writes the first occurrence of each named tensor as raw bytes plus a `.meta`
+  file, under `$QWEN_DUMP_DIR`. Names are sanitised (`-` becomes `_`, so `l_last-47` is `l_last_47.bin`).
+- Result: 1,671 tensor files, 1.1 GB, for the prompt pass. `l_last` is present for all 48 layers (`l_last_47`:
+  `ne=2560,4,1,1`), `result_output` is present (`ne=248320,1,1,1`). Not committed: this is local tooling in a git-ignored
+  reference checkout.
+- Stingray side: not started. It needs a dump hook in `Qwen4ExpForwardPass.cs` writing the same node names and layouts,
+  then a comparison that records max abs diff, relative error, cosine and first divergent op per layer.
+
 ## Phases (in order; do not start a later one before the current one's completion criteria)
 
 | # | Family | Checkpoint available? | Status | What's actually left |

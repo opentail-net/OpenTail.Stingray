@@ -105,7 +105,7 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 - **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total; smallest quant ~72.5 GB; synthetic gate only on this host, see the programme plan for the paged run).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [x] Real-weight verification, one prompt (paged execution, 2026-11-07; details in the programme plan).
+- [x] Real-weight execution, one prompt (paged run 2026-11-07; the layer-0 GDN mixer output matches llama.cpp). Full-stack numerical parity is **not** established: see the Qwen reconciliation in the programme plan.
 - [ ] Broader real-weight verification before promotion: more fixed prompts, incremental decode, a
       prompt crossing a prefill/decode chunk boundary, QSA K-pool exercise, a documented tolerance.
       MTP and vision stay deferred.
