@@ -598,7 +598,8 @@ public static class OpenAiEndpoints
             // been emitted; any trailing plain text is model control noise (e.g. Gemma's
             // <|tool_response> turn marker) and must not leak as a content delta (issue #150).
             // Preamble before the first call is unaffected (hasToolCalls is still false then).
-            if (hasToolCalls) return;
+            // After an invalid call the stream's output is over (owner decision D3): nothing more reaches the client.
+            if (hasToolCalls || invalidToolCall) return;
             var chunk = new ChatCompletionChunk(
                 requestId, "chat.completion.chunk", created, engine.ModelId,
                 [new ChunkChoice(0, new ChunkDelta(null, text), null)]);
@@ -649,7 +650,7 @@ public static class OpenAiEndpoints
                     toolCallContentStart = -1;
                     inToolCall = false;
                     await EmitToolCallsFromBlock(block);
-                    if (remaining.Length > 0)
+                    if (remaining.Length > 0 && !invalidToolCall)
                         await ProcessTextChunk(remaining);
                 }
                 return;
@@ -716,6 +717,7 @@ public static class OpenAiEndpoints
                     // chunk as a separate content delta (clients rely on the streaming cadence).
                     await WriteContentDelta(c.Text);
                 }
+                if (invalidToolCall) break; // the error event ends generation
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -732,7 +734,7 @@ public static class OpenAiEndpoints
         finally
         {
             // Flush any remaining buffered text (cannot contain a partial open marker now).
-            if (!inToolCall && pendingText.Length > 0)
+            if (!inToolCall && pendingText.Length > 0 && !invalidToolCall)
             {
                 try { await WriteContentDelta(pendingText); }
                 catch (OperationCanceledException) { /* client disconnected */ }

@@ -421,7 +421,8 @@ public static class AnthropicEndpoints
             // noise (e.g. Gemma's <|tool_response> turn marker) — not assistant content — so it
             // must not open a stray text block (issue #150). Preamble before the first call is
             // unaffected (hasToolCalls is still false then). Mirrors the OpenAI streaming guard.
-            if (hasToolCalls) return;
+            // After an invalid call the stream's output is over (owner decision D3): nothing more reaches the client.
+            if (hasToolCalls || invalidToolCall) return;
             if (!textOpen)
             {
                 // Close thinking block first if it was opened without a follow-up text block.
@@ -521,7 +522,7 @@ public static class AnthropicEndpoints
                     toolCallContentStart = -1;
                     inToolCall = false;
                     await EmitToolCallsFromBlock(block);
-                    if (remaining.Length > 0)
+                    if (remaining.Length > 0 && !invalidToolCall)
                         await ProcessTextChunk(remaining);
                 }
                 return;
@@ -609,6 +610,7 @@ public static class AnthropicEndpoints
                 {
                     await ProcessTextChunk(chunk.Text);
                 }
+                if (invalidToolCall) break; // the error event ends generation
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -625,7 +627,7 @@ public static class AnthropicEndpoints
         finally
         {
             // Flush any remaining buffered text (cannot contain a partial tool_call open tag).
-            if (!inToolCall && pendingText.Length > 0)
+            if (!inToolCall && pendingText.Length > 0 && !invalidToolCall)
             {
                 try { await FlushTextDelta(pendingText); }
                 catch (OperationCanceledException) { /* client disconnected */ }
@@ -680,7 +682,7 @@ public static class AnthropicEndpoints
         // Anthropic responses always include a terminal text block, even if empty.
         // Cover cases: (a) no chunks at all → empty text at index 0;
         //              (b) thinking-only (model hit budget) → empty text at nextBlockIndex.
-        if (!textOpen && !hasToolCalls)
+        if (!textOpen && !hasToolCalls && !invalidToolCall)
         {
             try
             {
