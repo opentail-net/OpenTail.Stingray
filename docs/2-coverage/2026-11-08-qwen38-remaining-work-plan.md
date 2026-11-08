@@ -139,7 +139,10 @@ Runnable now. Test cases only, no new disk or implementation.
   The copy itself is still made.
 - [x] Real-checkpoint measurement of the fixed bytes per sequence (2026-11-08, `Qwen4ExpChunkedPrefillTests`): fixed state
       118,079,488 bytes (112.6 MiB) per sequence, and 49,156 bytes of per-token state, both read from the loaded layer tensors.
-      Held snapshot bytes after a turn are not measured here.
+      Held snapshot bytes after a real turn (2026-11-08, `Qwen4ExpTurnSnapshotTests`): a first turn of 5 tokens, 3 generated tokens, then a
+      second turn of 7 tokens keeps a turn-start snapshot of 118,081,056 bytes. That is the fixed state (118,079,488) plus 1,568 bytes of
+      list headers. The KV rows are shared copy-on-write with the live cache, so they are not held until the live cache diverges.
+      The first turn holds none (0 bytes).
 - [ ] Cross-session copy-on-write page sharing (Job 8). **Design only**; not started. Deferred.
 
 ## Phase 4. MTP speculative decoding
