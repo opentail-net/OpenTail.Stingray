@@ -704,3 +704,59 @@ the engine level (see the table); its one limit is stated there. Qwen 3.8 is sti
 - Not measured: the real Qwen 3.8 fixed bytes per sequence. This needs the loaded pass, and no number is quoted here.
 - Still open in Phase 3: a `RetainedSequenceState` is not charged to any budget, and its turn-start snapshot doubles the
   per-sequence state. Copy-on-write sharing is not done. Qwen 3.8 remains unadmitted.
+
+## Phase 3 (retained-state budgeting), design 2026-11-08, recorded before code
+
+Correction to the earlier note: retained state is already budgeted at the session layer. `SessionResourceBudget`
+(Sessions) tracks committed resident bytes and per-turn reservations, with per-session and per-model caps.
+`HotSessionRuntime` reclaims idle retained caches when a reservation fails (`ReclaimIdleBytes` ->
+`HotSession.EvictRetainedCacheIfIdle`). What is missing is narrower, and it has the same cause as the prefix-cache gap.
+
+Contracts this must satisfy:
+- `IBatchedForwardPass.FixedBytesPerSequence` (default 0): bytes a sequence holds regardless of length. Charged per
+  resident state, not per token.
+- `RetainedSequenceState.EvictIfIdle()`: drops the cache and returns the materialised position count. It also disposes a
+  cache that holds zero positions, but then returns 0, so the caller cannot tell that a cache was dropped.
+- `HotSession.EvictRetainedCacheIfIdle()`: returns freed bytes and sets the session's residency to 0.
+- `ReclaimIdleBytes`: sums what each idle session frees, so eviction must report the same bytes the session charged.
+
+Branch map of byte uses in `HotSession.cs` (current line numbers):
+| Line | Use | Change |
+|---|---|---|
+| 301 | evict returns `freedPositions x kv` | return the fixed bytes too when a cache was dropped; use the eviction flag, not the position count |
+| 328-329 | prefix-snapshot reservation `prefixTokens x kv` | add fixed (a snapshot holds the fixed state) |
+| 483-486, 501 | initial turn reservation `initialPositions x kv` | add fixed (the session will hold the state after the turn) |
+| 526 | renewal `targetPositions x kv` | add fixed |
+| 638 | `CurrentResidentBytes` = positions x kv when a state is held | add fixed |
+| 695, 1104-1105 | ABI `KvBytesPerToken` | unchanged (fixed bytes are not part of the ABI) |
+
+Source of the value: `ContinuousBatchingEngine.FixedBytesPerSequence` (new public property, reading the pass). The
+constructor is not changed; there is one construction site (`HotSession.cs:830`).
+
+Not in this step (open):
+- The turn-start snapshot (`TurnSnapshot` in `Qwen4ExpBatchedForwardPass.Cache`) stays resident after a successful turn,
+  so a retained session holds about two states. `RollbackLastTurn` needs it, so it cannot simply be dropped. It needs its
+  own charge, or a different rollback design. This step does not change it.
+- Copy-on-write page sharing between sessions.
+
+Test plan: a Sessions.Fast test with a fake pass whose `FixedBytesPerSequence` is 1000 and `KvBytesPerToken` is 10. After
+one turn, the session's residency is positions x 10 + 1000. Eviction frees that same amount, and a zero-position cache
+is still dropped and its fixed bytes freed.
+
+## Phase 3 (retained-state budgeting), result 2026-11-08
+
+- Implemented, as designed above: a held retained state now costs its per-token KV plus its fixed sequence state. The
+  session layer charges that figure at every reservation and residency site (`HotSession.RetainedBytes`). Eviction reports
+  whether a cache was dropped, so a zero-position cache is also released and its fixed bytes freed
+  (`RetainedSequenceState.EvictIfIdle` now returns `(Dropped, Positions)`).
+- Tests: `HotSessionFixedStateTests` (Sessions.Fast, 2, synthetic): a completed turn's residency is the fixed-state-free
+  figure plus the fixed bytes, and eviction under budget pressure frees the fixed bytes too. Both pass.
+- Regression runs: Sessions.Fast full suite, 144 tests, 0 failed. Core full suite, 1366 tests, 0 failed, 95 skipped
+  (fixtures not present).
+- Not mutation-checked: the session-layer charge. The prefix-cache charge was checked (removing it fails its test).
+- Still open in Phase 3:
+  - The turn-start snapshot (`TurnSnapshot` in `Qwen4ExpBatchedForwardPass`) stays after a successful turn, so a retained
+    session holds about two states. `RollbackLastTurn` needs it. It is not charged yet, and removing it needs a rollback design.
+  - Copy-on-write page sharing between sessions.
+  - The real Qwen 3.8 fixed size is not measured.
+- Qwen 3.8 remains unadmitted and unadvertised.

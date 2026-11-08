@@ -343,6 +343,9 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// <summary>Backend-reported KV bytes per logical token, used by session residency planning.</summary>
     public long KvBytesPerToken => _fwd.KvBytesPerToken;
 
+    /// <summary>Bytes every sequence holds regardless of length (see <see cref="IBatchedForwardPass.FixedBytesPerSequence"/>).</summary>
+    public long FixedBytesPerSequence => _fwd.FixedBytesPerSequence;
+
     /// <summary>Maximum logical sequence length accepted by the active backend.</summary>
     public int MaxSequenceLength => _fwd.MaxSeqLen;
 

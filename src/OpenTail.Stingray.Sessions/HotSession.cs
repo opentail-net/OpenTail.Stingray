@@ -78,6 +78,9 @@ public sealed class HotSession : IDisposable
     private readonly InMemorySessionStore _store;
     private readonly SessionResourceBudget _resources;
     private readonly long _kvBytesPerToken;
+    // Fixed per-sequence state (recurrent buffers): held by a retained state whatever its length, so every
+    // residency and reservation figure below charges it once per held state, not per token.
+    private readonly long _fixedBytesPerSession;
     private readonly int _maxSequenceLength;
     private readonly int _maxCapturedOutputChunks;
     private readonly string _modelKey;
@@ -122,6 +125,7 @@ public sealed class HotSession : IDisposable
         _store = store;
         _resources = resources;
         _kvBytesPerToken = kvBytesPerToken;
+        _fixedBytesPerSession = engine.FixedBytesPerSequence;
         _maxSequenceLength = maxSequenceLength;
         _maxCapturedOutputChunks = maxCapturedOutputChunks;
         SessionId = sessionId;
@@ -295,10 +299,10 @@ public sealed class HotSession : IDisposable
     /// </summary>
     internal long EvictRetainedCacheIfIdle()
     {
-        int freedPositions = _state.EvictIfIdle();
-        if (freedPositions == 0) return 0;
+        var (dropped, freedPositions) = _state.EvictIfIdle();
+        if (!dropped) return 0;
         _resources.SetResidentBytes(SessionId, 0);
-        return checked(freedPositions * _kvBytesPerToken);
+        return RetainedBytes(freedPositions);
     }
 
     /// <summary>
@@ -325,7 +329,7 @@ public sealed class HotSession : IDisposable
         // Admission first, before any state is touched: a refusal leaves the forked cache with the caller to dispose.
         // Each session is charged its full prefix even though pages are shared (the conservative policy the rest of
         // the accounting already uses), against the aggregate, per-session and per-model limits.
-        long prefixBytes = checked((long)prefixTokens.Length * _kvBytesPerToken);
+        long prefixBytes = RetainedBytes(prefixTokens.Length);
         using var reservation = _resources.Reserve(SessionId, prefixBytes, _modelKey);
         _state.SeedWithForkedCache(forkedCache, prefixTokens.Length);
         var log = ImmutableArray.Create<ExecutionSegment>(new TokenSegment(prefixTokens));
@@ -480,7 +484,7 @@ public sealed class HotSession : IDisposable
             SessionResourceBudget.SessionResourceReservation reservation;
             int initialPositions = checked(priorCursor.MaterializedPositionCount + appendTokens.Length
                 + (sampling.MaxNewTokens > 0 ? 1 : 0));
-            long neededBytes = checked((long)initialPositions * _kvBytesPerToken);
+            long neededBytes = RetainedBytes(initialPositions);
             try
             {
                 reservation = _resources.Reserve(SessionId, neededBytes, _modelKey);
@@ -523,7 +527,7 @@ public sealed class HotSession : IDisposable
                     bool firstChunkSeen = false;
                     await foreach (var chunk in _engine.GenerateRetainedChunksAsync(
                         effectivePrompt, sampling, _state, cancellationToken,
-                        targetPositions => reservation.TryRenew(checked((long)targetPositions * _kvBytesPerToken))).ConfigureAwait(false))
+                        targetPositions => reservation.TryRenew(RetainedBytes(targetPositions))).ConfigureAwait(false))
                     {
                         if (!firstChunkSeen)
                         {
@@ -635,7 +639,10 @@ public sealed class HotSession : IDisposable
     }
 
     private long CurrentResidentBytes() =>
-        _state.HasRetainedState ? checked((long)_state.MaterializedPosition * _kvBytesPerToken) : 0;
+        _state.HasRetainedState ? RetainedBytes(_state.MaterializedPosition) : 0;
+
+    /// <summary>Bytes a held retained state occupies at <paramref name="positions"/>: per-token KV plus the fixed state.</summary>
+    private long RetainedBytes(long positions) => checked(positions * _kvBytesPerToken + _fixedBytesPerSession);
 
     private void CompensateUncommittedTurn(
         bool generationCompleted,

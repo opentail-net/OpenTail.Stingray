@@ -48,20 +48,20 @@ public sealed class RetainedSequenceState : IDisposable
     /// turn against this session simply starts cold (a fresh prefill) instead of resuming hot.
     /// No-op if a turn is currently queued or active (mirrors <see cref="Dispose"/>'s own
     /// in-use guard: an active lease already took ownership of <c>_cache</c>, so there is nothing
-    /// here to evict). Returns the materialized position that was dropped, so a caller can size
-    /// how much it just reclaimed.
+    /// here to evict). Returns whether a cache was dropped, and the materialized position it held (0 for a
+    /// cache that held none), so a caller can tell a drop from a no-op and size what it reclaimed.
     /// </summary>
-    internal int EvictIfIdle()
+    internal (bool Dropped, int Positions) EvictIfIdle()
     {
         lock (_gate)
         {
-            if (_inUse || _cache is null) return 0;
+            if (_inUse || _cache is null) return (false, 0);
             int freed = _materializedPosition;
             _cache.Dispose();
             _cache = null;
             _materializedPosition = 0;
             _lastTurn = null;
-            return freed;
+            return (true, freed);
         }
     }
 
