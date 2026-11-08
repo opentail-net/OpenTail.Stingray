@@ -144,9 +144,15 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
       projection/Hadamard transform/scoring pass entirely while the cached key count is `<=
       indexer_top_k` (selection can only be "all of them" in that regime). Output is unchanged;
       covered by `GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold`.
+- [x] `glm-dsa` sigmoid MoE selection-bias ordering bug, fixed 2026-11-08: `MoeFfn` added
+      `exp_probs_b` to raw logits before sigmoid gating and selected AND weighted experts from
+      that biased result; `build_moe_ffn` (shared by `glm-dsa.cpp`/`deepseek4.cpp`) adds the bias
+      after gating, for selection only. Same bug shape and fix as `deepseek4`'s MoE weighting fix
+      above, reusing `DeepSeek4Graph.WeightSelectedExperts`
+      (`MoeFfn_SigmoidGating_SelectionBiasNeverLeaksIntoTheGatheredWeight`).
 - [ ] `glm-dsa` synthetic-level correctness checks against the llama.cpp source reference (MLA
-      absorption, DSA indexer scoring, Hadamard rotation, sigmoid MoE routing, shared-expert
-      contribution) -- not done yet, see the coverage programme plan's Phase 2A.
+      absorption, DSA indexer scoring, Hadamard rotation, shared-expert contribution) -- not done
+      yet, see the coverage programme plan's Phase 2A.
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
