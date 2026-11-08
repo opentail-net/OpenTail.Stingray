@@ -27,8 +27,9 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       returns HTTP 422 with `invalid_tool_call`.
       Blocks: Phase 6 server wiring and the server round trip.
 - [ ] **D4. Approve admission** (Phase 8). Needs Phases 0-7 closed or explicitly waived.
-      2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met (Phase 0.3 open, the image step-1
-      cause unexplained, Phase 4 oracle not run, Phase 6 round trip not done, Phase 7 not started). No admission action
+      2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met. Phase 0.3 is closed under D1 (text and
+      image steps 0-1 explained by the noise floor). Still open: the Phase 4 oracle (blocked by the fork), the Phase 4 product decoder,
+      the Phase 6 product round trip (local round trip done, diagnostic-gated), and Phase 7 (not started). No admission action
       (ModelCompatibility, STATUS, README) is taken until the owner states whether that "yes" waives the open phases, or
       the phases are closed. Question to the owner is recorded in the loop summary.
 
@@ -64,7 +65,7 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       Update 2026-11-08: the per-layer check (Phase 5, (c)) shows the image-path residual drift is gradual, starting at 0.36%
       at layer 0 and growing to about 23% by layer 44, with no single layer where it breaks. The injection gate is not
       singled out by this data. The text-only per-layer comparison at the same decode position is the next check.
-- [ ] Re-state the Phase 0 section so it no longer says both "closed" and "open" (see Doc hygiene).
+- [x] Re-state the Phase 0 section so it no longer says both "closed" and "open" (done 2026-11-08: 0.3 is closed under D1; the earlier text is marked superseded).
 
 ## Phase 1. Per-sequence state: broader real-weight verification
 
@@ -203,7 +204,7 @@ Runnable now. Test cases only, no new disk or implementation.
       against 10% on text). The two are not directly comparable: the text reference is a batched prefill and Stingray is
       per token, while the image measurement is a single decode step on both sides. So this does not isolate an image-only
       component. It does show the same kind of cumulative drift on text, which points to the known numerical path rather
-      than a new image break. Phase 0.3 stays open.
+      than a new image break. Superseded: Phase 0.3 is closed under D1 (see the Phase 0 item above).
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
