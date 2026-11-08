@@ -43,6 +43,18 @@ Status 2026-11-08. This is the one plan for model coverage: what to do next for 
 These were the open items of the admission follow-ups, now collected here:
 
 - **Heavy suites never run:** the Cuda, Vulkan, Sessions and Server heavy projects, and the ForwardPass classes outside the migrated architectures. Run each on this machine where it can run; list each skip with its reason. Merged plan item A3 covers the finder part.
+  - **Status 2026-11-08:** all four projects build (Release, 0 warnings). Test counts: Server 24 facts, Sessions 13, Vulkan 201, Cuda 463. The heavy gate is inconsistent: only Sessions and Vulkan check `STINGRAY_RUN_HEAVY_TESTS`; Server and Cuda have no such check, so they run whatever they contain. Runs use `STINGRAY_RUN_HEAVY_TESTS=1`, one project at a time, with free RAM at 42-44 GB and no other test process running. Outputs are in the scratchpad, `a5/`.
+
+    | Project | Gate in code | Total | Passed | Failed | Skipped | Time | Skip reasons |
+    |---|---|---|---|---|---|---|---|
+    | Server | none | 26 | 6 | 9 | 11 | 3.5 s | Missing checkpoints: SmolLM2-135M, SmolLM2-360M, SmolLM2-1.7B, Qwen3-0.6B, Qwen3.5-0.8B. One needs `STINGRAY_FAIR_GATE_MEASURE=1`. |
+    | Sessions | yes | 13 | 1 | 0 | 12 | 0.75 s | SmolLM2-1.7B missing (11), one model fixture not present (1). |
+    | Vulkan | yes | 201 | incomplete | incomplete | incomplete | killed at 1504 s | No summary: my own `timeout 1500` killed the run (exit 124) while real models were loading. Skips seen before the kill: 10 "model fixture not present", 3 `scripts/kvarn-gate/wiki.test.raw` not found, SmolLM2 (135M and 360M) and SmolLM2 GGUF not present, DeepSeek-V2-Lite-Chat Q2_K not present. A full rerun is needed, without a short timeout. |
+    | Cuda | none | 463 | pending | pending | pending | pending | pending |
+
+    **Server, 9 failures, one product bug.** All nine are the DSpark refusal, not model loading. The planner sets `DsParkRequested` when `request.DSparkRequired` is true (`ExecutionPlanner.cs:138-140`, added 2026-11-06 in `6e17333c7`). The server loader hard-codes `DSparkRequired = true` (`InferenceEngineLoader.cs:235`, since 2026-10-07). So every server load requests DSpark, even with no DSpark head configured. `ForwardPassSelection` then refuses it: "requires --dspark-model" (5 accelerator-residency tests) or "not supported with continuous batching" (4 prefill-chunk tests). Suggested fix, not applied here: set `DSparkRequired` only when a DSpark path is configured, then rerun. It is a product decision, so it's logged, not changed.
+
+    The per-class time is not printed by this runner. The 3.5 s total is too short for a real-weight run, so no real-model test ran in Server. The same holds for Sessions (0.75 s).
 - **Legacy architecture shim:** delete `ModelArchitectureTraits.Legacy` (12 literals; `qwen3vlmoe` lives only there) once the hybrid layer topology, RWKV head size and NEOX table are keyed on the descriptor. Refactor only; each step keeps the golden tests passing.
 - **Golden plan tests not automatable here:** busy-port race and Ctrl-C during `capture-golden`. Record as not automated.
 
