@@ -884,3 +884,32 @@ Each point was checked against the code. Status is as of ae47d135.
   was submitted. The counting fake now takes an optional per-step delay. The two tests use it, and each passed three runs in a row.
   Full Core after the fix: 1411 tests, 0 failed, 95 skipped (fixtures not present).
 - Still open: the server does not yet use the validator, and an invalid tool call is still returned as-is (owner decision).
+
+## Job 3 (memory accounting completion), design 2026-11-08, recorded before code
+
+Sizes, from `Qwen4ExpForwardPass.cs` (`QsaAppend`):
+- Raw indexer key: one row of `_indexerKeyLength` floats per token, per attention layer that has an indexer projection.
+- Pooled indexer key: one row of `_indexerKeyLength` floats per `_indexerKPool` tokens, per such layer. This is a
+  per-token amortised cost of `ceil(4 x _indexerKeyLength / _indexerKPool)` bytes.
+- PLE token history: `Qwen4ExpPleHasher._tokenHistory`, a `List<int>` with one entry per token, 4 bytes each.
+- QSA row lists (K, V, raw, pooled): each list holds one 8-byte reference per row. A turn snapshot shares the rows (ad42fa92)
+  but copies the spines, so the spine cost is per token as well.
+
+Decisions:
+1. `KvBytesPerToken` (in `Qwen4ExpBatchedForwardPass`) becomes the exact per-token sum: K and V, plus the raw indexer key
+   and the amortised pooled key for each attention layer that has an indexer, plus 4 bytes of PLE history when PLE is
+   present. Counting uses the pass's real layer tensors, not an assumption that every attention layer has an indexer.
+   Effect: `KvBytesPerToken` changes, so the session ABI fingerprint changes. Acceptable: qwen4exp is not admitted and no
+   persisted qwen4exp sessions exist. Recorded here so the change is not a surprise.
+2. The turn snapshot's extra cost is its fixed state (GDN and PLE conv buffers, `FixedFloatBytes`) plus the list spines
+   (8 bytes per row per list, per token). The snapshot exists only while `TurnSnapshot` is held (after the first turn).
+   - A new optional interface on the sequence cache, `ISnapshotAccountedSequenceKvCache { long HeldSnapshotBytes { get; } }`,
+     reports that figure (0 when no snapshot is held). Backends without snapshots do not implement it.
+   - `RetainedSequenceState` exposes it internally. `HotSession.CurrentResidentBytes` adds it to the residency figure.
+   - Reservation projections: a turn that will take a snapshot (a prior position exists and the backend keeps snapshots)
+     reserves for the prior positions' fixed state as well. This is an over-estimate of the spine part, not an
+     under-estimate. The backend flag is a new `IBatchedForwardPass.KeepsTurnSnapshot` (default false).
+3. Tests: arithmetic against real list lengths (raw keys, pooled keys, PLE history); a snapshot's held bytes are zero before
+   a snapshot is taken and positive after a turn; residency after a turn includes them; eviction frees them.
+
+Not in this job: cross-session copy-on-write (Job 8, design only).
