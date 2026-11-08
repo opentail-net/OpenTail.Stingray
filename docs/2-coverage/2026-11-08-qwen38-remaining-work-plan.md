@@ -45,6 +45,16 @@ Runnable now. Test cases only, no new disk or implementation.
 - [ ] **Real-checkpoint cancellation memory check.** `CancelledRequest_DoesNotChangeTheOthers` asserts
       `CommittedKvTokens == 0`, but the batching test checks reservations and not cache disposal.
       Runnable now (real checkpoint).
+      Design (recorded before code):
+      - Test only, no product change. A wrapper `IBatchedForwardPass` over the real `Qwen4ExpBatchedForwardPass` hands
+        out its own cache wrapper, which delegates every call to the real cache and counts `Dispose`. The wrapper does
+        not implement `IPrefixCacheableBatchedForwardPass`, so the engine runs without the prefix cache and every cache
+        is a plain `ISequenceKvCache`.
+      - Real checkpoint, skipped when absent. Scenario A: a long request is cancelled after its first chunk. Scenario B:
+        a request runs to completion. Both must end with `created == disposed` and `CommittedKvTokens == 0`, and the
+        check polls with a timeout so a leak fails rather than hangs.
+      - Scope: this shows that the engine disposes the real Qwen cache and releases the reservation on a real request.
+        It does not measure the real held bytes (a separate open item).
 
 ## Phase 3. Prefix reuse and retained state
 
