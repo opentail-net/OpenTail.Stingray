@@ -155,6 +155,20 @@ Runnable now. Test cases only, no new disk or implementation.
       drift, not a new image-only break. Not proven: the decisive test is the same per-layer metric on a text-only prompt
       at the same decode position. If the text-only profile matches, the image path adds nothing new. The next step is
       that text comparison.
+
+      Text-only comparison, 2026-11-08 (same metric, no image): prompt "The capital of France is" (5 tokens). The reference
+      is a local diagnostic dump of the batched prefill (the decode graph carries `l_last` only for the last layers on the
+      text path). Stingray is the per-token forward at position 4 (the same last prompt token). Relative difference of the
+      last token's residual, layers 0 to 46 (the reference has no layer 47 file):
+      - layer 0: 0.37%; layer 1: 0.39%; layer 2: 0.63%; layer 4: 0.99%; layer 5: 2.99%;
+      - layer 12: 5.6%; layer 20: 9.1%; layer 28: 11.4%; layer 32: 13.9%; layer 40: 12.3%; layer 46: 8.9%.
+      Reading: layer 0 is 0.37% on text as well as 0.36% on the image decode, so the first-layer offset is systematic and
+      does not depend on the image. Both profiles grow gradually, with no single layer that breaks. The image profile is
+      lower in the middle layers (1.5 to 2.5% at layers 6 to 22, against 3 to 9% on text) and higher late (23% at layer 44,
+      against 10% on text). The two are not directly comparable: the text reference is a batched prefill and Stingray is
+      per token, while the image measurement is a single decode step on both sides. So this does not isolate an image-only
+      component. It does show the same kind of cumulative drift on text, which points to the known numerical path rather
+      than a new image break. Phase 0.3 stays open.
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. Untested; deferred by the owner. Leave unchecked until the owner reopens it.
