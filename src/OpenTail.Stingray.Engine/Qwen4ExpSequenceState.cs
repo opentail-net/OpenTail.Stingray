@@ -177,14 +177,16 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         return dst;
     }
 
+    /// <summary>
+    /// Copies the QSA history lists but shares their rows. A row is written once, when it is appended, and never
+    /// changed afterwards (the forward pass only appends and reads), so a copy can share the rows and copy only the
+    /// list spine. Without this, every snapshot duplicated the whole attention history (the per-session doubling).
+    /// </summary>
     private static List<float[]>[] CopyLists(List<float[]>[] src)
     {
         var dst = new List<float[]>[src.Length];
         for (int l = 0; l < src.Length; l++)
-        {
-            dst[l] = new List<float[]>(src[l].Count);
-            foreach (var row in src[l]) dst[l].Add((float[])row.Clone());
-        }
+            dst[l] = new List<float[]>(src[l]);
         return dst;
     }
 }

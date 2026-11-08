@@ -779,3 +779,15 @@ Status as of this table. Each open item names its blocker. "Runnable now" means 
 
 Owner decisions needed: confirm the parity criterion (Phase 0); decide whether the server acts on validator failures (Phase 6);
 approve admission later (Phase 8). Qwen 3.8 stays unadmitted and unadvertised until then.
+
+## Phase 3 (copy-on-write QSA history), result 2026-11-08
+
+- Change: `Qwen4ExpSequenceState.CopyLists` shares the QSA history rows between a sequence and its clones, and copies only
+  the list spines. The forward pass writes each row once (an `Add`) and never changes it afterwards; the only other uses are
+  reads (verified by grep over `Qwen4ExpForwardPass.cs`). Before this change, every snapshot duplicated the full attention history.
+- Tests: `Qwen4ExpSequenceSharingTests` (4, synthetic): shared rows, independent lists, divergence does not leak, reset of the
+  source does not clear a snapshot, restore returns to the snapshot's history. All pass.
+- Real-checkpoint regression: `Qwen4ExpRetainedTurnTests` (2), `Qwen4ExpPrefixReuseTests` (2), `Qwen4ExpBatchingTests` (4) pass.
+- Full Core suite: 1370 tests, 0 failed, 95 skipped (fixtures not present).
+- Still open: the snapshot's fixed state (recurrent buffers, PLE history) is still copied per snapshot and is charged once at
+  the session layer, not twice. The per-token doubling is removed by this change; the fixed-state doubling is not.
