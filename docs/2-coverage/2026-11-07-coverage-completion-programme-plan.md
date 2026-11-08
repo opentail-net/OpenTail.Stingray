@@ -563,3 +563,17 @@ Stingray plan:
 - Decision needed from the owner: allow building and running the unsloth fork as a local reference (it is third-party code,
   not part of this repository), or choose another oracle. Until then, the head's per-step agreement is unverified and
   Phase 4 cannot close. Qwen 3.8 stays unadmitted.
+
+### Status, 2026-11-08 (later)
+
+- Phase 2: cancelled-request memory is verified. `Qwen4ExpBatchingTests.CancelledRequest_DoesNotChangeTheOthers` now also
+  asserts `CommittedKvTokens == 0` after a cancellation. All four batching tests pass (105 s).
+- Phase 4 oracle state (evidence, not a result):
+  - Pinned reference `bed0a8566`: the embedding-state setter is a stub, so the MTP context cannot be fed the trunk state.
+  - Unsloth fork `mtp/qwen4exp-nextn`, per-step driver (`examples/mtp-check`): with a local oracle patch (qwen4exp removed
+    from the MTP-on-hybrid rule in `src/llama-model.cpp`), it still crashes while reserving the head graph: `build_rs_inp_impl`
+    dereferences a null recurrent memory, because the head has no recurrent layers. With `-t <trunk>` and the shared head
+    it loads, then crashes at the same point.
+  - Fork `llama-server` with the trunk and `-md <shared head>` and `--spec-type draft-mtp`: segfaults during the draft setup.
+    Plain `llama-server` on the trunk works, so the build itself is fine.
+  - Conclusion: the head's per-step agreement with the reference is NOT verified. Phase 4 remains open on that point.

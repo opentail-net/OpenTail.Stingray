@@ -89,6 +89,9 @@ public sealed class Qwen4ExpBatchingTests
         try { await victim; } catch (OperationCanceledException) { }
 
         Assert.Equal(expected, await survivor);
+
+        // Cancelled and finished requests must both release their KV reservation.
+        Assert.Equal(0, engine.CommittedKvTokens);
     }
 
     [Fact]
