@@ -267,6 +267,115 @@ public sealed class GlmDsaSyntheticTests : IDisposable
         Assert.Equal(shortcutResult, fullScoringResult);
     }
 
+    /// <summary>
+    /// Exercises the real-scoring indexer path (not the top_k shortcut) with YaRN metadata active,
+    /// after the 2026-11-08 fix that made the indexer's RoPE use the YaRN formula. Only a
+    /// finite-output smoke check (no independent reference run here), but it does make sure the
+    /// new code path -- YaRN-scaled indexer RoPE feeding into Hadamard + scoring + top-k -- at
+    /// least runs correctly end-to-end with yarn active, which the pre-fix code path never did.
+    /// </summary>
+    [Fact]
+    public void GlmDsa_FullIndexerScoring_WithYarnActive_ProducesFiniteLogits()
+    {
+        const int embedDim = 32;
+        const int numHeads = 2;
+        const int qLoraRank = 16;
+        const int kvLoraRank = 16;
+        const int headDimK = 16;
+        const int headDimV = 16;
+        const int ropeDim = 8;
+        const int indexerNumHeads = 2;
+        const int indexerHeadDim = 128;
+        const int denseFfn = 32;
+        const int vocabSize = 32;
+        const int numLayers = 1;
+        const int indexerTopK = 1; // position 1 (numKeys=2) already exceeds this -> real scoring
+
+        string path = Path.Combine(Path.GetTempPath(), $"glm_dsa_yarn_indexer_{Guid.NewGuid():N}.gguf");
+        _tempFiles.Add(path);
+
+        var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+
+        void AddTensor(string name, long[] shape, float fill = 0.05f)
+        {
+            long total = 1;
+            foreach (var s in shape) total *= s;
+            var floats = new float[total];
+            for (int i = 0; i < total; i++) floats[i] = fill * MathF.Sin(i + 1);
+            var bytes = new byte[total * 4];
+            Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+            tensors[name] = (shape, DType.Float32, bytes);
+        }
+
+        AddTensor("token_embd.weight", [embedDim, vocabSize]);
+        AddTensor("output_norm.weight", [embedDim]);
+        AddTensor("output.weight", [embedDim, vocabSize]);
+
+        for (int i = 0; i < numLayers; i++)
+        {
+            AddTensor($"blk.{i}.attn_norm.weight", [embedDim]);
+            AddTensor($"blk.{i}.attn_q_a_norm.weight", [qLoraRank]);
+            AddTensor($"blk.{i}.attn_kv_a_norm.weight", [kvLoraRank]);
+            AddTensor($"blk.{i}.attn_q_a.weight", [embedDim, qLoraRank]);
+            AddTensor($"blk.{i}.attn_q_b.weight", [qLoraRank, numHeads * headDimK]);
+            AddTensor($"blk.{i}.attn_kv_a_mqa.weight", [embedDim, kvLoraRank + ropeDim]);
+            AddTensor($"blk.{i}.attn_k_b.weight", [headDimK - ropeDim, kvLoraRank, numHeads]);
+            AddTensor($"blk.{i}.attn_v_b.weight", [kvLoraRank, headDimV, numHeads]);
+            AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDimV, embedDim]);
+            AddTensor($"blk.{i}.ffn_norm.weight", [embedDim]);
+
+            AddTensor($"blk.{i}.indexer_k_norm.weight", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_k_norm.bias", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_proj.weight", [embedDim, indexerNumHeads]);
+            AddTensor($"blk.{i}.indexer_attn_k.weight", [embedDim, indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_attn_q_b.weight", [qLoraRank, indexerNumHeads * indexerHeadDim]);
+
+            AddTensor($"blk.{i}.ffn_gate.weight", [embedDim, denseFfn]);
+            AddTensor($"blk.{i}.ffn_up.weight", [embedDim, denseFfn]);
+            AddTensor($"blk.{i}.ffn_down.weight", [denseFfn, embedDim]);
+        }
+
+        var metadata = new Dictionary<string, object>
+        {
+            ["general.architecture"] = "glm-dsa",
+            ["glm-dsa.leading_dense_block_count"] = (ulong)numLayers,
+            ["glm-dsa.expert_weights_scale"] = 2.5f,
+            ["glm-dsa.expert_weights_norm"] = true,
+            ["glm-dsa.expert_shared_count"] = (ulong)1,
+            ["glm-dsa.attention.q_lora_rank"] = (ulong)qLoraRank,
+            ["glm-dsa.attention.kv_lora_rank"] = (ulong)kvLoraRank,
+            ["glm-dsa.attention.key_length_mla"] = (ulong)headDimK,
+            ["glm-dsa.attention.value_length_mla"] = (ulong)headDimV,
+            ["glm-dsa.attention.indexer.head_count"] = (ulong)indexerNumHeads,
+            ["glm-dsa.attention.indexer.key_length"] = (ulong)indexerHeadDim,
+            ["glm-dsa.attention.indexer.top_k"] = (ulong)indexerTopK,
+            ["glm-dsa.expert_gating_func"] = (ulong)2,
+            ["glm-dsa.rope.scaling.factor"] = 4f,
+            ["glm-dsa.rope.scaling.original_context_length"] = (ulong)4096,
+        };
+
+        WriteGgufFile(path, metadata, tensors);
+
+        using var model = GgufModel.Open(path);
+        var hp = GlmDsaHyperparams.FromGgufMetadata(
+            model.Metadata, "glm-dsa", numLayerAll: numLayers, embedDim: embedDim, numHeads: numHeads,
+            headDim: headDimK, ropeDim: ropeDim, numExperts: 4, numExpertsUsed: 2);
+        Assert.True(hp.RopeYarnFactor > 1f, "metadata should have parsed as YaRN-active");
+
+        var forwardPass = new GlmDsaForwardPass(model, hp);
+        int[] tokens = [1, 5, 9];
+        for (int pos = 0; pos < tokens.Length; pos++)
+        {
+            var logits = forwardPass.Forward(token: tokens[pos], position: pos);
+            Assert.Equal(vocabSize, logits.Length);
+            foreach (var l in logits)
+            {
+                Assert.False(float.IsNaN(l));
+                Assert.False(float.IsInfinity(l));
+            }
+        }
+    }
+
     [Fact]
     public void GlmDsa_IndexerTopKShortcut_RunsAcrossThreshold_ProducesFiniteLogits()
     {
@@ -401,6 +510,100 @@ public sealed class GlmDsaSyntheticTests : IDisposable
 
         Assert.Equal(unbiasedProbs[4], weights[0], 6); // weight is the UNBIASED prob at index 4
         Assert.NotEqual(biasedSelectionProbs[4], weights[0]); // never the biased value
+    }
+
+    /// <summary>
+    /// Proves the YaRN indexer-RoPE fix (2026-11-08, <c>RunFullIndexer</c>) actually matters: when
+    /// YaRN is active (<c>rope.scaling.factor &gt; 1</c>), the plain ("NORM") rotation formula the
+    /// indexer's RoPE used to use and the YaRN-scaled formula glm-dsa.cpp actually applies there
+    /// (same params as the main attention's q_pe/k_pe RoPE -- lines 271-273/284-286 vs 400-406)
+    /// diverge. If they always agreed, the fix would have been a no-op; this shows they don't once
+    /// YaRN is active, and that they DO agree when it isn't (the fix's claimed zero-behaviour-change
+    /// case for every checkpoint seen so far).
+    /// </summary>
+    [Fact]
+    public void YarnRope_DivergesFromPlainRopeOnlyWhenYarnIsActive()
+    {
+        const int dim = 8;
+        const int position = 50;
+        const float freqBase = 10000f;
+
+        float[] PlainRope()
+        {
+            var x = new float[dim];
+            for (int i = 0; i < dim; i++) x[i] = 1f + i * 0.1f;
+            int half = dim / 2;
+            for (int i = 0; i < half; i++)
+            {
+                float freq = MathF.Pow(freqBase, -2f * i / dim);
+                float theta = position * freq;
+                float cos = MathF.Cos(theta), sin = MathF.Sin(theta);
+                float x0 = x[2 * i], x1 = x[2 * i + 1];
+                x[2 * i] = x0 * cos - x1 * sin;
+                x[2 * i + 1] = x0 * sin + x1 * cos;
+            }
+            return x;
+        }
+
+        float[] YarnRope(float yarnFactor, int origCtxLen)
+        {
+            var x = new float[dim];
+            for (int i = 0; i < dim; i++) x[i] = 1f + i * 0.1f;
+            int half = dim / 2;
+            bool yarnActive = yarnFactor > 1f;
+            float freqScale = yarnActive ? 1f / yarnFactor : 1f;
+            float extFactor = yarnActive ? 1f : 0f;
+            const float attnFactorBaseline = 1f;
+
+            static float CorrDim(int nDims, int nCtxOrig, float nRot, float b) =>
+                nDims * MathF.Log(nCtxOrig / (nRot * 2f * MathF.PI)) / (2f * MathF.Log(b));
+
+            float corrLow = 0f, corrHigh = half * 2f - 1f;
+            if (origCtxLen > 0)
+            {
+                corrLow = MathF.Max(0f, MathF.Floor(CorrDim(dim, origCtxLen, 32f, freqBase)));
+                corrHigh = MathF.Min(dim - 1, MathF.Ceiling(CorrDim(dim, origCtxLen, 1f, freqBase)));
+            }
+
+            float thetaScale = MathF.Pow(freqBase, -2f / dim);
+            float thetaExtrap = position;
+            for (int i = 0; i < half; i++)
+            {
+                float thetaInterp = freqScale * thetaExtrap;
+                float thetaFinal = thetaInterp;
+                float mscale = attnFactorBaseline;
+                if (extFactor != 0f)
+                {
+                    float y = (i - corrLow) / MathF.Max(0.001f, corrHigh - corrLow);
+                    float rampMix = (1f - MathF.Min(1f, MathF.Max(0f, y))) * extFactor;
+                    thetaFinal = thetaInterp * (1f - rampMix) + thetaExtrap * rampMix;
+                    mscale *= 1f + 0.1f * MathF.Log(1f / freqScale);
+                }
+                float cos = MathF.Cos(thetaFinal) * mscale, sin = MathF.Sin(thetaFinal) * mscale;
+                float x0 = x[2 * i], x1 = x[2 * i + 1];
+                x[2 * i] = x0 * cos - x1 * sin;
+                x[2 * i + 1] = x0 * sin + x1 * cos;
+                thetaExtrap *= thetaScale;
+            }
+            return x;
+        }
+
+        // YaRN inactive (factor == 1, the default for every checkpoint this repo has verified
+        // metadata against so far): the two formulas must agree exactly -- this is the "zero
+        // behaviour change on checkpoints seen so far" half of the fix's claim.
+        float[] plain = PlainRope();
+        float[] yarnInactive = YarnRope(yarnFactor: 1f, origCtxLen: 4096);
+        for (int i = 0; i < dim; i++) Assert.Equal(plain[i], yarnInactive[i], 5);
+
+        // YaRN active (factor > 1): the formulas must diverge -- this is why using the plain
+        // formula for the indexer's RoPE (the bug) was wrong whenever YaRN is actually on.
+        float[] yarnActiveResult = YarnRope(yarnFactor: 4f, origCtxLen: 4096);
+        bool anyDifferent = false;
+        for (int i = 0; i < dim; i++)
+        {
+            if (MathF.Abs(plain[i] - yarnActiveResult[i]) > 1e-4f) anyDifferent = true;
+        }
+        Assert.True(anyDifferent, "YaRN-active rotation should differ from the plain formula -- if it never does, the indexer RoPE fix has no effect and the bug it fixed was never real");
     }
 
     private static void WriteGgufFile(

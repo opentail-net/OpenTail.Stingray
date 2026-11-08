@@ -283,7 +283,13 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
             SimdKernels.MatVec(outPtr, layer.IndexerAttnK!.Value.DataPtr, inPtr, indexerHeadDim, _embedDim, layer.IndexerAttnK.Value.DType);
         }
         LayerNormInPlace(indexerK, layer.IndexerKNorm!.Value, layer.IndexerKNormBias);
-        ApplyRopeNorm(indexerK.AsSpan(0, nRot), position, _hp.RopeFreqBase);
+        // glm-dsa.cpp's indexer_k/indexer_q RoPE calls (lines 271-273, 284-286) pass the SAME
+        // freq_scale/ext_factor/attn_factor/beta_fast/beta_slow as the main attention's q_pe/k_pe
+        // RoPE (lines 400-406) -- the indexer's RoPE is YaRN-scaled exactly like the main
+        // attention's, not a separate plain RoPE. Fixed 2026-11-08 (was calling the plain,
+        // non-YaRN ApplyRopeNorm here, which only coincidentally matched ApplyYarnRope's output
+        // on non-YaRN checkpoints since YaRN reduces to plain RoPE when inactive).
+        ApplyYarnRope(indexerK.AsSpan(0, nRot), position);
         fixed (float* kPtr = indexerK)
         {
             PrismHadamard.ApplySylvesterHadamard(kPtr, indexerHeadDim, 128);
@@ -307,10 +313,11 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
             SimdKernels.MatVec(outPtr, layer.IndexerAttnQB!.Value.DataPtr, inPtr, numIndexerHeads * indexerHeadDim, qrNormed.Length, layer.IndexerAttnQB.Value.DType);
         }
 
-        // Layout per head is [rope | nope] -> first nRot channels are rotated
+        // Layout per head is [rope | nope] -> first nRot channels are rotated, YaRN-scaled like
+        // indexer_k above.
         for (int h = 0; h < numIndexerHeads; h++)
         {
-            ApplyRopeNorm(indexerQ.AsSpan(h * indexerHeadDim, nRot), position, _hp.RopeFreqBase);
+            ApplyYarnRope(indexerQ.AsSpan(h * indexerHeadDim, nRot), position);
         }
 
         // Orthonormal Sylvester-Walsh-Hadamard transform on indexer_q in-place
@@ -552,21 +559,6 @@ public sealed unsafe class GlmDsaForwardPass : IForwardPass
             x[2 * i] = x0 * cos - x1 * sin;
             x[2 * i + 1] = x0 * sin + x1 * cos;
             thetaExtrap *= thetaScale;
-        }
-    }
-
-    private static void ApplyRopeNorm(Span<float> x, int position, float freqBase)
-    {
-        int dim = x.Length;
-        int half = dim / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Pow(freqBase, -2f * i / dim);
-            float theta = position * freq;
-            float cos = MathF.Cos(theta), sin = MathF.Sin(theta);
-            float x0 = x[2 * i], x1 = x[2 * i + 1];
-            x[2 * i] = x0 * cos - x1 * sin;
-            x[2 * i + 1] = x0 * sin + x1 * cos;
         }
     }
 
