@@ -102,9 +102,13 @@ Each file below has open checkboxes. For each box: check it against the code. Cl
 ### A11. Housekeeping
 
 - Make `LtxVaeNoiseIsolationTest` write to a temp directory.
+  - **Status 2026-11-08: already done.** The test writes to `Path.GetTempPath()` (`LtxVaeNoiseIsolationTest.cs:93`). Close the box.
 - Fix or quarantine the flaky `SimdKernels` timing test.
+  - **Status 2026-11-08: no flake found in the timing tests that assert.** `SimdKernelsBF16Tests.FastKernel_IsFasterThanDequantFallback` asserts `speedup > 1.0`. It passed 40 of 40 at `DOTNET_PROCESSOR_COUNT=2`, with speedups of 7 to 10 times. `SimdKernelsIq1STests.FastKernel_IsFasterThanDequantFallback` asserts no speed at all: it prints a speedup that ran from 0.89 to 1.90 over 40 runs, and only its correctness checks can fail. The name says "IsFaster", so it is misleading. Fix: rename it, or assert a speed bound that the margins support. Not changed here.
 - Add a CI step that builds and runs every test project. A sweep found three real failures in one background command.
+  - **Status 2026-11-08: partly done.** `ci.yml` builds the whole solution (line 42) and runs 12 test projects by name. It runs the `.Fast` projects for Server, Sessions, ForwardPass and Audio, plus Vulkan.Fast and Mlx.Fast. Heavy and GPU projects are excluded on purpose (comment, lines 59-63). Not in CI at all: `Tests.Diffusion` and `Tests.Embeddings`. Run with defaults on this machine, neither has a failure. Diffusion: 535 tests, 260 passed, 275 skipped (259 behind the heavy flag, 16 for missing checkpoints), 0 failed, 489 s. Embeddings: 46 tests, 6 passed, 40 skipped (8 benchmarks, 32 checkpoints missing), 0 failed, 1.8 s. The 489 s run is slow for CI, so a subset would be needed. Not added to CI here.
 - Add "run `Tests.Core`" to the merge checklist.
+  - **Status 2026-11-08: done.** The merge checklist is `.github/PULL_REQUEST_TEMPLATE.md`. It now has a line for `Tests.Core`. It did not name it before, and it asked only for the `.Fast` projects.
 
 ### A12. OpenTelemetry acceptance boxes
 

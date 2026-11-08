@@ -9,6 +9,7 @@
 
 - [ ] Build is clean (warnings are errors)
 - [ ] Relevant `.Fast` test projects pass
+- [ ] `Tests.Core` passes (`dotnet test tests/OpenTail.Stingray.Tests.Core`, without `--nologo`)
 - [ ] Docs or the STATUS matrix updated if a verified claim changed
 - [ ] No model weights, scratch output or secrets included
 - [ ] I am happy for this to be licensed under the project's MIT license
