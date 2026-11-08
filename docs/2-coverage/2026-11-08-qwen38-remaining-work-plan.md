@@ -42,7 +42,10 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 2. Batching
 
-- [ ] **Real-checkpoint cancellation memory check.** `CancelledRequest_DoesNotChangeTheOthers` asserts
+- [x] **Real-checkpoint cancellation memory check.** Done: `Qwen4ExpCancellationProbeTests` (2) pass on the real checkpoint (14.7 s).
+      Scope: a cancelled request and a finished request each dispose their real Qwen cache and release their reservation
+      (`created == disposed`, `CommittedKvTokens == 0`). It does not measure held bytes (separate open item). Full Core 1421 tests, 0 failed.
+      Original note: `CancelledRequest_DoesNotChangeTheOthers` asserts
       `CommittedKvTokens == 0`, but the batching test checks reservations and not cache disposal.
       Runnable now (real checkpoint).
       Design (recorded before code):

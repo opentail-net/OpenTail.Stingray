@@ -910,3 +910,10 @@ Not in this job: cross-session copy-on-write (Job 8, design only).
 The Qwen 3.8 open items, owner decisions and doc-hygiene list now live in
 [2026-11-08-qwen38-remaining-work-plan.md](2026-11-08-qwen38-remaining-work-plan.md). The table in "Qwen 3.8 remaining work,
 tabled 2026-11-08" above is superseded by that file (its completed items are in done/2026-11-08-qwen38-remaining-work-completed-items-2026-11.md). This programme plan keeps the dated results and the general coverage work.
+
+## Phase 2 real-checkpoint cancellation probe, result 2026-11-08
+
+- `Qwen4ExpCancellationProbeTests` (2, real checkpoint): a counting wrapper over the real Qwen batched pass shows that a
+  cancelled request (after its first chunk) and a finished request each dispose their sequence cache and release their KV
+  reservation. Both pass (14.7 s). Scope: cache disposal and reservation release on a real request, not held bytes.
+- Full Core suite: 1421 tests, 0 failed, 95 skipped (fixtures not present).
