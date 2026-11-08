@@ -209,6 +209,12 @@ Runnable now. Test cases only, no new disk or implementation.
       additive at the output). Still open: (c) M-RoPE temporal index per merged chunk, (d) prompt layout with the reference
       timestamps, (e) comparison with `llama-mtmd-cli --video` on a short clip, and the frame-input path (frame sequence).
       The decoder question is still open for the owner.
+      Step (c), checked 2026-11-08 (`tools/mtmd/mtmd.cpp`, read only): mergeable frames are grouped in pairs
+      (`n_temporal_merge == 2` for Qwen-VL) and each pair is one embedding and one image-token chunk. Its position is
+      `t = pos_0` for every token of the pair, `x` and `y` as for an image, and the text position advances by
+      `max(nx, ny)` once per pair (`n_past += get_n_pos`). So Stingray's video layout must advance the text position per
+      pair, not per frame, and give every token of a pair the same temporal index. `ForwardVideo` takes one pair, so the
+      encoder side already matches this.
 
 ## Phase 6. Tool calls
 
