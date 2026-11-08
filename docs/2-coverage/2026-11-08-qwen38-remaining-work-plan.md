@@ -28,6 +28,11 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 - [ ] **0.3 FFN injection gate.** Still open. The residual MoE error from layer 1 is attributed to quantisation noise
       and is not confirmed. Runnable now (checkpoint on disk: `E:\_models\qwen38-flash-next\UD-IQ1_S`).
+      Conclusion, 2026-11-08: not closable on the present evidence. The text-path measurements in Phase 0.2 sit inside
+      the noise envelope, but the image-path logit comparison (Phase 5, step 1: TV 0.178, logit gap 0.81) is well outside
+      it. So the working parity criterion, which was adopted on text evidence, does not yet hold for the image path.
+      The next check is the same per-layer comparison on the image prompt's step 1, against the reference's eval-callback,
+      which would show whether the injection path is the first layer that diverges.
 - [ ] Re-state the Phase 0 section so it no longer says both "closed" and "open" (see Doc hygiene).
 
 ## Phase 1. Per-sequence state: broader real-weight verification
