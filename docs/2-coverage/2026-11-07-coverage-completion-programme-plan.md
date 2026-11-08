@@ -422,3 +422,17 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   - restore returns the sequence to its snapshot.
 - Not yet: Phase 1 acceptance was specified on "actual forward-pass fixtures"; these are real-weight tests, so Phase 1 is
   complete against that wording. Phase 2 (batching and paged state) is next.
+
+## Phase 2 (batching integration), status 2026-11-08
+
+- Done: `Qwen4ExpBatchedForwardPass` implements `IBatchedForwardPass` for qwen4exp. Each request owns a
+  `Qwen4ExpSequenceState` through `ISequenceKvCache`. The first version runs a batch's sequences one after another,
+  which is the sequential path the plan asks for; no batched GEMM, so no change in numerics.
+- `Qwen4ExpBatchingTests` (2 tests, real checkpoint, greedy, 6 new tokens, 4 prompts), passing, 86.8 s:
+  - four prompts run in isolation, then concurrently (maxBatchSize 4), then staggered by 200 ms: every output
+    equals its isolated text;
+  - cancelling one in-flight request leaves the other's output equal to its isolated text.
+- Not yet covered by a test (plan wording): a request finishing before the others while they continue; memory released
+  after finish or cancel; queue limits and admission under backpressure; and longer generations. These are open items for
+  Phase 2, not claimed as done.
+- Qwen 3.8 remains unadmitted; `IBatchedForwardPass` is an internal engine interface, not a support claim.
