@@ -577,3 +577,24 @@ Stingray plan:
   - Fork `llama-server` with the trunk and `-md <shared head>` and `--spec-type draft-mtp`: segfaults during the draft setup.
     Plain `llama-server` on the trunk works, so the build itself is fine.
   - Conclusion: the head's per-step agreement with the reference is NOT verified. Phase 4 remains open on that point.
+
+## Phase 5 (image and video input), status 2026-11-08
+
+### 5.1 Vision encoder: verified against the pinned reference
+
+- Projector: `mmproj-Qwen3.8-Flash-Next-F16.gguf` (unsloth, 904 MB; `clip`, `qwen3vl_merger`, 27 blocks, hidden 1152, patch 16,
+  projection 2560, no deepstack tensors). Downloaded to `E:\_models\qwen38-flash-next\MMPROJ\`.
+- Reference: pinned `bed0a8566` `llama-mtmd-debug` (LLAMA_BUILD_MTMD=ON in build-ref), `--image rainbow -n 448`:
+  196 x 2560, sum 997.976624, row 0 `[-0.0466, 0.0543, -0.0075]`.
+- Stingray `QwenVlVisionModel` + `QwenVlVisionEncoder` on the same input: 196 x 2560, sum 997.9759, row 0
+  `[-0.0466, 0.0542, -0.0075]`. Test `Qwen38Vl_Rainbow448_MatchesLlamaMtmdDebug` passes (16/16 in
+  `LlamaMtmdVisionParityTests` with `STINGRAY_RUN_HEAVY_TESTS=1`).
+- End-to-end oracle: `llama-mtmd-cli` (reference) on a generated 224 px image (red square, blue circle) answers
+  "The image contains two shapes: 1. A red square - located in the upper-left" (greedy, trunk + projector).
+
+### 5.2 Language side: not started (planned before code)
+
+- The projector emits 2560-wide tokens that replace image placeholder tokens in the qwen4exp forward pass.
+- qwen4exp uses four-section IMRoPE, so image tokens need the (t, h, w) position layout of the reference; the position
+  of text after an image continues from the image's extent. Check the reference's position assignment before coding.
+- Image preprocessing and the placeholder token ids come from the reference `mtmd` helpers and the GGUF metadata.

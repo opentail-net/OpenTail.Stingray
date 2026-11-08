@@ -142,6 +142,22 @@ public sealed class LlamaMtmdVisionParityTests : HeavyTestBase
     }
 
     [Fact]
+    public void Qwen38Vl_Rainbow448_MatchesLlamaMtmdDebug()
+    {
+        string? path = FindModel("mmproj-Qwen3.8-Flash-Next-F16.gguf");
+        Assert.SkipWhen(path is null, "mmproj-Qwen3.8-Flash-Next-F16.gguf not present");
+        using var model = QwenVlVisionModel.Open(path!);
+        float[] tokens = new QwenVlVisionEncoder(model).Forward(Rainbow(448), 448, 448, out int count);
+        Report("qwen38vl rainbow448", tokens, count, 2560);
+
+        // llama-mtmd-debug (-m mmproj-Qwen3.8-Flash-Next-F16.gguf --mmproj mmproj-Qwen3.8-Flash-Next-F16.gguf -n 448 --image rainbow,
+        // pinned bed0a8566, 2026-11-08): output 2560 x 196, sum 997.976624, row 0 [-0.0466, 0.0543, -0.0075].
+        // No deepstack branches in this projector: each token is the projection only.
+        Assert.Equal(196, count);
+        AssertMatches(tokens, 997.9766, 10.0, [-0.0466f, 0.0543f, -0.0075f], 0.02f);
+    }
+
+    [Fact]
     public void Qwen3Vl_Rainbow448_MatchesLlamaMtmdDebug()
     {
         string? path = FindModel("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf");
