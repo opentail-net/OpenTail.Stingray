@@ -842,3 +842,26 @@ to zero after everything drains.
 - Full Core suite: 1375 tests, 0 failed, 95 skipped (fixtures not present).
 - Still open in Phase 2: the real-checkpoint cancellation memory check (cache disposal is covered only with the counting fake),
   and mapping `EngineQueueFullException` to a server status.
+
+## External review check, 2026-11-08 (review of main at 1c8e120, re-checked at ae47d135)
+
+Each point was checked against the code. Status is as of ae47d135.
+
+- Memory, snapshot doubling: **partly stale.** The QSA history rows are shared since ad42fa92, so the per-token part of the
+  snapshot is no longer a deep copy. **Still open:** the snapshot's fixed state (GDN and PLE conv buffers) is copied and not
+  charged; `Qwen4ExpBatchedForwardPass` computes `KvBytesPerToken` from attention K and V only, so the indexer raw keys
+  (`QsaRawIndexKCache`), the pooled indexer keys (`QsaPooledKeys`, one per `IndexerKPool` tokens) and the PLE token history
+  (`PleHasher`) are not counted.
+- Malformed JSON tool calls: **open.** `ParseJsonCallBlock` calls `TryGetProperty` on any root, which throws
+  `InvalidOperationException` for a non-object root (`[]`), and `GetString()` throws for a non-string name (`{"name":42}`).
+  Only `JsonException` is caught. `JsonElementToObject` uses `ToDictionary`, so a duplicate property throws `ArgumentException`.
+  An array or scalar `arguments` gives a call with an empty argument dictionary. Tests to confirm before fixing.
+- Validator numeric and enum edge cases: **open.** `double.TryParse` accepts `NaN` and `Infinity`; `Math.Floor(d) == d` is true
+  for infinity; `Convert.ToString(true)` is `"True"`, while the enum literals are `"true"`/`"false"`. Tests to confirm.
+- Server wiring: **open.** `ToolCallArgumentValidator` is referenced only in Core and its test. The server path is not
+  schema-validated, and must not be described as such until the failure behaviour is decided.
+- Documentation: **stale and inconsistent.** The working-criterion section says Phase 0 is closed (~line 403). The Phase 0 section
+  and the remaining-work table still list the FFN injection gate as open. The `RefusalReason` in
+  `Architectures/Qwen4ExpArchitecture.cs` still describes wrong logit magnitudes; the current measurements do not support that.
+- CI: the earlier red runs (11:51 on 43e981fe, 11:59 on 77685279) were the first version of the backpressure test, which was
+  timing-flaky on CI (6 tokens finished before the poll). Fixed in ae47d135; the 12:08 run is green.
