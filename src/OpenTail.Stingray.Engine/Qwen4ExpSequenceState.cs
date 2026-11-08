@@ -112,6 +112,28 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         return bytes;
     }
 
+    /// <summary>
+    /// Bytes this state holds beyond the QSA rows it shares with its clones: the GDN and PLE conv buffers, one reference
+    /// per row in each QSA list (the list spines), and this copy's PLE token history. Counted from the real arrays and
+    /// lists, so it is exact for the state as it stands.
+    /// </summary>
+    public long HeldBytes
+    {
+        get
+        {
+            long floats = PleConvHistory.Length;
+            for (int l = 0; l < GdnConvState.Length; l++)
+                floats += GdnConvState[l].Length + GdnState[l].Length;
+
+            long references = 0;
+            for (int l = 0; l < QsaKeyCache.Length; l++)
+                references += QsaKeyCache[l].Count + QsaValCache[l].Count + QsaRawIndexKCache[l].Count + QsaPooledKeys[l].Count;
+
+            long hasherBytes = (long)(PleHasher?.HistoryLength ?? 0) * sizeof(int);
+            return floats * sizeof(float) + references * IntPtr.Size + hasherBytes;
+        }
+    }
+
     /// <summary>Deep copy: the clone and this sequence can continue independently.</summary>
     public Qwen4ExpSequenceState Clone()
     {

@@ -51,17 +51,28 @@ public sealed class RetainedSequenceState : IDisposable
     /// here to evict). Returns whether a cache was dropped, and the materialized position it held (0 for a
     /// cache that held none), so a caller can tell a drop from a no-op and size what it reclaimed.
     /// </summary>
-    internal (bool Dropped, int Positions) EvictIfIdle()
+    internal (bool Dropped, int Positions, long SnapshotBytes) EvictIfIdle()
     {
         lock (_gate)
         {
-            if (_inUse || _cache is null) return (false, 0);
+            if (_inUse || _cache is null) return (false, 0, 0);
             int freed = _materializedPosition;
+            // Read under the same lock that drops the cache, so the figure is the snapshot that is actually freed.
+            long snapshotBytes = _cache is ISnapshotAccountedSequenceKvCache s ? s.HeldSnapshotBytes : 0;
             _cache.Dispose();
             _cache = null;
             _materializedPosition = 0;
             _lastTurn = null;
-            return (true, freed);
+            return (true, freed, snapshotBytes);
+        }
+    }
+
+    /// <summary>Bytes the held turn-start snapshot costs. Zero when no snapshot is held, and while a turn has the cache leased.</summary>
+    internal long HeldSnapshotBytes
+    {
+        get
+        {
+            lock (_gate) return _cache is ISnapshotAccountedSequenceKvCache s ? s.HeldSnapshotBytes : 0;
         }
     }
 

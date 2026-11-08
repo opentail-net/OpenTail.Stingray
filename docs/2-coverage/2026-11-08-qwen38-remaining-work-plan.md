@@ -48,18 +48,22 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 3. Prefix reuse and retained state
 
-- [ ] **Job 3: memory accounting completion.** Design committed in 5c89581f, before code. Part (a) is implemented
-        (`Qwen4ExpSequenceState.PerTokenBytes`, `Qwen4ExpForwardPass.PerTokenStateBytes`, tests `Qwen4ExpPerTokenBytesTests`, 6);
-        its full-suite gate is pending. Pieces:
+- [ ] **Job 3: memory accounting completion.** Design committed in 5c89581f, before code. Parts (a) and (b) are implemented;
+        the remaining open item is the real-checkpoint measurement (below). Pieces:
   - [x] `KvBytesPerToken` becomes the exact per-token sum (done; full Core 1417 tests, 0 failed; tests `Qwen4ExpPerTokenBytesTests`, 6; the real-checkpoint value is not measured yet): K and V, raw indexer key, amortised pooled key
         (`ceil(4 x indexerKeyLength / indexerKPool)` bytes), and 4 bytes of PLE history. Counted from the real layer tensors.
         Changes the session ABI fingerprint (acceptable: no persisted qwen4exp sessions exist).
-  - [ ] `ISnapshotAccountedSequenceKvCache.HeldSnapshotBytes` (new), `RetainedSequenceState` exposes it,
-        `HotSession.CurrentResidentBytes` includes it.
-  - [ ] Reservation projection for a turn that will take a snapshot (`IBatchedForwardPass.KeepsTurnSnapshot`, default false).
-  - [ ] Tests: arithmetic against real list lengths; held bytes zero before a snapshot and positive after a turn;
-        residency includes them; eviction frees them.
-- [ ] The turn-start snapshot's fixed state (GDN and PLE conv buffers) is still copied and not charged to memory accounting.
+  - [x] `ISnapshotAccountedSequenceKvCache.HeldSnapshotBytes` (new), `RetainedSequenceState` exposes it,
+        `HotSession.CurrentResidentBytes` includes it, and eviction returns it. Done with the full Core gate at 1419 tests,
+        0 failed. Tests: `HotSessionSnapshotAccountingTests` (2; a mutation check that removes the snapshot from residency
+        fails both), `Qwen4ExpSequenceHeldBytesTests` (2).
+  - [x] Reservation projection for a turn that will take a snapshot (`IBatchedForwardPass.KeepsTurnSnapshot`, default false;
+        true for the Qwen pass). Known gap: no test isolates the reserved figure, so it is covered only indirectly through the
+        residency tests.
+  - [x] Tests: arithmetic against real list lengths (`Qwen4ExpPerTokenBytesTests`, `Qwen4ExpSequenceHeldBytesTests`); held bytes
+        zero before a snapshot and positive after a turn; residency includes them; eviction frees them.
+- [x] The turn-start snapshot's fixed state (GDN and PLE conv buffers) is now charged while a snapshot is held (Job 3 part b).
+  The copy itself is still made.
 - [ ] Real-checkpoint measurement of the fixed bytes per sequence. Not measured yet; no number is quoted anywhere.
 - [ ] Cross-session copy-on-write page sharing (Job 8). **Design only**; not started. Deferred.
 

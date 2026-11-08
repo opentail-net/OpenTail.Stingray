@@ -18,6 +18,15 @@ public interface ISequenceKvCache : IDisposable
 /// caches with windowed, recurrent, compressed, or device-specific semantics must opt in only
 /// after they can make the same guarantee.
 /// </summary>
+/// <summary>
+/// A sequence cache that holds extra state for rollback (a turn-start snapshot). <see cref="HeldSnapshotBytes"/> is what that
+/// state costs beyond the cache's shared rows; zero when no snapshot is held. Caches without snapshots do not implement it.
+/// </summary>
+public interface ISnapshotAccountedSequenceKvCache : ISequenceKvCache
+{
+    long HeldSnapshotBytes { get; }
+}
+
 public interface IRewindableSequenceKvCache : ISequenceKvCache
 {
     /// <summary>Absolute logical position of the next materialized state entry.</summary>
@@ -139,6 +148,12 @@ public interface IBatchedForwardPass : IThreadAffineBackend
     /// short prefix of a model with large fixed state is not admitted to the cache as if it were free. Zero by default.
     /// </summary>
     long FixedBytesPerSequence => 0;
+
+    /// <summary>
+    /// Whether a turn that starts after earlier positions keeps a turn-start snapshot (see
+    /// <see cref="ISnapshotAccountedSequenceKvCache"/>). A session then reserves for the snapshot as well. False by default.
+    /// </summary>
+    bool KeepsTurnSnapshot => false;
 
     /// <summary>Maximum supported sequence length; caps each request's projected KV reservation.</summary>
     int MaxSeqLen { get; }

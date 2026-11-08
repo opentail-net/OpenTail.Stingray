@@ -81,6 +81,8 @@ public sealed class HotSession : IDisposable
     // Fixed per-sequence state (recurrent buffers): held by a retained state whatever its length, so every
     // residency and reservation figure below charges it once per held state, not per token.
     private readonly long _fixedBytesPerSession;
+    // Whether a turn that starts after earlier positions keeps a snapshot of the prior state (reserved for in TurnBytes).
+    private readonly bool _keepsTurnSnapshot;
     private readonly int _maxSequenceLength;
     private readonly int _maxCapturedOutputChunks;
     private readonly string _modelKey;
@@ -126,6 +128,7 @@ public sealed class HotSession : IDisposable
         _resources = resources;
         _kvBytesPerToken = kvBytesPerToken;
         _fixedBytesPerSession = engine.FixedBytesPerSequence;
+        _keepsTurnSnapshot = engine.KeepsTurnSnapshot;
         _maxSequenceLength = maxSequenceLength;
         _maxCapturedOutputChunks = maxCapturedOutputChunks;
         SessionId = sessionId;
@@ -299,10 +302,10 @@ public sealed class HotSession : IDisposable
     /// </summary>
     internal long EvictRetainedCacheIfIdle()
     {
-        var (dropped, freedPositions) = _state.EvictIfIdle();
+        var (dropped, freedPositions, snapshotBytes) = _state.EvictIfIdle();
         if (!dropped) return 0;
         _resources.SetResidentBytes(SessionId, 0);
-        return RetainedBytes(freedPositions);
+        return RetainedBytes(freedPositions) + snapshotBytes;
     }
 
     /// <summary>
@@ -484,7 +487,7 @@ public sealed class HotSession : IDisposable
             SessionResourceBudget.SessionResourceReservation reservation;
             int initialPositions = checked(priorCursor.MaterializedPositionCount + appendTokens.Length
                 + (sampling.MaxNewTokens > 0 ? 1 : 0));
-            long neededBytes = RetainedBytes(initialPositions);
+            long neededBytes = TurnBytes(initialPositions, priorCursor.MaterializedPositionCount);
             try
             {
                 reservation = _resources.Reserve(SessionId, neededBytes, _modelKey);
@@ -527,7 +530,7 @@ public sealed class HotSession : IDisposable
                     bool firstChunkSeen = false;
                     await foreach (var chunk in _engine.GenerateRetainedChunksAsync(
                         effectivePrompt, sampling, _state, cancellationToken,
-                        targetPositions => reservation.TryRenew(RetainedBytes(targetPositions))).ConfigureAwait(false))
+                        targetPositions => reservation.TryRenew(TurnBytes(targetPositions, priorCursor.MaterializedPositionCount))).ConfigureAwait(false))
                     {
                         if (!firstChunkSeen)
                         {
@@ -639,7 +642,15 @@ public sealed class HotSession : IDisposable
     }
 
     private long CurrentResidentBytes() =>
-        _state.HasRetainedState ? RetainedBytes(_state.MaterializedPosition) : 0;
+        _state.HasRetainedState ? RetainedBytes(_state.MaterializedPosition) + _state.HeldSnapshotBytes : 0;
+
+    /// <summary>
+    /// Bytes a turn reserves for: its own state at <paramref name="positions"/>, plus, when the turn will take a snapshot of
+    /// the prior state (there is a prior position and the backend keeps snapshots), the prior state's cost. The snapshot
+    /// shares rows, so this over-estimates it. That is the conservative side for an admission reservation.
+    /// </summary>
+    private long TurnBytes(long positions, long priorPositions) =>
+        RetainedBytes(positions) + (_keepsTurnSnapshot && priorPositions > 0 ? RetainedBytes(priorPositions) : 0);
 
     /// <summary>Bytes a held retained state occupies at <paramref name="positions"/>: per-token KV plus the fixed state.</summary>
     private long RetainedBytes(long positions) => checked(positions * _kvBytesPerToken + _fixedBytesPerSession);

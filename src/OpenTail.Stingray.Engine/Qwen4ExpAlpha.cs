@@ -854,6 +854,9 @@ public sealed class Qwen4ExpPleHasher
 
     public void Reset() => _tokenHistory.Clear();
 
+    /// <summary>Tokens in the history. Each one costs an int in every copy of this hasher.</summary>
+    public int HistoryLength => _tokenHistory.Count;
+
     private Qwen4ExpPleHasher(Qwen4ExpPleHasher source)
     {
         _ngramSize = source._ngramSize;

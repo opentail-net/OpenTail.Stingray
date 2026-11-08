@@ -69,6 +69,9 @@ public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass, IPrefixCac
     /// <summary>Recurrent conv and state plus PLE history, held by every sequence whatever its length.</summary>
     public long FixedBytesPerSequence => _pass.FixedStateBytesPerSequence;
 
+    /// <summary>A turn that starts after earlier positions keeps a turn-start snapshot (see <see cref="MarkTurnStart"/>).</summary>
+    public bool KeepsTurnSnapshot => true;
+
     public int MaxSeqLen => _maxSeqLen;
 
     public bool PrefillDequantCacheActive => false;
@@ -114,9 +117,12 @@ public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass, IPrefixCac
     }
 
     /// <summary>A sequence cache. Rewinds only to the turn-start snapshot (or to an empty sequence).</summary>
-    private sealed class Cache(Qwen4ExpSequenceState state) : ISequenceKvCache, IRewindableSequenceKvCache
+    private sealed class Cache(Qwen4ExpSequenceState state) : ISequenceKvCache, IRewindableSequenceKvCache, ISnapshotAccountedSequenceKvCache
     {
         public Qwen4ExpSequenceState State { get; } = state;
+
+        /// <summary>The turn-start snapshot's own bytes: its buffers, its list references and its PLE history copy.</summary>
+        public long HeldSnapshotBytes => TurnSnapshot?.HeldBytes ?? 0;
 
         /// <summary>Position of the last completed prefill chunk; -1 when none, so a new prefill starts a new turn.</summary>
         public int LastPrefillEnd { get; set; } = -1;

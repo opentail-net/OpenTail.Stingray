@@ -362,6 +362,9 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// <summary>Bytes every sequence holds regardless of length (see <see cref="IBatchedForwardPass.FixedBytesPerSequence"/>).</summary>
     public long FixedBytesPerSequence => _fwd.FixedBytesPerSequence;
 
+    /// <summary>Whether a turn started after earlier positions keeps a snapshot (see <see cref="IBatchedForwardPass.KeepsTurnSnapshot"/>).</summary>
+    public bool KeepsTurnSnapshot => _fwd.KeepsTurnSnapshot;
+
     /// <summary>Maximum logical sequence length accepted by the active backend.</summary>
     public int MaxSequenceLength => _fwd.MaxSeqLen;
 
