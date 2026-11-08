@@ -1234,11 +1234,23 @@ This is the architectural work worth retaining after DiffusionGemma itself is co
 
 ## Open (checked 2026-10-30 against the status line)
 
-- [ ] Download the real Q4_K_M GGUF (16.8 GB) and run the Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler)
+- [~] Download the real Q4_K_M GGUF (16.8 GB): done 2026-11-08 to `E:/_models/diffusiongemma-26b-a4b-it-gguf`, sha256 `24523b6c…8028bc5` verified against the scout pin (revision `f4183a2c`). Run result below. The Phase 9/13 parity ladder against llama.cpp (backbone) and TensorSharp (canvas and sampler) is still open.
 - [ ] Level 4 paged real-weight run (00-current-work item 14)
 - [x] Resolve what enc_layer_output_scale and layer_output_scale mean (prefill or canvas pass). Answered 2026-11-08 (coverage plan, item A2): both are the same per-layer scalar. Sources, all read without a weight download. (1) Upstream `google/diffusiongemma-26B-A4B-it`, revision `f7f5b7f5fa82ffc52addd066915886d497f5517b`: `model.safetensors.index.json` has `layer_scalar` for 30 layers under both `model.encoder.language_model.layers.N` and `model.decoder.layers.N`; the BF16 values match in all 30 layers. (2) vLLM `vllm/model_executor/models/diffusion_gemma.py`, commit `de05fd1db93f712288e654bc28a8480a67a7a8e2`: "Single Gemma4 backbone run in two modes ... Same weights, same layers"; `gemma4.py` applies one `layer_scalar` to every text layer in both modes. (3) GGUF `unsloth/diffusiongemma-26B-A4B-it-GGUF`, revision `f4183a2c7a354128d02545752303c4354d165bf0`, Q4_K_M: has both `blk.N.enc_layer_output_scale.weight` and `blk.N.layer_output_scale.weight` (F32, shape [1], N = 0..29); the values match in all 30 layers and match the upstream values. Consequence: prefill and canvas decode multiply by the same value, so TensorSharp's split (`_encScale` for prefill, `_decScale` for canvas) gives the same numbers. Recommendation for the port: read the value from the GGUF and fail when either tensor is missing or the two disagree. Do not default a missing scale to 1.0, which is what TensorSharp's loader does.
 
 ---
+
+## Real-checkpoint run, 2026-11-08
+
+Checkpoint: `unsloth/diffusiongemma-26B-A4B-it-GGUF`, `diffusiongemma-26B-A4B-it-Q4_K_M.gguf`, revision `f4183a2c7a354128d02545752303c4354d165bf0`, 16,806,810,208 bytes, sha256 `24523b6c833c9ce9f5f34f9b333ab1517d73d6f1e76a103645353114c8028bc5`. Scout (budget 63G, ctx 4096): allowed, peak 21.5 GiB plus 8 GiB reserve. Free RAM about 43 GiB at run time, no other model run active.
+
+- **CLI (`stingray run`): refused.** `PlanNotExecutableException`: "GGUF architecture 'diffusion-gemma' is not admitted ... (status NotAdmitted)". The process ends with an unhandled exception and a stack trace, not a clean message. `RunCommand` catches some exception types but not this one. This is a CLI gap; it is not fixed here.
+- **Port guard, `DiffusionGemmaRealCheckpointGuardTests`: passes on the real file** (1 test, 0 skipped, 0.58 s). `DiffusionGemmaForwardPass` refuses a real checkpoint unless `allowRealCheckpoint` is set or `STINGRAY_DIFFUSIONGEMMA_ENABLE_REAL=1`.
+- **Port with the override, bounded smoke (scratch test, not committed): runs end to end.** Construct 0.1 s; `PrefillPrompt` of 3 tokens 1.2 s; one `ForwardCanvas` step on a 2-token canvas 0.4 s; 524,288 logits (2 × 262,144), none NaN or infinite; max logit 18.14; peak working set 4.67 GiB. This is **not a correctness result**: the token IDs were arbitrary, nothing was decoded, and nothing was compared against a reference.
+
+Two statements in the code disagree and need fixing before the ladder. `DiffusionGemmaArchitecture.RefusalReason` says the Gemma-4 MoE layout is "not yet implemented". `DiffusionGemmaForwardPass` says the layout is "implemented in-place, but real-weight execution remains guarded". The smoke run shows the path executes. It does not show the values are right.
+
+Still open: the parity ladder (backbone against llama.cpp; canvas and sampler against TensorSharp), the Level 4 paged run, and the self-conditioning width check.
 
 ## Research findings (2026-10-31)
 
