@@ -822,3 +822,23 @@ Design:
 Tests (synthetic, counting fake pass): limit N with a budget that admits one at a time; the (N+1)th submit is refused
 immediately; after one is admitted a new submit succeeds; cancelling a waiting request frees its slot; the counter returns
 to zero after everything drains.
+
+## Phase 2 (queue limit), result 2026-11-08
+
+- Implemented: `ContinuousBatchingEngine(..., maxQueuedRequests)` (optional, default unlimited; below 1 is rejected at
+  construction). A request arriving while the waiting count is at the limit throws `EngineQueueFullException`. The request
+  is refused, not held. Mapping to a server status is left to the host.
+- Correction to the design above: the engine already had a waiting counter, `_pendingCount` (exposed as `QueueDepth`),
+  updated on every exit path. The limit reuses it; no new counter was added.
+- Added after the design: `PurgeCancelledPending`. Before it, a cancelled request still waiting in the queue kept its slot
+  until the running batch freed up, because admission only inspects the head of the queue. The purge completes cancelled
+  waiters on each loop iteration and keeps the rest in FIFO order. This applies to every engine, not only ones with a limit.
+- Tests: `ContinuousBatchingQueueLimitTests` (2): a full queue refuses the next request, the refused request's count is
+  undone, cancelling a waiting request frees its slot at once, and a new request is accepted afterwards; a limit below 1 is
+  rejected. Both pass.
+- Also changed: `ContinuousBatchingBackpressureTests` (1) now uses 200-token requests and a 250-token budget. The earlier 6-token
+  version finished faster than the 1 ms poll, and the poll sometimes saw no reservation. The test checks that committed KV
+  never exceeds the budget.
+- Full Core suite: 1375 tests, 0 failed, 95 skipped (fixtures not present).
+- Still open in Phase 2: the real-checkpoint cancellation memory check (cache disposal is covered only with the counting fake),
+  and mapping `EngineQueueFullException` to a server status.

@@ -10,13 +10,13 @@ namespace OpenTail.Stingray.Tests.Core;
 /// </summary>
 public sealed class ContinuousBatchingBackpressureTests
 {
-    private const long BudgetTokens = 12;     // one request needs about 8 (prompt 2 + 6 new), so two cannot fit
+    private const long BudgetTokens = 250;    // one request needs 202 (prompt 2 + 200 new), so two cannot fit
 
     [Fact]
     public async Task QueuedRequests_NeverExceedTheKvBudget_AndAllFinishUnchanged()
     {
         var tok = new ContinuousBatchingCancellationMemoryTests.ByteTokenizer();
-        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 6 };
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 200 };
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         // Baseline: the same request alone, with the same budget.
@@ -25,7 +25,7 @@ public sealed class ContinuousBatchingBackpressureTests
             maxBatchSize: 2, kvBudgetBytes: BudgetTokens))
         {
             string baseline = await CollectAsync(solo, "QR", sp, cts.Token);
-            Assert.Equal(6, baseline.Length);
+            Assert.Equal(200, baseline.Length);
 
             using var engine = new ContinuousBatchingEngine(
                 new ContinuousBatchingCancellationMemoryTests.CountingForwardPass(), tok, "queued",

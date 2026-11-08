@@ -39,6 +39,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     private readonly bool _ownsKvCache;
     private readonly ITokenizer _tokenizer;
     private readonly int _maxBatchSize;
+    // Requests waiting for admission (see QueueDepth) may not exceed this; int.MaxValue when unlimited.
+    private readonly int _maxQueuedRequests;
     private readonly int _thinkTokenId;
     private readonly int _endThinkTokenId;
     private readonly bool _thinkingEnabled;
@@ -250,14 +252,18 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         long kvBudgetBytes = 0,
         long prefixCacheBytes = 256L * 1024 * 1024,
         IKvCache? kvCache = null,
-        IExecutionTurnGate? turnGate = null)
+        IExecutionTurnGate? turnGate = null,
+        int? maxQueuedRequests = null)
     {
         ArgumentNullException.ThrowIfNull(fwd);
         ArgumentNullException.ThrowIfNull(tokenizer);
+        if (maxQueuedRequests is < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxQueuedRequests), maxQueuedRequests, "A queue limit must be at least 1 when set.");
         _fwd = fwd;
         _turnGate = turnGate;
         _tokenizer = tokenizer;
         ModelId = modelId;
+        _maxQueuedRequests = maxQueuedRequests ?? int.MaxValue;
         _maxBatchSize = Math.Max(1, maxBatchSize);
         _thinkTokenId = thinkTokenId;
         _endThinkTokenId = endThinkTokenId;
@@ -321,6 +327,16 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
 
     /// <summary>Number of requests queued but not yet being generated.</summary>
     public int QueueDepth => _pendingCount;
+
+    /// <summary>
+    /// Refuses a request that would make the waiting count exceed the queue limit. The count already includes the
+    /// request, and the caller's catch block undoes it. Requests that are running do not count.
+    /// </summary>
+    private void ThrowIfQueueFull()
+    {
+        if (Volatile.Read(ref _pendingCount) > _maxQueuedRequests)
+            throw new EngineQueueFullException(ModelId, _maxQueuedRequests);
+    }
 
     /// <summary>Number of requests currently being prefilled or decoded.</summary>
     public int ActiveRequests => _activeCount;
@@ -475,6 +491,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         {
             try
             {
+                ThrowIfQueueFull();
                 await _queue.Writer.WriteAsync(request, ct).ConfigureAwait(false);
             }
             catch
@@ -524,6 +541,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         Interlocked.Increment(ref _pendingCount);
         try
         {
+            ThrowIfQueueFull();
             await _queue.Writer.WriteAsync(
                 new PendingRequest(prompt, sp, ct, channel, canonicalHistoryPrefix: null, state,
                     lease.Cache, lease.TurnStartPosition, reservationRenewer), ct).ConfigureAwait(false);
@@ -587,6 +605,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             while (_queue.Reader.TryRead(out var queued))
                 pending.Enqueue(queued);
 
+            PurgeCancelledPending(pending);
             AdmitPending(pending, prefilling, active);
 
             if (active.Count == 0 && prefilling.Count == 0)
@@ -925,6 +944,27 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// when nothing is running, where it is always admitted so a single oversized
     /// request can't deadlock the engine (it then fails in prefill if it truly can't fit).
     /// </summary>
+    /// <summary>
+    /// Completes waiting requests that were cancelled, wherever they sit in the queue, so their queue slots are freed
+    /// now rather than when the head of the queue is next reached. Live requests keep their FIFO order.
+    /// </summary>
+    private void PurgeCancelledPending(Queue<PendingRequest> pending)
+    {
+        int n = pending.Count;
+        for (int i = 0; i < n; i++)
+        {
+            var req = pending.Dequeue();
+            if (!req.Ct.IsCancellationRequested)
+            {
+                pending.Enqueue(req);
+                continue;
+            }
+            Interlocked.Decrement(ref _pendingCount);
+            ReturnUnstartedRetainedState(req);
+            CompleteCancelled(req.Output.Writer, req.Ct, retained: req.RetainedState is not null);
+        }
+    }
+
     private void AdmitPending(Queue<PendingRequest> pending, List<PrefillingSeq> prefilling, List<ActiveSeq> active)
     {
         while (pending.Count > 0 && active.Count + prefilling.Count < _maxBatchSize)
