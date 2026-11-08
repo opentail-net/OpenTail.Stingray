@@ -248,8 +248,9 @@ Runnable now. Test cases only, no new disk or implementation.
       Frame-input path, done 2026-11-08 (`FrameSequenceVideoSource`: a directory of PNG frames in name order, the rate stated by
       the caller, frames of another size resized bicubic, another rate refused; no decoder). Tests: `FrameSequenceVideoSourceTests`,
       6 tests. The projector-path test runs the frames through `ForwardVideo` with the real mmproj and passes, not skipped.
-      Correction found on the way: at 224 px the encoder gives 49 tokens per pair (7x7), which means the mmproj's patch size is 16,
-      not the 14 assumed by the decode test and by the encoder's `// 14` comment. Both tests now take the size from
+      Correction found on the way, checked against the metadata (`stingray list-metadata` on the mmproj in `/e/_models`):
+      `clip.vision.patch_size` is 16 and `spatial_merge_size` is 2, so 224 px gives 14x14 patches and 7x7 = 49 tokens per
+      pair, not 64. The decode test and the encoder's `// 14` comment assumed 14 (the comment is stale; code not changed). Both tests now take the size from
       `QwenVlVisionModel.PatchSize`. The decode test has never run here (it skips without ffmpeg).
 
 ## Phase 6. Tool calls
