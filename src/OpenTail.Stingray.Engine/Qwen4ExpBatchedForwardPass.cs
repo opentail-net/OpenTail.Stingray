@@ -18,12 +18,9 @@ public sealed class Qwen4ExpBatchedForwardPass : IBatchedForwardPass, IPrefixCac
         ArgumentNullException.ThrowIfNull(hp);
         _maxSeqLen = hp.ContextLength;
 
-        // Growing per-token state: K and V rows of each attention (QSA) layer, plus the indexer keys.
-        int attentionLayers = 0;
-        for (int l = 0; l < numLayers; l++)
-            if (!hp.IsRecurrentLayer(l)) attentionLayers++;
-        long perToken = (long)attentionLayers * 2 * hp.NumHeadsKv * hp.HeadDim * sizeof(float);
-        _kvBytesPerToken = (int)Math.Min(int.MaxValue, perToken);
+        // Growing per-token state, counted exactly by the pass: K and V rows, the raw and pooled indexer keys of each
+        // attention layer that has an indexer, and the PLE token history.
+        _kvBytesPerToken = (int)Math.Min(int.MaxValue, pass.PerTokenStateBytes);
     }
 
     public ISequenceKvCache CreateCache() => new Cache(_pass.CreateSequenceState());

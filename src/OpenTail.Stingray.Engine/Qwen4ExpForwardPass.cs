@@ -1295,6 +1295,26 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     public long FixedStateBytesPerSequence => Qwen4ExpSequenceState.FixedFloatBytes(
         SeqNumLayers, SeqIsRecurrent, SeqGdnConvLength, SeqGdnStateLength, SeqPleHistoryLength);
 
+    /// <summary>
+    /// Exact growing bytes per token, counted from this model's real layers (attention layers, and which of them have an
+    /// indexer), not an assumption. See <see cref="Qwen4ExpSequenceState.PerTokenBytes"/>.
+    /// </summary>
+    public long PerTokenStateBytes
+    {
+        get
+        {
+            int attention = 0, indexers = 0;
+            for (int l = 0; l < _numLayers; l++)
+            {
+                if (_hp.IsRecurrentLayer(l)) continue;
+                attention++;
+                if (_tensors.Layers[l].IndexKProj != null) indexers++;
+            }
+            return Qwen4ExpSequenceState.PerTokenBytes(
+                attention, indexers, _numHeadsKv, _headDim, _indexerKeyLength, _indexerKPool, _hp.PleLayers is { Count: > 0 });
+        }
+    }
+
     // Sequence-state sizing: one definition, used by both the allocation and the byte count above.
     private int SeqNumLayers => _numLayers + 1; // + the MTP head's block, whose attention cache lives at index _numLayers
     private bool SeqIsRecurrent(int l) => l < _numLayers && _hp.IsRecurrentLayer(l);

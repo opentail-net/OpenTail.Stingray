@@ -95,6 +95,23 @@ public sealed class Qwen4ExpSequenceState : IDisposable
         return floats * sizeof(float);
     }
 
+    /// <summary>
+    /// Bytes one token adds to a sequence's growing state, by the rows the forward pass writes per token: K and V for
+    /// every attention layer; for each attention layer that has an indexer, the raw indexer key (one per token) and the
+    /// pooled key (one per <paramref name="indexerKPool"/> tokens, amortised and rounded up); and, when PLE is present,
+    /// one token in its history (an int).
+    /// </summary>
+    public static long PerTokenBytes(
+        int attentionLayers, int indexerLayers, int numHeadsKv, int headDim, int indexerKeyLength, int indexerKPool, bool hasPle)
+    {
+        long kv = 2L * numHeadsKv * headDim * sizeof(float);
+        long keyRow = (long)indexerKeyLength * sizeof(float);
+        long pooledPerToken = indexerKPool > 0 ? (keyRow + indexerKPool - 1) / indexerKPool : keyRow;
+        long bytes = attentionLayers * kv + indexerLayers * (keyRow + pooledPerToken);
+        if (hasPle) bytes += sizeof(int);
+        return bytes;
+    }
+
     /// <summary>Deep copy: the clone and this sequence can continue independently.</summary>
     public Qwen4ExpSequenceState Clone()
     {
