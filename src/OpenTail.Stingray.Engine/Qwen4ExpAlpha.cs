@@ -150,7 +150,7 @@ public sealed record Qwen4ExpHyperparams
             VocabSize = GetInt(metadata, $"{arch}.vocab_size", 152064),
             ContextLength = GetInt(metadata, $"{arch}.context_length", 4096),
 
-            NumLayerNextn = GetInt(metadata, $"{arch}.nextn.layer_count"),
+            NumLayerNextn = GetInt(metadata, $"{arch}.nextn_predict_layers"),
             ExpertFeedForwardLength = GetInt(metadata, $"{arch}.expert_feed_forward_length", 640),
             ExpertSharedFeedForwardLength = GetInt(metadata, $"{arch}.expert_shared_feed_forward_length"),
             ExpertCount = GetInt(metadata, $"{arch}.expert_count"),
