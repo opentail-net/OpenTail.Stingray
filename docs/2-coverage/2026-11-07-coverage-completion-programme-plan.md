@@ -460,3 +460,23 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
 - Still open in Phase 3: retained conversation state across turns (turn-level snapshots), memory budgeting and eviction for
   retained state, and copy-on-write page sharing. The current fork copies the whole state; that is correct but not
   memory-efficient. Qwen 3.8 remains unadmitted.
+
+## Phase 3 (retained conversation state), status 2026-11-08
+
+- Retained path: `GenerateRetainedChunksAsync` and `RetainedSequenceState` require the cache to implement
+  `IRewindableSequenceKvCache` (`Complete` rejects others; cancelled and failed turns roll back through `RewindTo`).
+- `Qwen4ExpBatchedForwardPass` implements it. The recurrent state cannot be rolled back token by token, so the adapter
+  keeps one turn-start snapshot per retained sequence (taken at the first prefill chunk of a new turn, not each chunk),
+  and rewinds only to that position or to an empty sequence. Memory is bounded at two states per retained sequence.
+- Engine fix (retained cancellation): the consumer used to observe the cancellation before the batcher had rolled the
+  turn back, so a rerun found the state still leased (measured: lease held for 3.4 s after the cancel). The retained
+  consumer now reads the channel to completion and only then reports the cancellation. Non-retained requests are unchanged.
+- `Qwen4ExpRetainedTurnTests` (2 tests, real checkpoint, passing):
+  - the second retained turn generates the same tokens as a cold greedy run over the whole conversation (prompt, first
+    reply, second prompt), and the materialised position equals prompt plus reply;
+  - a cancelled second turn rolls back, the state is settled when the cancellation is seen, and a rerun reproduces the
+    uninterrupted turn's tokens.
+- Regression after the engine change: `Qwen4ExpBatchingTests` (4) and `Qwen4ExpPrefixReuseTests` (2) pass; in the Fast
+  project `ContinuousBatchingRetainedStateTests` (4) and `ContinuousBatchingConstraintTests` (7) pass.
+- Still open in Phase 3: memory budgeting and eviction for retained state (the snapshot doubles per-sequence state
+  memory), copy-on-write page sharing. Qwen 3.8 remains unadmitted.

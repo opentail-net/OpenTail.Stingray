@@ -532,8 +532,12 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             throw;
         }
 
-        await foreach (var chunk in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+        // Read to completion, not to cancellation: the batcher retires a cancelled retained turn (rolling it back and
+        // publishing its outcome) before it completes this channel. Only then does the caller see the cancellation,
+        // so a rerun never finds the state still leased.
+        await foreach (var chunk in channel.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
             yield return chunk;
+        ct.ThrowIfCancellationRequested();
     }
 
     private static void ValidateOutputBound(SamplingParams sampling)
