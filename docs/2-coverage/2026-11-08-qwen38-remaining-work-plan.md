@@ -254,7 +254,7 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 6. Tool calls
 
-- [ ] Server wiring: the server does not use the validator yet. Waits on D3.
+- [x] Server wiring (D3, 12e961a2): the validator runs on all four paths (OpenAI and Anthropic, streaming and non-streaming). Tests: `ToolCallValidationEndpointTests` (4): OpenAI non-streaming invalid and valid, OpenAI streaming invalid, Anthropic non-streaming undeclared tool. Not covered by a test yet: Anthropic streaming, and Anthropic invalid arguments.
 - [ ] Round trip through the server tool pipeline. Waits on admission (rule 14).
 
 ## Phase 7. Serving and product
