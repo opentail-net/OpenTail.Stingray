@@ -335,3 +335,21 @@ Greedy, 12 tokens, Stingray against `llama-completion` at `bed0a8566`. Full text
 - Proposed criterion (owner to confirm, not agreed): per-token KL against llama.cpp's distribution, with the threshold set by
   the perturbation envelope on the same prompts, plus greedy agreement except where the top-two margin is inside that envelope.
   Phase 0 stays open until the owner confirms it.
+
+### Phase 0.2 result, 2026-11-08: last-position KL on three prompts, with each prompt's own noise envelope
+
+Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation checked: identical IDs on all three prompts.
+
+| Prompt | llama top-1 (p) | KL(llama \|\| Stingray) | noise: KL(base \|\| eps 1e-6) | top-1 |
+|---|---|---|---|---|
+| "The capital of France is" | 11751 (0.550) | 0.015 | 0.033 | match |
+| "The largest planet in the solar system is" | 271 (0.210) | 0.015 | 0.0025 | match |
+| "def fibonacci(n):" | 198 (0.956) | 0.0001 | 0.0001 | match |
+
+- The KL to llama.cpp is 0.015 nats or less on all three prompts, and the top-1 token matches on all three.
+- The noise envelope is prompt-dependent (0.0001 to 0.033 nats). One prompt is not a representative noise floor, and the
+  France result above is the largest envelope measured, not the typical one.
+- Caveat: last position only. The greedy divergences (planet at step 3, "2 + 2 =" at step 2) are later positions, not
+  measured here.
+- Proposed criterion (owner to confirm, not agreed): KL to llama.cpp at every checked position below the prompt's noise
+  envelope plus a fixed margin, and greedy agreement except at near-ties inside that envelope. Phase 0 stays open.

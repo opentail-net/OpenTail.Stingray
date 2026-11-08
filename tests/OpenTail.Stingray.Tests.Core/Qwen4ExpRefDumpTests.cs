@@ -130,7 +130,13 @@ public sealed class Qwen4ExpRefDumpTests
         string? path = FindModel();
         Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
 
-        int last = PromptTokens.Length - 1;
+        string? customPrompt = Environment.GetEnvironmentVariable("QWEN_DUMP_PROMPT");
+        using var tokModel = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int[] toks = customPrompt is null
+            ? PromptTokens
+            : OpenTail.Stingray.Core.GgufTokenizer.FromGgufModel(tokModel).Encode(customPrompt).ToArray();
+        int last = toks.Length - 1;
+        Console.WriteLine("DUMP_TOKENS " + string.Join(",", toks));
         Environment.SetEnvironmentVariable("STINGRAY_Q4E_DUMP_DIR", outDir);
         Environment.SetEnvironmentVariable("STINGRAY_Q4E_DUMP_POS", last.ToString());
         try
@@ -144,7 +150,7 @@ public sealed class Qwen4ExpRefDumpTests
             ReadOnlySpan<float> logits = default;
             for (int pos = 0; pos <= last; pos++)
             {
-                logits = forwardPass.Forward(PromptTokens[pos], pos);
+                logits = forwardPass.Forward(toks[pos], pos);
             }
 
             Assert.False(float.IsNaN(logits[0]) || float.IsInfinity(logits[0]));
