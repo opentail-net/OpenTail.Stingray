@@ -598,3 +598,19 @@ Stingray plan:
 - qwen4exp uses four-section IMRoPE, so image tokens need the (t, h, w) position layout of the reference; the position
   of text after an image continues from the image's extent. Check the reference's position assignment before coding.
 - Image preprocessing and the placeholder token ids come from the reference `mtmd` helpers and the GGUF metadata.
+
+### 5.2 planned from the reference (recorded before code, 2026-11-08)
+
+- Position type: qwen4exp uses IMRoPE (`llama-model.cpp` ~3205), so `mtmd` uses `MTMD_POS_TYPE_MROPE` (`mtmd.cpp` ~556-561).
+- Per image token `i` in an `nx` x `ny` grid, starting at `pos_0` (`mtmd.cpp` ~2478-2487):
+  `t = pos_0`, `x = pos_0 + (i % nx)` (column), `y = pos_0 + (i / nx)` (row), `z = 0`.
+- Written to the four RoPE sections in the order t, y (section 1), x (section 2), z (section 3) (`mtmd-helper-common.h` ~101-112).
+- Text after the image continues at `pos_0 + max(nx, ny)` (`mtmd.cpp` ~2537-2541). Text tokens use the same value in all four sections.
+- Attention inside an image chunk is non-causal (`mtmd_decode_use_non_causal`, `scope_non_causal` in `mtmd-helper.cpp`).
+  Recurrent (GDN) layers stay causal; only the attention layers change.
+- Stingray change: a per-token four-section position for RoPE (text: all four equal, so existing results must stay
+  bit-identical), an embedding-input forward for image tokens, and the non-causal flag for the attention layers
+  inside one image chunk. The QSA indexer uses the same positions.
+- Oracle: the reference answer to "What shapes are in the image?" on `test_shapes.png` (greedy, 24 tokens):
+  "The image contains two shapes: 1. A red square - located in the upper-left". Also compare the first generated logits
+  once the prompt builder is aligned with the reference's chat template.
