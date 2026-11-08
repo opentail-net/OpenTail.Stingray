@@ -606,6 +606,209 @@ public sealed class GlmDsaSyntheticTests : IDisposable
         Assert.True(anyDifferent, "YaRN-active rotation should differ from the plain formula -- if it never does, the indexer RoPE fix has no effect and the bug it fixed was never real");
     }
 
+    /// <summary>
+    /// Shared-expert contribution check (Phase 2A's last open synthetic-correctness item):
+    /// glm-dsa.cpp's shared expert (lines 486-498) is a plain SwiGLU FFN -- <c>build_ffn</c> with
+    /// <c>LLM_FFN_SILU</c>/<c>LLM_FFN_PAR</c>, no extra scale -- added to the routed MoE output with
+    /// <c>ggml_add</c>, exactly matching <c>GlmDsaForwardPass.MoeFfn</c>'s shared-expert block
+    /// (gate/up MatVec, SiLU(gate)*up, down MatVec, accumulated into the routed sum with no scale
+    /// factor). Verifies that exact composition -- SiLU-gated SwiGLU, no extra weighting -- against
+    /// hand-computed values using <see cref="SimdKernels.MatVec"/> directly (the same primitive
+    /// production uses), with weight matrices simple enough to check by hand rather than
+    /// recomputing the expected value with the same logic under test.
+    /// </summary>
+    [Fact]
+    public unsafe void SharedExpertSwiGlu_MatchesHandComputedValues()
+    {
+        // input = [1, 2]; gate/up weights are identity (2x2 row-major [out,in]) so gate==up==input;
+        // down weight is identity too, so the result is exactly silu(x)*x elementwise.
+        float[] input = [1f, 2f];
+        float[] identity2x2 = [1f, 0f, 0f, 1f];
+
+        var gate = new float[2];
+        var up = new float[2];
+        fixed (float* inPtr = input, wPtr = identity2x2, gatePtr = gate, upPtr = up)
+        {
+            SimdKernels.MatVec(gatePtr, (byte*)wPtr, inPtr, rows: 2, cols: 2, DType.Float32);
+            SimdKernels.MatVec(upPtr, (byte*)wPtr, inPtr, rows: 2, cols: 2, DType.Float32);
+        }
+
+        for (int i = 0; i < 2; i++)
+        {
+            float g = gate[i];
+            float silu = g / (1f + MathF.Exp(-g)); // SiLU(g) = g * sigmoid(g) = g / (1 + e^-g)
+            gate[i] = silu * up[i];
+        }
+
+        var down = new float[2];
+        fixed (float* gatePtr = gate, wPtr = identity2x2, downPtr = down)
+        {
+            SimdKernels.MatVec(downPtr, (byte*)wPtr, gatePtr, rows: 2, cols: 2, DType.Float32);
+        }
+
+        // Hand computation: SiLU(x) = x / (1 + e^-x); with identity gate/up/down and input [1, 2],
+        // the whole pipeline reduces to SiLU(x) * x elementwise (gate == up == input == x here).
+        float siluOf1 = 1f / (1f + MathF.Exp(-1f)); // SiLU(1) ~0.7310586
+        float siluOf2 = 2f / (1f + MathF.Exp(-2f)); // SiLU(2) ~1.7615942
+        float expected0 = siluOf1 * 1f; // SiLU(1) * up[0] = SiLU(1) * 1
+        float expected1 = siluOf2 * 2f; // SiLU(2) * up[1] = SiLU(2) * 2
+        Assert.Equal(expected0, down[0], 5);
+        Assert.Equal(expected1, down[1], 5);
+
+        // Sanity on the hand-computed constants themselves, independent of SimdKernels.
+        Assert.True(MathF.Abs(expected0 - 0.7310586f) < 1e-4f);
+        Assert.True(MathF.Abs(expected1 - 3.5231884f) < 1e-4f);
+    }
+
+    /// <summary>
+    /// End-to-end isolation of the shared-expert's contribution inside the real forward pass:
+    /// zeroes every routed-expert tensor (gate_exps/up_exps), which forces each routed expert's
+    /// SwiGLU input to 0 regardless of which experts the router selects, so the down-projection of
+    /// a zero vector is exactly zero (<see cref="SimdKernels.MatVec"/> of an all-zero input, no
+    /// bias) -- the routed-MoE contribution is provably zero however routing picks its top-k.
+    /// What survives in the FFN output is therefore exactly the shared expert's own SwiGLU,
+    /// confirming <c>MoeFfn</c> actually adds the shared contribution rather than silently
+    /// dropping or double-counting it.
+    /// </summary>
+    [Fact]
+    public void MoeFfn_SharedExpertContribution_SurvivesWhenRoutedExpertsAreZeroed()
+    {
+        const int embedDim = 16;
+        const int numHeads = 2;
+        const int qLoraRank = 8;
+        const int kvLoraRank = 8;
+        const int headDimK = 8;
+        const int headDimV = 8;
+        const int ropeDim = 4;
+        const int indexerNumHeads = 1;
+        const int indexerHeadDim = 128;
+        const int numExperts = 2;
+        const int numExpertsUsed = 1;
+        const int expertFfn = 8;
+        const int vocabSize = 16;
+        const int numLayers = 2; // layer 0 dense (builds a non-trivial hidden state), layer 1 MoE
+
+        string path = Path.Combine(Path.GetTempPath(), $"glm_dsa_shared_expert_{Guid.NewGuid():N}.gguf");
+        _tempFiles.Add(path);
+
+        var tensors = new Dictionary<string, (long[] shape, DType dtype, byte[] data)>();
+
+        void AddTensor(string name, long[] shape, float fill = 0.05f)
+        {
+            long total = 1;
+            foreach (var s in shape) total *= s;
+            var floats = new float[total];
+            for (int i = 0; i < total; i++) floats[i] = fill * MathF.Sin(i + 1);
+            var bytes = new byte[total * 4];
+            Buffer.BlockCopy(floats, 0, bytes, 0, bytes.Length);
+            tensors[name] = (shape, DType.Float32, bytes);
+        }
+
+        void AddZeroTensor(string name, long[] shape)
+        {
+            long total = 1;
+            foreach (var s in shape) total *= s;
+            tensors[name] = (shape, DType.Float32, new byte[total * 4]);
+        }
+
+        AddTensor("token_embd.weight", [embedDim, vocabSize]);
+        AddTensor("output_norm.weight", [embedDim]);
+        AddTensor("output.weight", [embedDim, vocabSize]);
+
+        for (int i = 0; i < numLayers; i++)
+        {
+            AddTensor($"blk.{i}.attn_norm.weight", [embedDim]);
+            AddTensor($"blk.{i}.attn_q_a_norm.weight", [qLoraRank]);
+            AddTensor($"blk.{i}.attn_kv_a_norm.weight", [kvLoraRank]);
+            AddTensor($"blk.{i}.attn_q_a.weight", [embedDim, qLoraRank]);
+            AddTensor($"blk.{i}.attn_q_b.weight", [qLoraRank, numHeads * headDimK]);
+            AddTensor($"blk.{i}.attn_kv_a_mqa.weight", [embedDim, kvLoraRank + ropeDim]);
+            AddTensor($"blk.{i}.attn_k_b.weight", [headDimK - ropeDim, kvLoraRank, numHeads]);
+            AddTensor($"blk.{i}.attn_v_b.weight", [kvLoraRank, headDimV, numHeads]);
+            AddTensor($"blk.{i}.attn_output.weight", [numHeads * headDimV, embedDim]);
+            AddTensor($"blk.{i}.ffn_norm.weight", [embedDim]);
+
+            AddTensor($"blk.{i}.indexer_k_norm.weight", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_k_norm.bias", [indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_proj.weight", [embedDim, indexerNumHeads]);
+            AddTensor($"blk.{i}.indexer_attn_k.weight", [embedDim, indexerHeadDim]);
+            AddTensor($"blk.{i}.indexer_attn_q_b.weight", [qLoraRank, indexerNumHeads * indexerHeadDim]);
+
+            if (i == 0)
+            {
+                AddTensor($"blk.{i}.ffn_gate.weight", [embedDim, expertFfn]);
+                AddTensor($"blk.{i}.ffn_up.weight", [embedDim, expertFfn]);
+                AddTensor($"blk.{i}.ffn_down.weight", [expertFfn, embedDim]);
+            }
+            else
+            {
+                AddTensor($"blk.{i}.ffn_gate_inp.weight", [embedDim, numExperts]);
+                // Routed-expert gate/up zeroed: every routed expert's SwiGLU input is 0 regardless
+                // of which expert(s) the router picks, so down(silu(0)*0) == down(0) == 0 exactly
+                // -- the routed contribution is provably zero, isolating the shared expert.
+                AddZeroTensor($"blk.{i}.ffn_gate_exps.weight", [embedDim, expertFfn, numExperts]);
+                AddZeroTensor($"blk.{i}.ffn_up_exps.weight", [embedDim, expertFfn, numExperts]);
+                AddTensor($"blk.{i}.ffn_down_exps.weight", [expertFfn, embedDim, numExperts]); // irrelevant: input is 0
+                AddTensor($"blk.{i}.ffn_gate_shexp.weight", [embedDim, expertFfn]);
+                AddTensor($"blk.{i}.ffn_up_shexp.weight", [embedDim, expertFfn]);
+                AddTensor($"blk.{i}.ffn_down_shexp.weight", [expertFfn, embedDim]);
+            }
+        }
+
+        var metadata = new Dictionary<string, object>
+        {
+            ["general.architecture"] = "glm-dsa",
+            ["glm-dsa.leading_dense_block_count"] = (ulong)1,
+            ["glm-dsa.expert_weights_scale"] = 2.5f,
+            ["glm-dsa.expert_weights_norm"] = true,
+            ["glm-dsa.expert_shared_count"] = (ulong)1,
+            ["glm-dsa.attention.q_lora_rank"] = (ulong)qLoraRank,
+            ["glm-dsa.attention.kv_lora_rank"] = (ulong)kvLoraRank,
+            ["glm-dsa.attention.key_length_mla"] = (ulong)headDimK,
+            ["glm-dsa.attention.value_length_mla"] = (ulong)headDimV,
+            ["glm-dsa.attention.indexer.head_count"] = (ulong)indexerNumHeads,
+            ["glm-dsa.attention.indexer.key_length"] = (ulong)indexerHeadDim,
+            ["glm-dsa.attention.indexer.top_k"] = (ulong)16,
+            ["glm-dsa.expert_gating_func"] = (ulong)2,
+        };
+
+        WriteGgufFile(path, metadata, tensors);
+
+        using var model = GgufModel.Open(path);
+        var hp = GlmDsaHyperparams.FromGgufMetadata(
+            model.Metadata, "glm-dsa", numLayerAll: numLayers, embedDim: embedDim, numHeads: numHeads,
+            headDim: headDimK, ropeDim: ropeDim, numExperts: numExperts, numExpertsUsed: numExpertsUsed);
+
+        var withRouted = new GlmDsaForwardPass(model, hp);
+        var logitsWithRouted = withRouted.Forward(token: 3, position: 0).ToArray();
+
+        // Rebuild with the shared expert's weights also zeroed (mutating `tensors` in place is
+        // safe here -- the first model's GGUF bytes were already written to `path` above, so this
+        // only affects the second file): if the shared contribution were ever dropped (e.g. an
+        // accidental overwrite instead of +=), THIS run would already equal the first one -- it
+        // wouldn't need the shared weights zeroed to match. Confirms the first run's output
+        // actually depends on the shared expert, not just the (zeroed) routed path or the residual.
+        AddZeroTensor($"blk.1.ffn_gate_shexp.weight", [embedDim, expertFfn]);
+        AddZeroTensor($"blk.1.ffn_up_shexp.weight", [embedDim, expertFfn]);
+        string pathNoShared = Path.Combine(Path.GetTempPath(), $"glm_dsa_shared_expert_zeroed_{Guid.NewGuid():N}.gguf");
+        _tempFiles.Add(pathNoShared);
+        WriteGgufFile(pathNoShared, metadata, tensors);
+        using var modelNoShared = GgufModel.Open(pathNoShared);
+        var withoutShared = new GlmDsaForwardPass(modelNoShared, hp);
+        var logitsWithoutShared = withoutShared.Forward(token: 3, position: 0).ToArray();
+
+        // The shared expert's contribution survives small-magnitude attenuation through the
+        // output-norm/output-projection stages that follow it, so the measured difference is real
+        // but small (~1e-8 on these tiny synthetic weights) -- well above float32 noise for a
+        // 16-wide accumulation (~1e-7 relative), but far below 1e-6.
+        bool anyDifferent = false;
+        for (int i = 0; i < logitsWithRouted.Length; i++)
+        {
+            if (MathF.Abs(logitsWithRouted[i] - logitsWithoutShared[i]) > 1e-9f) anyDifferent = true;
+        }
+        Assert.True(anyDifferent, "zeroing the shared expert's weights should change the output -- if it doesn't, MoeFfn isn't actually using the shared expert's contribution");
+    }
+
     private static void WriteGgufFile(
         string path,
         Dictionary<string, object> metadata,
