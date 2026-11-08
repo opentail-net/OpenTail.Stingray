@@ -260,7 +260,7 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 6. Tool calls
 
-- [x] Server wiring (D3, 12e961a2): the validator runs on all four paths (OpenAI and Anthropic, streaming and non-streaming). Tests: `ToolCallValidationEndpointTests` (5): OpenAI non-streaming invalid and valid, OpenAI streaming invalid, Anthropic non-streaming and streaming undeclared tool (Server fast suite 686 passed, 2 skipped). Not covered by a test yet: Anthropic invalid arguments (only the undeclared-tool case is tested).
+- [x] Server wiring (D3, 12e961a2; streaming output stopped after an invalid call in 78579880): the validator runs on all four paths (OpenAI and Anthropic, streaming and non-streaming). Tests: `ToolCallValidationEndpointTests` (10): OpenAI non-streaming invalid and valid; OpenAI streaming invalid, invalid then text, invalid then valid; Anthropic non-streaming undeclared tool and missing required argument; Anthropic streaming undeclared tool, invalid then text, invalid then valid. Not covered: an argument type mismatch on Anthropic (only missing required and undeclared tool are tested). Server fast suite: 691 passed, 2 skipped.
 - [ ] Round trip through the server tool pipeline. Waits on admission (rule 14).
 
 ## Phase 7. Serving and product
