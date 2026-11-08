@@ -1,6 +1,7 @@
 # Families to port now, prove later (todo)
 
 > Completed items moved to [done/ported-families-todo-completed-items-2026-10.md](../done/ported-families-todo-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Ticked items moved to [done/ported-families-todo-completed-items-2026-11.md](../done/ported-families-todo-completed-items-2026-11.md) on 2026-11-08.
 
 User policy, 2026-10-02: port these families from their reference code now; prove them on real
 checkpoints when there is capacity; meanwhile **don't admit and don't advertise them**. The
@@ -105,7 +106,6 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 - **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total; smallest quant ~72.5 GB; synthetic gate only on this host, see the programme plan for the paged run).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [x] Real-weight execution, one prompt (paged run 2026-11-07; the layer-0 GDN mixer output matches llama.cpp). Full-stack numerical parity is **not** established: see the Qwen reconciliation in the programme plan.
 - [ ] Broader real-weight verification before promotion: more fixed prompts, incremental decode, a
       prompt crossing a prefill/decode chunk boundary, QSA K-pool exercise, a documented tolerance.
       MTP and vision stay deferred.
@@ -176,8 +176,6 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
   dense-layer code path (`leading_dense_block_count` layers) is confirmed working, since V1 is
   architecturally a subset.
 
-- [x] *(done 2026-11-03: the `deepseek2-ocr` descriptor (`DeepSeek2Architectures.cs`) and the vision encoder (`DeepSeekOcr2VisionEncoder`, `UnifiedVisionPipeline`) reference none of the `DeepSeek4`/`DeepSeek32`/`DeepSeek41` types, which live in their own forward-pass classes; and on current main the real-weight SAM parity tests against `llama-mtmd-debug` pass: `DeepSeekOcr2_Rainbow1024_SamMatchesLlamaMtmdDebug` 14.8 s and `DeepSeekOcr2_Rainbow768Tile_SamMatchesLlamaMtmdDebug` 5.5 s with `mmproj-deepseek-ocr-2-q8_0.gguf`.)* Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
-  existing working vision branch. Not a rebuild.
 
 ---
 

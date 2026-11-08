@@ -125,7 +125,5 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 - [ ] `2026-10-03-qwen38-flash-next-port-plan.md` status line still says "AWAITING REAL-WEIGHT QUALIFICATION" and the
       "Next check" line predates 2026-11-07. Update, or point to this file.
-- [ ] `ported-families-todo.md` Qwen row: the "Real-weight execution" box is ticked, but the Phase 0 parity status is open.
-      Keep both statements consistent with this file.
 - [ ] `Architectures/Qwen4ExpArchitecture.cs` `RefusalReason` still describes wrong logit magnitudes. The
       2026-11-08 measurements do not support that (external review check, programme plan).

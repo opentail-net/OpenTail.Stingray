@@ -1,6 +1,7 @@
 # Qwen 3.8 Flash Next port plan (`qwen4exp`)
 
 > Completed items moved to [done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-10.md](../done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Ticked items moved to [done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-11.md](../done/2026-10-03-qwen38-flash-next-port-plan-completed-items-2026-11.md) on 2026-11-08 (matrix rows A to N). Rows O and P stay here.
 
 **Status (revised 2026-10-03): IMPLEMENTED (SYNTHETICALLY VERIFIED, AWAITING REAL-WEIGHT QUALIFICATION).**
 The full structural and semantic implementation (HC, GDN, MoE with fused/separate expert tensors, 16-head n-gram grouped PLE with 160-wide row concatenation, 4-section IMRoPE with partial rotary factor 0.25 and theta 10M, and QSA K-pooling/scoring with unconditional active tail retention) is complete and verified with synthetic tests. Real-weight qualification on the 72.5 GB UD-IQ1_S checkpoint is deferred.
@@ -88,20 +89,6 @@ The initial structural port, semantic implementations, and synthetic fixtures ar
 
 | Phase | Subsystem | Description | Status |
 | :--- | :--- | :--- | :--- |
-| **A** | PLE | Parse hash metadata arrays (`PleLayerMultipliers`, `PleHeadOffsets`, `PleHeadVocabSizes`) | **Implemented (synthetic verified)** |
-| **B** | PLE | Memory-mapped PLE table row access via `PerLayerTokEmbd` | **Implemented (synthetic verified)** |
-| **C** | PLE | Stateful n-gram hash window & row gather across decode calls (`Qwen4ExpPleHasher`, n-gram head grouping, EOS truncation) | **Implemented (synthetic verified)** |
-| **D** | PLE | $16 \times 160$ row concatenation into 2560-wide vector feeding `ExecutePle` projection math | **Implemented (synthetic verified)** |
-| **E** | QSA | Dedicated raw indexer-K cache separate from main KV cache | **Implemented (synthetic verified)** |
-| **F** | QSA | K-pool layout, chunk-boundary completion state, and active tail retention | **Implemented (synthetic verified)** |
-| **G** | QSA | Pooled-K arithmetic: block mean + RMSNorm | **Implemented (synthetic verified)** |
-| **H** | QSA | Indexer Q RoPE and pooled-K RoPE ($\theta = 10\text{M}$, partial rotary 0.25, unrotated dims passthrough) | **Implemented (synthetic verified)** |
-| **I** | QSA | Main attention Q & K four-section IMRoPE (`[11, 11, 10]`, partial rotary 0.25) | **Implemented (synthetic verified)** |
-| **J** | QSA | Multi-head ReLU scoring + top-k block selection (`indexer_top_k / kpool`) | **Implemented (synthetic verified)** |
-| **K** | QSA | Sparse attention mask generation & selected-block attention walk | **Implemented (synthetic verified)** |
-| **L** | MoE | Fused `ffn_gate_up_exps` vs separate `ffn_gate_exps`/`ffn_up_exps` compatibility | **Implemented (synthetic verified)** |
-| **M** | Tests | Chunk-boundary, incremental decode, K-pool tail retention, n-gram grouping, RoPE geometry, and MoE parity tests | **Implemented (synthetic verified)** |
-| **N** | Gate | Remove `hp.IndexerTopK > 0` constructor refusal guard | **Implemented (synthetic verified)** |
 | **O** | Validation | 72.5 GB UD-IQ1_S paged real-weight execution | **Deferred (awaiting download/run)** |
 | **P** | Validation | External logit parity against llama.cpp / TensorSharp | **Deferred (awaiting download/run)** |
 

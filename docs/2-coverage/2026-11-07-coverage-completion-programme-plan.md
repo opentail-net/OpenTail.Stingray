@@ -202,17 +202,11 @@ Checked against `Qwen4ExpForwardPass.cs` and the descriptor's `RefusalReason` (`
 
 ## Checklist (state as of 2026-11-08)
 
-- [x] Phase 0: coverage baseline current (`ported-families-todo.md` + the table above)
-- [x] Phase 1, step 1: reproduce the Qwen4Exp garbled-text claim with a fixed prompt (2026-11-07; claim was real)
-- [x] Phase 1 root cause and fix: conv1d weight transpose; regression test `Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`
-- [x] Phase 1 side fix: `TruncateTo` contract violation (`TruncateTo_RejectsIntermediateLength_OnlyAcceptsZeroOrCurrent`)
+> Ticked items moved to [done/2026-11-08-coverage-programme-completed-items-2026-11.md](../done/2026-11-08-coverage-programme-completed-items-2026-11.md) on 2026-11-08.
+
 - [ ] Phase 1 broader verification: more fixed prompts, incremental decode, a prefill/decode chunk-boundary prompt, QSA K-pool exercise, documented tolerance
-- [x] Phase 2A: `glm-dsa` metadata-only real-weight check (`GlmDsaRealWeightsSmokeTests`, 2026-11-07)
-- [x] Phase 2A: indexer top_k-shortcut optimisation (output unchanged, 2026-11-07)
-- [x] Phase 2A: synthetic-correctness checklist complete 2026-11-08 (MLA absorption, DSA scoring, Hadamard rotation, sigmoid MoE weighting, shared-expert contribution); two bugs fixed, three already correct
 - [ ] Phase 2A: real-weight parity. Rescoped to hyperparameter parsing (done); full parity blocked on disk, not missing work
 - [ ] Phase 2B `glm5next`: K-pool selection gating attention reads; remove the full-attention/throw shortcut; isolated numerical tests (KDA recurrence, Sinkhorn mHC, pool construction/selection, sequence isolation). Real implementation work
-- [x] Phase 3 side fix: `deepseek4` MoE hash-routing weight and selection-bias ordering (2026-11-07/08)
 - [ ] Phase 3: implement YaRN rope scaling (factor 16) for real; remove the refusal only after verification against the pinned llama.cpp reference
 - [ ] Phase 3: exercise non-zero `compress_ratios` (first real CSA test)
 - [ ] Phase 4: candidate reassessment (report only; Muse Spark / MiniMax M3.1 / others)
@@ -225,9 +219,6 @@ taking on Phase 2B/3's real implementation work:
 - [ ] 1. Phase 1's remaining broader-verification checklist (more fixed prompts, a prefill/decode chunk
    boundary, QSA K-pool exercise, a documented tolerance) -- no new disk or implementation, just
    more test cases against the checkpoint already on disk.
-- [x] 2. Phase 2A's remaining synthetic-level correctness checklist (MLA absorption, indexer scoring,
-   Hadamard rotation, sigmoid MoE routing, shared-expert contribution against the llama.cpp source) --
-   done 2026-11-08 (see Checklist above).
 - [ ] 3. Phase 2B (`glm5next` K-pool) or Phase 3 (`deepseek4` YaRN) only after 1-2, since both are real
    algorithm work, not verification, and should be sized and started deliberately rather than picked
    up as a side effect of something else.
@@ -913,3 +904,9 @@ Decisions:
    a snapshot is taken and positive after a turn; residency after a turn includes them; eviction frees them.
 
 Not in this job: cross-session copy-on-write (Job 8, design only).
+
+## Qwen 3.8 remaining work: moved
+
+The Qwen 3.8 open items, owner decisions and doc-hygiene list now live in
+[2026-11-08-qwen38-remaining-work-plan.md](2026-11-08-qwen38-remaining-work-plan.md). The table in "Qwen 3.8 remaining work,
+tabled 2026-11-08" above is superseded by that file (its completed items are in done/2026-11-08-qwen38-remaining-work-completed-items-2026-11.md). This programme plan keeps the dated results and the general coverage work.

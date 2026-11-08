@@ -17,24 +17,19 @@ Ticked = closed with evidence in the item's own text. Unticked = still open, or 
 - [ ] **1. DeepSeek2 greedy parity fails 1/2** (token 9 divergence after the Q3_K kernel rewrite `e7b7aa8a`; bugstofix #24; later characterised as a near-tie and receipted in `DeepSeek2GreedyParityTests`, see `docs/00-current-work.md` "Closed 2026-10-09 #24"). Still to confirm: nothing remains.
 - [ ] **2. Llama 4 heavy parity deferred by the user** (about 44 GB mapped against about 23 GB free RAM at the time; not a result). Related: the `LlamaFour` legacy parity class was deliberately kept (golden deferred).
 - [ ] **3. Heavy suites never run:** Cuda, Vulkan, Sessions and Server heavy projects, and the other heavy ForwardPass classes outside the migrated architectures.
-- [x] **4. Full heavy `GoldenParityTests` run on an idle machine.** Done 2026-11-06: ran clean, no memory-pressure kill this time (`STINGRAY_RUN_HEAVY_TESTS=1`, all 24 goldens, direct `.exe -class` invocation). 48 cases (24 goldens x 2 test methods), 46 passed, 2 skipped (both `smollm2-135m.golden.json`: `SmolLM2-135M-Instruct-Q4_K_M.gguf` not on disk, unrelated to this item), 0 failed, 892.6 s (~14.9 min) on this machine with about 34 GB free RAM beforehand. Every architecture classified `Exact` or `NearTie`, no `Diverged`.
 - [ ] **5. UNVERIFIED on 2026-10-08 (no checkpoint or reference on disk).** Confirmed 2026-11-06 for Maincoder, Falcon, Olmo, Olmo2, GraniteMoe, Gpt2, Glm4 and Granite (real weights, passing golden). Still open: Apertus (blocked, see item 6) and the 3 `Gemma4Cpu` tests, which were not re-checked (not a golden-migrated class).
 - [ ] **6. Legacy parity classes deliberately kept after golden migration:** `PhiMoeGreedyParityTests` (LongRoPE factor selection depends on context size, 4096 vs 8192; the golden runner uses one context), `ApertusGreedyParityTests` (llama-server 10306 cannot load the Apertus GGUF, chat-template parse error; needs a `llama-completion` capture path), `OlmoeGreedyParityTests` (also holds the top-candidates-at-divergence diagnostic and a stricter stepwise bound of 1.0), `GraniteHybrid`, `DeepSeek2` (Q8 prefill setting plus bug-specific assertions; decision D4: keep until `engineSettings` covers it), `Rwkv6/7` (recurrent state checks), `LlamaFour`. Stays open until each class moves to a golden or is formally retired.
 
 ### Remaining architecture-string leaks (semantics plan "Exercise results", capabilities plan Phase 3)
 
-- [x] **7. Small Gemma 4 leaks.** Checked 2026-11-06, closed: `ModelDescription.cs` (`IsGemma4 = hp.LayerHeadDim is not null`, structural not raw-arch), `StaticPlanCommand.cs` and `LlamaCompatEndpoints.cs` have no Gemma-4 arch-string check left, `InferenceEngineLoader.cs`'s two hits are error-message prose. The remaining two (`GgufModel.cs`'s `attention_k_eq_v` heuristic, `GgufTokenizer.cs`'s `modelFamily ==` switches) are Core-layer code that cannot see the descriptor registry, already covered by item 9.
 - [ ] **8. Core structural tables still keyed on arch strings** (hybrid layer topology, RWKV head size, the NEOX table, the by-name shim `ModelArchitectureTraits.Legacy`): see item 16.
 - [ ] **9. Separate registries kept out of scope, edited per family:** tokenizer family switches (`GgufTokenizer.cs`, `PreTokenizerPatterns.cs`), `ChatProtocolRegistry.cs`, `ToolCallAdapter.cs` (deliberately not moved), `PrefillHandoffFamilies.cs`, vision projector dispatch (`UnifiedVisionPipeline.cs`). Standing scope decision, not work to finish.
 - [ ] **10. `FallbackChat` vs `ChatProtocolId`** disagree for six architectures by design (CLI/server no-template fallback vs engine API); retire or keep as derived convenience is decision D3, not taken.
-- [x] **11. Duplicated admitted-set snapshot** in `ArchitectureDescriptorContractTests` and `ArchitectureRegistryTests`: closed 2026-11-06, removed from `ArchitectureRegistryTests` (kept in `ArchitectureDescriptorContractTests`).
 
 ### Small and optional
 
-- [x] **12. Capabilities plan 0.3** (test that every key in `PrefillHandoffFamilies` names a registered architecture). Closed 2026-11-06: `PrefillHandoffFamilies_EveryReceiptKey_NamesARegisteredArchitecture` in `ArchitectureRegistryTests`, excluding the synthetic `llama+experts` family key by design.
 - [ ] **13. Golden plan 1.b** (`FindModelPath` copies -> `ModelLocator`): tracked at item 17.
 - [ ] **14. Golden plan 4.3 untested paths:** busy-port race and Ctrl-C during `capture-golden` (not automatable here).
-- [x] **15. Golden plan decisions D1-D3.** Confirmed 2026-11-06: D1 all 24 goldens live under `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/`. D3 `CaptureGoldenCommand` always sets `Sha256`, all 24 golden files hashed. D2 default `GoldenParityRunner.NearTieTolerance` = 0.02 is live; its revisit with receipt data is a separate open question (not part of this box).
 
 ### Large
 
