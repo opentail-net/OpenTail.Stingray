@@ -140,8 +140,30 @@ Checked against `Qwen4ExpForwardPass.cs` and the descriptor's `RefusalReason` (`
 - Result: 1,671 tensor files, 1.1 GB, for the prompt pass. `l_last` is present for all 48 layers (`l_last_47`:
   `ne=2560,4,1,1`), `result_output` is present (`ne=248320,1,1,1`). Not committed: this is local tooling in a git-ignored
   reference checkout.
-- Stingray side: not started. It needs a dump hook in `Qwen4ExpForwardPass.cs` writing the same node names and layouts,
-  then a comparison that records max abs diff, relative error, cosine and first divergent op per layer.
+### Phase 0.2 progress, 2026-11-08: Stingray side and first comparison
+
+- Stingray dump hook (`STINGRAY_Q4E_DUMP_DIR` + `STINGRAY_Q4E_DUMP_POS`, env-gated, off by default) writes
+  `l_last_N`, `linear_attn_out_N`, `hc_combine_N`, `ffn_out_N`, `ffn_moe_logits_N`, `ffn_moe_weights_norm_N`,
+  `ffn_moe_topk_N`, `ple_gate_N`, `ple_gated_value_N`, `ple_conv_out_N`, `ple_embd` and `result_output`. Driver:
+  `QWEN_STINGRAY_DUMP_DIR=<dir>`, test `Qwen4ExpRefDumpTests` (skipped without that variable or the checkpoint).
+- Comparison scripts live in the scratchpad, not the repo.
+- **Bug fixed: PLE depthwise conv weight layout.** GGUF stores `blk.N.ple_conv1d.weight` as `[channel][tap]` (bf16),
+  `StepDilatedConv` read `[tap][channel]`. Transposed at load (`Qwen4ExpPle.TransposeConvWeights`, cached per tensor).
+  Effect on layer 1: `ple_conv_out-1` cosine 0.082 -> 0.99997; full logits cosine 0.975 -> 0.995, relative error
+  22% -> 11%. Regression tests: `Qwen4ExpPleLayoutTests` (2 tests, passing).
+- **Current measurement (5-token prompt, last position, against llama.cpp `bed0a8566`):**
+  - `l_last`: layer 0 relative error 1.5% (cosine 0.9999); layer 4 5.8%; layer 24 13%; layer 47 14%.
+  - Layer 0 GDN mixer output (`linear_attn_out_0`) relative error 2.5%; `ffn_out_0` 1.6%.
+  - Layer 4 `hc_combine_4` (after the token mixer) 1.8%, but `ffn_out_4` (MoE) 26% (cosine 0.966).
+  - Router logits agree to 0.3-1.1% relative. The top-10 expert set differs at the rank boundary in layers 0, 1,
+    4 and 5 (near-ties, e.g. layer 4 ranks 7-9 swap experts 410/63/102). A flipped expert changes `ffn_out` a lot.
+  - Logits: top-1 agrees (token 11751); relative error 11%, cosine 0.9947.
+- **Open:** the 1.5-2.5% error already present at layer 0 is larger than expected for identical quantised weights.
+  Candidate, not verified: llama.cpp quantises activations for the quantised matmuls and Stingray does not. The
+  near-tie routing then amplifies this. Next step: find the source of the layer-0 error (the GDN mixer is the largest
+  contributor) before any further change, and check whether the error is intrinsic (activation rounding) or a
+  remaining port bug.
+- Phase 0.3 (FFN injection gate) is still open. These numbers do not yet settle it.
 
 ## Phases (in order; do not start a later one before the current one's completion criteria)
 

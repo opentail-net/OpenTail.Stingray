@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -35,6 +36,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly Dictionary<nint, float[]> _dequantCache = new();
     private readonly Dictionary<nint, float[]> _convWeightTransposeCache = new();
     private readonly bool _q4eDebug = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1";
+    // Diagnostic dump of l_last-N and result_output at one position (see Phase 0.2 of the Qwen plan).
+    private readonly string? _dumpDir = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_DIR");
+    private readonly int _dumpPos = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_POS"), out int p) ? p : -1;
+    private bool _dumpActive;
     private double[]? _layerSumAccum;
     private double[]? _hcCombine0Accum;
     private double[]? _linearAttnOut0Accum;
@@ -232,6 +237,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     public ReadOnlySpan<float> Forward(int token, int position)
     {
+        _dumpActive = _dumpDir != null && position == _dumpPos;
+
         // 1. Embed token
         EmbedToken(token, _tokEmbdScratch);
 
@@ -249,7 +256,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             // 2a. PLE if present at this layer
             if (layer.IsPle && layer.PleKey != null && layer.PleValue != null)
             {
-                ExecutePle(layer, _tokEmbdScratch, token);
+                ExecutePle(il, position, layer, _tokEmbdScratch, token);
             }
 
             // 2b. HC Mix before Token Mixer
@@ -286,8 +293,14 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                     Console.Error.WriteLine($"[q4e-dbg] linear_attn_out-0 sum={_linearAttnOut0Accum[0]:F6}");
             }
 
+            if (_dumpDir != null && position == _dumpPos)
+                DumpFloats(Path.Combine(_dumpDir, $"linear_attn_out_{il}.bin"), _blockOut);
+
             // 2d. HC Combine after Token Mixer
             Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
+
+            if (_dumpDir != null && position == _dumpPos)
+                DumpFloats(Path.Combine(_dumpDir, $"hc_combine_{il}.bin"), _resHc);
 
             if (_q4eDebug && il == 0 && position <= 4)
             {
@@ -318,6 +331,9 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             // 2f. MoE (routed + shared expert)
             ExecuteMoe(layer, _mixed, _blockOut);
 
+            if (_dumpDir != null && position == _dumpPos)
+                DumpFloats(Path.Combine(_dumpDir, $"ffn_out_{il}.bin"), _blockOut);
+
             if (_q4eDebug && il == 0 && position <= 4)
             {
                 double s = 0; foreach (var v in _blockOut) s += v;
@@ -337,6 +353,9 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                     for (int li = 0; li < _numLayers; li++)
                         Console.Error.WriteLine($"[q4e-dbg] l_last-{li} sum={_layerSumAccum[li]:F6}");
             }
+
+            if (_dumpDir != null && position == _dumpPos)
+                DumpFloats(Path.Combine(_dumpDir, $"l_last_{il}.bin"), _resHc);
         }
 
         // 3. Final head mix (acts as output norm, qwen4exp.cpp:515-517)
@@ -357,11 +376,27 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             Console.Error.WriteLine($"[q4e-dbg] pos={position} result_output sum={s:F6}");
         }
 
+        if (_dumpDir != null && position == _dumpPos)
+            DumpFloats(Path.Combine(_dumpDir, "result_output.bin"), _logits);
+
         return _logits;
     }
 
-    private void ExecutePle(Qwen4ExpLayerTensors layer, ReadOnlySpan<float> tokEmb, int token)
+    private static void DumpFloats(string path, ReadOnlySpan<float> data)
     {
+        using var fs = File.Create(path);
+        fs.Write(MemoryMarshal.AsBytes(data));
+    }
+
+    private static void DumpInts(string path, ReadOnlySpan<int> data)
+    {
+        using var fs = File.Create(path);
+        fs.Write(MemoryMarshal.AsBytes(data));
+    }
+
+    private void ExecutePle(int il, int position, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> tokEmb, int token)
+    {
+        bool dump = _dumpDir != null && position == _dumpPos;
         // 1. Determine PLE embedding input:
         // If the PLE n-gram table (PerLayerTokEmbd) is present and hasher is initialized,
         // gather the embedding row for each head and concatenate them into pleEmb.
@@ -431,6 +466,13 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             for (int i = 0; i < _embedDim; i++) dst[i] = val[i] * g;
         }
 
+        if (dump)
+        {
+            DumpFloats(Path.Combine(_dumpDir!, "ple_embd.bin"), pleEmb);
+            DumpFloats(Path.Combine(_dumpDir!, $"ple_gate_{il}.bin"), gate);
+            DumpFloats(Path.Combine(_dumpDir!, $"ple_gated_value_{il}.bin"), gated);
+        }
+
         // Grouped RMSNorm on gated
         Span<float> normConvIn = stackalloc float[_hcDim];
         Qwen4ExpPle.GroupedRmsNorm(gated, AsFloatSpan(layer.PleNormConv), normConvIn, _hc, _embedDim, _eps);
@@ -449,8 +491,13 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         if (layer.PleConv1d != null)
         {
             Qwen4ExpPle.StepDilatedConv(
-                _pleConvHistory, AsFloatSpan(layer.PleConv1d), convOut,
+                _pleConvHistory, GetTransposedPleConv(layer), convOut,
                 _hcDim, _pleConvKernel, _pleNgramSize, _pleHistSlots);
+        }
+
+        if (dump)
+        {
+            DumpFloats(Path.Combine(_dumpDir!, $"ple_conv_out_{il}.bin"), convOut);
         }
 
         // Add to residual: res_hc += gated + conv_out (qwen4exp.cpp:1477)
@@ -886,6 +933,14 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         Span<float> topW = _moeTopWScratch.AsSpan(0, topK);
         Qwen4ExpMoeRouting.Route(logits, topK, _hp.ExpertWeightsScale, topIdx, topW);
 
+        if (_dumpActive)
+        {
+            int il = layer.LayerIndex;
+            DumpFloats(Path.Combine(_dumpDir!, $"ffn_moe_logits_{il}.bin"), logits);
+            DumpFloats(Path.Combine(_dumpDir!, $"ffn_moe_weights_norm_{il}.bin"), topW);
+            DumpInts(Path.Combine(_dumpDir!, $"ffn_moe_topk_{il}.bin"), topIdx);
+        }
+
         Span<float> gate = _moeGateScratch.AsSpan(0, interDim);
         Span<float> up = _moeUpScratch.AsSpan(0, interDim);
         Span<float> down = _moeDownScratch;
@@ -1010,6 +1065,32 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         for (int c = 0; c < channels; c++)
             for (int k = 0; k < _ssmDConv; k++)
                 dst[k * channels + c] = src[c * _ssmDConv + k];
+
+        _convWeightTransposeCache[key] = dst;
+        return dst;
+    }
+
+    // GGUF stores blk.N.ple_conv1d.weight as [channel][tap] (tap innermost, bf16). StepDilatedConv reads [tap][channel].
+    private ReadOnlySpan<float> GetTransposedPleConv(Qwen4ExpLayerTensors layer)
+    {
+        var t = layer.PleConv1d!.Value;
+        int count = (int)t.Info.ElementCount;
+        nint key = (nint)t.DataPtr;
+        if (_convWeightTransposeCache.TryGetValue(key, out var cached)) return cached;
+
+        var src = new float[count];
+        if (t.DType == DType.Float32)
+        {
+            new ReadOnlySpan<float>((float*)t.DataPtr, count).CopyTo(src);
+        }
+        else
+        {
+            long byteSize = DTypeInfo.ByteSize(count, t.DType);
+            Dequantize.ToFloat32(new ReadOnlySpan<byte>(t.DataPtr, checked((int)byteSize)), src, t.DType, count);
+        }
+
+        var dst = new float[count];
+        Qwen4ExpPle.TransposeConvWeights(src, _hcDim, _pleConvKernel, dst);
 
         _convWeightTransposeCache[key] = dst;
         return dst;

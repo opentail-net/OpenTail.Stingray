@@ -482,6 +482,16 @@ public static class Qwen4ExpPle
     /// <c>conv_out = SiLU(sum_k history(t - (kern-1-k)*dilation) * w_k)</c>.
     /// (qwen4exp.cpp:1430-1474).
     /// </summary>
+    /// <summary>
+    /// GGUF stores ple_conv1d.weight as [channel][tap] (tap innermost). StepDilatedConv reads [tap][channel].
+    /// </summary>
+    public static void TransposeConvWeights(ReadOnlySpan<float> src, int channels, int kernelSize, Span<float> dst)
+    {
+        for (int c = 0; c < channels; c++)
+            for (int k = 0; k < kernelSize; k++)
+                dst[k * channels + c] = src[c * kernelSize + k];
+    }
+
     public static void StepDilatedConv(
         ReadOnlySpan<float> historyBuffer,
         ReadOnlySpan<float> convWeights,
