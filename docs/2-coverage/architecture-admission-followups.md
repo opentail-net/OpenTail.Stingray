@@ -1,6 +1,6 @@
 # Architecture descriptors, semantics and golden parity: open follow-ups
 
-Three 2026-10-08/09 plans are finished and archived verbatim in `docs/done/`; this file keeps only what they left open.
+Three 2026-10-08/09 plans are finished. Their completed items are archived as extracts in `docs/done/` (not verbatim copies; the originals stay in `2-coverage/` or `done/`); this file keeps only what they left open.
 
 | Archived plan | Result |
 |---|---|

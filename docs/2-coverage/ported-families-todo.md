@@ -11,31 +11,25 @@ table.
 
 Order (user): after the worker-pool experiment, the Q8_K alignment, and `Q1_0` + Bonsai2.
 
-**2026-11-07: cross-cutting programme plan** covering verification (not porting) of
-`qwen4exp`/`glm-dsa`/`glm5next`/`deepseek4` is at
-[2026-11-07-coverage-completion-programme-plan.md](2026-11-07-coverage-completion-programme-plan.md).
+**Single copies (2026-11-08):** the per-family status table lives only in the tensorsharp plan's
+"Ported, not verified" table; cross-cutting status, verification levels and the glm/qwen/deepseek
+audit history live only in [2026-11-07-coverage-completion-programme-plan.md](2026-11-07-coverage-completion-programme-plan.md);
+external sizes, licences and sources live only in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
+Nothing is repeated here.
 
-## Per-family plans (one each, 2026-10-03)
+## References
 
-References (updated 2026-10-03): the local llama.cpp source (`examples/llama.cpp/llama.cpp`,
-git-ignored) was pulled to upstream **`bed0a8566`** (2026-10-02). It now contains `qwen4exp.cpp`,
-`muse-glimmer.cpp` and `glm5-next.cpp` besides `glm-dsa.cpp` and `deepseek4.cpp`. The vendored
-**binaries** (`tools/llama.cpp`, b10306) are unchanged and know only `glm-dsa` and `deepseek4`.
-Every existing receipt and League ratio is pinned to b10306, so updating them is a separate,
-deliberate step (keep b10306 alongside, re-run key receipts on both, then switch).
+The local llama.cpp source (`examples/llama.cpp/llama.cpp`, git-ignored) was pulled to upstream
+**`bed0a8566`** (2026-10-02). It now contains `qwen4exp.cpp`, `muse-glimmer.cpp` and `glm5-next.cpp`
+besides `glm-dsa.cpp` and `deepseek4.cpp`. The vendored **binaries** (`tools/llama.cpp`, b10306) are
+unchanged and know only `glm-dsa` and `deepseek4`. Every existing receipt and League ratio is pinned
+to b10306, so updating them is a separate, deliberate step (keep b10306 alongside, re-run key
+receipts on both, then switch).
 
-| Family | Plan | Fits this PC? | Second implementation | Port + synthetic |
-|---|---|---|---|---|
-| Muse-Glimmer | [plan](2026-10-03-muse-glimmer-port-plan.md) | yes (small quants) | llama.cpp `muse-glimmer.cpp` (source) + TensorSharp | **ADMITTED 2026-10-03 (text, CPU only).** `admit-arch` 8/8 exact; real-window 3,748-token prompt identical; Level 2 synthetic parity (`MuseGlimmerSyntheticTests`) plus level 4: `UD-Q4_K_XL` (Muse-Glimmer-30B) greedy output vs llama.cpp `bed0a8566` over 3 prompts is token-identical to the compared length except one 0.006-nat near-tie (" in" 0.7108 vs " proper" 0.7169 NLL). Prefill about 10x slower than llama.cpp (per-token for gated models). Remaining: batched prefill, vision tower, DFlash |
-| Qwen 3.8 Flash Next | [plan](2026-10-03-qwen38-flash-next-port-plan.md) | paged only (72.5 GB; fits the scratch disk, not RAM) | llama.cpp `qwen4exp.cpp` (source) + TensorSharp | **Impl-complete / synthetic-covered (24 tests passing).** Full structural & semantic implementation (GatedResidual HC, FP32 GDN, 512-expert MoE with fused/separate tensors, 16-head n-gram grouped PLE with 160-wide row concat & lazy disk mmap, QSA four-section IMRoPE, indexer-K cache, K-pool sparse selection with active tail retention). Constructor refusal guard removed (`Qwen4ExpGuardTests`). **2026-11-07: Level 4 paged real-weight execution attempted** against the real 62 GB UD-IQ1_S checkpoint -- found and fixed two wrong tensor names (`hc_head_*` never existed; real names are `output_hc_norm/_down/_up`) and a native crash (`AsFloatSpan` cast quantized Q8_0 weights as Float32, now dequantized via `Dequantize.ToFloat32`, cached per tensor). Prefill and decode now run to completion with finite logits (`Qwen4ExpRealWeightsSmokeTests`), but a manual 12-token greedy continuation produced incoherent garbage. **2026-11-07, root-caused and fixed:** reproduced with a fixed prompt/20-token greedy decode, then bisected against a rebuilt pinned llama.cpp reference (`llama-eval-callback`, `qwen4exp.cpp` at `bed0a8566`) layer-by-layer. `blk.N.ssm_conv1d.weight` is stored by GGUF as `[channel][kernel]` (kernel innermost), the transpose of what `GdnKernels.CausalDepthwiseConv1dDecode` expects; `HybridGdnForwardPass` (Qwen 3.5 hybrid) already transposes this at load time, this port never did. Fixed with the same load-time transpose. Generation is now coherent ("The capital of France is Paris."); layer-0 GDN-mixer output sum matches llama.cpp within quantisation noise (regression test: `Layer0GdnMixerOutput_MatchesLlamaCppEvalCallback_AfterConv1dTransposeFix`). **Pending:** broader real-weight verification (more prompts, incremental decode, QSA K-pool exercise, a documented tolerance) before admission; parity against llama.cpp/TensorSharp beyond the single prompt checked so far. MTP & vision deferred. |
-| GLM-5.x | [plan](2026-10-03-glm5-port-plan.md) | paged only (GLM-5.3 Q2_K_XL ~236 GiB; fits the 279 GB scratch disk, not RAM) | `glm-dsa`: llama.cpp source + b10306 binaries; `glm5next`: llama.cpp source for the trunk, **not NextN** | **Synthetic execution** (`GlmDsaSyntheticTests`, `Glm5NextSyntheticTests`; finite-logit smoke tests, not parity). `glm5next`: HC-stream carry-over bug fixed 2026-10-03; K-pool sparse selection missing (throws past `indexer.top_k` keys); no regression test for the HC fix yet. `glm-dsa`: the b10306 llama.cpp synthetic comparison is not done |
-| DiffusionGemma | [plan](2026-10-03-diffusiongemma-port-plan.md) | yes (~13-17 GB) | llama.cpp (Gemma-4 backbone) + TensorSharp (diffusion/sampler) | **Impl-complete / synthetic-covered (32 tests passing); real checkpoint REFUSED per Rule 14 pending verification.** Real 692-tensor loader with strict geometry validation, Gemma-4 MoE backbone (25 SWA / 5 Full, top-8 fused MoE, V-from-K, dual scales), multi-block causal prefill attending persistent prefix, self-conditioning pipeline, and EntropyBound sampler. **Pending:** real 16.8 GB Q4_K_M load, single-layer/backbone parity against llama.cpp, and end-to-end canvas/sampler parity against TensorSharp. |
-| MiniMax-H3 | [plan](2026-10-03-minimax-h3-port-plan.md) | yes (sequential loading, see plan) | upstream HF/PyTorch + TensorSharp | **Foundation only** (`MiniMaxH3Tests`): layout, schedulers, AdaLN, MM-RoPE, VAE decoders, synthetic pipeline. **Missing:** Qwen3-VL hidden-state extraction, 50-block real loader, VAE encode, conditioning modes |
-| DeepSeek V4 / V4.1 (review) | [plan](2026-10-03-deepseek-v4-review-plan.md) | V4: paged only (~98.6 GB). V4.1: no (~335 GB, does not fit the scratch disk) | V4: llama.cpp source + b10306; V4.1: TensorSharp only | **V4: synthetic execution** (the forward test uses ratio 0 only, so CSA is unexercised). **2026-11-07: real-weight load attempted** against unsloth/DeepSeek-V4-Flash-GGUF UD-IQ1_S (86 GB) -- pre-emptively fixed the same unguarded-Float32-cast risk found on qwen4exp (AsFloatSpan now dequantizes). Found the real checkpoint declares `rope.scaling.type=yarn, factor=16`, which this port doesn't implement and, until this fix, didn't even guard against -- would have silently run with wrong attention. Added `RopeScalingFactor` + a constructor refusal (same pattern as V4.1's). Confirmed the refusal fires against the real checkpoint's real metadata (`DeepSeek4RealWeightsSmokeTests`). This checkpoint also declares non-trivial `compress_ratios` (would be the first real CSA/HCA exercise) but construction now refuses before reaching that. Implementing YaRN is the real next step, not attempted here (algorithm work, not a bounded fix). **2026-11-08: MoE hash-routing weight bug fixed** -- `MoeFfn`'s hash-routed branch (`il < HashLayerCount`) was giving every selected expert a weight of exactly 1.0; checked against both the pinned llama.cpp reference (`build_moe_ffn`, `llama-graph.cpp:2129-2146`) and `deepseek4.cpp`'s hash-layer call site (1289-1310), confirming hash layers still run the same router projection + sqrt-softplus gating as every other layer and only swap how expert INDICES are chosen, never how they're weighted. Found a second bug in the same code while auditing it: the non-hash branch added the DeepSeek-V3-style selection bias to raw logits before gating instead of after (and only for selection); both share one fix, `DeepSeek4Graph.WeightSelectedExperts` (`DeepSeek4AlphaTests`: `WeightSelectedExperts_GathersRawProbsAtFixedIndices_NotUnitWeight`, `WeightSelectedExperts_NormalizeAndScale_AppliedIndependently`, `MoeFfn_NormalLayer_SelectionBiasNeverLeaksIntoTheGatheredWeight`). Unrelated to the YaRN refusal above; both bugs now fixed on the same code path. **V4.1: partial**, parsed + loaded but compressed attention (ratios 1/2), V4.1 indexer, YaRN and quantised Engram are not on the execution path; the forward pass now refuses such configs. Fixed 2026-10-03: `moe_intermediate_size` 2304, indexer defaults |
+## Fits this host (summary; detail in the tensorsharp plan's table)
 
-The estimates cover **port + synthetic verification only**. Real-checkpoint verification
-(hardware-dependent), the closeout performance + DRY pass (CLAUDE.md rule 7) and promotion are
-separate costs.
+- Muse-Glimmer: yes (small quants). DiffusionGemma: yes (~13-17 GB). MiniMax-H3: yes (sequential loading).
+- Qwen 3.8 Flash Next, GLM-5.x, DeepSeek V4: paged only. DeepSeek V4.1: no (does not fit the scratch disk).
 
 ## Status ladder (shared definition of done)
 
@@ -64,12 +58,6 @@ PORTED is not SUPPORTED, and SYNTHETIC VERIFIED is not REAL-WEIGHT VERIFIED.
 
 Never call a check "independent" when its reference derives from the same source as the port.
 
-Label what a test suite actually proves; "Done" is not a label:
-**structural** (metadata, shapes, construction) < **synthetic execution** (tiny model runs, finite
-output) < **synthetic parity** (agrees with an independently written reference) < **reference
-parity** (agrees with another implementation). A test that recomputes the expected value with the
-same logic as the code under test proves nothing and should not exist.
-
 **Scope:** this is the TensorSharp coverage wave (started 2026-10-02). Families beyond these six get
 a new plan when someone decides to take them on; the wave isn't meant to grow by itself.
 
@@ -78,14 +66,11 @@ a new plan when someone decides to take them on; the wave isn't meant to grow by
 Policy: a family whose checkpoint cannot be run here stays **written, tested synthetically, and not
 exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end state, not a gap.
 
-- **DeepSeek-V4.1 (`deepseek41`, ~335 GB):** does not fit even on the 279 GB scratch disk; not
-  attempted. Stays PORTED + SYNTHETIC only.
-- **Qwen 3.8 Flash Next (~62 GB paged), DeepSeek-V4 (~98.6 GB):** both fit `E:\_models` and can be paged on this host (slow is fine). DeepSeek-V4 is a real candidate (the vendored llama.cpp b10306 knows `deepseek4`); do it after GLM-5.3. **Qwen's Level 4 paged real-weight execution ran 2026-11-07**: found and fixed a conv1d weight-transpose bug (see row 30 and the coverage programme plan's Phase 1), generation is now coherent and matches llama.cpp's reference within quantisation noise on one prompt. Broader verification (more prompts, incremental decode, a chunk-boundary prompt, QSA K-pool exercise, documented tolerance) is still open before promotion past PORTED + SYNTHETIC.
-- **GLM-5.3 (~236 GiB):** fits `E:\_models`; correctness-only runs (hours, paged from disk) are
-  acceptable. Slowness is not a failure; a token/logit mismatch is.
-
-Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSeek-V4, then DiffusionGemma (backbone & pipeline implementation complete; synthetic test suite passes with 32 tests; pending real Q4_K_M checkpoint verification). Download into `E:\_models` (or `F:\_models`), verify against the independent implementation, then delete the checkpoint.
-
+- **DeepSeek-V4.1 (`deepseek41`):** does not fit the scratch disk; not attempted. Stays PORTED + SYNTHETIC only.
+- **DeepSeek-V3.2 (`deepseek32`):** no cheap shard option (see the programme plan).
+- **Real-checkpoint order:** Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSeek-V4, then
+  DiffusionGemma. Download into `E:\_models` (or `F:\_models`), verify against the independent
+  implementation, then delete the checkpoint.
 
 ## Per-family checklist (every family)
 
@@ -95,8 +80,11 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - [ ] Structural/synthetic tests only, named as such.
 - [ ] `// <arch> — NOT admitted` block in `src/OpenTail.Stingray.Engine/ModelCompatibility.cs`:
       what was ported, from which reference (file and commit), and what verification is missing.
+      *(Checked 2026-11-08: no family has this block; the NOT-admitted notes live in the `*Alpha.cs`
+      header comments. Either add the blocks or change this rule.)*
 - [ ] Row in the plan's "Ported, not verified" table (date, code location, reference).
 - [ ] Ported code from TensorSharp goes into the TensorSharp section of `THIRD_PARTY_NOTICES.md`.
+      *(Checked 2026-11-08: present for qwen4exp, MiniMax-H3 and Muse-Glimmer; not for glm-dsa or deepseek4.)*
 - [ ] Nothing in STATUS.md, README, WHAT-YOU-CAN-DO, RUNNING or the catalogs.
 - [ ] Later, for promotion (see the status ladder): a real checkpoint, an independent implementation
       (`stingray admit-arch` against llama.cpp for text LLMs; pipeline fixtures for media), timed
@@ -114,14 +102,10 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
   - x4 hyper-connection streams;
   - 512-expert MoE;
   - image input through an mmproj.
-- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total: 125B lang + 51B PLE + 4B MTP; smallest quant ~72.5 GB; does not fit this PC; synthetic gate only).
+- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total; smallest quant ~72.5 GB; synthetic gate only on this host, see the programme plan for the paged run).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
-- [x] Real-weight verification (paged execution on `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ1_S ~62 GB) --
-      2026-11-07, one prompt: found/fixed the conv1d weight-transpose bug, generation now coherent and
-      matches llama.cpp within quantisation noise. Fixed the same day: `TruncateTo` was silently
-      no-opping for intermediate lengths instead of throwing per `IForwardPass`'s contract (unrelated
-      bug found while re-checking state handling against TensorSharp's validation discipline).
+- [x] Real-weight verification, one prompt (paged execution, 2026-11-07; details in the programme plan).
 - [ ] Broader real-weight verification before promotion: more fixed prompts, incremental decode, a
       prompt crossing a prefill/decode chunk boundary, QSA K-pool exercise, a documented tolerance.
       MTP and vision stay deferred.
@@ -130,55 +114,26 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - **Design:**
   - `glm-dsa` (GLM-5.2/5.3): 744B MoE (256 routed + 1 shared, top-8, sigmoid, scale 2.5; 3 leading dense) on MLA (64 heads, 512+64 latent row) + 32-head DSA indexer with orthonormal Sylvester Hadamard rotation (`PrismHadamard` FWHT); shared indexer layers reuse top-k.
   - `glm5next` (GLM-5.3-Flash): 320B hybrid trunk with 45 layers (34 KDA linear attention + 11 NoPE MLA/DSA in strict 3:1 schedule: `i % 4 != 3` -> KDA, `i % 4 == 3` -> MLA), 4-token K-pool indexer, x4 Sinkhorn mHC, 288+1 MoE with FP32 router, SwiGLU clamp at 10.
-- **Weights:** `unsloth/GLM-5.3-GGUF` (UD-Q2_K_XL ~236.4 GiB, Q4 ~432 GB; does not fit 64 GB RAM; synthetic gate only).
+- **Weights:** `unsloth/GLM-5.3-GGUF` (UD-Q2_K_XL; does not fit 64 GB RAM; synthetic gate only on this host).
 - **Reuse:** Stingray's `deepseek2` MLA, `deepseek32` indexer, `PrismHadamard` FWHT, and `deepseek4` mHC.
 - **References:**
-  - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries know it too and serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
-  - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`, includes K-pool, mHC, KDA recurrence, MTP), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
-- [x] `glm-dsa` metadata-only real-weight check, 2026-11-07 (`GlmDsaRealWeightsSmokeTests`): the real
-      GLM-5.2 checkpoint's first shard (~9 MB of a much larger checkpoint) confirmed every hyperparameter
-      in `GlmDsaAlpha.cs`'s spec comment against real metadata. Full forward-pass real-weight parity
-      stays out of reach on this host's disk budget (see the coverage programme plan's Phase 2A).
-- [x] `glm-dsa` indexer top_k-shortcut optimisation ported from TensorSharp's `GlmDsaModel.Attention.cs`
-      (`SparseAttentionActive`/`AppendIndexerKeys`), 2026-11-07: `RunFullIndexer` now skips the query
-      projection/Hadamard transform/scoring pass entirely while the cached key count is `<=
-      indexer_top_k` (selection can only be "all of them" in that regime). Output is unchanged;
-      covered by `GlmDsa_IndexerTopKShortcut_MatchesFullScoringAcrossThreshold`.
-- [x] `glm-dsa` sigmoid MoE selection-bias ordering bug, fixed 2026-11-08: `MoeFfn` added
-      `exp_probs_b` to raw logits before sigmoid gating and selected AND weighted experts from
-      that biased result; `build_moe_ffn` (shared by `glm-dsa.cpp`/`deepseek4.cpp`) adds the bias
-      after gating, for selection only. Same bug shape and fix as `deepseek4`'s MoE weighting fix
-      above, reusing `DeepSeek4Graph.WeightSelectedExperts`
-      (`MoeFfn_SigmoidGating_SelectionBiasNeverLeaksIntoTheGatheredWeight`).
-- [x] `glm-dsa` MLA absorption check, 2026-11-08 (`MlaAttention` vs `glm-dsa.cpp:369-444`): Qcur/Kcur
-      concat order, the YaRN kq_scale pre-scale formula, wv_b decompression, and the NORM-type
-      adjacent-pair RoPE convention (confirmed `GLM_DSA` uses NORM, not NEOX, via `llama-model.cpp`'s
-      `rope_type` table) all match. No bug found.
-- [x] `glm-dsa` DSA indexer scoring check, 2026-11-08 (`RunFullIndexer` vs `glm-dsa.cpp:263-359`):
-      found and fixed a real bug -- the indexer's own RoPE must be YaRN-scaled with the same params
-      as the main attention's RoPE, but this port used a plain, non-YaRN rotation there (invisible
-      on every checkpoint verified so far, since YaRN has been inactive on all of them). Fixed to use
-      the same `ApplyYarnRope` the main attention path already used
-      (`YarnRope_DivergesFromPlainRopeOnlyWhenYarnIsActive`,
-      `GlmDsa_FullIndexerScoring_WithYarnActive_ProducesFiniteLogits`). Hadamard rotation's own
-      correctness was already covered by an existing invariant test.
-- [x] `glm-dsa` shared-expert contribution check, 2026-11-08 (vs `glm-dsa.cpp:486-498`): a plain
-      SwiGLU added to the routed MoE output, no extra scale, matching `MoeFfn`'s shared-expert
-      block exactly. No bug found (`SharedExpertSwiGlu_MatchesHandComputedValues`,
-      `MoeFfn_SharedExpertContribution_SurvivesWhenRoutedExpertsAreZeroed`). This closes Phase 2A's
-      synthetic-correctness checklist (MLA absorption, DSA scoring, Hadamard rotation, sigmoid MoE
-      weighting, shared-expert contribution) -- two bugs found and fixed along the way (sigmoid MoE
-      bias ordering, indexer YaRN-RoPE), three already correct. Real-weight parity remains out of
-      reach on this machine's disk budget, see the coverage programme plan's Phase 2A.
+  - `glm-dsa`: llama.cpp `src/models/glm-dsa.cpp` (local source; vendored b10306 binaries serve as local oracle), HF `GlmMoeDsaForCausalLM`, TensorSharp `Models/GlmDsa`.
+  - `glm5next`: current upstream llama.cpp `src/models/glm5-next.cpp` (`bed0a8566`), HF `Glm5NextForConditionalGeneration`, TensorSharp `Models/GlmDsa`.
+- **Status:** the synthetic-correctness checklist for `glm-dsa` is complete (2026-11-08). Its full
+  audit history (bugs fixed, tests added, the metadata-only real-weight check) is in the programme
+  plan's "What changed" section and its Checklist, not repeated here.
+- [ ] `glm-dsa` real-weight parity: out of reach on this host's disk budget; rescoped to hyperparameter parsing (done 2026-11-07).
+- [ ] `glm5next` K-pool selection gating attention reads (Phase 2B of the programme plan).
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
   - text + image; thinking through an `assistant to=self` channel;
   - llama.cpp's standard SWA window predicate and a hard-coded 1e-8 (per TensorSharp's card);
   - DFlash speculative drafter (optional).
+- **Status:** admitted 2026-10-03 (text, CPU only); see the Muse-Glimmer plan and the STATUS row.
 - **Weights:** Muse-Glimmer-30B; GGUF sizes on the card are about 3-10 GB for the parts listed.
 - **References:** TensorSharp `Models/MuseGlimmer` (cites `llama.cpp/src/models/muse-glimmer.cpp`,
-  which is present in the local copy at `bed0a8566`).
+  present in the local copy at `bed0a8566`).
 - [ ] Port vision tower (deferred)
 
 ### 4. DiffusionGemma (`diffusion-gemma`, alias `diffusion_gemma`)
@@ -187,9 +142,9 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
   - 30 layers: 5 Full attention (Q=16, KV=2, dim=512) + 25 Sliding attention (Q=16, KV=8, dim=256, window=1024);
   - **Self-conditioning**: step 1 seed, $t > 1$ soft probability weighted embeddings through learned SC MLP injected into canvas;
   - Canvas denoising (256 tokens) with bidirectional canvas attention + persistent causal prefix KV cross-attention;
-  - Sampler: temperature decay ($0.8 \to 0.408$ over 48 steps), nats entropy budget (0.1), greedy acceptance, categorical re-noising;
+  - Sampler: temperature decay, nats entropy budget (0.1), greedy acceptance, categorical re-noising;
   - Block-autoregressive lifecycle: commit 256 tokens, causal re-prefill, next canvas.
-- **Weights:** `google/diffusiongemma-26B-A4B-it` (HF), `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M ~16.8 GB; fits 64 GB machine).
+- **Weights:** `google/diffusiongemma-26B-A4B-it` (HF); `unsloth/diffusiongemma-26B-A4B-it-GGUF` (Q4_K_M, see the research file for sizes).
 - **Reuse:** Stingray's Gemma 4 primitives, MoE routing, and PagedKvCache.
 - **References:** HF reference implementation, TensorSharp `Models/DiffusionGemma`, Unsloth / llama.cpp DiffusionGemma runner.
 - [ ] Real-weight verification (Phase 9/13 ladder against llama.cpp and TensorSharp on `diffusiongemma-26B-A4B-it-Q4_K_M.gguf`)
@@ -199,24 +154,21 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
   - one DiT denoises a packed video+audio latent;
   - seven graphs: text encode, vision encode, DiT, and encode + decode for each of the two VAEs;
   - up to 15 s at 24 fps.
-- **Weights:** `MiniMaxAI/MiniMax-H3`, `unsloth/MiniMax-H3-GGUF`, `Comfy-Org/MiniMax-H3`; parts
-  about 12-35 GB.
-- **Reuse:** Stingray's diffusion pipeline (Wan, HunyuanVideo, LTX) and audio VAE code. A
-  diffusion project, not an LLM arch.
+- **Weights:** `MiniMaxAI/MiniMax-H3`, `unsloth/MiniMax-H3-GGUF`, `Comfy-Org/MiniMax-H3` (sizes and licence in the research file).
+- **Reuse:** Stingray's diffusion pipeline (Wan, HunyuanVideo, LTX) and audio VAE code. A diffusion project, not an LLM arch.
 - **References:** TensorSharp `Models/MiniMaxH3`, upstream HF code.
+- [ ] Real-checkpoint parity and remaining items: see the MiniMax-H3 plan's open checklist.
 
 ### 6. DeepSeek V4 / V4.1 Flash (V4 review + V4.1 distinct architecture)
-- Stingray has V4 alpha code (`DeepSeek4*.cs`, plan [058](../reference/058-deepseek-full-lineage-implementation-plan.md)); real-weight load attempted
-  2026-11-07/08 (see row 34 above) -- refuses YaRN correctly, MoE hash-routing weight bug fixed, CSA/HCA
-  still unexercised (blocked on the YaRN refusal).
 - **Design:**
   - V4 Flash (`deepseek4`): 43 layers, hidden 4096, 64 heads, head dim 512, compression ratios 0/4/128, 256+1 MoE (top-6, sqrtsoftplus), x4 mHC, 64x128 indexer top-512, 1 NextN.
   - V4.1 Flash (`deepseek41`): distinct architecture with 40 layers, hidden 5120, compression ratios 0/1/2, 384+1 MoE (scale 1.5), dual ~196B Engram tables (layers 1 & 14, 4-gram, 99k compressed vocab), 8 index-source layers, candidate top-2048 x block 8, 3 NextN layers, DSpark (layers 37-39).
-- **Weights:** V4 Flash Q2_K ~98.6 GB / 117 GB; V4.1 Flash Q2_K+Q5 ~335.4 GB (due to Engram). Neither fits 64 GB RAM.
+- **Weights:** V4 Flash Q2_K ~98.6 GB; V4.1 Flash ~335 GB (sizes and sources in the research file). Neither fits 64 GB RAM.
 - **Reuse:** Stingray's existing `DeepSeek4ForwardPass`, `DeepSeek4CompressedState`, `DeepSeek4Alpha`.
 - **References:**
   - V4: llama.cpp `src/models/deepseek4.cpp` (local source + vendored b10306 as local oracle).
   - V4.1: TensorSharp `Models/DeepSeek4/` (`DeepSeek41Model.cs`, `DeepSeek4CpuExecutor.V41.cs`, `Dsv41EngramData.cs`) validated under 103-case PyTorch oracle (100/103 passed).
+- **Status and open phases:** see [2026-10-03-deepseek-v4-review-plan.md](2026-10-03-deepseek-v4-review-plan.md). Its inline `[x]` gate claims need the code check noted in the programme plan (no `NOT admitted` block in `ModelCompatibility.cs`).
 
 ## Open items moved from 058-deepseek-full-lineage-implementation-plan.md (2026-10-30)
 
@@ -227,15 +179,8 @@ Real-checkpoint order: Muse-Glimmer (done 2026-10-03), then GLM-5.3, then DeepSe
 - [x] *(done 2026-11-03: the `deepseek2-ocr` descriptor (`DeepSeek2Architectures.cs`) and the vision encoder (`DeepSeekOcr2VisionEncoder`, `UnifiedVisionPipeline`) reference none of the `DeepSeek4`/`DeepSeek32`/`DeepSeek41` types, which live in their own forward-pass classes; and on current main the real-weight SAM parity tests against `llama-mtmd-debug` pass: `DeepSeekOcr2_Rainbow1024_SamMatchesLlamaMtmdDebug` 14.8 s and `DeepSeekOcr2_Rainbow768Tile_SamMatchesLlamaMtmdDebug` 5.5 s with `mmproj-deepseek-ocr-2-q8_0.gguf`.)* Audit `deepseek2-ocr` only, to confirm nothing in Phases 0-2 silently affects the
   existing working vision branch. Not a rebuild.
 
-
 ---
 
-## Research findings (2026-10-31)
+## Research findings
 
-Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md).
-
-- **Sizes checked:** Qwen3.8-Flash-Next UD-IQ1_S 72.5 GB (confirmed). GLM-5.3 full UD-Q2_K_XL 236.4 GiB (not confirmed; Unsloth lists 239 GB for UD-IQ2_M). DeepSeek-V4-Flash Q2_K 98.6 GB (sources say 102 to 103 GB). DeepSeek-V4.1-Flash UD-Q2_K_XL 334.8 GB (matches 335.4).
-- **Licences checked:** Qwen1.5-MoE is `tongyi-qianwen-research`; Hunyuan-A13B is under the Tencent Hunyuan Community License (territory terms not confirmed); MiniMax-H3 is under the MiniMax H3 Community License with territorial exclusions; Muse-Glimmer is Apache 2.0 per secondary sources; Trinity-Mini is Apache 2.0; Phi-3.5-MoE is MIT.
-- **Consolidation:** the ported-not-verified table in the TensorSharp plan had a stale Muse-Glimmer row (admitted); it is moved out. This file stays the working todo, because about a dozen plans link to it.
-
-**Next checks:** the file lists of `unsloth/GLM-5.3-GGUF`, `unsloth/DeepSeek-V4-Flash-GGUF` and `unsloth/Qwen3.8-Flash-Next-GGUF`, recorded with their licence files.
+Moved to [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverage-facts.md) (sizes, licences, llama.cpp logprob fields, open checks). Not repeated here.

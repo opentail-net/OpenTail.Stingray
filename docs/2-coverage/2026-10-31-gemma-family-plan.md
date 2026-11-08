@@ -2,16 +2,15 @@
 
 > Completed items moved to [../done/2026-10-31-gemma-family-plan-completed-items-2026-10.md](../done/2026-10-31-gemma-family-plan-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
 
-> This file summarises its owner plan. If the two disagree, the owner plan is authoritative; correct this file.
+> The state of each Gemma checkpoint lives only in its STATUS row ([../STATUS.md](../STATUS.md)) and in the model card ([../models/gemma.md](../models/gemma.md)). This file does not repeat them.
 
-**Owner:** this file (moved from docs/workstreams on 2026-10-31). **Last verified:** 2026-10-30.
-**Evidence:** [../done/2026-10-11-llm-reply-sanity-check.md](../done/2026-10-11-llm-reply-sanity-check.md) (the Gemma 2 fix record). **Card:** [../models/gemma.md](../models/gemma.md). **Status row:** [../STATUS.md](../STATUS.md).
+**Owner:** this file (moved from docs/workstreams on 2026-10-31). **Last verified:** 2026-11-08.
 
-## Correct state
+## Current state (pointers only)
 
-- **Gemma 2 (`gemma2`):** on the admitted list since the first release. Before the 2026-10-11 fix its output was incoherent, and the sanity check (`76def766`) called that "not a recent regression". The descriptor had no model semantics. The fix (`4a6027a6`) added the embedding scale, GeGLU, alternating sliding-window layers, and attention and final logit softcapping. Checked against llama-server on gemma-2-2b-it Q4_K_M: two cases exact (48/48), one near-tie (46/48, both misses inside the reference's own margin). **CPU only.** Vulkan and CUDA attention have no softcap, so the descriptor records a `BackendLimitation` for them (checked 2026-10-31; enforcement at load was not confirmed).
-- **Gemma 1 (`gemma`):** has an architecture descriptor (`GemmaArchitectures.cs`) and was on the admitted list from the registry migration (`71619b9d`). It never worked before 2026-11-01: every position predicted BOS until `FamilyModelSemantics.Gemma1` was added (see the done item below). It now has a golden (22/24 near-tie, gemma-1.1-2b-it Q8_0) and a STATUS row; CPU only.
-- **Gemma 3 and Gemma 4 E4B:** STATUS rows exist with dated evidence.
+- **Gemma 2 (`gemma2`), Gemma 1 (`gemma`), Gemma 3, Gemma 4 E4B, Gemma 4 26B-A4B:** see their STATUS rows.
+- **Fix records:** Gemma 2 softcapping and semantics fix (`4a6027a6`, sanity check `76def766`, [../done/2026-10-11-llm-reply-sanity-check.md](../done/2026-10-11-llm-reply-sanity-check.md)). Gemma 1 `FamilyModelSemantics.Gemma1` (2026-11-01, see the done file above).
+- **Backend limitation (Gemma 2):** the descriptor's `BackendLimitation` (`GemmaArchitectures.cs`) is read by the planner, which reports Vulkan/CUDA as refused for this architecture (`StaticPlanCommand.cs`), and by the GPU perplexity command, which refuses (`PerplexityCommand.cs`). Not confirmed: that the engine's own load path refuses it. Checked 2026-11-08.
 
 ## Open items
 
@@ -25,4 +24,4 @@
 
 - Review when Gemma 1 is attempted, and whenever a softcap kernel lands on Vulkan or CUDA.
 - Re-read at least every two weeks while any item is open.
-- Close when Gemma 1 has a recorded verdict and Gemma 2's backend gaps are either built or stated as permanent in STATUS.
+- Close when Gemma 2's backend gaps are either built or stated as permanent in STATUS.
