@@ -136,6 +136,22 @@ Runnable now. Test cases only, no new disk or implementation.
       `max(nx, ny)` after the image (`n_past += get_n_pos`). Stingray uses the same values (`posT = pos0`, `posX/posY`
       as above, text resumes at 4 + 7 = 11), and the first decode position is 24 on both sides. These match, so the
       discrepancy is not a position error.
+      Investigation, 2026-11-08 (c): per-layer residuals at the first decode position (`l_last`, 4 HC streams x 2560
+      floats; Stingray `l_last_<il>.bin` against the reference's `l_last-<il>` from a local diagnostic dump). Relative
+      difference ||ref - st|| / ||ref||:
+      - layer 0: 0.36%; layer 1: 0.46%; layers 2 to 5: 0.49% to 0.75%;
+      - layers 6 to 22: 1.5% to 2.5%;
+      - layers 23 to 29: 3.6% to 6.9%;
+      - layers 30 to 44: 9.4% to 23.1%, with the largest single-layer step at 44 to 45 (0.23 to 0.22 is flat; the
+        absolute difference grows from 0.20 to 0.43).
+      - Layer 47 reads 149%. Not interpreted: it is likely the reference's final-layer naming (the same tensor name
+        appears with a "(reshaped)" suffix), so it needs a check before use.
+      Reading: the drift is cumulative and gradual, with no single layer that breaks. Layer 0 is already 0.36% off, which
+      matches the quantisation-level numerics recorded in Phase 0.2. Phase 0.2 also recorded a growing per-layer error
+      on the text path (MoE 19 to 27% by layers 5 to 11). So the image-step discrepancy looks like that known text-path
+      drift, not a new image-only break. Not proven: the decisive test is the same per-layer metric on a text-only prompt
+      at the same decode position. If the text-only profile matches, the image path adds nothing new. The next step is
+      that text comparison.
 - [ ] Exact 40-token equality. The current test compares text only.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. Untested; deferred by the owner. Leave unchecked until the owner reopens it.
