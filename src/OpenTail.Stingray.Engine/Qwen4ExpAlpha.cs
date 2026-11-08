@@ -751,6 +751,23 @@ public static class Qwen4ExpRope
         IReadOnlyList<int>? sections,
         int ropeDim = 0,
         float ropeTheta = 10000000.0f)
+        => ApplyImRope(vec, pos, pos, pos, numHeads, headDim, sections, ropeDim, ropeTheta);
+
+    /// <summary>
+    /// IMRoPE with one position per M-RoPE component: <paramref name="posT"/> for section 0 (time),
+    /// <paramref name="posY"/> for section 1 (row), <paramref name="posX"/> for section 2 (column). Section 3 is unrotated.
+    /// Text tokens pass the same value for all three, which gives the single-position result.
+    /// </summary>
+    public static unsafe void ApplyImRope(
+        Span<float> vec,
+        int posT,
+        int posY,
+        int posX,
+        int numHeads,
+        int headDim,
+        IReadOnlyList<int>? sections,
+        int ropeDim = 0,
+        float ropeTheta = 10000000.0f)
     {
         if (headDim <= 0 || (headDim & 1) != 0) return;
         if (ropeDim <= 0 || ropeDim > headDim) ropeDim = headDim;
@@ -764,9 +781,9 @@ public static class Qwen4ExpRope
             int comp = GetMropeComponent(i, sections);
             float p = comp switch
             {
-                0 => pos,
-                1 => pos,
-                2 => pos,
+                0 => posT,
+                1 => posY,
+                2 => posX,
                 _ => 0f // component 3 / unrotated
             };
             float angle = p * MathF.Pow(ropeTheta, -2f * i / ropeDim);

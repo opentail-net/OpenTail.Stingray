@@ -614,3 +614,13 @@ Stingray plan:
 - Oracle: the reference answer to "What shapes are in the image?" on `test_shapes.png` (greedy, 24 tokens):
   "The image contains two shapes: 1. A red square - located in the upper-left". Also compare the first generated logits
   once the prompt builder is aligned with the reference's chat template.
+
+### 5.2 progress, 2026-11-08
+
+- Done: `Qwen4ExpRope.ApplyImRope` takes one position per M-RoPE component (t, y, x). The single-position overload calls it
+  with the same value for all three, so text is unchanged: the real-weight logits and `l_last_24` are bit-identical to the
+  pre-change run.
+- Not done: the image chunk forward. Non-causal attention inside an image needs every image token's K/V at a layer before
+  that layer's attention runs. The current forward is token-major (one token through all layers), so an image chunk needs a
+  layer-major path: residuals kept per image token, K/V appended for the whole chunk, then attention, for each layer.
+  The GDN layers stay sequential in token order. The rest of the forward is unchanged.
