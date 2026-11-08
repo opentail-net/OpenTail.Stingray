@@ -440,3 +440,7 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
 - Added 2026-11-08: a short request (2 tokens) finishing while a long one (12 tokens) runs. Both equal their isolated
   outputs, and `CommittedKvTokens` is 0 afterwards. `Qwen4ExpBatchingTests` now has 3 tests, all passing (103 s).
 - Still open in Phase 2: queue limits and admission under backpressure; memory checks for cancelled requests.
+
+- Added 2026-11-08: a tight KV budget (about one request at a time) with three requests. All three equal their
+  isolated outputs, and `CommittedKvTokens` is 0 afterwards. `Qwen4ExpBatchingTests` now has 4 tests, all passing (128 s).
+- Still open in Phase 2: memory checks for cancelled requests specifically (the finish-order test covers normal finish).
