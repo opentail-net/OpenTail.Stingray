@@ -552,3 +552,14 @@ Stingray plan:
 - Next oracle: the unsloth fork branch `mtp/qwen4exp-nextn` (PR 144, closed). Its public header has `ctx_other` (a source/target
   context). Plan: shallow-clone that branch into the scratchpad, read how its MTP context receives the trunk state, build a
   driver against it, and compare the same hand-off. Only then a per-step verdict.
+
+### Phase 4 blocker, 2026-11-08: the reference oracle needs a permission decision
+
+- The unsloth fork branch `mtp/qwen4exp-nextn` (PR 144) was shallow-cloned to the scratchpad (`fork_llama`, commit `ca14269`).
+  Its MTP context takes the trunk's hidden state from the ordinary `llama_batch.embd` field (`llama-context.cpp` ~1665), so
+  a driver against it is straightforward.
+- The next step is to configure and build that fork and run a driver. The action was denied by the auto-mode classifier
+  (running external code). It has not been retried or worked around. The denied command wrote no files.
+- Decision needed from the owner: allow building and running the unsloth fork as a local reference (it is third-party code,
+  not part of this repository), or choose another oracle. Until then, the head's per-step agreement is unverified and
+  Phase 4 cannot close. Qwen 3.8 stays unadmitted.
