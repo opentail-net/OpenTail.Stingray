@@ -33,6 +33,9 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       it. So the working parity criterion, which was adopted on text evidence, does not yet hold for the image path.
       The next check is the same per-layer comparison on the image prompt's step 1, against the reference's eval-callback,
       which would show whether the injection path is the first layer that diverges.
+      Update 2026-11-08: the per-layer check (Phase 5, (c)) shows the image-path residual drift is gradual, starting at 0.36%
+      at layer 0 and growing to about 23% by layer 44, with no single layer where it breaks. The injection gate is not
+      singled out by this data. The text-only per-layer comparison at the same decode position is the next check.
 - [ ] Re-state the Phase 0 section so it no longer says both "closed" and "open" (see Doc hygiene).
 
 ## Phase 1. Per-sequence state: broader real-weight verification
