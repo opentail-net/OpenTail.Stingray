@@ -231,3 +231,24 @@ taking on Phase 2B/3's real implementation work:
 - [ ] 3. Phase 2B (`glm5next` K-pool) or Phase 3 (`deepseek4` YaRN) only after 1-2, since both are real
    algorithm work, not verification, and should be sized and started deliberately rather than picked
    up as a side effect of something else.
+
+### Phase 0.2 finding, 2026-11-08: the HC mix 1% is a quantised-activation mismatch
+
+- Tensor types (raw GGUF header, shard 2): `blk.0.hc_attn_down` and `hc_attn_up` are Q8_0 (type 8);
+  `hc_attn_inject` is BF16 (type 30); `hc_attn_norm` and `ffn_gate_inp` are F32; `attn_qkv` and `ssm_out` are Q5_K (type 13).
+- `Qwen4ExpGatedResidual.Mix` reads the Q8_0 weights as float32 and dots them with a float32 activation. llama.cpp's
+  quantised matmul rounds the activation to the Q8_1 int8 grid first (blocks of 32, d = amax/127).
+- Experiment, env-gated (`STINGRAY_Q4E_HC_Q8ACT=1`, default off): round the matmul inputs (`xn` for down and inject,
+  `lo` for up) the same way. Result at layer 0, last token:
+  - `hc_mixed_0`: 1.08% -> 0.0048% relative error (cosine 0.999946 -> 1.000000).
+  - `linear_attn_qkv_mixed_0` 0.29%, `conv_output_silu_0` 0.11%, `z_0` 0.027%, `alpha_0` 0.024%.
+  - `final_output_0` (gated GDN output, before `ssm_out`): 0.30%.
+  - `linear_attn_out_0` (after `ssm_out`): 2.2%. `l_last_0`: 1.43% (was 1.46% without the experiment).
+- So the HC mix was a real numeric mismatch, but it is not the dominant source of the layer-0 residual error. The
+  dominant step is now the `ssm_out` projection, which amplifies a 0.3% input error to 2.2%.
+- Checked against the pinned reference: llama.cpp's Q8_K quantiser uses `iscale = -127/max` (ggml-quants.c:2791),
+  the same as Stingray's `QuantizeRowToQ8K`. So Q8_K scale is not the cause.
+- The HC experiment is not yet a default. A real fix would route the HC matmuls through the quantised kernel path
+  (`SimdKernels.MatVec` with Q8_0 weights), with a regression test, once the whole chain is understood.
+- **Next:** find why `ssm_out` (Q5_K, input `final_output`) amplifies the error. Check the Q5_K x Q8_K kernel against
+  `ggml_vec_dot_q5_K_q8_K` in the pinned source, and dump `ssm_out` intermediates if needed.

@@ -678,6 +678,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             qTiled, kTiled, v, alpha, beta, ssmA, ssmDt, normWeight, z,
             gdnState, gdnOut, _ssmDtRank, _ssmDState, _eps, useSigmoidGate: true);
 
+        if (_dumpActive) DumpFloats(Path.Combine(_dumpDir!, $"final_output_{layerIdx}.bin"), gdnOut);
+
         // Output projection
         if (layer.SsmOut != null)
         {

@@ -285,6 +285,25 @@ public static class Qwen4ExpGatedResidual
     /// <param name="embedDim">Hidden dimension per stream (e.g. 2560).</param>
     /// <param name="hcLowRank">Low-rank bottleneck rank (typically 320).</param>
     /// <param name="eps">RMSNorm epsilon.</param>
+    // Phase 0.2 experiment switch, read once. Off by default.
+    private static readonly bool Q8ActExperiment = Environment.GetEnvironmentVariable("STINGRAY_Q4E_HC_Q8ACT") == "1";
+
+    /// <summary>Rounds each 32-wide block to the int8 grid (d = amax/127), as llama.cpp's Q8_1 activation does.</summary>
+    internal static void RoundToQ8Blocks(Span<float> x)
+    {
+        for (int b = 0; b < x.Length; b += 32)
+        {
+            int n = Math.Min(32, x.Length - b);
+            float amax = 0f;
+            for (int i = 0; i < n; i++) amax = MathF.Max(amax, MathF.Abs(x[b + i]));
+            if (amax == 0f) continue;
+            float d = amax / 127f;
+            float inv = 1f / d;
+            for (int i = 0; i < n; i++)
+                x[b + i] = MathF.Round(x[b + i] * inv, MidpointRounding.AwayFromZero) * d;
+        }
+    }
+
     public static void Mix(
         ReadOnlySpan<float> x,
         ReadOnlySpan<float> wNorm,
@@ -336,14 +355,25 @@ public static class Qwen4ExpGatedResidual
             try
             {
                 float invHc = 1.0f / hc;
+                // Experiment (Phase 0.2): llama.cpp feeds Q8_0 matmuls a Q8_1-rounded activation.
+                ReadOnlySpan<float> matIn = xn;
+                if (Q8ActExperiment)
+                {
+                    var rounded = new float[hcDim];
+                    xn.CopyTo(rounded);
+                    RoundToQ8Blocks(rounded);
+                    matIn = rounded;
+                }
                 for (int r = 0; r < hcLowRank; r++)
                 {
                     var row = wDown.Slice(r * hcDim, hcDim);
-                    float dot = TensorPrimitives.Dot(row, xn) * invHc;
+                    float dot = TensorPrimitives.Dot(row, matIn) * invHc;
                     // SiLU(dot) = dot * sigmoid(dot)
                     float sig = 1.0f / (1.0f + MathF.Exp(-dot));
                     lo[r] = dot * sig;
                 }
+
+                if (Q8ActExperiment) RoundToQ8Blocks(lo);
 
                 // 3. Up-projection: gate = wUp * lo (shape [hcDim])
                 // Gating: gated = xn * sigmoid(gate)
@@ -375,7 +405,7 @@ public static class Qwen4ExpGatedResidual
                     for (int c = 0; c < hc; c++)
                     {
                         var injRow = wInject.Slice(c * hcDim, hcDim);
-                        inject[c] = TensorPrimitives.Dot(injRow, xn);
+                        inject[c] = TensorPrimitives.Dot(injRow, matIn);
                     }
                 }
             }
