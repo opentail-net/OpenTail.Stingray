@@ -16,6 +16,11 @@ public static class EnvironmentVariableClasses
     {
         ["STINGRAY_ASR_PROFILE"] = "diagnostic",
         ["STINGRAY_Q4E_DEBUG"] = "diagnostic",
+        ["STINGRAY_Q4E_DUMP_DIR"] = "diagnostic",
+        ["STINGRAY_Q4E_DUMP_POS"] = "diagnostic",
+        ["STINGRAY_Q4E_PERTURB_EPS"] = "diagnostic",
+        ["STINGRAY_Q4E_SSMOUT_F32"] = "experimental",
+        ["STINGRAY_Q4E_EXPERT_F32"] = "experimental",
         ["STINGRAY_AUDIO_DIAGNOSTIC_DUMP"] = "expert",
         ["STINGRAY_CFG_TRACE"] = "diagnostic",
         ["STINGRAY_COSYVOICE3_TANH_GELU"] = "experimental",

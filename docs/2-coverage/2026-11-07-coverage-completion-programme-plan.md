@@ -641,3 +641,41 @@ Stingray plan:
 - Text bit-identity still holds after the change (logits and `l_last_24` identical to the pre-chunk run).
 - Not done: exact token-for-token equality over all 40 tokens, and a logit-level comparison with the reference. The test
   compares the text. Phase 5 also still needs video input and the tool and server paths for images.
+
+## Phase 6 (tool-call parsing), result 2026-11-08: synthetic, in memory, no checkpoint
+
+Oracle: the Qwen wire format as this repo's existing Qwen parser and the Qwen3.6 XML shape already read it (no new reference
+run). Tests: `Qwen4ExpToolCallParseTests` (Tests.Core), 15 cases, all pass. `ToolCallAdapterTests` (50) still pass.
+
+| Plan item | Status | Evidence / what is left |
+|---|---|---|
+| JSON bodies | Done | `JsonBody_ParsesNameAndTypedArguments`: names, string/number/bool arguments kept typed |
+| XML function/parameter bodies | Done | `XmlBody_ParametersAreStringsEvenWhenNumeric`; values stay strings, numbers included |
+| Multiple calls, mixed shapes | Done | `MultipleCalls_MixedShapes_KeepOrderAndTextBetween`; order and text between calls kept |
+| Indentation and newlines in values | Done (fixed) | `XmlBody_CodeKeepsIndentationAndInternalNewlines`, `XmlBody_KeepsSpacesInsideValueExactly`. Before: values went through `.Trim()`, which removed first-line indentation |
+| Literal closing marker in a value | Done (fixed) | `XmlBody_LiteralParameterCloseInsideValue_DoesNotEndTheValue`. A value ends at a `</parameter>` followed (after whitespace) by `<parameter=` or the end of the function. Limit: a literal `</parameter>` followed by `<parameter=` inside a value still ends it |
+| Incomplete call never executed, flagged Truncated | Done | `IncompleteCall_NoCloseMarker_IsNotExecuted_AndIsFlaggedTruncated` |
+| Closed block but unclosed function or parameter not executed | Done (fixed) | `FunctionNotClosed_BeforeCloseMarker_IsNotExecuted`, `ParameterNotClosed_IsNotExecuted_EvenThoughTheFunctionIs`, `MalformedJson_IsNotExecuted`. Before: a parameter cut short ran with the argument silently dropped. A malformed complete block now stays in the plain text and is not executed (not flagged Truncated) |
+| Thinking | Done (fixed) | `ToolCallMentionedInsideReasoning_IsNotExecuted`, `ReasoningWithoutOpenMarker_UpToCloseMarker_IsNotExecuted`. `<think>` blocks and the text before an implicit `</think>` are never executed. Before: a call mentioned in reasoning ran |
+| Streaming fragments | Partly done | `StreamingPrefixes_NeverYieldACallTheFullOutputDoesNotHave` (non-streaming parse of every prefix). **Not done:** the streaming path (`FindOpenMarker`/`FindCloseMarker` in the server) does not skip reasoning blocks, so a call quoted inside `<think>` can still stream as a call |
+| Finish reasons | Done in the server, not re-tested here | `OpenAiEndpoints` maps a truncated call to `finish_reason: length` through `Parse(...).Truncated` |
+| IDs | Server-assigned, not model-assigned | `OpenAiEndpoints` sets `call_<guid>` for each call. The model emits no ID, so none is parsed |
+| Safety: no execution on incomplete calls, validate arguments against the schema | Partly done | Incomplete and malformed calls are not executed. **Not done:** argument validation against the tool's declared schema (no validator exists in Core; the grammar constraints are the only schema path) |
+| Round trip through the server tool pipeline | **Not done** | qwen4exp is not admitted (CLAUDE.md rule 14), so the server cannot load it and no real round trip can run. Waiting on admission |
+
+Registry: `qwen4exp` has no registry entry. The architecture id must not appear outside `Engine/Architectures/` (the baseline test
+`ArchitectureLiterals_OutsideTheArchitectureFolder_OnlyShrink`), so it resolves to `DefaultAdapter`, which is the same Qwen
+wrapper and carries the same parser. An earlier registration was reverted for this reason.
+
+Other fixes in the same commit:
+- `KnownEnvironmentVariablesTests`: five `STINGRAY_Q4E_*` switches were read in source but not listed. They had been on
+  `main` since `01369e35` and `563ec1b4`, so this test failed before Phase 6. They are now listed and classed
+  (`DUMP_DIR`, `DUMP_POS`, `PERTURB_EPS` diagnostic; `SSMOUT_F32`, `EXPERT_F32` experimental), and the count in
+  `docs/reference/env-var-inventory.md` is 295.
+
+Full Core suite: 1347 tests, 1 failure before the inventory count fix (the failure list is in the 2026-11-08 run output).
+After the fix, the failing class passes; the rest of the suite ran clean in the same run (1346 passing, 95 skipped for missing
+fixtures). Not re-run in full after the count fix; the count test is the only test that reads the doc.
+
+Still open for Phase 6: the streaming reasoning skip, argument schema validation, and the server round trip (blocked on
+admission). Qwen 3.8 is still not admitted or advertised.

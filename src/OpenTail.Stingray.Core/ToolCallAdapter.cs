@@ -267,6 +267,86 @@ internal static class ToolCallParseHelpers
     }
 
     /// <summary>
+    /// Strict parse of one complete Qwen <c>&lt;function=NAME&gt;…&lt;/function&gt;</c> block (Phase 6 of the Qwen 3.8
+    /// plan). Returns false, so the call is never executed, when the function is not closed, a parameter has no
+    /// closing tag, a parameter is nameless, or anything other than whitespace follows the function.
+    /// <para>
+    /// A parameter value ends at the first <c>&lt;/parameter&gt;</c> that is followed (after whitespace) by another
+    /// <c>&lt;parameter=</c> or by the end of the function, so a literal <c>&lt;/parameter&gt;</c> inside the value
+    /// does not cut it short. The value is kept exactly as written: only the single framing newline the template puts
+    /// after <c>&lt;parameter=…&gt;</c> and before <c>&lt;/parameter&gt;</c> is removed. Values stay strings.
+    /// </para>
+    /// </summary>
+    public static bool TryParseQwenXmlFunctionBlock(string block, out ParsedToolCall call)
+    {
+        const string funcTag    = "<function=";
+        const string funcClose  = "</function>";
+        const string paramTag   = "<parameter=";
+        const string paramClose = "</parameter>";
+
+        call = default;
+        if (!block.StartsWith(funcTag, StringComparison.Ordinal)) return false;
+
+        int nameEnd = block.IndexOf('>', funcTag.Length);
+        if (nameEnd < 0) return false;
+        string name = block[funcTag.Length..nameEnd].Trim();
+        if (name.Length == 0) return false;
+
+        int close = block.LastIndexOf(funcClose, StringComparison.Ordinal);
+        if (close < nameEnd) return false;
+        if (block[(close + funcClose.Length)..].Trim().Length != 0) return false;
+
+        string body = block[(nameEnd + 1)..close];
+        var args = new Dictionary<string, object?>(StringComparer.Ordinal);
+        int p = 0;
+        while (true)
+        {
+            while (p < body.Length && char.IsWhiteSpace(body[p])) p++;
+            if (p == body.Length) break;
+            if (!body.AsSpan(p).StartsWith(paramTag, StringComparison.Ordinal)) return false;
+
+            int pNameEnd = body.IndexOf('>', p + paramTag.Length);
+            if (pNameEnd < 0) return false;
+            string pname = body[(p + paramTag.Length)..pNameEnd].Trim();
+            if (pname.Length == 0) return false;
+
+            int valueStart = pNameEnd + 1;
+            int valueEnd = FindParameterValueEnd(body, valueStart, paramTag, paramClose);
+            if (valueEnd < 0) return false;
+
+            args[pname] = StripFramingNewline(body[valueStart..valueEnd]);
+            p = valueEnd + paramClose.Length;
+        }
+
+        call = new ParsedToolCall(name, args);
+        return true;
+    }
+
+    /// <summary>Index of the <c>&lt;/parameter&gt;</c> that really ends a value, or -1 if none is complete.</summary>
+    private static int FindParameterValueEnd(string body, int from, string paramTag, string paramClose)
+    {
+        int k = body.IndexOf(paramClose, from, StringComparison.Ordinal);
+        while (k >= 0)
+        {
+            int j = k + paramClose.Length;
+            while (j < body.Length && char.IsWhiteSpace(body[j])) j++;
+            if (j == body.Length || body.AsSpan(j).StartsWith(paramTag, StringComparison.Ordinal)) return k;
+            k = body.IndexOf(paramClose, k + paramClose.Length, StringComparison.Ordinal);
+        }
+        return -1;
+    }
+
+    /// <summary>Removes one framing newline (CRLF or LF) from each end of a parameter value, nothing more.</summary>
+    private static string StripFramingNewline(string value)
+    {
+        if (value.StartsWith("\r\n", StringComparison.Ordinal)) value = value[2..];
+        else if (value.StartsWith('\n')) value = value[1..];
+        if (value.EndsWith("\r\n", StringComparison.Ordinal)) value = value[..^2];
+        else if (value.EndsWith('\n')) value = value[..^1];
+        return value;
+    }
+
+    /// <summary>
     /// Parses a <c>{"name":"...","arguments":{...}}</c> JSON object (Qwen3 default
     /// payload and Llama-3 emit shape). <c>arguments</c> may itself be a JSON
     /// string (some templates double-encode); both shapes are accepted. When
@@ -378,15 +458,49 @@ public sealed class QwenToolCallAdapter(string architecture) : IToolCallAdapter
         };
     }
 
+    public const string ThinkOpen  = "<think>";
+    public const string ThinkClose = "</think>";
+
+    /// <summary>
+    /// The generation prompt of a thinking template already opens <c>&lt;think&gt;</c>, so output before the first
+    /// <c>&lt;/think&gt;</c> is reasoning when no <c>&lt;think&gt;</c> precedes it. Returns the end of that reasoning
+    /// (0 when there is none).
+    /// </summary>
+    private static int ImplicitReasoningEnd(string raw)
+    {
+        int close = raw.IndexOf(ThinkClose, StringComparison.Ordinal);
+        if (close < 0) return 0;
+        int open = raw.IndexOf(ThinkOpen, StringComparison.Ordinal);
+        if (open >= 0 && open < close) return 0;
+        return close + ThinkClose.Length;
+    }
+
+    /// <summary>
+    /// Splits the output into plain text and tool calls. Reasoning (<c>&lt;think&gt;</c> blocks, and the text before an
+    /// implicit <c>&lt;/think&gt;</c>) is copied to the plain text and never executed. A call whose block is complete but
+    /// malformed is not executed and its raw text stays in the plain text. A call with no close marker is not executed
+    /// and the output is flagged <c>Truncated</c>.
+    /// </summary>
     public ToolCallParseResult Parse(string rawOutput)
     {
         var calls = new List<ParsedToolCall>();
         var plain = new StringBuilder();
-        int pos = 0;
+        int pos = ImplicitReasoningEnd(rawOutput);
+        plain.Append(rawOutput, 0, pos);
 
         while (pos < rawOutput.Length)
         {
             int start = rawOutput.IndexOf(OpenMarker, pos, StringComparison.Ordinal);
+            int think = rawOutput.IndexOf(ThinkOpen, pos, StringComparison.Ordinal);
+            if (think >= 0 && (start < 0 || think < start))
+            {
+                int close = rawOutput.IndexOf(ThinkClose, think + ThinkOpen.Length, StringComparison.Ordinal);
+                int reasoningEnd = close < 0 ? rawOutput.Length : close + ThinkClose.Length;
+                plain.Append(rawOutput, pos, reasoningEnd - pos);
+                pos = reasoningEnd;
+                continue;
+            }
+
             if (start < 0)
             {
                 plain.Append(rawOutput, pos, rawOutput.Length - pos);
@@ -406,7 +520,9 @@ public sealed class QwenToolCallAdapter(string architecture) : IToolCallAdapter
 
             string block = rawOutput[contentStart..end].Trim();
             pos = end + CloseMarker.Length;
-            foreach (var c in ParseBlock(block)) calls.Add(c);
+            var parsed = ParseBlock(block);
+            if (parsed.Count > 0) calls.AddRange(parsed);
+            else plain.Append(rawOutput, start, pos - start); // complete but malformed: not executed, kept as text
         }
 
         return new ToolCallParseResult(plain.ToString(), calls, Truncated: false);
@@ -429,9 +545,9 @@ public sealed class QwenToolCallAdapter(string architecture) : IToolCallAdapter
     public IReadOnlyList<ParsedToolCall> ParseBlock(string block)
     {
         block = block.Trim();
-        ParsedToolCall? call = block.StartsWith("<function=", StringComparison.Ordinal)
-            ? ToolCallParseHelpers.ParseXmlFunctionBlock(block)
-            : ToolCallParseHelpers.ParseJsonCallBlock(block);
+        if (block.StartsWith("<function=", StringComparison.Ordinal))
+            return ToolCallParseHelpers.TryParseQwenXmlFunctionBlock(block, out var xmlCall) ? [xmlCall] : [];
+        ParsedToolCall? call = ToolCallParseHelpers.ParseJsonCallBlock(block);
         return call.HasValue ? [call.Value] : [];
     }
 
