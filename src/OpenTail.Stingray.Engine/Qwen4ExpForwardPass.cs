@@ -365,6 +365,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         // 4. Output projection to logits
         ComputeLogits(_mixed, _logits);
+        if (_mtpHead != null) RecordMtpHistory(position);
 
         if (Environment.GetEnvironmentVariable("STINGRAY_Q4E_DEBUG") == "1")
         {
@@ -1295,6 +1296,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     {
         _seq.Reset();
         Array.Clear(_resHc);
+        _mtpHistory.Clear();
     }
 
     /// <summary>A new, empty sequence state for this model (its own PLE token history and caches).</summary>
@@ -1425,6 +1427,66 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         {
             _seq = previous;
         }
+    }
+
+    // ── IForwardPass MTP surface (MtpDecoder, sequential path) ─────────────────────────
+    // The head's attention cache is the sequence's slot _numLayers (SeqNumLayers = _numLayers + 1). The trunk hidden of every
+    // position is recorded while the head is attached, so PrefillMtp can replay the prompt into the head's cache.
+    private readonly List<float[]> _mtpHistory = new();
+    private float[]? _mtpHidden;
+
+    /// <summary>True once an MTP head is attached.</summary>
+    public bool HasMtpHead => _mtpHead != null;
+
+    /// <summary>The trunk's HC residual after the last forward: the hidden the head drafts from.</summary>
+    public ReadOnlySpan<float> LastHidden => _resHc;
+
+    /// <summary>The head's own hidden output from the last <see cref="MtpForward"/>.</summary>
+    public ReadOnlySpan<float> MtpLastHidden => _mtpHidden is null ? default : _mtpHidden;
+
+    /// <summary>One MTP draft step on the default sequence: the token at <paramref name="position"/> with the trunk hidden of
+    /// position - 1 predicts the token at position + 1.</summary>
+    public ReadOnlySpan<float> MtpForward(int token, int position, ReadOnlySpan<float> prevHidden)
+    {
+        _mtpHidden ??= new float[_hcDim];
+        return ForwardMtp(token, prevHidden, position, _seq, _mtpHidden);
+    }
+
+    /// <summary>Fills the head's attention cache for prompt tokens from the recorded trunk hiddens (the PrefillMtp contract).</summary>
+    public void PrefillMtp(IReadOnlyList<int> tokens, int startPos = 0)
+    {
+        if (_mtpHead is null) return;
+        _mtpHidden ??= new float[_hcDim];
+        var zero = new float[_hcDim];
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            int p = startPos + i;
+            ReadOnlySpan<float> prev;
+            if (p == 0) prev = zero;
+            else if (p - 1 < _mtpHistory.Count) prev = _mtpHistory[p - 1];
+            else throw new InvalidOperationException(
+                $"PrefillMtp at position {p} needs the trunk hidden of position {p - 1}; prefill that position with the head attached.");
+            _ = ForwardMtp(tokens[i], prev, p, _seq, _mtpHidden);
+        }
+    }
+
+    /// <summary>Clears the head's attention cache (sequence slot _numLayers). The trunk cache is untouched.</summary>
+    public void MtpResetCache()
+    {
+        _seq.QsaKeyCache[_numLayers].Clear();
+        _seq.QsaValCache[_numLayers].Clear();
+        _seq.QsaRawIndexKCache[_numLayers].Clear();
+        _seq.QsaPooledKeys[_numLayers].Clear();
+    }
+
+    /// <summary>Not supported: the head cannot be rewound to a length. The sequential MTP path never calls it.</summary>
+    public void MtpTruncateTo(int length) => throw new NotSupportedException(
+        "Qwen4ExpForwardPass: MtpTruncateTo is not implemented; only the sequential MTP path is supported.");
+
+    private void RecordMtpHistory(int position)
+    {
+        if (position < _mtpHistory.Count) _mtpHistory.RemoveRange(position, _mtpHistory.Count - position);
+        if (position == _mtpHistory.Count) _mtpHistory.Add(_resHc.ToArray());
     }
 
     /// <summary>
