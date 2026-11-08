@@ -313,8 +313,18 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       2026-11-08 status: greedy text matches `llama-completion` on the single-token prompt, the 2,376-token prompt (16 tokens),
       and the Phase 1 prompts within the tolerance. Logit distributions are not compared with the reference (llama-completion
       prints none), so 6.4 stays open on that part.
-- [ ] Check the Hugging Face file list for `unsloth/Qwen3.8-Flash-Next-GGUF` (recorded as the "next check" on 2026-10-31).
-- [ ] Read the model card licence before any fixture decision (not checked on 2026-10-31).
+- [x] Check the Hugging Face file list for `unsloth/Qwen3.8-Flash-Next-GGUF` (2026-11-08, read-only API). 77 files, last modified
+      2026-11-07, commit `084c631`. The local files match the repository's sizes: UD-IQ1_S shards 10,946,618 / 37,568,095,648 /
+      28,800,138,432 bytes; shared MTP Q4_K_M 1,907,151,936 bytes; `mmproj-F16` 904,004,000 bytes.
+- [x] Read the model card licence before any fixture decision (2026-11-08). The GGUF card says `license: other`,
+      `qwen-community-1.0`, with a link to `LICENSE` that does not exist in that repository ("Entry not found"). The base
+      repository `Qwen/Qwen3.8-Flash-Next` has the text: Qwen Community License 1.0. Summary, not legal advice: use, copy,
+      modify, distribute, fine-tune and host are permitted, including the weights. Conditions: keep the copyright notice; if the
+      Software is used in a commercial product with more than 100,000,000 monthly active users or US$20,000,000 monthly revenue,
+      show the model name prominently in the UI; a Model-as-a-Service or AI Work Assistant business needs a separate licence
+      from Qwen, except internal use that does not make the Software or its outputs available to a third party. **For the owner:**
+      whether an admitted OpenTail server (which a third party could call) would count as Model as a Service is a question to
+      settle before D4.
 
 ## Phase 8. Verification and admission
 
