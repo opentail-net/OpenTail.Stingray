@@ -657,7 +657,7 @@ run). Tests: `Qwen4ExpToolCallParseTests` (Tests.Core), 15 cases, all pass. `Too
 | Incomplete call never executed, flagged Truncated | Done | `IncompleteCall_NoCloseMarker_IsNotExecuted_AndIsFlaggedTruncated` |
 | Closed block but unclosed function or parameter not executed | Done (fixed) | `FunctionNotClosed_BeforeCloseMarker_IsNotExecuted`, `ParameterNotClosed_IsNotExecuted_EvenThoughTheFunctionIs`, `MalformedJson_IsNotExecuted`. Before: a parameter cut short ran with the argument silently dropped. A malformed complete block now stays in the plain text and is not executed (not flagged Truncated) |
 | Thinking | Done (fixed) | `ToolCallMentionedInsideReasoning_IsNotExecuted`, `ReasoningWithoutOpenMarker_UpToCloseMarker_IsNotExecuted`. `<think>` blocks and the text before an implicit `</think>` are never executed. Before: a call mentioned in reasoning ran |
-| Streaming fragments | Partly done | `StreamingPrefixes_NeverYieldACallTheFullOutputDoesNotHave` (non-streaming parse of every prefix). **Not done:** the streaming path (`FindOpenMarker`/`FindCloseMarker` in the server) does not skip reasoning blocks, so a call quoted inside `<think>` can still stream as a call |
+| Streaming fragments | Done for the reasoning split; the tool-call scan is text-only, by design | `StreamingPrefixes_NeverYieldACallTheFullOutputDoesNotHave` (non-streaming parse of every prefix). `ContinuousBatchingThinkingSplitTests` (2, synthetic, batching engine): a call quoted inside a think block streams as `Thinking`, and the same call after `</think>` streams as `Text`. The server's `ProcessTextChunk` (OpenAiEndpoints, AnthropicEndpoints) only scans `Text` chunks, so the reasoning split happens before the tool-call scan. **Limit:** the engine splits on the think token IDs (`RuntimeInstance` takes them from `tokenizer.ReasoningTokens`); a model whose think markers are plain text, not special tokens, gets no split, so a quoted call would stream as text. The Qwen tokenizer's `<think>`/`</think>` are special tokens, but I have not confirmed that against the real Qwen 3.8 vocabulary, because qwen4exp is not loaded through the server |
 | Finish reasons | Done in the server, not re-tested here | `OpenAiEndpoints` maps a truncated call to `finish_reason: length` through `Parse(...).Truncated` |
 | IDs | Server-assigned, not model-assigned | `OpenAiEndpoints` sets `call_<guid>` for each call. The model emits no ID, so none is parsed |
 | Safety: no execution on incomplete calls, validate arguments against the schema | Partly done | Incomplete and malformed calls are not executed. **Not done:** argument validation against the tool's declared schema (no validator exists in Core; the grammar constraints are the only schema path) |
@@ -677,5 +677,6 @@ Full Core suite: 1347 tests, 1 failure before the inventory count fix (the failu
 After the fix, the failing class passes; the rest of the suite ran clean in the same run (1346 passing, 95 skipped for missing
 fixtures). Not re-run in full after the count fix; the count test is the only test that reads the doc.
 
-Still open for Phase 6: the streaming reasoning skip, argument schema validation, and the server round trip (blocked on
-admission). Qwen 3.8 is still not admitted or advertised.
+Still open for Phase 6: argument schema validation, and the server round trip (blocked on admission). The streaming reasoning
+split is covered at the engine level (see the table); its one limit is stated there. Qwen 3.8 is still not admitted or
+advertised.
