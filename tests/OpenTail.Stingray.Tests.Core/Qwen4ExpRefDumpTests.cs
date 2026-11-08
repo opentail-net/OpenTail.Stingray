@@ -96,6 +96,13 @@ public sealed class Qwen4ExpRefDumpTests
             int best = 0;
             for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
             generated.Add(best);
+            if (Environment.GetEnvironmentVariable("QWEN_GREEDY_TOP") == "1")
+            {
+                float[] lg = logits.ToArray();
+                var top = Enumerable.Range(0, lg.Length).OrderByDescending(i => lg[i]).Take(5).ToArray();
+                Console.WriteLine($"GREEDY_STEP {s} top5: " + string.Join(" ", top.Select(i => $"{i}:{lg[i]:F4}")) + $" eog:{string.Join(",", tokenizer.EogTokenIds)}");
+            }
+            if (tokenizer.EogTokenIds.Contains(best)) break;
             logits = forwardPass.Forward(best, pos++);
         }
 

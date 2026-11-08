@@ -297,3 +297,22 @@ taking on Phase 2B/3's real implementation work:
     tokens decode to nothing). The EOS stop is not implemented in the test.
 - This is an acceptance-criterion check on three prompts, not the tolerance criterion. Per-layer and logit errors above
   still stand (cosine 0.998 at the logits). Phase 0 stays open until the criterion is confirmed by the owner.
+
+### Phase 0.2 result, 2026-11-08: greedy continuations on five prompts, with the divergence margins
+
+Greedy, 12 tokens, Stingray against `llama-completion` at `bed0a8566`. Full text compared, not the first line.
+
+| Prompt | Result | First divergence (Stingray top-2 logit margin) |
+|---|---|---|
+| "The capital of France is" | identical | none |
+| "Once upon a time," | identical | none |
+| "def fibonacci(n):" | identical | none |
+| "2 + 2 =" | first token identical (" 4"); llama emits end-of-text, Stingray emits "\n\n" | step 2: 0.12 logits (271 vs EOS 248046) |
+| "The largest planet in the solar system is" | diverges at "A. Earth" vs llama's "A. Jupiter" | step 3: 0.018 logits (8964 vs 48017) |
+
+- Both divergences are at near-ties: the top two candidates are within the logit noise measured above. llama.cpp's
+  choice at the planet step is inferred from its output, not from its logits.
+- Proposed greedy criterion (for owner confirmation, not yet agreed): greedy tokens must agree at every step where the
+  reference's top-two margin exceeds a noise threshold. The threshold should come from the measured logit error, not be
+  set by hand. The two observed divergences are below 0.12 logits; the noise is not yet measured as a number.
+- Owner confirmation of the parity criterion: not given. Phase 0 stays open.
