@@ -538,3 +538,17 @@ Stingray plan:
   hc_head_down [10240, 320], hc_head_up [320, 10240]).
 - `Qwen4ExpMtpLoadTests` (2 tests, real files): the head loads with reference shapes; a trunk file without NextN tensors is rejected.
 - Not yet: `ForwardMtp` (the planned graph) and any verification of its output. No speed claim.
+
+### Phase 4 status, 2026-11-08: ForwardMtp written; reference oracle blocked at the pinned revision
+
+- Implemented: `Qwen4ExpForwardPass.ForwardMtp` (planned graph, steps 1-8), `AttachMtpHead`, `LastHcResidual`; the head's
+  attention cache is sequence-state index NumLayers (48), never recurrent. `Qwen4ExpMtpForwardTests.DraftStep_IsFiniteAndDeterministic`
+  passes on the real trunk and the shared head. This shows the step runs; it is not a correctness result.
+- Hand-off written for the reference: draft token 11751, position 5, Stingray residual and logits (scratchpad `mtp_io`).
+- Reference oracle at the pinned revision `bed0a8566`: **blocked.** `llama_batch_ext_set_embd_state` is a stub (`llama-batch.cpp`
+  ~1230, `TODO`, returns false), `ctx_other` is only bound for Gemma4Assistant and Eagle3/DFlash (`llama-context.cpp` ~144-161),
+  and there is no public switch for the trunk's `h_nextn`. So the MTP context cannot be fed the trunk's hidden state through
+  the public API here. A local driver (`examples/mtp-check`) is built and fails at that call.
+- Next oracle: the unsloth fork branch `mtp/qwen4exp-nextn` (PR 144, closed). Its public header has `ctx_other` (a source/target
+  context). Plan: shallow-clone that branch into the scratchpad, read how its MTP context receives the trunk state, build a
+  driver against it, and compare the same hand-off. Only then a per-step verdict.

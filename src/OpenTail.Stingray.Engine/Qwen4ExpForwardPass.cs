@@ -1181,20 +1181,104 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     /// <summary>A new, empty sequence state for this model (its own PLE token history and caches).</summary>
     public Qwen4ExpSequenceState CreateSequenceState() => new(
-        _numLayers,
-        _hp.IsRecurrentLayer,
+        _numLayers + 1, // + the MTP head's block, whose attention cache lives at index _numLayers
+        l => l < _numLayers && _hp.IsRecurrentLayer(l),
         (_ssmDConv - 1) * _convDim,
         _ssmDtRank * _ssmDState * _ssmDState,
         _pleHistSlots * _hcDim,
         _hp.PleLayers != null && _hp.PleLayers.Count > 0 ? new Qwen4ExpPleHasher(_hp) : null);
 
-    /// <summary>Forward pass for one token of a given sequence. Calls on different sequences may be interleaved.</summary>
     /// <summary>Hyperparameters this pass was built with.</summary>
     public Qwen4ExpHyperparams Hyperparameters => _hp;
 
     /// <summary>Number of transformer layers.</summary>
     public int NumLayers => _numLayers;
 
+    /// <summary>
+    /// HC residual after the last <see cref="Forward(int, int, Qwen4ExpSequenceState)"/> call: the trunk's h_nextn for that
+    /// position. Valid until the next forward call.
+    /// </summary>
+    public ReadOnlySpan<float> LastHcResidual => _resHc;
+
+    private Qwen4ExpMtpHead? _mtpHead;
+    private float[]? _mtpEmbed, _mtpEnorm, _mtpHnorm, _mtpRes, _mtpConcat;
+
+    /// <summary>Attaches the qwen4exp MTP draft head (Phase 4). Required before <see cref="ForwardMtp"/>.</summary>
+    public void AttachMtpHead(Qwen4ExpMtpHead head)
+    {
+        _mtpHead = head ?? throw new ArgumentNullException(nameof(head));
+        _mtpEmbed ??= new float[_embedDim];
+        _mtpEnorm ??= new float[_embedDim];
+        _mtpHnorm ??= new float[_hcDim];
+        _mtpRes ??= new float[_hcDim];
+        _mtpConcat ??= new float[2 * _embedDim];
+    }
+
+    /// <summary>
+    /// One MTP draft step (reference graph_mtp, qwen4exp.cpp ~529-612). Given the draft token and the trunk's HC residual
+    /// <paramref name="hIn"/> at the previous position, returns the draft logits and writes the next residual into
+    /// <paramref name="hOut"/>. Uses the head's own attention cache in <paramref name="sequence"/> (index NumLayers).
+    /// </summary>
+    public ReadOnlySpan<float> ForwardMtp(
+        int draftToken, ReadOnlySpan<float> hIn, int position, Qwen4ExpSequenceState sequence, Span<float> hOut)
+    {
+        var head = _mtpHead ?? throw new InvalidOperationException("No MTP head attached (AttachMtpHead).");
+        if (hIn.Length != _hcDim || hOut.Length != _hcDim)
+            throw new ArgumentException($"MTP residual must have {_hcDim} values.");
+        sequence.ThrowIfDisposed();
+
+        var previous = _seq;
+        _seq = sequence;
+        try
+        {
+            int head0 = _numLayers;
+            var layer = head.Layer;
+            var res = _mtpRes!;
+
+            // 1. token embedding (shared with the trunk), then RMS norm with enorm.
+            EmbedToken(draftToken, _mtpEmbed!);
+            Qwen4ExpPle.GroupedRmsNorm(_mtpEmbed!, AsFloatSpan(head.EnNorm), _mtpEnorm!, 1, _embedDim, _eps);
+
+            // 2. hidden state: grouped RMS norm per stream with hnorm.
+            Qwen4ExpPle.GroupedRmsNorm(hIn, AsFloatSpan(head.HNorm), _mtpHnorm!, _hc, _embedDim, _eps);
+
+            // 3. eh_proj over concat(enorm, hnorm_c) for every stream c.
+            var concat = _mtpConcat!;
+            for (int c = 0; c < _hc; c++)
+            {
+                _mtpEnorm!.AsSpan().CopyTo(concat.AsSpan(0, _embedDim));
+                _mtpHnorm!.AsSpan(c * _embedDim, _embedDim).CopyTo(concat.AsSpan(_embedDim, _embedDim));
+                MatVec(head.EhProj, concat, res.AsSpan(c * _embedDim, _embedDim));
+            }
+
+            // 4. attention block with the head's own cache.
+            var hcAttnNorm = AsFloatSpan(layer.HcAttnNorm);
+            Qwen4ExpGatedResidual.Mix(res, hcAttnNorm, AsFloatSpan(layer.HcAttnDown), AsFloatSpan(layer.HcAttnUp),
+                AsFloatSpan(layer.HcAttnInject), _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
+            ExecuteQsaMixer(head0, layer, _mixed, position, _blockOut);
+            Qwen4ExpGatedResidual.Combine(res, _blockOut, _inject, _hc, _embedDim);
+
+            // 5. FFN block (routed MoE + shared expert).
+            Qwen4ExpGatedResidual.Mix(res, AsFloatSpan(layer.HcFfnNorm), AsFloatSpan(layer.HcFfnDown), AsFloatSpan(layer.HcFfnUp),
+                AsFloatSpan(layer.HcFfnInject), _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
+            ExecuteMoe(layer, _mixed, _blockOut);
+            Qwen4ExpGatedResidual.Combine(res, _blockOut, _inject, _hc, _embedDim);
+
+            res.AsSpan().CopyTo(hOut);
+
+            // 6. head output mixer (no injection), then the shared output projection.
+            Qwen4ExpGatedResidual.Mix(res, AsFloatSpan(head.HcHeadNorm), AsFloatSpan(head.HcHeadDown), AsFloatSpan(head.HcHeadUp),
+                ReadOnlySpan<float>.Empty, _mixed, Span<float>.Empty, _hc, _embedDim, _hcLowRank, _eps);
+            ComputeLogits(_mixed, _logits);
+            return _logits;
+        }
+        finally
+        {
+            _seq = previous;
+        }
+    }
+
+    /// <summary>Forward pass for one token of a given sequence. Calls on different sequences may be interleaved.</summary>
     public ReadOnlySpan<float> Forward(int token, int position, Qwen4ExpSequenceState sequence)
     {
         sequence.ThrowIfDisposed();
