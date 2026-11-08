@@ -162,7 +162,7 @@ public sealed unsafe class QwenVlVisionEncoder
 
     private float[] ForwardCore(ReadOnlySpan<float> chw, ReadOnlySpan<float> chw1, int targetWidth, int targetHeight, out int tokenCount)
     {
-        int patchSize = _m.PatchSize; // 14
+        int patchSize = _m.PatchSize; // clip.vision.patch_size (16 in the Qwen 3.8 mmproj)
         int mergeFactor = _m.SpatialMergeFactor; // 2
         int patchesX = targetWidth / patchSize;
         int patchesY = targetHeight / patchSize;
@@ -171,7 +171,7 @@ public sealed unsafe class QwenVlVisionEncoder
 
         if (numPatches == 0) return [];
 
-        // 1. Conv2D Patch Embeddings: (3 x 14 x 14 -> 1280)
+        // 1. Conv2D Patch Embeddings: (3 x P x P -> n_embd, P = patch size)
         var hiddenStates = new float[numPatches * _embd];
         ExtractPatchEmbeddings(chw, chw1, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
 
@@ -399,7 +399,7 @@ public sealed unsafe class QwenVlVisionEncoder
 
     private void ExtractPatchEmbeddings(ReadOnlySpan<float> chw, ReadOnlySpan<float> chw1, int width, int height, int patchesX, int patchesY, float[] output)
     {
-        int patchSize = _m.PatchSize; // 14
+        int patchSize = _m.PatchSize; // clip.vision.patch_size (16 in the Qwen 3.8 mmproj)
         int patchArea = patchSize * patchSize;
         int totalPixels = width * height;
         var positionEmbd = _m.IsQwen3Vl ? ResizedPositionEmbedding(patchesX, patchesY) : _positionEmbdF32;

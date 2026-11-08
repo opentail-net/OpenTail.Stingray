@@ -62,13 +62,18 @@ public sealed partial class FfmpegVideoFrameSource : IVideoFrameSource
         Match size = VideoStreamSize().Match(ffmpegStderr);
         if (!size.Success) throw new InvalidDataException($"no video stream in '{name}'.");
         Match fps = VideoRate().Match(ffmpegStderr);
-        double rate = fps.Success ? double.Parse(fps.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
+        if (!fps.Success) throw new InvalidDataException($"no video frame rate in '{name}'.");
+        double rate = double.Parse(fps.Groups[1].Value, CultureInfo.InvariantCulture);
+        if (!double.IsFinite(rate) || rate <= 0) throw new InvalidDataException($"invalid video frame rate in '{name}'.");
         return new VideoClipInfo(int.Parse(size.Groups[1].Value, CultureInfo.InvariantCulture),
             int.Parse(size.Groups[2].Value, CultureInfo.InvariantCulture), rate);
     }
 
     public IEnumerable<byte[]> ReadFrames(string path, double fps, int width, int height)
     {
+        if (!double.IsFinite(fps) || fps <= 0) throw new ArgumentOutOfRangeException(nameof(fps), "the frame rate must be a positive number.");
+        if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width), "the frame width must be positive.");
+        if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height), "the frame height must be positive.");
         if (!File.Exists(path)) throw new FileNotFoundException("video not found", path);
         string filter = FormattableString.Invariant($"fps={fps},scale={width}:{height}");
         var psi = Start(["-hide_banner", "-loglevel", "error", "-i", path, "-vf", filter,

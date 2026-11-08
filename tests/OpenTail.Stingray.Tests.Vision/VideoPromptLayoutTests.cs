@@ -61,4 +61,19 @@ public sealed class VideoPromptLayoutTests
         Assert.Equal(new List<int[]> { new[] { 0, 1 }, new[] { 2, 3 }, new[] { 4, 5 }, new[] { 6, 7 } },
             VideoPromptLayout.Chunks(parts));
     }
+
+    [Fact]
+    public void Segments_KeepTextAndChunksInPromptOrder()
+    {
+        var segments = VideoPromptLayout.Segments(VideoPromptLayout.Parts(8, 4f));
+
+        Assert.Equal(7, segments.Count);
+        Assert.Equal("Video:", segments[0].Text);
+        Assert.Equal(new[] { 0 }, segments[1].Frames);
+        Assert.Equal("[0m0.00s]", segments[2].Text);
+        Assert.Equal(new[] { 1, 2 }, segments[3].Frames);
+        Assert.Equal(new[] { 3, 4 }, segments[4].Frames);
+        Assert.Equal(new[] { 5, 6 }, segments[5].Frames);
+        Assert.Equal(new[] { 7 }, segments[6].Frames);
+    }
 }

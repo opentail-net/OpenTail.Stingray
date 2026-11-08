@@ -43,22 +43,32 @@ public static class VideoPromptLayout
     }
 
     /// <summary>Temporal chunks in reference order: each chunk is one or two frame indices.</summary>
-    public static List<int[]> Chunks(IReadOnlyList<VideoPromptPart> parts)
+    public static List<int[]> Chunks(IReadOnlyList<VideoPromptPart> parts) =>
+        Segments(parts).Where(s => s.Frames is not null).Select(s => s.Frames!).ToList();
+
+    /// <summary>The media in prompt order: text parts as they are, and each temporal chunk.</summary>
+    public static List<VideoPromptSegment> Segments(IReadOnlyList<VideoPromptPart> parts)
     {
-        var chunks = new List<int[]>();
+        var segments = new List<VideoPromptSegment>();
         for (int i = 0; i < parts.Count; i++)
         {
-            if (!parts[i].IsFrame) continue;
-            if (i + 1 < parts.Count && parts[i + 1].IsFrame)
+            if (!parts[i].IsFrame)
             {
-                chunks.Add([parts[i].FrameIndex, parts[i + 1].FrameIndex]);
+                segments.Add(new(parts[i].Text, null));
+            }
+            else if (i + 1 < parts.Count && parts[i + 1].IsFrame)
+            {
+                segments.Add(new(null, [parts[i].FrameIndex, parts[i + 1].FrameIndex]));
                 i++;
             }
             else
             {
-                chunks.Add([parts[i].FrameIndex]);
+                segments.Add(new(null, [parts[i].FrameIndex]));
             }
         }
-        return chunks;
+        return segments;
     }
 }
+
+/// <summary>A text part (<see cref="Text"/>) or a temporal chunk of one or two frames (<see cref="Frames"/>).</summary>
+public readonly record struct VideoPromptSegment(string? Text, int[]? Frames);

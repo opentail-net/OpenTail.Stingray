@@ -104,6 +104,26 @@ public sealed class FrameSequenceVideoSourceTests : IDisposable
     }
 
     [Fact]
+    public void ReadFrames_OrdersNumericallyNotLexically()
+    {
+        // frame-10 must come after frame-2; lexical order would put it second.
+        PngWriter.Write(Path.Combine(_dir, "frame-1.png"), ToChw(RgbFrame(0, Side), Side), Side, Side);
+        PngWriter.Write(Path.Combine(_dir, "frame-2.png"), ToChw(RgbFrame(1, Side), Side), Side, Side);
+        PngWriter.Write(Path.Combine(_dir, "frame-10.png"), ToChw(RgbFrame(2, Side), Side), Side, Side);
+
+        var frames = new FrameSequenceVideoSource(Fps).ReadFrames(_dir, Fps, Side, Side).ToList();
+
+        Assert.Equal(3, frames.Count);
+        for (int k = 0; k < 3; k++)
+        {
+            byte[] expected = RgbFrame(k, Side);
+            int worst = 0;
+            for (int i = 0; i < expected.Length; i++) worst = Math.Max(worst, Math.Abs(expected[i] - frames[k][i]));
+            Assert.True(worst <= 1, $"position {k} is not frame {k} (differs by {worst} levels)");
+        }
+    }
+
+    [Fact]
     public void EmptyDirectory_IsRejected()
     {
         Assert.Throws<InvalidDataException>(() => new FrameSequenceVideoSource(Fps).Probe(_dir));
@@ -117,20 +137,21 @@ public sealed class FrameSequenceVideoSourceTests : IDisposable
         const int count = 8;
         WriteFrames(count, Side);
 
-        var frames = new FrameSequenceVideoSource(Fps).ReadFrames(_dir, Fps, Side, Side);
+        var frames = new FrameSequenceVideoSource(Fps).ReadFrames(_dir, Fps, Side, Side)
+            .Select(f => VideoTemporalPairs.RgbToChw(f, Side, Side)).ToList();
         using var vision = QwenVlVisionModel.Open(mmproj!);
         var encoder = new QwenVlVisionEncoder(vision);
+        int merged = vision.PatchSize * 2; // patch size from the mmproj, times the 2x2 merge
 
-        int pairs = 0;
-        foreach (var (f0, f1) in VideoTemporalPairs.Pair(frames, Side, Side))
+        // The reference's chunking (a timestamp between frames splits a pair), not consecutive pairs.
+        var chunks = VideoPromptLayout.Chunks(VideoPromptLayout.Parts(frames.Count, (float)Fps));
+        foreach (int[] chunk in chunks)
         {
-            float[] tokens = encoder.ForwardVideo(f0, f1, Side, Side, out int n);
-            int merged = vision.PatchSize * 2; // patch size from the mmproj, times the 2x2 merge
+            float[] tokens = encoder.ForwardVideo(frames[chunk[0]], frames[chunk[^1]], Side, Side, out int n);
             Assert.Equal((Side / merged) * (Side / merged), n);
             Assert.True(tokens.Length > 0);
             Assert.All(tokens.Take(256), v => Assert.True(float.IsFinite(v)));
-            pairs++;
         }
-        Assert.Equal(count / 2, pairs);
+        Assert.Equal(5, chunks.Count); // 8 frames at 4 fps: [0] [1,2] [3,4] [5,6] [7]
     }
 }

@@ -241,10 +241,15 @@ Runnable now. Test cases only, no new disk or implementation.
       A single-frame chunk runs both temporal kernels on that frame (`tools/mtmd/models/qwen2vl.cpp`, `n_batch == 1`), which is
       what `ForwardVideo(f, f)` does, so it matches the still path.
 
-      Step (e), not started: blocked on a working ffmpeg. The reference also runs ffprobe (`probe`, `ffprobe_bin` in
-      `mtmd-helper.cpp`) and a decoder subprocess, so both sides need one. When unblocked: a short clip, its prompt built from
-      `VideoPromptLayout` (text parts and chunks tokenized as the reference does), compared with `llama-mtmd-cli --video` at
-      the same settings.
+      Step (e), done 2026-11-08: the answer matches the reference. Clip: 2 s, 224x224, 4 fps, red for 1 s then blue
+      (`ffmpeg` lavfi, 8 frames). Question as in `Qwen4ExpVideoAnswerTests`.
+      Reference: `llama-mtmd-cli --video` from `build-ref` (pinned build), `-fit off -c 4096 -ngl 0 --temp 0 --repeat-penalty 1.0 -n 40`,
+      default fps and timestamp interval; 56 s wall. Stingray: `Qwen4ExpVideoAnswerTests`, greedy, 40 new tokens; 206 s wall.
+      Both answers, character for character: "The colors red and blue appear in the video, with red being the first color
+      shown and blue being the second." (each after the same empty think block). The reference layout log shows 11 entries
+      and 5 image chunks, which matches `VideoPromptLayout.Segments` for this clip. Limit: the CLI prints text, not token ids,
+      so the comparison is on text; one clip and one question only. The reference's `-fit` default aborts on this checkpoint
+      (72.5 GB vs 63 GB RAM), so the reference run uses `-fit off`.
       Frame-input path, done 2026-11-08 (`FrameSequenceVideoSource`: a directory of PNG frames in name order, the rate stated by
       the caller, frames of another size resized bicubic, another rate refused; no decoder). Tests: `FrameSequenceVideoSourceTests`,
       6 tests. The projector-path test runs the frames through `ForwardVideo` with the real mmproj and passes, not skipped.
@@ -272,7 +277,7 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 - [ ] 6.1 Sharded GGUF loading and tensor inventory: all shards load via memory-mapped pointers; `per_layer_token_embd`
       stays on disk with no managed RAM allocation.
-- [ ] 6.2 PLE sparse touch: instrument `Qwen4ExpPleRowStore` to show a decode touches only the gathered head rows (8-32), not the table.
+- [x] 6.2 PLE sparse touch (2026-11-08): the gather is counted in `Qwen4ExpForwardPass` (`PleGatherRows`, `PleGatherBytes`, `PleTableBytes`). `Qwen4ExpPleTouchTests` on the real trunk: 16 head rows (1440 bytes) per decode token, against a 28,800,138,240-byte table. Only layer 1 has PLE (`qwen4exp.ple.layers` = [1]), so one gather per token. Logical rows and bytes, not OS pages. (The item named a class that does not exist; the gather is in `ExecutePle`.)
 - [ ] 6.3 Paged correctness run: single-token prefill plus 5 decode steps; a prompt crossing a K-pool boundary; a prompt
       crossing the sparse selection threshold.
 - [ ] 6.4 External parity gate: greedy token sequence and logit distributions against the pinned llama.cpp (`bed0a8566`)
@@ -297,7 +302,5 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 ## Doc hygiene (stale or conflicting statements to fix when these items are touched)
 
-- [ ] `../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md` status line still says "AWAITING REAL-WEIGHT QUALIFICATION" and the
-      "Next check" line predates 2026-11-07. Update, or point to this file.
-- [ ] `Architectures/Qwen4ExpArchitecture.cs` `RefusalReason` still describes wrong logit magnitudes. The
-      2026-11-08 measurements do not support that (external review check, programme plan).
+- [x] `../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md` status and next-check lines now point to this plan (fixed 2026-11-08).
+- [x] `Architectures/Qwen4ExpArchitecture.cs` `RefusalReason` rewritten 2026-11-08: it no longer claims wrong logit magnitudes; it states the text-path noise envelope, the image-path gap and the open Phase 0.3 gate.

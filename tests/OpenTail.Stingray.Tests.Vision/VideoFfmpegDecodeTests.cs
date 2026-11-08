@@ -138,7 +138,28 @@ Input #0, mov,mp4, from 'clip.mp4':
     }
 
     [Fact]
-    public void DecodedPairs_RunThroughTheProjectorTwoFramePath()
+    public void ProbeParser_RejectsOutputWithoutAFrameRate()
+    {
+        const string stderr = """
+Input #0, mov,mp4, from 'clip.mp4':
+  Stream #0:0[0x1](und): Video: mpeg4 (Simple Profile), yuv420p, 224x224 [SAR 1:1 DAR 1:1], 102 kb/s
+""";
+        Assert.Throws<InvalidDataException>(() => FfmpegVideoFrameSource.ParseProbeOutput(stderr, "clip.mp4"));
+    }
+
+    [Fact]
+    public void ReadFrames_RejectsInvalidRateAndSizeBeforeStartingFfmpeg()
+    {
+        // An explicit path is taken as given, and these checks run before any process starts, so no ffmpeg is needed.
+        var source = new FfmpegVideoFrameSource("does-not-run.exe");
+        Assert.Throws<ArgumentOutOfRangeException>(() => source.ReadFrames("missing.mp4", 0, Side, Side).ToList());
+        Assert.Throws<ArgumentOutOfRangeException>(() => source.ReadFrames("missing.mp4", double.NaN, Side, Side).ToList());
+        Assert.Throws<ArgumentOutOfRangeException>(() => source.ReadFrames("missing.mp4", Fps, 0, Side).ToList());
+        Assert.Throws<ArgumentOutOfRangeException>(() => source.ReadFrames("missing.mp4", Fps, Side, -1).ToList());
+    }
+
+    [Fact]
+    public void DecodedFrames_RunThroughTheProjectorChunkPath()
     {
         string? ffmpeg = FfmpegOrSkip();
         Assert.SkipUnless(ffmpeg is not null, "ffmpeg is required (STINGRAY_FFMPEG or PATH).");
@@ -149,25 +170,22 @@ Input #0, mov,mp4, from 'clip.mp4':
         try
         {
             var source = new FfmpegVideoFrameSource(ffmpeg);
-            var frames = source.ReadFrames(clip, Fps, Side, Side);
+            var frames = source.ReadFrames(clip, Fps, Side, Side)
+                .Select(f => VideoTemporalPairs.RgbToChw(f, Side, Side)).ToList();
             using var vision = QwenVlVisionModel.Open(mmproj!);
             var encoder = new QwenVlVisionEncoder(vision);
+            int merged = vision.PatchSize * 2; // patch size from the mmproj, times the 2x2 merge
 
-            int pairs = 0;
-            int firstTokens = -1;
-            foreach (var (f0, f1) in VideoTemporalPairs.Pair(frames, Side, Side))
+            // The reference's chunking: the timestamp after frame 0 splits the first pair, so this is not Frames / 2 pairs.
+            var chunks = VideoPromptLayout.Chunks(VideoPromptLayout.Parts(frames.Count, (float)Fps));
+            foreach (int[] chunk in chunks)
             {
-                float[] tokens = encoder.ForwardVideo(f0, f1, Side, Side, out int n);
-                if (firstTokens < 0) firstTokens = n;
-                Assert.Equal(firstTokens, n);
+                float[] tokens = encoder.ForwardVideo(frames[chunk[0]], frames[chunk[^1]], Side, Side, out int n);
+                Assert.Equal((Side / merged) * (Side / merged), n);
                 Assert.True(tokens.Length > 0);
                 Assert.All(tokens.Take(256), v => Assert.True(float.IsFinite(v)));
-                pairs++;
             }
-
-            Assert.Equal(Frames / 2, pairs);
-            int merged = vision.PatchSize * 2; // patch size from the mmproj, times the 2x2 merge
-            Assert.Equal((Side / merged) * (Side / merged), firstTokens);
+            Assert.Equal(5, chunks.Count); // 8 frames at 4 fps: [0] [1,2] [3,4] [5,6] [7]
         }
         finally { File.Delete(clip); }
     }

@@ -38,6 +38,32 @@ public sealed class FrameSequenceVideoSource : IVideoFrameSource
     private static IEnumerable<string> FrameFiles(string directory)
     {
         if (!Directory.Exists(directory)) throw new DirectoryNotFoundException($"frame directory not found: {directory}");
-        return Directory.EnumerateFiles(directory, "*.png").OrderBy(f => f, StringComparer.Ordinal);
+        return Directory.EnumerateFiles(directory, "*.png").OrderBy(f => f, Comparer<string>.Create(NaturalCompare));
+    }
+
+    /// <summary>Orders "frame-2.png" before "frame-10.png": runs of digits compare by value, other text by character.</summary>
+    private static int NaturalCompare(string a, string b)
+    {
+        int i = 0, j = 0;
+        while (i < a.Length && j < b.Length)
+        {
+            if (char.IsDigit(a[i]) && char.IsDigit(b[j]))
+            {
+                int si = i, sj = j;
+                while (i < a.Length && char.IsDigit(a[i])) i++;
+                while (j < b.Length && char.IsDigit(b[j])) j++;
+                string na = a[si..i].TrimStart('0'), nb = b[sj..j].TrimStart('0');
+                int c = na.Length.CompareTo(nb.Length);
+                if (c == 0) c = string.CompareOrdinal(na, nb);
+                if (c != 0) return c;
+            }
+            else
+            {
+                int c = a[i].CompareTo(b[j]);
+                if (c != 0) return c;
+                i++; j++;
+            }
+        }
+        return (a.Length - i).CompareTo(b.Length - j);
     }
 }
