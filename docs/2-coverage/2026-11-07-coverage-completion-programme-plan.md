@@ -480,3 +480,25 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   project `ContinuousBatchingRetainedStateTests` (4) and `ContinuousBatchingConstraintTests` (7) pass.
 - Still open in Phase 3: memory budgeting and eviction for retained state (the snapshot doubles per-sequence state
   memory), copy-on-write page sharing. Qwen 3.8 remains unadmitted.
+
+## Phase 4 (MTP speculative decoding), findings 2026-11-08 (recorded before any code)
+
+- **The trunk checkpoint we use has no MTP head.** `E:\_models\qwen38-flash-next\UD-IQ1_S` (48 blocks, 0-47) has no
+  `blk.48`, no `nextn` tensors and no `nextn_predict_layers` key. So MTP cannot run on it. It is not a code bug.
+- **The MTP head ships as a separate file** in the repo's `MTP/` folder (`unsloth/Qwen3.8-Flash-Next-GGUF`). Files:
+  `mtp-Qwen3.8-Flash-Next-{BF16,Q8_0,Q4_K_M}.gguf` (self-contained) and `...-shared-{BF16,Q8_0,Q4_K_M}.gguf` (borrow
+  `token_embd` and `output.weight` from the trunk, `qwen4exp.nextn_shared_target_tensors = True`). The README recommends
+  shared Q8_0 (2.60 GB); shared Q4_K_M is 1.78 GB. Downloads are authorised for `models/_models`; not yet downloaded.
+- **Head layout (from the header of `mtp-...-shared-Q4_K_M.gguf`):** `qwen4exp.block_count = 49` (trunk 48 + one head
+  block at index 48), `qwen4exp.nextn_predict_layers = 1`. Tensors of block 48: a full QSA-style block (attn_q 2560x12288,
+  attn_k/v, attn_output, q/k norms, indexer k/q projections and norms, routed MoE with 512 experts, shared expert, hc_attn_*
+  and hc_ffn_* mixers) plus `blk.48.nextn.eh_proj` [5120, 2560], `nextn.enorm` [2560], `nextn.hnorm` [10240],
+  `nextn.hc_head_norm` [10240], `nextn.hc_head_down` [10240, 320], `nextn.hc_head_up` [320, 10240].
+- **Stingray key mismatch (to fix):** `Qwen4ExpHyperparams` reads `{arch}.nextn.layer_count`; the pinned llama.cpp and this
+  head use `{arch}.nextn_predict_layers`. Fix the key; the value is then 1 for the head file and 0 for the trunk.
+- **Reference:** `examples/llama.cpp/llama.cpp/src/models/qwen4exp.cpp` at `bed0a8566` has `graph_mtp` (line ~529,
+  asserts `n_layer_nextn == 1`) and the head tensor set (lines 292-301). This is the independent oracle for the head's
+  forward. The head needs the trunk's hidden state (`h_nextn`, the HC residual before the final head, line ~502) and
+  the token embedding of the drafted token.
+- Consequence: Phase 4 needs (a) the MTP head file in `models/_models` (about 1.8 GB for shared Q4_K_M), (b) the key fix,
+  (c) a `graph_mtp` port checked against llama.cpp, then (d) verification and speed measurement. Qwen 3.8 stays unadmitted.
