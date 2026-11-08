@@ -207,7 +207,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     public ReadOnlySpan<float> Forward(int token, int position)
     {
         _dumpActive = _dumpDir != null && position == _dumpPos;
-        _seq.TokensProcessed = position + 1;
+        _seq.TokensProcessed++;
 
         // 1. Embed token
         EmbedToken(token, _tokEmbdScratch);
@@ -678,6 +678,109 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 MatVec(layer.SsmOut.Value, gdnOut, output);
             }
         }
+    }
+
+    /// <summary>
+    /// Image-chunk QSA, phase 1: projects Q (with its gate) and K/V for one token at the M-RoPE position (posT, posY, posX),
+    /// and appends K/V and the indexer keys to the sequence caches. Text tokens never call this; see <see cref="ExecuteQsaMixer"/>.
+    /// </summary>
+    private void QsaAppend(int layerIdx, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input,
+        int posT, int posY, int posX, Span<float> qOut, Span<float> gateOut)
+    {
+        int totalQDim = _numHeads * _headDim * 2;
+        int totalKDim = _numHeadsKv * _headDim;
+        int totalVDim = _numHeadsKv * _headDim;
+
+        Span<float> qFull = _qFullScratch.AsSpan(0, totalQDim);
+        MatVec(layer.AttnQ!.Value, input, qFull);
+        Qwen4ExpQsa.SplitAndNormQGated(qFull, AsFloatSpan(layer.AttnQNorm), qOut, gateOut, _numHeads, _headDim, _eps);
+        Qwen4ExpRope.ApplyImRope(qOut, posT, posY, posX, _numHeads, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
+
+        Span<float> k = _kScratch.AsSpan(0, totalKDim);
+        MatVec(layer.AttnK!.Value, input, k);
+        var kNorm = AsFloatSpan(layer.AttnKNorm);
+        if (!kNorm.IsEmpty)
+        {
+            for (int h = 0; h < _numHeadsKv; h++)
+            {
+                var kh = k.Slice(h * _headDim, _headDim);
+                float sumSq = TensorPrimitives.SumOfSquares(kh);
+                float invRms = 1.0f / MathF.Sqrt(sumSq / _headDim + _eps);
+                TensorPrimitives.Multiply(kh, invRms, kh);
+                TensorPrimitives.Multiply(kh, kNorm, kh);
+            }
+        }
+        Qwen4ExpRope.ApplyImRope(k, posT, posY, posX, _numHeadsKv, _headDim, _hp.RopeDimensionSections, _ropeDim, _ropeTheta);
+
+        Span<float> v = _vScratch.AsSpan(0, totalVDim);
+        MatVec(layer.AttnV!.Value, input, v);
+        _seq.QsaKeyCache[layerIdx].Add(k.ToArray());
+        _seq.QsaValCache[layerIdx].Add(v.ToArray());
+
+        if (layer.IndexKProj != null)
+        {
+            Span<float> rawIdxK = stackalloc float[_indexerKeyLength];
+            MatVec(layer.IndexKProj.Value, input, rawIdxK);
+            _seq.QsaRawIndexKCache[layerIdx].Add(rawIdxK.ToArray());
+
+            int rawCount = _seq.QsaRawIndexKCache[layerIdx].Count;
+            if (rawCount % _indexerKPool == 0)
+            {
+                int poolIdx = (rawCount / _indexerKPool) - 1;
+                Span<float> blockKeys = stackalloc float[_indexerKPool * _indexerKeyLength];
+                for (int p = 0; p < _indexerKPool; p++)
+                    _seq.QsaRawIndexKCache[layerIdx][poolIdx * _indexerKPool + p].CopyTo(blockKeys.Slice(p * _indexerKeyLength, _indexerKeyLength));
+                Span<float> pooledKey = stackalloc float[_indexerKeyLength];
+                Qwen4ExpQsa.PoolIndexerKeys(blockKeys, AsFloatSpan(layer.IndexKNorm), pooledKey, _indexerKPool, _indexerKeyLength, _eps);
+                int indexerRopeDim = Math.Min(_ropeDim, _indexerKeyLength);
+                Qwen4ExpRope.ApplyImRope(pooledKey, poolIdx * _indexerKPool, 1, _indexerKeyLength, _hp.RopeDimensionSections, indexerRopeDim, _ropeTheta);
+                _seq.QsaPooledKeys[layerIdx].Add(pooledKey.ToArray());
+            }
+        }
+    }
+
+    /// <summary>
+    /// Image-chunk QSA, phase 2: full attention over every cached token (the whole image chunk is already appended, so the
+    /// attention inside the image is non-causal, and it stays causal with respect to earlier tokens). Only valid while the
+    /// cache fits in the indexer's top-k, where the sparse selection keeps every token.
+    /// </summary>
+    private void QsaAttendAll(int layerIdx, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> q, ReadOnlySpan<float> gate, Span<float> output)
+    {
+        int numTokens = _seq.QsaKeyCache[layerIdx].Count;
+        if (layer.IndexQProj != null && _indexerTopK > 0 &&
+            _seq.QsaPooledKeys[layerIdx].Count > Math.Max(1, _indexerTopK / _indexerKPool))
+            throw new NotSupportedException(
+                "qwen4exp image chunk: the cache is longer than the indexer top-k, so the sparse selection is not supported on this path.");
+
+        float invSqrtD = 1.0f / MathF.Sqrt(_headDim);
+        Span<float> attnOut = _attnOutScratch;
+        attnOut.Clear();
+        float[] scores = new float[numTokens];
+        int headsPerKv = _numHeads / _numHeadsKv;
+
+        for (int h = 0; h < _numHeads; h++)
+        {
+            int kvHead = h / headsPerKv;
+            var qh = q.Slice(h * _headDim, _headDim);
+            for (int t = 0; t < numTokens; t++)
+                scores[t] = TensorPrimitives.Dot(qh, _seq.QsaKeyCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim)) * invSqrtD;
+
+            RowKernels.SoftmaxInPlace(scores);
+
+            var outHead = attnOut.Slice(h * _headDim, _headDim);
+            for (int t = 0; t < numTokens; t++)
+            {
+                float weight = scores[t];
+                if (weight <= 0f || float.IsNaN(weight)) continue;
+                var vt = _seq.QsaValCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
+                for (int d = 0; d < _headDim; d++)
+                    outHead[d] += vt[d] * weight;
+            }
+        }
+
+        Qwen4ExpQsa.ApplyAttentionGate(attnOut, gate);
+        if (layer.AttnOut != null)
+            MatVec(layer.AttnOut.Value, attnOut, output);
     }
 
     private void ExecuteQsaMixer(int layerIdx, Qwen4ExpLayerTensors layer, ReadOnlySpan<float> input, int position, Span<float> output)
@@ -1271,6 +1374,110 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 ReadOnlySpan<float>.Empty, _mixed, Span<float>.Empty, _hc, _embedDim, _hcLowRank, _eps);
             ComputeLogits(_mixed, _logits);
             return _logits;
+        }
+        finally
+        {
+            _seq = previous;
+        }
+    }
+
+    /// <summary>
+    /// Image chunk (Phase 5.2): forwards the projector embeddings of one image (n tokens, each <c>EmbedDim</c> wide) layer by
+    /// layer, so the attention inside the image is non-causal. <paramref name="placeholderTokens"/> are the image placeholder
+    /// ids (used by the PLE token path); (<paramref name="posT"/>, <paramref name="posY"/>, <paramref name="posX"/>) are the M-RoPE
+    /// positions per token. Afterwards the sequence holds the image and <see cref="Forward(int, int, Qwen4ExpSequenceState)"/>
+    /// continues the text.
+    /// </summary>
+    public void ForwardImageChunk(
+        ReadOnlySpan<float> embeddings, ReadOnlySpan<int> placeholderTokens,
+        ReadOnlySpan<int> posT, ReadOnlySpan<int> posY, ReadOnlySpan<int> posX,
+        Qwen4ExpSequenceState sequence)
+    {
+        sequence.ThrowIfDisposed();
+        int n = placeholderTokens.Length;
+        if (n == 0) return;
+        if (embeddings.Length != n * _embedDim || posT.Length != n || posY.Length != n || posX.Length != n)
+            throw new ArgumentException("image chunk: embeddings and positions must have one entry per token.");
+
+        int pleLayers = 0;
+        for (int il = 0; il < _numLayers; il++) if (_tensors.Layers[il].IsPle) pleLayers++;
+        if (pleLayers > 1)
+            throw new NotSupportedException("qwen4exp image chunk: more than one PLE layer needs token-major ordering (not implemented).");
+
+        var previous = _seq;
+        _seq = sequence;
+        try
+        {
+            int hcDim = _hcDim;
+            int embd = _embedDim;
+            int qDim = _numHeads * _headDim;
+            var res = new float[n * hcDim];
+            for (int t = 0; t < n; t++)
+                for (int c = 0; c < _hc; c++)
+                    embeddings.Slice(t * embd, embd).CopyTo(res.AsSpan(t * hcDim + c * embd, embd));
+
+            var mixed = new float[n * embd];
+            var inj = new float[n * _hc];
+            var blockOut = new float[n * embd];
+            var qBuf = new float[n * qDim];
+            var gateBuf = new float[n * qDim];
+
+            for (int il = 0; il < _numLayers; il++)
+            {
+                var layer = _tensors.Layers[il];
+                bool recurrent = layer.IsRecurrent;
+
+                // Phase A: per token, PLE, attention-side HC mix, then the GDN mixer or the QSA append.
+                for (int t = 0; t < n; t++)
+                {
+                    var rt = res.AsSpan(t * hcDim, hcDim);
+                    rt.CopyTo(_resHc);
+                    if (layer.IsPle && layer.PleKey != null && layer.PleValue != null)
+                        ExecutePle(il, posT[t], layer, embeddings.Slice(t * embd, embd), placeholderTokens[t]);
+
+                    Qwen4ExpGatedResidual.Mix(_resHc, AsFloatSpan(layer.HcAttnNorm), AsFloatSpan(layer.HcAttnDown),
+                        AsFloatSpan(layer.HcAttnUp), AsFloatSpan(layer.HcAttnInject), _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
+                    _mixed.AsSpan(0, embd).CopyTo(mixed.AsSpan(t * embd, embd));
+                    _inject.AsSpan(0, _hc).CopyTo(inj.AsSpan(t * _hc, _hc));
+
+                    var mt = mixed.AsSpan(t * embd, embd);
+                    var bt = blockOut.AsSpan(t * embd, embd);
+                    if (recurrent)
+                        ExecuteGdnMixer(il, layer, mt, bt, posT[t]);
+                    else
+                        QsaAppend(il, layer, mt, posT[t], posY[t], posX[t],
+                            qBuf.AsSpan(t * qDim, qDim), gateBuf.AsSpan(t * qDim, qDim));
+
+                    _resHc.AsSpan(0, hcDim).CopyTo(rt);
+                }
+
+                // Phase B: full attention for the QSA layers, now that every image token is cached.
+                if (!recurrent)
+                {
+                    for (int t = 0; t < n; t++)
+                        QsaAttendAll(il, layer, qBuf.AsSpan(t * qDim, qDim), gateBuf.AsSpan(t * qDim, qDim),
+                            blockOut.AsSpan(t * embd, embd));
+                }
+
+                // Phase C: per token, the attention combine, then the FFN block and its combine.
+                for (int t = 0; t < n; t++)
+                {
+                    var rt = res.AsSpan(t * hcDim, hcDim);
+                    rt.CopyTo(_resHc);
+                    blockOut.AsSpan(t * embd, embd).CopyTo(_blockOut);
+                    inj.AsSpan(t * _hc, _hc).CopyTo(_inject);
+                    Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
+
+                    Qwen4ExpGatedResidual.Mix(_resHc, AsFloatSpan(layer.HcFfnNorm), AsFloatSpan(layer.HcFfnDown),
+                        AsFloatSpan(layer.HcFfnUp), AsFloatSpan(layer.HcFfnInject), _mixed, _inject, _hc, _embedDim, _hcLowRank, _eps);
+                    ExecuteMoe(layer, _mixed, _blockOut);
+                    Qwen4ExpGatedResidual.Combine(_resHc, _blockOut, _inject, _hc, _embedDim);
+
+                    _resHc.AsSpan(0, hcDim).CopyTo(rt);
+                }
+            }
+
+            sequence.TokensProcessed += n;
         }
         finally
         {

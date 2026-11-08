@@ -624,3 +624,20 @@ Stingray plan:
   that layer's attention runs. The current forward is token-major (one token through all layers), so an image chunk needs a
   layer-major path: residuals kept per image token, K/V appended for the whole chunk, then attention, for each layer.
   The GDN layers stay sequential in token order. The rest of the forward is unchanged.
+
+### 5.2 result, 2026-11-08: image question answered, matching the reference
+
+- Implemented: `Qwen4ExpForwardPass.ForwardImageChunk` (layer-major: per-token PLE, attention-side HC mix and GDN or QSA append;
+  then QSA attention over the whole image cache, non-causal inside the image; then per-token attention combine, FFN and MoE).
+  `QsaAppend` and `QsaAttendAll` are the split QSA steps; the single-token mixer is unchanged. The chunk path refuses a cache
+  longer than the indexer top-k and more than one PLE layer. `TokensProcessed` now counts cache entries.
+- Prompt (reference layout, checked against the reference log): 4 prefix tokens, 49 image tokens at position 4 (7x7 grid),
+  text from position 4 + max(7, 7) = 11, and the no-thinking assistant block `<think>\n\n</think>\n\n` (reference default).
+- Test `Qwen4ExpImageAnswerTests` (Tests.Vision, env `QWEN_TEST_IMAGE`, heavy flag): passes. Answer (greedy, 40 tokens):
+  "The image contains two shapes: 1. **A red square** — located in the upper-left portion of the image. 2. **A blue circle** —
+  located in the lower-right portion". The reference (`llama-mtmd-cli`, 24 tokens) gives the same text up to "upper-left".
+- A first run without the empty think block produced a `<think>` reasoning answer; the chat template, not the image path,
+  was the cause.
+- Text bit-identity still holds after the change (logits and `l_last_24` identical to the pre-chunk run).
+- Not done: exact token-for-token equality over all 40 tokens, and a logit-level comparison with the reference. The test
+  compares the text. Phase 5 also still needs video input and the tool and server paths for images.
