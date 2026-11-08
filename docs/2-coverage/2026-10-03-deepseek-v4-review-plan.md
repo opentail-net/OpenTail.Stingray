@@ -78,9 +78,16 @@ Tests: `DeepSeek4AlphaTests` / `DeepSeek41AlphaTests` (component and metadata ch
 - [~] **Phase 0: V4 reference reconciliation.** A review pass changed the alpha code (CSA ratio 4, 8-group output LoRA,
   Hadamard on the indexer, per the commit and the hub). Not independently re-audited line by line; the code itself still calls
   its CSA overlap construction a "working hypothesis".
-- [~] **Phase 1: Resolve V4 alpha uncertainties.** CSA ratio 4 and the 8-group output LoRA are in the code. Unverified:
-  CSA overlap boundaries, indexer top-k selection, `rope_ext_back`, mHC equations, and the grouped-LoRA pointer arithmetic on
-  quantised dtypes (offsets assume a dense stride).
+- [~] **Phase 1: Resolve V4 alpha uncertainties.** CSA ratio 4 and the 8-group output LoRA are in the code. 2026-11-08, checked
+  against the pinned reference source (`examples/llama.cpp/llama.cpp`, `bed0a8566`, `src/models/deepseek4.cpp:517-588`,
+  `llama-model.cpp:3194`, `llama-kv-cache-dsv4.cpp:527`): the CSA overlap window (first half of the previous block's 4 rows as
+  "prev", second half of this block's rows as "cur", window `[prev..., cur...]`), the APE add before storage, the zero-KV and
+  -inf-score first block, the per-channel softmax, and the compressed-RoPE type (`NORM`, i.e. interleaved, because
+  `dsv4_hc_mult > 0`) all match our code. **Mismatch found and fixed:** a compressed block was roped at its block index `k`;
+  the reference ropes it at `ratio * k` (`state_write_pos = pos + 1 - ratio`). Both CSA and HCA are fixed, via
+  `DeepSeek4ForwardPass.CompressedBlockPosition`. This is verified against the source, not numerically. Still unverified:
+  indexer top-k selection, `rope_ext_back`, mHC equations, and the grouped-LoRA pointer arithmetic on quantised dtypes (offsets
+  assume a dense stride).
 - [~] **Phase 2: V4 synthetic specification test.** 2026-11-08: `DeepSeek4SyntheticTests` now runs CSA (ratio 4) and HCA
   (ratio 128) layers. After 130 tokens, CSA has 32 blocks and HCA has 1. Before the first CSA block (position 3) the model
   matches the raw-only model exactly. From position 3 it differs (max diff 3.66e-7 on a logit scale of 1.0e-3). A CSA layer

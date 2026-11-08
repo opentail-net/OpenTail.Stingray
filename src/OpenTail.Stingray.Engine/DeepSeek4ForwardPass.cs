@@ -177,6 +177,11 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         RequireTensor(il, layer.IndexerAttnQB, $"blk.{il}.indexer.attn_q_b.weight");
     }
 
+    // RoPE position of compressed block k: the block's first raw token, ratio * k. The reference
+    // passes state_write_pos = pos + 1 - ratio for the same block (llama-kv-cache-dsv4.cpp:527,
+    // deepseek4.cpp:989 and :1119). Using k alone rotates every block after the first wrongly.
+    internal static int CompressedBlockPosition(int blockIndex, int ratio) => blockIndex * ratio;
+
     private static void RequireTensor(int il, DeepSeek4TensorRef? tensor, string name)
     {
         if (tensor is null)
@@ -538,7 +543,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             kvFlat, scoreFlat, ratio, coffHeadDim, _ropeDim,
             AsFloatSpan(layer.AttnCompNorm), _hp.RmsNormEps,
             (span, ropeDim, blockPos, freqBase) => ApplyRopeInterleaved(span, (int)blockPos, freqBase),
-            _hp.CompressRopeFreqBase, blockIndex,
+            _hp.CompressRopeFreqBase, CompressedBlockPosition(blockIndex, ratio),
             result);
 
         _compressedState.Hca(il)!.Persist(result, new float[coffHeadDim]);
@@ -653,7 +658,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             kvWindow, scoreWindow, ratio, headDim, _ropeDim,
             normWeight, _hp.RmsNormEps,
             (span, ropeDim, blockPos, freqBase) => ApplyRopeInterleaved(span, (int)blockPos, freqBase),
-            _hp.CompressRopeFreqBase, blockIndex,
+            _hp.CompressRopeFreqBase, CompressedBlockPosition(blockIndex, ratio),
             result);
 
         target.Persist(result, new float[headDim]);

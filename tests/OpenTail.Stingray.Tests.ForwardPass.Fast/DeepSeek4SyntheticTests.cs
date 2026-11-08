@@ -108,6 +108,17 @@ public sealed class DeepSeek4SyntheticTests : IDisposable
         Assert.Contains("blk.0.attn_compressor_kv.weight", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DeepSeek4_CompressedBlockRope_UsesTheBlocksFirstRawToken()
+    {
+        // Block k covers raw tokens ratio*k .. ratio*k + ratio - 1 and is roped at ratio*k, as the reference's
+        // state_write_pos is. Block 0 is at position 0 under either formula, so only later blocks catch a regression.
+        // This pins the convention; it is not a numeric check against the reference.
+        Assert.Equal(0, DeepSeek4ForwardPass.CompressedBlockPosition(0, 4));
+        Assert.Equal(12, DeepSeek4ForwardPass.CompressedBlockPosition(3, 4));
+        Assert.Equal(128, DeepSeek4ForwardPass.CompressedBlockPosition(1, 128));
+    }
+
     private float[][] LogitsPerPosition(int[] ratios, int tokens)
     {
         string path = WriteSyntheticModel(ratios);
