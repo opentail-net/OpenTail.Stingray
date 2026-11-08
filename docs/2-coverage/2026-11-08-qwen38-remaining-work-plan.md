@@ -37,6 +37,16 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 ## Phase 0. Numerical parity (real checkpoint, paged)
 
+- [x] **0.3 text-path drift, explained (2026-11-08, later).** Per-layer dumps regenerated after the Q5_K numerics fix
+      (commit 563ec1b4, 01:52; the earlier dumps predated it). Text prompt "The capital of France is", last token, against the
+      eval-callback dump: layer 0 `linear_attn_out` 0.36%, `l_last_0` 0.37% (was 2.5% and 1.46%); `qkv_mixed` 0.03%; embedding
+      exact. Per-layer residual rises to 9-14% by layers 28-47; logits relative error 6.5%, cosine 0.9979, top-1 11751 matches.
+      **Noise probe:** the same run with the embedding scaled by (1 + 1e-6 x u), u in [-1, 1] (`STINGRAY_Q4E_PERTURB_EPS`)
+      moves layer 0 by 0.41%, layers 32-47 by 8-10%, and the logits by 6.4% (top-1 unchanged). So the reference-to-Stingray
+      text drift is the size that float-order noise produces, amplified through the network. It is not evidence of a logic error.
+      Consequence for the criterion: the programme plan's proposed final-logit cosine >= 0.998 is below this noise floor (the
+      probe itself gives 0.9979), so it should not be used. The token-level criterion (D1) is the one to hold.
+      The image path is not covered by this probe; its logit gap (0.81, TV 0.178) is still open.
 - [ ] **0.3 FFN injection gate.** Still open. The residual MoE error from layer 1 is attributed to quantisation noise
       and is not confirmed. Runnable now (checkpoint on disk: `E:\_models\qwen38-flash-next\UD-IQ1_S`).
       Conclusion, 2026-11-08: not closable on the present evidence. The text-path measurements in Phase 0.2 sit inside
