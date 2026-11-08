@@ -1,7 +1,7 @@
 # Specs: HTTP disconnect test (plan 2 P8) and server telemetry canary (plan 2 P5)
 
-Status: **both specs are implemented** (Spec A, the disconnect test: `ClientDisconnectTests`, PR 92; Spec B, the telemetry canary: PR 80). Written against main at b9b00e1 (2026-10-31) as specifications; kept here as the record of what was asked for.
-Parent plan: [2026-10-31-autonomous-plan-2.md](../00-current-work.md#open-work-as-of-2026-11-03); rows P5 and P8 are now in its [done half](2026-10-31-autonomous-plan-2-completed-items-2026-10.md).
+Status: specification only. Nothing here is implemented or run. Written against main at b9b00e1 (2026-10-31).
+Parent plan: [2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31](2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31), rows P5 and P8.
 
 ## Contracts this must satisfy (read 2026-10-31)
 

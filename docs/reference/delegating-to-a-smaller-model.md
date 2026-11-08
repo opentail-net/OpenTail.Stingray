@@ -64,7 +64,7 @@ When finished, report: files changed; test counts before/after (whole project); 
 
 ## Task card E: local inventory (`models --local [--verify]`; plan P4)  **start only after other work on `ModelsCommand.cs` and the option inventory has finished**
 
-**Read first:** `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md` sections 3 (G5, G7), 5.2 and P4.
+**Read first:** `docs/3-product-and-runtime/2026-11-08-product-plan.md` sections 3 (G5, G7), 5.2 and P4.
 **Files you may change:** `src/OpenTail.Stingray.Cli/ModelsCommand.cs`, a new `src/OpenTail.Stingray.Cli/LocalInventory.cs`, a new test file, and (last step) `docs/reference/cli-option-inventory.md` regenerated with `scripts/gen-cli-option-inventory.ps1` (Class `stable`).
 **Do:** `stingray models --local` lists (1) each catalogue entry with its state (Missing / Partial / Installed) and (2) every GGUF found in the model home and in `STINGRAY_MODEL_DIRS`, reusing the scanning that `ListModelsCommand` already does (do not write a second scanner). For each GGUF read only its index (`GgufModel.Open`, no weights) and show: architecture, whether it is admitted (`ArchitectureRegistry`; show a ported-not-verified family as plain "not supported", CLAUDE.md rule 14), the dominant quantisation, size, and whether it fits this machine via `LoadPreflight.EvaluateFile`. `--verify` additionally re-hashes catalogue files with `ModelFingerprinter.Compute` (it caches in a `.sha256` sidecar) and reports Intact / Damaged against the catalogue sha256; it is opt-in because hashing is slow. Never modify or delete a model file.
 **Tests:** a temp model home with synthetic GGUFs (`HubFixtures.Gguf`) covering: catalogue states, an admitted and an unregistered architecture, an unreadable file reported as unreadable without stopping the scan, fits / does not fit (inject RAM), `--verify` intact and damaged, no file modified.
@@ -80,7 +80,7 @@ When finished, report: files changed; test counts before/after (whole project); 
 
 ## Task card F: favourites (plan P3)
 
-**Read first:** `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md` section 5.2 and P3.
+**Read first:** `docs/3-product-and-runtime/2026-11-08-product-plan.md` section 5.2 and P3.
 **Files you may change:** new `src/OpenTail.Stingray.Cli/Favourites.cs`, `src/OpenTail.Stingray.Cli/CatalogTaskResolver.cs`, `src/OpenTail.Stingray.Cli/ModelsCommand.cs`, a new test file, and (last step) the regenerated `docs/reference/cli-option-inventory.md` (Class `stable`) plus one short section in `docs/reference/061-coverage-tooling.md`.
 **Decisions already made (change nothing without asking):** the file is `favourites.json` in a per-user config directory: `%APPDATA%\stingray` on Windows, `$XDG_CONFIG_HOME/stingray` (default `~/.config/stingray`) elsewhere, overridable by the environment variable `STINGRAY_CONFIG_DIR` (register it in `KnownEnvironmentVariables`, add its row to `docs/reference/env-var-inventory.md` and bump the count sentence there: the Core tests enforce both). Format: `{ "chat": "qwen2.5-1.5b" }` mapping an alias to a CATALOGUE id only (no user-chosen repo files in this task). Commands: `stingray models use <task> <id>` (validates the id exists AND serves that task; refuses otherwise) and `stingray models use <task> --clear`; `stingray models` marks the favourite.
 **Resolution order** in `CatalogTaskResolver`: explicit `--model-file` > explicit `--model <id>` > favourite > catalogue default. A favourite that names a removed or wrong-task id must produce an error that says what to run to fix it (`stingray models use chat <id>` or `--clear`); never silently fall back to the default. A corrupt or unreadable `favourites.json` is an error naming the file, never silently ignored and never overwritten.
@@ -89,7 +89,7 @@ When finished, report: files changed; test counts before/after (whole project); 
 **Expected effort:** medium (3-4 hours).
 ## Task card G: two more chat catalogue entries (plan P2, data plus tests)
 
-**Read first:** `src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs` (the `qwen2.5-0.5b` entry is the template; every field is filled the same way) and plan P2 in `docs/3-product-and-runtime/2026-10-09-known-good-checkpoints-and-first-run-plan.md`.
+**Read first:** `src/OpenTail.Stingray.Core/Catalog/ModelCatalog.cs` (the `qwen2.5-0.5b` entry is the template; every field is filled the same way) and plan P2 in `docs/3-product-and-runtime/2026-11-08-product-plan.md`.
 **Files you may change:** `ModelCatalog.cs` (add entries after `qwen2.5-0.5b`, so the 0.5b stays the chat default), the existing catalogue tests (`CatalogGuardTests.cs`, `FirstRunTests.cs` only if a count is asserted), and nothing else. No new options, no docs.
 **The entries:**
 * `qwen2.5-1.5b`: repo `Qwen/Qwen2.5-1.5B-Instruct-GGUF`, revision `91cad51170dc...` (resolve the full 40-character commit), file `qwen2.5-1.5b-instruct-q4_k_m.gguf`.

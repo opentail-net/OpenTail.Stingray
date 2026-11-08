@@ -1,4 +1,5 @@
 # Architecture descriptors, semantics and golden parity: open follow-ups
+> Ticked items moved to [done/architecture-admission-followups-completed-items-2026-11.md](../done/architecture-admission-followups-completed-items-2026-11.md) on 2026-11-08.
 
 Three 2026-10-08/09 plans are finished. Their completed items are archived as extracts in `docs/done/` (not verbatim copies; the originals stay in `2-coverage/` or `done/`); this file keeps only what they left open.
 

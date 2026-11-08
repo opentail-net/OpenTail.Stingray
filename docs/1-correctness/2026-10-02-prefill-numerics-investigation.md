@@ -161,23 +161,13 @@ values. Harness: `harness/ggmlx` in the reproduction kit.
    Those were the predefined "really bad turn" criteria, and none was met.
 
 ## Open / follow-up
-- [x] *(closed 2026-11-03 by `Q8ActivationQuantizationTests`: the in-test port of `quantize_row_q8_K_ref` is bit-identical (scale and all 256 int8 values, 50 outlier rows) to the real function exported by the vendored b10306 `ggml-base.dll`, and on outlier rows with amax/rms of 25, 50 and 90 Stingray's Q8_KS (a scale per 32 values) reconstructs the row with no more error than ggml's Q8_K (a scale per 256), on average at least 10% less. So the activation quantiser is not a defect and is finer than the one llama.cpp uses; the weight-side dots (`vec_dot_*_q8_K`) are not compared.)* ggml vs Stingray Q8 activation quantization on identical rows (`quantize_row_q8_K_ref` via the
-  vendored `ggml-base.dll`): is 1e-2 per projection normal int8 noise or a defect?
 - [ ] 27B MTP validation: see [reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md](../reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md) (open follow-ups; owner of the MTP thread).
 - [ ] Re-baseline `MtpDecoder_GreedyParity_LlamaCpp`: see ADR-0002 (open follow-ups).
 
 ### Follow-ups from the MoE audit (moved from docs/00-current-work.md, 2026-10-30)
 
-- [x] *(closed 2026-11-03 by `Q8ActivationQuantizationTests`: the in-test port of `quantize_row_q8_K_ref` is bit-identical (scale and all 256 int8 values, 50 outlier rows) to the real function exported by the vendored b10306 `ggml-base.dll`, and on outlier rows with amax/rms of 25, 50 and 90 Stingray's Q8_KS (a scale per 32 values) reconstructs the row with no more error than ggml's Q8_K (a scale per 256), on average at least 10% less. So the activation quantiser is not a defect and is finer than the one llama.cpp uses; the weight-side dots (`vec_dot_*_q8_K`) are not compared.)* NEW, from the row check: the per-token int8 decode matvec has 1.2e-2 mean / 8e-2 worst
-      rel-RMS per projection (vs 9e-7 for the F32 GEMM). Compare our `QuantizeRowToQ8KS` + dot
-      against ggml's `quantize_row_q8_K` + `vec_dot_q4_K_q8_K` on the same rows, to tell normal
-      int8 noise (activation amax/rms 25-90 here) from a defect
 - [ ] *(narrowed 2026-11-03: Q8_KS is finer than ggml's Q8_K by design, so aligning would make Stingray's activations coarser; the 0.69% gap to llama.cpp PPL is not explained by the activation quantiser alone, the per-weight-type dot comparison is still open.)* Our int8 prefill is not llama.cpp's: SmolLM2 F32 matches llama.cpp PPL to 0.03%, int8 is
       0.69% off, although llama.cpp also uses int8 activations. Check our Q8_KS (8 scales/256) vs
       ggml Q8_K (1 scale/256) per weight type; align where it differs
-- [x] *(closed 2026-11-03, read in `MoeBatchedExperts.cs`: the default MoE prefill path passes F32 activations to `MatMulBatched` with `allowQ8: Q8PrefillEnabled`, which is false unless `STINGRAY_MOE_PREFILL_Q8=1`, so there is no per-bucket quantisation to hoist; it would only speed the opt-in Q8 path, which was not adopted, see the batched MoE prefill plan.)* MoE: quantize the token activations once before expert dispatch (ggml `mul_mat_id` style)
-      instead of per expert bucket: k-fold less quantize work, identical activations per token
-- [x] *(closed 2026-11-03, read in code: gate and up outputs are F32 and `SiLuMul` runs on them (`MoeBatchedExperts.cs`); activations are quantised only inside `MatMulBatched`, and only when Q8 is enabled; the router is `FusedMatVec` -> `SimdKernels.MatVec` by the router tensor's own dtype (F32 in the checkpoints read, `HybridGdnForwardPass.cs:209`), and the int8-activation branch of `FusedMatVec` is taken only for Q4_K or Q6_K weights with the Q8 prefill gate on. Not checked: a checkpoint with a quantised `ffn_gate_inp`.)* MoE: keep router and SiLU*up in F32, quantize only at GEMM inputs
 - [ ] MoE: small prompts (N <= 32) through the folded decode-style dispatch (bit-identical to
       decode, fewer tiny GEMMs); measure
-- [x] *(decided: `STINGRAY_MOE_PREFILL_Q8` stays off and experimental; the batched MoE prefill plan measured +11% (153 to 171 tok/s) with identical text and kept exactness as the policy. No re-run needed for a path that is not enabled.)* Then re-run the Granite-4-H-Small PPL/NLL comparison and decide `STINGRAY_MOE_PREFILL_Q8`

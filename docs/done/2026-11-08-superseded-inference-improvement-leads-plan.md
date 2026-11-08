@@ -40,7 +40,6 @@ Order below is "what to look at next" within each group; the groups themselves a
 - [ ] **E3** Lead 5: FLUX.2 GPU (3,260 s for one 512x512 image).
 - [ ] **E4** Lead 6: diffusion-side `MatVecDq*` kernels (parked, would double the effort).
 - [ ] **E5** Reference per-op timings for Wan 2.2, HunyuanVideo and FLUX.2: explicitly deferred until the leads above are done or parked.
-- [x] **E6** *(done 2026-11-03: `scripts/lib/TextCheck.ps1` plus `scripts/bench-league-recheck.ps1` now put the first 80 generated characters in every row, flag EMPTY, NON-TEXT or REPEATING, compare with `scripts/league-text-baselines.json` (`-UpdateBaseline` writes it; a different start reads `[changed]`, informational because greedy text can move with a near-tie) and count flagged rows as `bad-text=` in the summary. Checked: 9 flag cases and the output parser in a scratch test, and real SmolLM2-1.7B runs on CPU: text recorded, a fresh baseline matched, an edited baseline gave `[changed]`. No baseline file is committed yet: it is written by the next full sweep.)* (later, from the 2026-10-11 all-checkpoint sweep) Text sanity check in `scripts/bench-league-recheck.ps1`: record the first ~80 characters of each run's output, flag empty or degenerate text (repetition, mostly non-text), and keep a baseline file of known-good starts so a later sweep reports "text changed" per model. Today the sweep proves a checkpoint loads and decodes (CPU 94 of 95, Vulkan 81 of 95 at 94 models in), not that its output is right.
 
 ## How the wins were found (the playbook; reuse it)
 

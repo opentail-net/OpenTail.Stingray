@@ -5,7 +5,7 @@ families stays in [2026-11-07-coverage-completion-programme-plan.md](2026-11-07-
 Qwen 3.8 stays **not admitted and not advertised** until Phase 8 (CLAUDE.md rule 14).
 
 Sources for each item are the dated sections of the programme plan (Qwen sections, lines ~109-905) and
-[2026-10-03-qwen38-flash-next-port-plan.md](2026-10-03-qwen38-flash-next-port-plan.md). Where those two
+[../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md](../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md). Where those two
 disagree, the programme plan's later dates win; the conflicts are listed under "Doc hygiene" below.
 
 Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no download needed.
@@ -228,7 +228,7 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 ## Doc hygiene (stale or conflicting statements to fix when these items are touched)
 
-- [ ] `2026-10-03-qwen38-flash-next-port-plan.md` status line still says "AWAITING REAL-WEIGHT QUALIFICATION" and the
+- [ ] `../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md` status line still says "AWAITING REAL-WEIGHT QUALIFICATION" and the
       "Next check" line predates 2026-11-07. Update, or point to this file.
 - [ ] `Architectures/Qwen4ExpArchitecture.cs` `RefusalReason` still describes wrong logit magnitudes. The
       2026-11-08 measurements do not support that (external review check, programme plan).

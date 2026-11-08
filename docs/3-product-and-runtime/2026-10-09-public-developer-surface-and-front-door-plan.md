@@ -696,7 +696,7 @@ Code and outside sources, checked 2026-10-31. This plan is about the repository'
 
 **Verified in code**
 - `scripts/verify-package-consumers.ps1` and `samples/README.md` exist, as the checklist says.
-- The `piper-lessac` licence wording is the one that matters for the "speak" front door. It understates the voice's restriction. See [2026-10-09-known-good-checkpoints-and-first-run-plan.md](2026-10-09-known-good-checkpoints-and-first-run-plan.md#research-findings-2026-10-31), which has the CSTR source and the recommended wording change.
+- The `piper-lessac` licence wording is the one that matters for the "speak" front door. It understates the voice's restriction. See [2026-11-08-product-plan.md](2026-11-08-product-plan.md#research-findings-2026-10-31), which has the CSTR source and the recommended wording change.
 
 **Doc issues**
 - B3 (speak) says consent is recorded "truthfully" at install time. The consent text led with "MIT" until 2026-10-31; it now leads with research-use-only (`ModelCatalog.cs`, `piper-lessac`). The text requirement is met; the interactive prompt was not re-run.

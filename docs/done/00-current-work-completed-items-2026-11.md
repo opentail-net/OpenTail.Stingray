@@ -24,3 +24,7 @@ Ticked items moved from [docs/00-current-work.md](../00-current-work.md) on 2026
 ## Owner action (does not block the list above)
 
 - [x] **Run once:** `pwsh scripts/qualify-tasks.ps1`. Run 2026-11-06: chat, speak and transcribe all PASS with no licence flag (the default speak model is Kokoro, Apache-2.0; the Piper licence applies only if Piper is chosen with `-m piper-lessac`).
+
+## Moved 2026-11-08 from 00-current-work.md
+
+  - [x] *(stale, closed 2026-11-03: `lfm2moe` was admitted 2026-10-01; the batched drift was flash-64 attention's online softmax, not a batched-path bug; see STATUS and [bugstofix item 12](done/bugstofix-resolved-2026-10.md))* Admit LFM2-MoE (`lfm2moe`) with PPL parity. BLOCKED 2026-09-28 (timeboxed): PPL +6.3% and per-token vs batched disagree by 9%; see bugstofix.

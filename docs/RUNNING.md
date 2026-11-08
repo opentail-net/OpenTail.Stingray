@@ -255,7 +255,7 @@ Use `-g -1` (or `--ngl -1`) to offload all transformer layers to GPU VRAM, or om
 
 #### Long-prompt Vulkan figures (measured 2026-10-11, reference machine: Ryzen 5700G + integrated Radeon, `-g -1`, greedy, batched prefill and split-KV decode attention on by default)
 
-These are prompts of 0.5k to 2k tokens, because both prefill and decode attention cost depend on context length. RAM/VRAM was not re-measured in this pass. Details and the before/after A/Bs: [the performance status board](4-performance/2026-10-10-inference-improvement-leads-plan.md).
+These are prompts of 0.5k to 2k tokens, because both prefill and decode attention cost depend on context length. RAM/VRAM was not re-measured in this pass. Details and the before/after A/Bs: [the performance status board](4-performance/2026-11-08-performance-plan.md).
 
 | Model | Command | Prompt | Prefill | Decode |
 |---|---|---|---|---|

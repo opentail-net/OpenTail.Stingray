@@ -4,9 +4,9 @@
 
 # Quality-of-life improvements — current work
 
-**Thread:** [configuration and sessions](04-quality-of-life-improvements-plan.md).
+**Thread:** [configuration and sessions](2026-11-08-product-plan.md).
 
-Overlap (ported from the retired workstream, 2026-10-31): item 4 (server observability) is tracked in the [OpenTelemetry plan](2026-10-12-opentelemetry-observability-plan.md). Item 6 depends on the outcome of [plan 010](010-forward-pass-context-isolation-for-session-forking-plan.md).
+Overlap (ported from the retired workstream, 2026-10-31): item 4 (server observability) is tracked in the [OpenTelemetry plan](2026-10-12-opentelemetry-observability-plan.md). Item 6 depends on the outcome of [plan 010](2026-11-08-product-plan.md).
 
 **Status:** planning/diagnostics baseline shipped; deterministic static-plan decision fixtures
 and typed host-key classification are now in place. Environment ownership and execution parity remain.

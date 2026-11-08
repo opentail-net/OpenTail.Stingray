@@ -31,7 +31,7 @@ History:
   quantization in the batched MoE expert path accounted for all of the batched-vs-per-token NLL
   differences.
 - The off default cost every dense model its prefill speed. The performance plan's evidence
-  table (`docs/4-performance/perf-sweep-plan.md` 10.2) and the Gemma re-measure (Phase 6) put
+  table (`docs/4-performance/2026-11-08-performance-plan.md` 10.2) and the Gemma re-measure (Phase 6) put
   the decision to the user.
 
 ## Evidence (all measured on this repo's reference box, 8-core Ryzen 5700G)
@@ -119,7 +119,7 @@ Follow-ups:
 - the Q3_K batched path's format (it reportedly uses Q8_KS where decode uses Q8_K).
 
 The follow-up list (quantize-once MoE dispatch, Q8_K alignment, then re-deciding
-`STINGRAY_MOE_PREFILL_Q8`) is tracked in `docs/4-performance/perf-sweep-plan.md`.
+`STINGRAY_MOE_PREFILL_Q8`) is tracked in `docs/4-performance/2026-11-08-performance-plan.md`.
 
 ## Addendum 2026-11-01: Q3_K activation format (plan 4 A1)
 

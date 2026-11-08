@@ -5,7 +5,7 @@ The options type also has two deliberately non-bindable programmatic hooks
 (`EngineFactory` and `OutputConstraintFactory`); they are excluded from this inventory because
 JSON configuration cannot supply delegates.
 
-Third and final part of Phase 0 deliverable 1 of `04-quality-of-life-improvements-plan.md`,
+Third and final part of Phase 0 deliverable 1 of `2026-11-08-product-plan.md`,
 alongside `env-var-inventory.md` (a 141-row historical snapshot; the source registry now has 156 names) and
 `cli-option-inventory.md` (a 94-row historical snapshot; source now has 149 declarations).
 

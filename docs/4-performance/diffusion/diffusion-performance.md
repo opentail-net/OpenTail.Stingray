@@ -11,7 +11,7 @@
 
 Completed items from the earlier split remain in [done/094-diffusion-performance-plan-closed-phases.md](../../done/094-diffusion-performance-plan-closed-phases.md), [done/069-flux-vulkan-gemm-perf-handoff-completed-items-2026-10.md](../../done/069-flux-vulkan-gemm-perf-handoff-completed-items-2026-10.md) and [done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md](../../done/093-flux2-gpu-performance-optimization-plan-completed-items-2026-10.md).
 
-The FLUX.1 DiT gap (Part 2) is also tracked in the [performance pickup](../2026-10-30-performance-pickup.md) (rows 2-4). The measurement rules are in [../../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md).
+The FLUX.1 DiT gap (Part 2) is also tracked in the [performance pickup](../2026-11-08-performance-plan.md) (rows 2-4). The measurement rules are in [../../reference/performance-measurement-rules.md](../../reference/performance-measurement-rules.md).
 
 ---
 

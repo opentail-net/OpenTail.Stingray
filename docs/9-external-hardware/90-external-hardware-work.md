@@ -95,5 +95,5 @@ Hardware-only verification items taken out of the plans so that the plans carry 
 > from: `docs/2-coverage/2026-10-03-streamed-residency-plan.md`
 - [ ] CUDA streamed path (not done)
 
-> from: `docs/4-performance/2026-10-10-inference-improvement-leads-plan.md`
+> from: `docs/4-performance/2026-11-08-performance-plan.md`
 - [ ] **A10** CUDA decode attention (`llm_attention`, `_bf16`, `_q8_0`) has the identical one-block-per-head, one-thread-per-key structure; needs an NVIDIA machine to measure before porting.

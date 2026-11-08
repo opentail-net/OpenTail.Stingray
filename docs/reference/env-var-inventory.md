@@ -85,7 +85,7 @@ verified" Bonsai2 PRISM gate.)
 settings — `MicroGemmKernel.ReadFromEnvironment`/`VulkanPath2Dispatcher.ReadFromEnvironment` no
 longer read the retired names. This is a name reduction, not a review of the `experimental`
 surface's dead-code candidates — that per-variable owner review remains open, see
-`04-quality-of-life-improvements-plan.md` item 1.)
+`2026-11-08-product-plan.md` item 1.)
 
 **Reconciled again 2026-08-31 — `KnownEnvironmentVariables.All` now contains **176** names**
 (added `STINGRAY_DEBUG_COSYVOICE3`, `STINGRAY_DUMP_CONVPOST_PATH`, `STINGRAY_DUMP_CONVPRE_PATH`,
@@ -135,7 +135,7 @@ the "now contains **NNN** names" sentence above. It makes new registry drift vis
 it does not by itself catch table-level row drift (that requires re-diffing the table against
 `KnownEnvironmentVariables.All`, which is what this reconciliation did by hand).
 
-This is Phase 0 deliverable 1 of `04-quality-of-life-improvements-plan.md`, and it is a
+This is Phase 0 deliverable 1 of `2026-11-08-product-plan.md`, and it is a
 prerequisite for `--print-effective-config`, saved profiles, and the `ExecutionPlan` work: none of
 those can be correct while the setting surface is unenumerated.
 
@@ -161,7 +161,7 @@ groups (e.g. the three `SNAPKV_*` budget/window/recency knobs, which are one fea
 were classified together rather than letting an arbitrary alphabetical split give two siblings
 different classes. None of this is a promise that every `experimental` row is equally unimportant —
 it means none of them has had an owner review yet, which is the explicit remaining work this
-reconciliation does NOT close (see `04-quality-of-life-improvements-plan.md`).
+reconciliation does NOT close (see `2026-11-08-product-plan.md`).
 
 **Retirement is the point, not documentation.** The QoL plan inventories these but retires none. A
 surface of 162 variables is itself the usability defect. Expect a meaningful fraction of the

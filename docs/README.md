@@ -46,10 +46,10 @@ ordered list of open work**; the folders hold the detail docs behind its items. 
 is the priority.
 
 The latest session report and proposed next plan (what was done with evidence, what was found wrong in the docs, ranked next steps,
-owner decisions) is [2026-10-31-session-report-and-next-plan.md](2026-10-31-session-report-and-next-plan.md). It is a report, not
+owner decisions) is [2026-11-08-open-work-merged.md#open-steps-from-the-2026-10-31-session](2026-11-08-open-work-merged.md#open-steps-from-the-2026-10-31-session). It is a report, not
 the backlog: move any item from it into 00-current-work.md when someone takes it on.
 
-The plan being worked from it is [2026-10-31-autonomous-plan-2.md](00-current-work.md#open-work-as-of-2026-11-03) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](00-current-work.md#open-work-as-of-2026-11-03), and what is worth doing after that, checked against the code, is [plan 4](00-current-work.md#open-work-as-of-2026-11-03).
+The plan being worked from it is [2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31](00-current-work.md#open-work-as-of-2026-11-03) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](00-current-work.md#open-work-as-of-2026-11-03), and what is worth doing after that, checked against the code, is [plan 4](00-current-work.md#open-work-as-of-2026-11-03).
 Two reference documents came out of it: the [request parameter audit](reference/request-parameter-audit-2026-10-31.md) (which fields of the OpenAI
 and Anthropic endpoints are honoured, refused or ignored, and why) and the [specs for the client-disconnect test and the server
 telemetry canary](done/2026-10-31-server-lifecycle-and-canary-specs.md).
@@ -59,7 +59,7 @@ telemetry canary](done/2026-10-31-server-lifecycle-and-canary-specs.md).
 | [1-correctness/](1-correctness) | Bugs in what is already claimed ([bugstofix.md](1-correctness/bugstofix.md)). Most correctness items are short enough to live in 00-current-work.md itself. |
 | [2-coverage/](2-coverage) | Model families not yet supported or half built: DeepSeek V3.2/V4 (058). Closed coverage plans (Qwen3.5 MoE/GDN, Gemma 4 E4B vision, GGML ops, ACE-Step) are in [done/](done) |
 | [3-product-and-runtime/](3-product-and-runtime) | Front door (103), release checklist, configuration ownership (04), multi-model runtime (032), sessions (010, 051) |
-| [4-performance/](4-performance) | [perf-sweep-plan.md](4-performance/perf-sweep-plan.md) across models, then [gpu/](4-performance/gpu) (vulkan-gemm), [diffusion/](4-performance/diffusion) (069, 093, 094), [audio/](4-performance/audio) (079, 080) |
+| [4-performance/](4-performance) | [2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md) across models, then [gpu/](4-performance/gpu) (vulkan-gemm), [diffusion/](4-performance/diffusion) (069, 093, 094), [audio/](4-performance/audio) (079, 080) |
 | [9-external-hardware/](9-external-hardware) | Work that needs hardware this machine lacks: CUDA, ARM64, a discrete GPU |
 
 File numbers inside folders are the order the documents were written, kept so that code comments

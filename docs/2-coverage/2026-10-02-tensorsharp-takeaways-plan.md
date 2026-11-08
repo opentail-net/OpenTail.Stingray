@@ -1,4 +1,5 @@
 # TensorSharp takeaways (2026-10-02)
+> Ticked items moved to [done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-11.md](../done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-11.md) on 2026-11-08.
 
 > Completed items moved to [done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md](../done/2026-10-02-tensorsharp-takeaways-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 
@@ -27,7 +28,7 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
     every call) and an unbounded pure-spin pool, on SmolLM2-1.7B shapes.
   - Bounded spin-then-park on **tiny** models was never measured. That is where the remaining decode
     gap is: SmolLM2-135M ~0.55x and Qwen2.5-0.5B ~0.75x of llama.cpp, attributed to per-call
-    overhead (`perf-sweep-plan.md`).
+    overhead (`2026-11-08-performance-plan.md`).
 - **Expect less than claimed:** this machine has 8 cores, not 122.
 
 ### Result, 2026-10-02: shipped **opt-in** (`STINGRAY_CPU_POOL=spin`)
@@ -74,8 +75,6 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
   batched expert loops, so the spinners compete with them. A concurrent multi-user server
   workload has also not been measured.
 - **Next, if pursued:**
-  - [x] Evaluate a per-model or per-phase policy (pool for dense decode only). *(Per phase is what ships: decode loops only. 2026-11-01: a per-process policy, on only while one engine is loaded, would gain +4..8% on these two models, well under the 19..27% measured on 2026-10-02, and would be a regression the moment a second engine loads; not worth the policy. Stays opt-in.)*
-  - [x] Check concurrent-server throughput before any default change. *(Measured 2026-11-01 (plan 6 D1; `SpinPoolConcurrencyBenchTests`, Ryzen 7 5700G, 16 logical CPUs, background CPU about 9 to 10%, 5 interleaved rounds, 64 greedy tokens per engine, identical tokens in every mode): aggregate decode throughput with the pool on against off, for 1, 2 and 3 engines decoding at once in one process: Qwen2.5-0.5B 1.08x, 0.98x, 0.92x; SmolLM2-1.7B 1.04x, **0.80x**, 0.98x (these timed the prefill too; rerun 2026-11-03 with prefill outside the timer, plan 6 G1: Qwen2.5-0.5B 1.11x, 0.93x, 0.95x; SmolLM2-1.7B 1.06x, **0.70x**, 0.98x). About half of all pool dispatches found the pool busy and fell back to `Parallel.For`. A single engine decodes on one thread at a time, so it is the only case where the pool helps; a second engine in the process (multi-model serving) is a second caller of the one static pool. **Verdict: it must not become the default.***)*
   - [ ] Measure on a many-core host, where TensorSharp measured its gains. *(Not possible here: 16 logical CPUs, and a measurement on this host says nothing about 100+ cores.)*
 - **Measurement caution recorded:** mid-session this machine's memory-bound throughput dropped
   about 25% for reasons outside the code (a HEAD build showed the same drop). Only same-run
@@ -92,7 +91,7 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
 - **Also worth copying:** `TS_CPU_QGEMM_VERIFY`, which compares a finished GEMM against the
   per-row path.
 - **Use:** a second, readable implementation next to the vendored ggml for the cross-check in
-  `perf-sweep-plan.md` 10.2 follow-ups (Q8_KS vs Q8_K, Q3_K batched vs decode format).
+  `2026-11-08-performance-plan.md` 10.2 follow-ups (Q8_KS vs Q8_K, Q3_K batched vs decode format).
 
 ### Result, 2026-10-02
 

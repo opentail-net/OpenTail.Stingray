@@ -1,4 +1,5 @@
 # Golden parity harness, automatic reference capture and hash-pinned receipts (plan)
+> Ticked items moved to [done/2026-10-08-golden-parity-and-admission-tooling-plan-completed-items-2026-11.md](../done/2026-10-08-golden-parity-and-admission-tooling-plan-completed-items-2026-11.md) on 2026-11-08.
 
 > Completed items moved to [done/2026-10-08-golden-parity-and-admission-tooling-plan-completed-items-2026-10.md](../done/2026-10-08-golden-parity-and-admission-tooling-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 

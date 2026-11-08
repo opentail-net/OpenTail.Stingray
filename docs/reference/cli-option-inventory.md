@@ -28,7 +28,7 @@ with all three descriptions now populated â a pure information gain, no row
 The **Class** column is hand classification, and the generator preserves existing values by command
 + option name, so a regeneration never discards it. **Classification was complete for every row
 as of 2026-09-01** (20 rows are blank now; see above) â this was the outstanding half of Phase 0 deliverable 1 of
-`04-quality-of-life-improvements-plan.md`, alongside the same pass on `env-var-inventory.md`.
+`2026-11-08-product-plan.md`, alongside the same pass on `env-var-inventory.md`.
 
 The declared source count is test-guarded by
 `StaticPlanConfigurationTests.CliOptionInventory_DeclaredCountMatchesSource`. That guard detects the
@@ -36,7 +36,7 @@ next drift immediately; it does not substitute for re-running the classification
 that arrives blank.
 
 Companion to `env-var-inventory.md`; together they are the starting point for the configuration work
-in `04-quality-of-life-improvements-plan.md`. A current source-backed inventory is required before
+in `2026-11-08-product-plan.md`. A current source-backed inventory is required before
 the precedence chain (`CLI pin > profile > host > environment > default`) can be specified.
 
 Class meanings (deliberately prose, not a table â a `` | `class-name` | `` row here would be

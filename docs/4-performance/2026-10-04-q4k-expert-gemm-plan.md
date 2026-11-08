@@ -1,6 +1,6 @@
 # Q4_K (and Q6_K) GEMM for CPU MoE expert prefill
 
-**Thread:** [CPU performance](perf-sweep-plan.md).
+**Thread:** [CPU performance](2026-11-08-performance-plan.md).
 
 ## Checklist (2026-10-30; code checked)
 

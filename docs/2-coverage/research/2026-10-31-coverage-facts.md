@@ -64,10 +64,6 @@ From the llama.cpp server history ([PR #10783, "server : fix logprobs, make it O
 
 ## Open checks from this research
 
-- [x] DiffusionGemma config values and model-card numbers recorded (section 1), 2026-10-31
-- [x] Qwen3.8-Flash-Next UD-IQ1_S size (72.5 GB) confirmed from two sources
-- [x] Qwen1.5-MoE-A2.7B-Chat licence tag confirmed (`tongyi-qianwen-research`); read the LICENSE file before any commercial decision
-- [x] Trinity-Mini (Apache 2.0) and Phi-3.5-MoE (MIT) licences confirmed from the repo cards
 - [ ] GLM-5.3 UD-Q2_K_XL size (~236.4 GiB): not found online; Unsloth lists 239 GB for UD-IQ2_M
 - [ ] DeepSeek-V4-Flash Q2_K size: sources conflict (98.6 vs 102 vs 103 GB); no official V4-Flash GGUF confirmed
 - [ ] Hunyuan-A13B-Instruct licence: territory terms not confirmed for A13B
