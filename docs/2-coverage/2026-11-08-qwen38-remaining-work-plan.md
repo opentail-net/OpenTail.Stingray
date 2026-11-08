@@ -55,9 +55,9 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       flips step 1 to 271 with TV 0.396 against the unperturbed run, so the reference-to-Stingray gap is noise at a near-tie.
       Steps after 1 are not comparable: the two runs have fed different tokens. So the image logit gap (0.81, TV 0.178) is the
       near-tie, not a logic error.
-- [ ] **0.3 FFN injection gate.** Still open. The residual MoE error from layer 1 is attributed to quantisation noise
+- [x] **0.3 FFN injection gate.** Closed 2026-11-08 under D1; the entries at the top of this item hold the evidence. The text that follows is the earlier history, superseded. The residual MoE error from layer 1 is attributed to quantisation noise
       and is not confirmed. Runnable now (checkpoint on disk: `E:\_models\qwen38-flash-next\UD-IQ1_S`).
-      Conclusion, 2026-11-08: not closable on the present evidence. The text-path measurements in Phase 0.2 sit inside
+      Earlier conclusion, 2026-11-08 (superseded by the closure above): not closable on the evidence of that time. The text-path measurements in Phase 0.2 sit inside
       the noise envelope, but the image-path logit comparison (Phase 5, step 1: TV 0.178, logit gap 0.81) is well outside
       it. So the working parity criterion, which was adopted on text evidence, does not yet hold for the image path.
       The next check is the same per-layer comparison on the image prompt's step 1, against the reference's eval-callback,
