@@ -802,3 +802,23 @@ approve admission later (Phase 8). Qwen 3.8 stays unadmitted and unadvertised un
 - Not mutation-checked: removing the cache disposal or the budget check. The tests were not run against a broken engine.
 - Still open in Phase 2: the real-checkpoint cancellation memory check (the Qwen batching test checks reservations, not
   cache disposal), and queue limits beyond the single budget case (maximum queue length, rejection when full).
+
+## Phase 2 (queue limit), design 2026-11-08, recorded before code
+
+Current state (verified in `ContinuousBatchingEngine.cs`): the request queue `_queue` is an unbounded channel. The batcher
+drains it into a local `pending` FIFO (line ~587), and `AdmitPending` moves requests from `pending` into `prefilling`/`active`
+under the KV budget. So a waiting request is in `pending`, not in the channel, and nothing bounds how many wait.
+
+Design:
+- New optional limit `maxQueuedRequests` (default unlimited, so no behaviour change). When set, the queue is bounded and
+  a request arriving when `queued >= limit` is refused immediately with a typed exception, not held.
+- "Queued" = requests written to the channel but not yet admitted: the channel count plus `pending.Count`. Tracked with an
+  `Interlocked` counter, incremented on submit.
+- The counter must be decremented on every path that removes a waiting request: admission (`AdmitPending`), cancellation
+  while still waiting, and the shutdown drain (`TryRead` at line ~879). Each exit path is listed here so none is missed.
+- The error type and its mapping to a server status (429 or 503) are a product choice. This step adds the exception only;
+  the server mapping is left for the owner.
+
+Tests (synthetic, counting fake pass): limit N with a budget that admits one at a time; the (N+1)th submit is refused
+immediately; after one is admitted a new submit succeeds; cancelling a waiting request frees its slot; the counter returns
+to zero after everything drains.
