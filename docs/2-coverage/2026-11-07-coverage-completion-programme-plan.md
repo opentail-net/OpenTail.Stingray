@@ -402,3 +402,23 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
      and llama.cpp's own batched and token-by-token paths disagree at that step.
 - Phase 0 is closed under this criterion. Qwen 3.8 stays unadmitted (admission is a separate gate, rule 14).
 - Next: Phase 1 (per-sequence state).
+
+## Phase 1 (per-sequence state), status 2026-11-08
+
+- Done: `Qwen4ExpSequenceState` owns all per-sequence state: GDN conv and recurrent state per layer, PLE conv history
+  and token counter, the PLE n-gram hasher (token history), and the four QSA caches. Model weights and config stay in
+  `Qwen4ExpForwardPass`; per-token execution scratch (residual stream, matmul buffers) stays there too, because it is
+  rebuilt on every call.
+- `CreateSequenceState()` gives a new sequence with its own hasher. `Forward(token, position, sequence)` runs one sequence;
+  calls on different sequences may be interleaved. The old `Forward(token, position)` uses the default sequence.
+- Lifecycle: `Reset`, deep `Clone` and `Snapshot`, `Restore`, and `Dispose` (a disposed sequence rejects use with
+  `ObjectDisposedException`).
+- Behaviour unchanged: real-weight logits and `l_last_24` are bit-identical to the pre-refactor run.
+- Acceptance tests, real checkpoint, `Qwen4ExpSequenceIsolationTests` (5 tests, all passing, 47 s):
+  - two sequences interleaved match their separate runs bitwise;
+  - resetting one sequence leaves the other's continuation bitwise unchanged;
+  - a clone continues identically, then diverges independently;
+  - a disposed sequence rejects use, and the other sequence is unaffected;
+  - restore returns the sequence to its snapshot.
+- Not yet: Phase 1 acceptance was specified on "actual forward-pass fixtures"; these are real-weight tests, so Phase 1 is
+  complete against that wording. Phase 2 (batching and paged state) is next.

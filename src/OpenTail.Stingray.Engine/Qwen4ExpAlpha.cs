@@ -837,6 +837,20 @@ public sealed class Qwen4ExpPleHasher
 
     public void Reset() => _tokenHistory.Clear();
 
+    private Qwen4ExpPleHasher(Qwen4ExpPleHasher source)
+    {
+        _ngramSize = source._ngramSize;
+        _headsPerNgram = source._headsPerNgram;
+        _eosTokenId = source._eosTokenId;
+        _multipliers = source._multipliers;   // immutable tables, shared
+        _headOffsets = source._headOffsets;
+        _headVocabSizes = source._headVocabSizes;
+        _tokenHistory.AddRange(source._tokenHistory);
+    }
+
+    /// <summary>Copy with its own token history; the constant tables are shared.</summary>
+    public Qwen4ExpPleHasher Clone() => new(this);
+
     /// <summary>
     /// Computes row indices in the PLE table for each head at the current token position.
     /// Heads are partitioned by n-gram length (n = 2 .. ngramSize).

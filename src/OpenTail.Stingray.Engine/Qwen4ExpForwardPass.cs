@@ -96,16 +96,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
     // Recurrent & State buffers
     private readonly float[] _resHc;             // [hc * embedDim]
-    private readonly float[][] _gdnConvState;    // per layer: [(dConv - 1) * convDim]
-    private readonly float[][] _gdnState;        // per layer: [numVHeads * headDim * headDim] in FP32
-    private readonly float[] _pleConvHistory;    // [histSlots * hcDim]
-    private int _pleTokensSeen;
-
-    // QSA KV cache and Indexer cache
-    private readonly List<float[]>[] _qsaKeyCache;
-    private readonly List<float[]>[] _qsaValCache;
-    private readonly List<float[]>[] _qsaRawIndexKCache;
-    private readonly List<float[]>[] _qsaPooledKeys;
+    private Qwen4ExpSequenceState _seq = null!; // per-sequence state, see Qwen4ExpSequenceState
 
     // Scratch buffers
     private readonly float[] _mixed;
@@ -180,35 +171,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             : (numPleHeads > 0 ? _embedDim / numPleHeads : 160);
 
         _resHc = new float[_hcDim];
-        _gdnConvState = new float[_numLayers][];
-        _gdnState = new float[_numLayers][];
-        for (int l = 0; l < _numLayers; l++)
-        {
-            if (hp.IsRecurrentLayer(l))
-            {
-                _gdnConvState[l] = new float[Math.Max(1, (_ssmDConv - 1) * _convDim)];
-                _gdnState[l] = new float[Math.Max(1, _ssmDtRank * _ssmDState * _ssmDState)];
-            }
-            else
-            {
-                _gdnConvState[l] = Array.Empty<float>();
-                _gdnState[l] = Array.Empty<float>();
-            }
-        }
-
-        _pleConvHistory = new float[_pleHistSlots * _hcDim];
-
-        _qsaKeyCache = new List<float[]>[_numLayers];
-        _qsaValCache = new List<float[]>[_numLayers];
-        _qsaRawIndexKCache = new List<float[]>[_numLayers];
-        _qsaPooledKeys = new List<float[]>[_numLayers];
-        for (int l = 0; l < _numLayers; l++)
-        {
-            _qsaKeyCache[l] = new List<float[]>();
-            _qsaValCache[l] = new List<float[]>();
-            _qsaRawIndexKCache[l] = new List<float[]>();
-            _qsaPooledKeys[l] = new List<float[]>();
-        }
+        _seq = CreateSequenceState();
 
         _mixed = new float[_embedDim];
         _inject = new float[_hc];
@@ -425,8 +388,8 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         if (_pleHasher != null && _tensors.PerLayerTokEmbd != null && _pleHeadRows != null)
         {
-            _pleHasher.PushToken(token);
-            _pleHasher.ComputeRowIndices(_pleHeadRows);
+            _seq.PleHasher!.PushToken(token);
+            _seq.PleHasher!.ComputeRowIndices(_pleHeadRows);
 
             var info = _tensors.PerLayerTokEmbd.Value.Info;
             long totalRows = info.Dimensions.Length > 1 ? info.Dimensions[1] : 1;
@@ -500,17 +463,17 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         // Shift history slots left
         if (_pleHistSlots > 1)
         {
-            Array.Copy(_pleConvHistory, _hcDim, _pleConvHistory, 0, (_pleHistSlots - 1) * _hcDim);
+            Array.Copy(_seq.PleConvHistory, _hcDim, _seq.PleConvHistory, 0, (_pleHistSlots - 1) * _hcDim);
         }
-        normConvIn.CopyTo(_pleConvHistory.AsSpan((_pleHistSlots - 1) * _hcDim, _hcDim));
-        _pleTokensSeen++;
+        normConvIn.CopyTo(_seq.PleConvHistory.AsSpan((_pleHistSlots - 1) * _hcDim, _hcDim));
+        _seq.PleTokensSeen++;
 
         // Step dilated depthwise causal 1D conv
         Span<float> convOut = stackalloc float[_hcDim];
         if (layer.PleConv1d != null)
         {
             Qwen4ExpPle.StepDilatedConv(
-                _pleConvHistory, GetTransposedPleConv(layer), convOut,
+                _seq.PleConvHistory, GetTransposedPleConv(layer), convOut,
                 _hcDim, _pleConvKernel, _pleNgramSize, _pleHistSlots);
         }
 
@@ -551,7 +514,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
 
         // Conv1D over QKV channels
-        var convState = _gdnConvState[layerIdx];
+        var convState = _seq.GdnConvState[layerIdx];
         Span<float> qkvPostConv = stackalloc float[qkvDim];
 
         if (layer.SsmConv1d != null)
@@ -667,7 +630,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         var ssmA = AsFloatSpan(layer.SsmA);
         var ssmDt = AsFloatSpan(layer.SsmDt);
         var normWeight = layer.SsmNorm != null ? AsFloatSpan(layer.SsmNorm) : ReadOnlySpan<float>.Empty;
-        var gdnState = _gdnState[layerIdx];
+        var gdnState = _seq.GdnState[layerIdx];
 
         if (_q4eDebug && layerIdx == 0 && position <= 4)
         {
@@ -759,18 +722,18 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         // Store K and V in cache
         var kCached = k.ToArray();
         var vCached = v.ToArray();
-        _qsaKeyCache[layerIdx].Add(kCached);
-        _qsaValCache[layerIdx].Add(vCached);
+        _seq.QsaKeyCache[layerIdx].Add(kCached);
+        _seq.QsaValCache[layerIdx].Add(vCached);
 
         // Maintain QSA raw indexer-K cache and form K-pools
         if (layer.IndexKProj != null)
         {
             Span<float> rawIdxK = stackalloc float[_indexerKeyLength];
             MatVec(layer.IndexKProj.Value, input, rawIdxK);
-            _qsaRawIndexKCache[layerIdx].Add(rawIdxK.ToArray());
+            _seq.QsaRawIndexKCache[layerIdx].Add(rawIdxK.ToArray());
 
             // Check if a full pool of kpool tokens has just been completed
-            int rawCount = _qsaRawIndexKCache[layerIdx].Count;
+            int rawCount = _seq.QsaRawIndexKCache[layerIdx].Count;
             if (rawCount % _indexerKPool == 0)
             {
                 int poolIdx = (rawCount / _indexerKPool) - 1;
@@ -778,7 +741,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 for (int p = 0; p < _indexerKPool; p++)
                 {
                     int t = poolIdx * _indexerKPool + p;
-                    _qsaRawIndexKCache[layerIdx][t].CopyTo(blockKeys.Slice(p * _indexerKeyLength, _indexerKeyLength));
+                    _seq.QsaRawIndexKCache[layerIdx][t].CopyTo(blockKeys.Slice(p * _indexerKeyLength, _indexerKeyLength));
                 }
                 Span<float> pooledKey = stackalloc float[_indexerKeyLength];
                 var indexKNorm = AsFloatSpan(layer.IndexKNorm);
@@ -788,11 +751,11 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 int blockStartPos = poolIdx * _indexerKPool;
                 int indexerRopeDim = Math.Min(_ropeDim, _indexerKeyLength);
                 Qwen4ExpRope.ApplyImRope(pooledKey, blockStartPos, 1, _indexerKeyLength, _hp.RopeDimensionSections, indexerRopeDim, _ropeTheta);
-                _qsaPooledKeys[layerIdx].Add(pooledKey.ToArray());
+                _seq.QsaPooledKeys[layerIdx].Add(pooledKey.ToArray());
             }
         }
 
-        int numTokens = _qsaKeyCache[layerIdx].Count;
+        int numTokens = _seq.QsaKeyCache[layerIdx].Count;
         float invSqrtD = 1.0f / MathF.Sqrt(_headDim);
 
         Span<float> attnOut = _attnOutScratch;
@@ -800,9 +763,9 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
 
         // Perform sparse block selection if indexer is active and topK is specified
         HashSet<int>? selectedTokenIndices = null;
-        if (_indexerTopK > 0 && layer.IndexQProj != null && _qsaPooledKeys[layerIdx].Count > 0)
+        if (_indexerTopK > 0 && layer.IndexQProj != null && _seq.QsaPooledKeys[layerIdx].Count > 0)
         {
-            int totalPools = _qsaPooledKeys[layerIdx].Count;
+            int totalPools = _seq.QsaPooledKeys[layerIdx].Count;
             int topKPoolCount = Math.Max(1, _indexerTopK / _indexerKPool);
 
             // Project Indexer Q
@@ -829,7 +792,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             Span<float> poolScores = stackalloc float[totalPools];
             for (int p = 0; p < totalPools; p++)
             {
-                poolScores[p] = Qwen4ExpQsa.ComputeBlockScore(idxQFull, _qsaPooledKeys[layerIdx][p], _indexerHeadCount, _indexerKeyLength);
+                poolScores[p] = Qwen4ExpQsa.ComputeBlockScore(idxQFull, _seq.QsaPooledKeys[layerIdx][p], _indexerHeadCount, _indexerKeyLength);
             }
 
             Span<int> selectedPools = stackalloc int[totalPools];
@@ -870,7 +833,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 }
                 else
                 {
-                    var kt = _qsaKeyCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
+                    var kt = _seq.QsaKeyCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
                     scores[t] = TensorPrimitives.Dot(qh, kt) * invSqrtD;
                 }
             }
@@ -885,7 +848,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
                 float weight = scores[t];
                 if (weight <= 0f || float.IsNaN(weight)) continue;
 
-                var vt = _qsaValCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
+                var vt = _seq.QsaValCache[layerIdx][t].AsSpan(kvHead * _headDim, _headDim);
                 for (int d = 0; d < _headDim; d++)
                 {
                     outHead[d] += vt[d] * weight;
@@ -1195,7 +1158,7 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     public void TruncateTo(int length)
     {
         if (length == 0) { ResetCache(); return; }
-        if (length != _pleTokensSeen)
+        if (length != _seq.PleTokensSeen)
         {
             // GDN conv/recurrent state and the QSA raw-key/pool caches are destructively updated
             // per token (SupportsPartialRewind defaults to false and is not overridden here), so
@@ -1204,26 +1167,34 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
             // whatever state existed unchanged while callers believed the rewind had happened.
             throw new NotSupportedException(
                 $"Qwen4ExpForwardPass (alpha): TruncateTo({length}) is not supported -- only " +
-                $"full reset (TruncateTo(0)) or a no-op (current length {_pleTokensSeen}) is " +
+                $"full reset (TruncateTo(0)) or a no-op (current length {_seq.PleTokensSeen}) is " +
                 "representable, because GDN/QSA state is destructively updated per token.");
         }
     }
 
     public void ResetCache()
     {
-        _pleTokensSeen = 0;
-        _pleHasher?.Reset();
-        Array.Clear(_pleConvHistory);
+        _seq.Reset();
         Array.Clear(_resHc);
-        for (int l = 0; l < _numLayers; l++)
-        {
-            if (_gdnConvState[l].Length > 0) Array.Clear(_gdnConvState[l]);
-            if (_gdnState[l].Length > 0) Array.Clear(_gdnState[l]);
-            _qsaKeyCache[l].Clear();
-            _qsaValCache[l].Clear();
-            _qsaRawIndexKCache[l].Clear();
-            _qsaPooledKeys[l].Clear();
-        }
+    }
+
+    /// <summary>A new, empty sequence state for this model (its own PLE token history and caches).</summary>
+    public Qwen4ExpSequenceState CreateSequenceState() => new(
+        _numLayers,
+        _hp.IsRecurrentLayer,
+        (_ssmDConv - 1) * _convDim,
+        _ssmDtRank * _ssmDState * _ssmDState,
+        _pleHistSlots * _hcDim,
+        _hp.PleLayers != null && _hp.PleLayers.Count > 0 ? new Qwen4ExpPleHasher(_hp) : null);
+
+    /// <summary>Forward pass for one token of a given sequence. Calls on different sequences may be interleaved.</summary>
+    public ReadOnlySpan<float> Forward(int token, int position, Qwen4ExpSequenceState sequence)
+    {
+        sequence.ThrowIfDisposed();
+        var previous = _seq;
+        _seq = sequence;
+        try { return Forward(token, position); }
+        finally { _seq = previous; }
     }
 
     public void Dispose() { }
