@@ -252,3 +252,20 @@ taking on Phase 2B/3's real implementation work:
   (`SimdKernels.MatVec` with Q8_0 weights), with a regression test, once the whole chain is understood.
 - **Next:** find why `ssm_out` (Q5_K, input `final_output`) amplifies the error. Check the Q5_K x Q8_K kernel against
   `ggml_vec_dot_q5_K_q8_K` in the pinned source, and dump `ssm_out` intermediates if needed.
+
+### Phase 0.2 fix, 2026-11-08: Q5_K matvec numerics (Qwen path only)
+
+- llama.cpp's ssm_out-0 output is reproduced to 5.6e-7 relative error by the Q5_K x Q8_K dot on llama.cpp's own
+  input (Python check, llama.cpp Q5_K dequant formula and Q8_K quantiser). With f32 activations the error is 2.2%.
+- Stingray's generic `SimdKernels.MatVec` keeps f32 activations for Q5_K. The Qwen path now calls
+  `Qwen4ExpForwardPass.MatVecLlamaNumerics`, which uses `MatVecQ5K_Q8K` for Q5_K. Other dtypes already quantise
+  like llama.cpp and are unchanged.
+- Scope: this changes only the Qwen 3.8 forward pass. Other models still use the generic dispatch, so they are not affected.
+  The generic Q5_K decode switch `STINGRAY_Q5K_DECODE_Q8K` is also unchanged. Its documented speed cost applies to other models,
+  not to Qwen's correctness path. Speed of the Qwen path is not measured yet (rule 7 pass comes later).
+- Regression test: `Qwen4ExpQ5KDispatchTests` (synthetic Q5_K weights; the dispatch must equal `MatVecQ5K_Q8K`, and the f32
+  kernel must differ, so the test can detect a regression).
+- Effect on the real checkpoint, layer 0 (last token, with the HC rounding experiment on): `linear_attn_out_0` 2.2% -> 0.36%,
+  `l_last_0` 1.46% -> 0.37%, logits relative error 11% -> 6.5% (cosine 0.9979), top-1 still 11751 (matches reference).
+- Still open: the MoE error from layer 1 on (`ffn_out` 2%, growing to 19-27% at layers 5-11). Routed experts computed in
+  f32 give the same error, so it is not the expert matvec's activation rounding.

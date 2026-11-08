@@ -16,6 +16,64 @@ public sealed class Qwen4ExpRefDumpTests
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
         "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
 
+    /// <summary>
+    /// Phase 0.2: feed llama.cpp's own final_output-0 into Stingray's layer-0 ssm_out weights (dequantised f32, dot per row)
+    /// and compare with llama.cpp's linear_attn_out-0. Separates a weight/orientation error from an input error.
+    /// </summary>
+    [Fact]
+    public unsafe void SsmOutLayer0_ReferenceInput_VersusReferenceOutput()
+    {
+        string? refDir = Environment.GetEnvironmentVariable("QWEN_REF_DUMP_DIR");
+        Assert.SkipUnless(refDir is not null && Directory.Exists(refDir),
+            "Set QWEN_REF_DUMP_DIR to the llama.cpp eval-callback dump directory.");
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+        var ssmOut = tensors.Layers[0].SsmOut!.Value;
+
+        int inDim = 6144;
+        int outDim = (int)(ssmOut.Info.ElementCount / inDim);
+        var w = new float[ssmOut.Info.ElementCount];
+        long byteSize = OpenTail.Stingray.Core.DTypeInfo.ByteSize((int)ssmOut.Info.ElementCount, ssmOut.DType);
+        OpenTail.Stingray.Cpu.Dequantize.ToFloat32(new ReadOnlySpan<byte>(ssmOut.DataPtr, checked((int)byteSize)), w, ssmOut.DType, w.Length);
+
+        var finalOut = ReadLastToken(Path.Combine(refDir!, "final_output_0.bin"), inDim);
+        var refLinear = ReadLastToken(Path.Combine(refDir!, "linear_attn_out_0.bin"), outDim);
+
+        var y = new double[outDim];
+        for (int r = 0; r < outDim; r++)
+        {
+            double acc = 0;
+            for (int c = 0; c < inDim; c++) acc += (double)w[r * inDim + c] * finalOut[c];
+            y[r] = acc;
+        }
+
+        double num = 0, den = 0, dot = 0, ny = 0;
+        for (int r = 0; r < outDim; r++)
+        {
+            double d = y[r] - refLinear[r];
+            num += d * d;
+            den += (double)refLinear[r] * refLinear[r];
+            dot += y[r] * refLinear[r];
+            ny += y[r] * y[r];
+        }
+        Console.WriteLine($"ssm_out(ref final_output) vs ref linear_attn_out: rel={Math.Sqrt(num / den):G6} cos={dot / Math.Sqrt(ny * den):F6}");
+    }
+
+    private static float[] ReadLastToken(string path, int width)
+    {
+        var all = File.ReadAllBytes(path);
+        int floats = all.Length / 4;
+        int offset = floats - width; // last token is the last slice of a [width, n_tokens] tensor
+        var result = new float[width];
+        Buffer.BlockCopy(all, offset * 4, result, 0, width * 4);
+        return result;
+    }
+
     [Fact]
     public void PromptPass_DumpsLastPositionResidualsAndLogits()
     {

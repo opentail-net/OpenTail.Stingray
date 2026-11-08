@@ -40,6 +40,10 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
     private readonly string? _dumpDir = Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_DIR");
     private readonly int _dumpPos = int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_Q4E_DUMP_POS"), out int p) ? p : -1;
     private bool _dumpActive;
+    // Phase 0.2 experiment: ssm_out as an f32 dot instead of the quantised MatVec. Off by default.
+    private static readonly bool SsmOutF32Experiment = Environment.GetEnvironmentVariable("STINGRAY_Q4E_SSMOUT_F32") == "1";
+    // Phase 0.2 experiment: routed experts as dequantised f32 dots. Off by default.
+    private static readonly bool ExpertF32Experiment = Environment.GetEnvironmentVariable("STINGRAY_Q4E_EXPERT_F32") == "1";
     private double[]? _layerSumAccum;
     private double[]? _hcCombine0Accum;
     private double[]? _linearAttnOut0Accum;
@@ -683,7 +687,18 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         // Output projection
         if (layer.SsmOut != null)
         {
-            MatVec(layer.SsmOut.Value, gdnOut, output);
+            if (SsmOutF32Experiment)
+            {
+                // Experiment (Phase 0.2): dot the dequantised f32 weights, no activation rounding.
+                var w = AsFloatSpan(layer.SsmOut);
+                int inDim = gdnOut.Length;
+                for (int r = 0; r < output.Length; r++)
+                    output[r] = TensorPrimitives.Dot(w.Slice(r * inDim, inDim), gdnOut);
+            }
+            else
+            {
+                MatVec(layer.SsmOut.Value, gdnOut, output);
+            }
         }
     }
 
@@ -992,6 +1007,16 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         int totalRows = (int)tensor.Info.Dimensions[1];
         long bytesPerRow = (long)(inDim / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
         byte* expertPtr = tensor.DataPtr + ((long)expert * totalRows + rowOffset) * bytesPerRow;
+        if (ExpertF32Experiment)
+        {
+            // Experiment (Phase 0.2): dequantised f32 weights, no activation rounding.
+            int count = outDim * inDim;
+            var wf = new float[count];
+            Dequantize.ToFloat32(new ReadOnlySpan<byte>(expertPtr, checked((int)(outDim * bytesPerRow))), wf, tensor.DType, count);
+            for (int r = 0; r < outDim; r++)
+                outVec[r] = TensorPrimitives.Dot(wf.AsSpan(r * inDim, inDim), inVec);
+            return;
+        }
         fixed (float* outPtr = outVec, inPtr = inVec)
         {
             SimdKernels.MatVec(outPtr, expertPtr, inPtr, outDim, inDim, tensor.DType);
@@ -1020,8 +1045,21 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         int inDim = inVec.Length;
         fixed (float* outPtr = outVec, inPtr = inVec)
         {
-            SimdKernels.MatVec(outPtr, tensor.DataPtr, inPtr, outDim, inDim, tensor.DType);
+            MatVecLlamaNumerics(outPtr, tensor.DataPtr, inPtr, outDim, inDim, tensor.DType);
         }
+    }
+
+    /// <summary>
+    /// Matvec with llama.cpp's activation numerics for the Qwen 3.8 path. llama.cpp's Q5_K matmul quantises the
+    /// activation to Q8_K (ggml_vec_dot_q5_K_q8_K). The generic <see cref="SimdKernels.MatVec"/> keeps f32 activations
+    /// for Q5_K, which left a 2.2% error at ssm_out (Phase 0.2). Other dtypes already quantise like llama.cpp.
+    /// </summary>
+    public static void MatVecLlamaNumerics(float* output, byte* weights, float* input, int rows, int cols, DType dtype)
+    {
+        if (dtype == DType.Q5_K)
+            SimdKernels.MatVecQ5K_Q8K(output, weights, input, rows, cols);
+        else
+            SimdKernels.MatVec(output, weights, input, rows, cols, dtype);
     }
 
     private ReadOnlySpan<float> AsFloatSpan(Qwen4ExpTensorRef? tensorRef)
