@@ -92,8 +92,18 @@ Tests: `DeepSeek4AlphaTests` / `DeepSeek41AlphaTests` (component and metadata ch
   (ratio 128) layers. After 130 tokens, CSA has 32 blocks and HCA has 1. Before the first CSA block (position 3) the model
   matches the raw-only model exactly. From position 3 it differs (max diff 3.66e-7 on a logit scale of 1.0e-3). A CSA layer
   whose compressor or indexer tensors are missing is refused at construction, naming the tensor; before this, it crashed on
-  the first token with a null dereference. Still open: the planned tiny `deepseek4` GGUF against vendored llama.cpp b10306
-  (a numeric oracle). These tests check structure and behaviour, not values.
+  the first token with a null dereference. These tests check structure and behaviour, not values.
+  **Numeric oracle, attempted 2026-11-08 (blocked):** the oracle is the pinned build `bed0a8566` at
+  `examples/llama.cpp/llama.cpp/build-ref/bin/llama-completion.exe` (it runs; the 9 KB `tools/llama.cpp` exes do not). A tiny
+  `deepseek4` GGUF written by a scratch Python generator (not committed; shapes from `src/models/deepseek4.cpp`
+  `load_arch_tensors`) gets past the loader after these keys are added: `deepseek4.swiglu_clamp_exp`,
+  `deepseek4.attention.key_length_swa` and `value_length_swa` (without them the SWA head size is 0), `tokenizer.ggml.token_type`
+  as int32, and the tokenizer keys. Compressor tensors must be written only for non-zero ratios. Then it stops:
+  (a) ratio 0 layers (`0,0`): `-fit off -lv 4` shows `sched_reserve` and the process exits 127 with no message, and
+  `llama_kv_cache: layers = 0` for the non-SWA cache (`is_swa_any = 1`; the trunk layers are all SWA by `set_swa_pattern(0)`);
+  (b) ratio 4 or 128 layers: `GGML_ASSERT(ggml_nelements(a) == ne0*ne1)` in `ggml_reshape_2d`. The local build has no PDBs and
+  no debugger, so the failing op is not identified. Next: bisect tensor shapes against `deepseek4.cpp`, or find a llama.cpp
+  deepseek4 test fixture that loads.
 - [~] **Phase 3: V4 gate & audit record.** Gate [x] (`// deepseek4 - NOT admitted`). Plan 058's audit notes not updated.
 
 ### Part 2: DeepSeek-V4.1 Architecture Definition & Core Port

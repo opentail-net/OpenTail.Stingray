@@ -86,7 +86,11 @@ The vision tower (50-layer ViT, 1536 hidden width, merge size 2, erf-GELU, Lancz
 
 - [ ] **Independent implementation, synthetic (level 3):** the synthetic-GGUF comparison against llama.cpp was never run
    as such; a CPU llama.cpp build at `bed0a8566` now exists (`examples/llama.cpp/llama.cpp/build-ref`), so it is cheap to do. The
-   level-4 result below makes it lower priority.
+   level-4 result below makes it lower priority. **Status 2026-11-08: not run.** The binary loads and reports `bed0a8566`, but
+   the synthetic writer in `tests/OpenTail.Stingray.Tests.ForwardPass.Fast/MuseGlimmerSyntheticTests.cs` writes no tokenizer
+   metadata, so llama cannot load its file as is. Also unchecked: how to get logits out of the pinned binary
+   (`llama-eval-callback.exe` exists in `build-ref/bin`; its options are not confirmed yet). Next: a llama-loadable variant of
+   the writer (tokenizer keys, the keys in `src/models/muse-glimmer.cpp`), then one logit comparison.
 - [ ] **Follow-up (rule 7 performance pass):** wire `attn_gate` and the embedding norm into the batched `PrefillCore` GEMM path;
    the gate is a plain GEMM, so this should close most of the 10x prefill gap. Not started.
 
