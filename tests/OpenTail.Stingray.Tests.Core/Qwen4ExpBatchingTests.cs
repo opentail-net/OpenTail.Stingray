@@ -91,6 +91,37 @@ public sealed class Qwen4ExpBatchingTests
         Assert.Equal(expected, await survivor);
     }
 
+    [Fact]
+    public async Task ShortRequestFinishingFirst_LeavesLongerOnesIntact_AndReleasesMemory()
+    {
+        string? path = FindModel();
+        Assert.SkipUnless(path is not null, "Qwen3.8-Flash-Next UD-IQ1_S checkpoint is required (paged, 72.5 GB).");
+
+        using var model = GgufModel.Open(path!);
+        int totalLayers = (int)Convert.ToInt64(model.Metadata["qwen4exp.block_count"]);
+        var hp = Qwen4ExpHyperparams.FromMetadata(model.Metadata, totalLayers);
+        var tensors = Qwen4ExpTensorSet.Load(model, hp, totalLayers);
+        using var pass = new Qwen4ExpForwardPass(model, hp, tensors);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        var adapter = new Qwen4ExpBatchedForwardPass(pass, hp, totalLayers);
+        using var engine = new ContinuousBatchingEngine(adapter, tokenizer, "qwen4exp-test", maxBatchSize: 4);
+
+        var shortSp = new SamplingParams { Temperature = 0f, MaxNewTokens = 2 };
+        var longSp = new SamplingParams { Temperature = 0f, MaxNewTokens = 12 };
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+
+        string longBaseline = await CollectAsync(engine, Prompts[2], longSp, cts.Token);
+        string shortBaseline = await CollectAsync(engine, Prompts[0], shortSp, cts.Token);
+
+        var longTask = CollectAsync(engine, Prompts[2], longSp, cts.Token);
+        var shortTask = CollectAsync(engine, Prompts[0], shortSp, cts.Token);
+        Assert.Equal(shortBaseline, await shortTask);
+        Assert.Equal(longBaseline, await longTask);
+
+        // Everything has finished: no committed KV should be left behind.
+        Assert.Equal(0, engine.CommittedKvTokens);
+    }
+
     private static async Task<string> CollectAsync(
         ContinuousBatchingEngine engine, string prompt, SamplingParams sp, CancellationToken ct)
     {

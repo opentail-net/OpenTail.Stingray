@@ -436,3 +436,7 @@ Last prompt position, llama.cpp `bed0a8566` against Stingray. Tokenisation check
   after finish or cancel; queue limits and admission under backpressure; and longer generations. These are open items for
   Phase 2, not claimed as done.
 - Qwen 3.8 remains unadmitted; `IBatchedForwardPass` is an internal engine interface, not a support claim.
+
+- Added 2026-11-08: a short request (2 tokens) finishing while a long one (12 tokens) runs. Both equal their isolated
+  outputs, and `CommittedKvTokens` is 0 afterwards. `Qwen4ExpBatchingTests` now has 3 tests, all passing (103 s).
+- Still open in Phase 2: queue limits and admission under backpressure; memory checks for cancelled requests.
