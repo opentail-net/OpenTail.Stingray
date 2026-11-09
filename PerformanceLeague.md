@@ -1110,6 +1110,17 @@ Verdict against the rules fixed before the runs: H0 (B at least 0.90 of A) is re
 
 What this does show: when the mapped expert working set does not fit in available RAM, CPU MoE decode on this machine runs at about 0.4x, and prefill at about 0.1x. What it does not show: whether a process-managed residency policy would read fewer bytes. That needs routing traces under the same budget (hit rate of a pinned set versus the OS's LRU), which were not collected.
 
+## MoE decode with a co-tenant model, CPU (2026-11-09)
+
+Test M in [the measurement plan](docs/4-performance/2026-11-09-moe-expert-residency-measurement-plan.md), section 6a.1. Qwen3-Coder-30B-A3B Q4_K_M decodes 128 tokens (8 threads) while a second model decodes in another process (4 threads). Session 2026-11-09, one run at a time, order S B S B S B, 64 GB machine.
+
+| Co-tenant | Runs | MoE decode t/s: median (runs) | MoE prefill t/s (median) | Hard-fault reads (GiB) | Output |
+|---|---:|---|---:|---|---|
+| Qwen3-0.6B Q8_0 (control, negligible memory) | 3 | **12.8** (12.4, 14.0, 12.8) | 49.7 | 2.0-3.3 | `69195351a9d6b52a` |
+| Qwen2.5-Coder-32B Q4_K_M dense, 18.5 GB | 3 | **5.7** (5.6, 5.7, 9.2) | 6.8-39.1 | 0.2, 12.7, 14.2 | `69195351a9d6b52a` |
+
+Ratio 0.45 (medians). The outcome is not uniform: the same pair gave 5.6 and 5.7 t/s with heavy paging, and 9.2 t/s with almost none. The cause of the penalty is not established (cache scan-thrash by the dense model's full weight sweep, or DRAM bandwidth contention); only one warm run was measured, so no replicate claim is made.
+
 ## Opt-in and no-go items
 
 - **CUDA:** no numbers. All CUDA rows are from prior hardware (†) and are historical.

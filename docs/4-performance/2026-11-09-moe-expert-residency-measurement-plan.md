@@ -55,6 +55,46 @@ Let A and B be the medians of decode tokens per second over the three runs of ea
 - GPU paths (`ExpertSlotManager`, `CudaExpertSlotManager`). Rule 13: the iGPU is not evidence about a discrete GPU.
 - Other models, other pressure levels, other thread counts.
 
+## 6a. Realistic pressure: a second model in the same session (pre-registered 2026-11-09)
+
+The question was raised by the owner: the realistic source of pressure is a second model, since the server can hold several resident. Verified in code before this test:
+
+- **Multi-model residency is the default.** `ModelResidencyMode.MultiSlot` (`ModelRuntime.cs:75`) keeps every acquired model resident. Nothing is evicted unless a budget refuses a load.
+- **Host-memory admission is off by default.** `HostResourceBudget` is installed only when `EnableResourceAdmission` is set (`ServiceCollectionExtensions.cs:88`). When on, it requires `candidate × 1.25 ≤ available host memory`. Mapped model pages count as available, so this check does not see a second model's working set competing with the first.
+
+Test M (two active models, separate processes, same prompt, same MoE command as section 4):
+
+- **Co-tenant, big:** `Qwen2.5-Coder-32B-Q4_K_M` (dense, 18.5 GB, `qwen2`, supported). It is decoding while the MoE model runs.
+- **Co-tenant, small (control):** `Qwen3-0.6B-Q8_0` (0.6 GB, `qwen3`, supported). It uses the same threads, so CPU sharing is equal, but it adds almost no memory.
+- Threads: MoE `-t 8`; each co-tenant `-t 4`. Both co-tenants run with long `-n` so they are still decoding during the MoE run. The big co-tenant starts 90 s before the MoE run, the small one 30 s before.
+- Order, three repetitions: small, big, small, big, small, big. The MoE run is measured as before; its output must match the control text.
+- **Ratio P = MoE decode (with big co-tenant) ÷ MoE decode (with small co-tenant).** The small-co-tenant baseline is the within-session reference, so CPU sharing cancels.
+
+Fixed rules: **P ≥ 0.90**, the second model's memory does not matter at this size. **P ≤ 0.80**, a second model's footprint costs MoE decode, so cross-model memory management is a real cost. In between: record only. A cost found here is about models sharing memory, not about experts, so the design question it would open is admission and placement, not an expert cache.
+
+### 6a.1 Test M results (2026-11-09)
+
+Runs in order S, B, S, B, S, B (MoE decode, 128 tokens, 8 threads; co-tenant 4 threads). All six generated texts are identical (`69195351a9d6b52a`).
+
+| Run | Co-tenant | Co-tenant prefault | MoE load | MoE prefill t/s | MoE decode t/s | Hard-fault reads (GiB) | Min free RAM (MiB) |
+|---|---|---|---:|---:|---:|---:|---:|
+| 1 | small | (small model) | 5.5 s | 49.7 | 12.4 | 2.0 | 29,134 |
+| 2 | big | 18.5 GiB in 6.3 s | 1.5 s | 6.8 | 5.6 | 14.2 | 264 |
+| 3 | small | (small model) | 7.6 s | 48.0 | 14.0 | 3.3 | 29,506 |
+| 4 | big | 18.5 GiB in 2.1 s | 1.5 s | 7.6 | 5.7 | 12.7 | 387 |
+| 5 | small | (small model) | 6.4 s | 50.5 | 12.8 | 2.6 | 30,755 |
+| 6 | big | 18.5 GiB in 2.2 s | 0.5 s | 39.1 | 9.2 | 0.2 | 3,867 |
+
+- Small-co-tenant control: decode median **12.8** t/s.
+- Big co-tenant: decode median **5.7** t/s with heavy hard-fault reads (runs 2 and 4). Run 6 is the same pair of models, with the same warm pre-fault, at **9.2** t/s and almost no reads.
+- Ratio P (big ÷ small, medians): **0.45**. The fixed rule (P ≤ 0.80) is met.
+
+**What the data show**
+
+- **Same pair, two outcomes.** Runs 2, 4 and 6 had the same models and the same warm-or-near-warm pre-fault. Two runs thrashed and one did not. The combined mapped set is about 36 GB on a 64 GB machine with about 44–48 GB available before the runs, so this is a boundary: whether the working sets fit depends on the state the cache happens to be in. One warm run is not enough to call this bistable; it needs replicates.
+- **Likely mechanism (not tested):** the dense co-tenant reads all 18.5 GB of its weights every token. Under an LRU-like policy, a full sweep over a near-full cache evicts the MoE model's pages, which is the classic scan-thrash pattern. This would make the penalty a cache-policy problem, not an expert-residency one. The alternative explanation, DRAM bandwidth contention from the 18.5 GB sweep, is not separated from it by this test.
+- **Correction to the pre-registered interpretation.** Section 6a said a cost found here "is about models sharing memory, not about experts". That is still the likely reading for the thrashing runs, but the test does not separate paging from bandwidth contention, so the "not about experts" conclusion is not established either way.
+
 ## 7. Results
 
 Filled in after the runs, with dated rows in `docs/4-performance/PerformanceLeague-LOG.md` (rule 8).
