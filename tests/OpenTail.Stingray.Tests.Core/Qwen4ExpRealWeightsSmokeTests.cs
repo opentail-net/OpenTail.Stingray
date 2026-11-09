@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Core;
 public sealed class Qwen4ExpRealWeightsSmokeTests
 {
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void Prefill_OnRealCheckpoint_ProducesFiniteLogits()

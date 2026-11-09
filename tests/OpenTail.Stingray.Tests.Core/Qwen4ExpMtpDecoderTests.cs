@@ -5,6 +5,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 4 (product path): the product <see cref="MtpDecoder"/>, driving the real qwen4exp forward pass through
 /// <see cref="IForwardPass"/>, emits exactly the plain greedy tokens. Real trunk and shared head; skipped when absent.
@@ -16,16 +18,10 @@ public sealed class Qwen4ExpMtpDecoderTests
 
     private const int Generate = 24;
 
-    private static string? FindTrunk() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindTrunk() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => ModelLocator.FindDeep("mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void MtpDecoder_OnTheQwenPass_EmitsThePlainGreedyTokens()

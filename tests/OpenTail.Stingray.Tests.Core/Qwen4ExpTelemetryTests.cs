@@ -18,7 +18,7 @@ public sealed class Qwen4ExpTelemetryTests
         public void OnEvent(in EngineEvent e) => Events.Add(e);
     }
 
-    private static string? FindTrunk() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindTrunk() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void ForwardCounters_ReportTheRealPleGatherAfterTokens()

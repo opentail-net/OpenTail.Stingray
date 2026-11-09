@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Core;
 public sealed class Qwen4ExpMtpLoadTests
 {
     private static string? FindTrunk() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
         "mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");

@@ -496,7 +496,16 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       worst total variation 0.072374) and the MTP-oracle test (44 steps: worst cosine 0.997465) passed on rerun with their inputs.
       The reference-dump tests are developer-only and skipped. Not closed by this pass: the items waived under D4 (the multi-row
       pass, the HTTP runs, the performance pass, docs and the licence).
-- [ ] Performance pass and DRY pass (CLAUDE.md rule 7). Single-sample speed on this machine (2026-11-08,
+- [ ] Performance pass and DRY pass (CLAUDE.md rule 7). **DRY pass done 2026-11-09:** (1) Engine: the image and video splices
+      share `ForwardQwenChunk` (M-RoPE positions, one `ForwardImageChunk`, the text advance) and `CountTokens`; the Gemma splice
+      uses `CountTokens`. Regression: Vision full 225 total, 0 failed; the image and video real-checkpoint answers unchanged.
+      (2) Core tests: `Qwen4ExpTestSupport` holds the checkpoint file name, `Argmax` and `Top5Contains`; 8 and 2 private copies
+      removed; 23 files use the shared filename. Core gate 1439 total, 0 failed; the changed classes pass on the real checkpoint
+      (batched verify, MTP decoder, acceptance, lossless, turn snapshot, logit parity, MTP oracle, MTP speed, sharded loading,
+      single token). (3) Left in place on purpose: the model-open boilerplate in about 33 files (each test attaches a different
+      setup, such as the MTP head or the batched pass), and the separate Vision and Sessions test projects' own helpers.
+      The performance pass is recorded above (measured; no kept optimisation).
+      Single-sample speed on this machine (2026-11-08,
       `MeasureTextThroughput_OnTheRealCheckpoint`, paged UD-IQ1_S, 63 GB RAM): prefill 1.30 tok/s over 63 prompt tokens, decode
       1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
       fix: "Speed of the Qwen path is not measured yet"). The Q5_K numerics change (`MatVecLlamaNumerics`) is a candidate to measure.

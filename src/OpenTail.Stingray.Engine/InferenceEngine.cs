@@ -424,8 +424,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         int visionStartId = SingleTokenId("<|vision_start|>");
         int visionEndId = SingleTokenId("<|vision_end|>");
 
-        int padCount = 0;
-        foreach (int id in tokens) if (id == videoPadId) padCount++;
+        int padCount = CountTokens(tokens, videoPadId);
         if (padCount != videos.Count)
             throw new InvalidOperationException(
                 $"Video count mismatch: the rendered prompt has {padCount} <|video_pad|> placeholder(s) " +
@@ -461,20 +460,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     throw new InvalidOperationException($"Qwen video chunk has {nTok} soft tokens, expected {grid * grid}.");
 
                 logits = pass.Forward(visionStartId, pos++);
-                int basePos = pos;
-                var placeholderIds = new int[nTok];
-                var posT = new int[nTok];
-                var posY = new int[nTok];
-                var posX = new int[nTok];
-                for (int k = 0; k < nTok; k++)
-                {
-                    placeholderIds[k] = _imgPlaceholderId;
-                    posT[k] = basePos;
-                    posY[k] = basePos + k / grid;
-                    posX[k] = basePos + k % grid;
-                }
-                pass.ForwardImageChunk(soft, placeholderIds, posT, posY, posX, pass.DefaultSequence);
-                pos = basePos + grid;
+                ForwardQwenChunk(pass, soft, grid, grid, nTok, ref pos, _imgPlaceholderId);
                 logits = pass.Forward(visionEndId, pos++);
             }
             lastWasVideo = true;
@@ -483,6 +469,35 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
             throw new InvalidOperationException("The prompt must have text after the last video.");
         endPos = pos;
         return logits;
+    }
+
+    /// <summary>
+    /// One Qwen media chunk (an image, or a video frame pair): M-RoPE positions for its tokens (time = the start position, rows and
+    /// columns from the grid), one <see cref="Qwen4ExpForwardPass.ForwardImageChunk"/> call, and the text position advanced by
+    /// max(nx, ny).
+    /// </summary>
+    private static void ForwardQwenChunk(Qwen4ExpForwardPass pass, float[] soft, int nx, int ny, int nTok, ref int pos, int padId)
+    {
+        var placeholderIds = new int[nTok];
+        var posT = new int[nTok];
+        var posY = new int[nTok];
+        var posX = new int[nTok];
+        for (int k = 0; k < nTok; k++)
+        {
+            placeholderIds[k] = padId;
+            posT[k] = pos;
+            posY[k] = pos + k / nx;
+            posX[k] = pos + k % nx;
+        }
+        pass.ForwardImageChunk(soft, placeholderIds, posT, posY, posX, pass.DefaultSequence);
+        pos += Math.Max(nx, ny);
+    }
+
+    private static int CountTokens(int[] tokens, int id)
+    {
+        int n = 0;
+        foreach (int t in tokens) if (t == id) n++;
+        return n;
     }
 
     private int SingleTokenId(string text)
@@ -520,8 +535,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
             blocks[i] = (soft, nx, ny, nTok);
         }
 
-        int placeholders = 0;
-        foreach (int id in tokens) if (id == _imgPlaceholderId) placeholders++;
+        int placeholders = CountTokens(tokens, _imgPlaceholderId);
         if (placeholders != imageBytes.Count)
             throw new InvalidOperationException(
                 $"Image count mismatch: the rendered prompt has {placeholders} <|image_pad|> placeholder(s) " +
@@ -541,19 +555,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                 continue;
             }
             var (soft, nx, ny, nTok) = blocks[imgIdx++];
-            var placeholderIds = new int[nTok];
-            var posT = new int[nTok];
-            var posY = new int[nTok];
-            var posX = new int[nTok];
-            for (int k = 0; k < nTok; k++)
-            {
-                placeholderIds[k] = _imgPlaceholderId;
-                posT[k] = pos;
-                posY[k] = pos + k / nx;
-                posX[k] = pos + k % nx;
-            }
-            pass.ForwardImageChunk(soft, placeholderIds, posT, posY, posX, pass.DefaultSequence);
-            pos += Math.Max(nx, ny);
+            ForwardQwenChunk(pass, soft, nx, ny, nTok, ref pos, _imgPlaceholderId);
             lastWasImage = true;
         }
         if (lastWasImage)
@@ -592,8 +594,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
             blocks[i] = (soft, nTok);
         }
 
-        int placeholders = 0;
-        foreach (int id in tokens) if (id == _imgPlaceholderId) placeholders++;
+        int placeholders = CountTokens(tokens, _imgPlaceholderId);
         if (placeholders != imageBytes.Count)
             throw new InvalidOperationException(
                 $"Image count mismatch: the rendered prompt has {placeholders} <|image|> placeholder(s) " +

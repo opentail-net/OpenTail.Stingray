@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Core;
 /// </summary>
 public sealed class Qwen4ExpShardedLoadingTests
 {
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void ShardedCheckpoint_MapsEveryShard_AndKeepsThePerLayerTableOffTheManagedHeap()

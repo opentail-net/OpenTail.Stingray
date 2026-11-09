@@ -13,7 +13,7 @@ public sealed class Qwen4ExpSequenceIsolationTests
     private static readonly int[] SeqB = { 760, 7526, 11247, 303, 279 }; // "The largest planet in the"
 
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void TwoSequences_Interleaved_MatchSeparateRunsBitwise()

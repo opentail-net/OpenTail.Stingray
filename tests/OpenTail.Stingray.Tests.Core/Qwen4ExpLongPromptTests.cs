@@ -14,7 +14,7 @@ public sealed class Qwen4ExpLongPromptTests
     private const int IndexerTopK = 2048;
     private const int Steps = 16;
 
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void LongPrompt_PastTheIndexerTopK_GreedyContinuationIsPrinted()

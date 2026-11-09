@@ -13,7 +13,7 @@ public sealed class Qwen4ExpCancellationProbeTests
     private const string Prompt = "The capital of France is";
 
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public async Task CancelledRealRequest_DisposesItsCache_AndReleasesItsReservation()

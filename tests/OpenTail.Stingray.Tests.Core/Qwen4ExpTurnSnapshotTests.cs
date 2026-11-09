@@ -4,6 +4,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 3 (Job 3): on a real qwen4exp cache, a second turn that starts after earlier positions keeps a turn-start
 /// snapshot, and the snapshot's held bytes are measured. Real checkpoint; skipped when absent.
@@ -13,14 +15,8 @@ public sealed class Qwen4ExpTurnSnapshotTests
     private const string FirstTurn = "The capital of France is";
     private const string SecondTurn = " Paris. The capital of Italy is";
 
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void SecondTurn_KeepsATurnStartSnapshot_WithMeasuredHeldBytes()

@@ -4,6 +4,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 4 (rollback, lossless): greedy speculative decoding with the shared MTP head must give exactly the plain
 /// greedy tokens. A chain of K drafts is verified by the trunk; on rejection the trunk and head state are restored from a
@@ -17,16 +19,10 @@ public sealed class Qwen4ExpSpeculativeLosslessTests
     private const int Generate = 24;
     private const int K = 3;
 
-    private static string? FindTrunk() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindTrunk() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => ModelLocator.FindDeep("mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void SpeculativeGreedy_WithRollback_EqualsPlainGreedy()

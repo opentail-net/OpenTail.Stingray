@@ -21,7 +21,7 @@ public sealed class Qwen4ExpToolCallModelTests
 
     private const string ParametersJson = "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}";
 
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public void RealModel_WritesAToolCall_ThatTheAdapterParsesAndTheSchemaAccepts()

@@ -5,6 +5,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 4 (acceptance rate, real trunk and shared MTP head): at each greedy position, the head's draft for the
 /// next token is compared with the trunk's own next greedy token. Nothing is rolled back and no output changes, so this measures
@@ -18,16 +20,10 @@ public sealed class Qwen4ExpMtpAcceptanceTests
 
     private const int DecodeSteps = 40;
 
-    private static string? FindTrunk() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindTrunk() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => ModelLocator.FindDeep("mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void MtpDraft_AcceptanceRate_OnTheRealTrunkAndHead()

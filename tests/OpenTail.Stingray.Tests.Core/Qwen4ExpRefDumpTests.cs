@@ -14,7 +14,7 @@ public sealed class Qwen4ExpRefDumpTests
     private static readonly int[] PromptTokens = { 760, 6511, 314, 9338, 369 };
 
     private static string? FindModel() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     /// <summary>
     /// Phase 0.2: feed llama.cpp's own final_output-0 into Stingray's layer-0 ssm_out weights (dequantised f32, dot per row)

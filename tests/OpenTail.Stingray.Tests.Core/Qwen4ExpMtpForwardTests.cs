@@ -12,7 +12,7 @@ public sealed class Qwen4ExpMtpForwardTests
     private static readonly int[] Prompt = { 760, 6511, 314, 9338, 369 }; // "The capital of France is"
 
     private static string? FindTrunk() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
-        "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+        Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(
         "mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");

@@ -5,6 +5,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 4 (per-step oracle): dumps the MTP head's inputs and Stingray's head logits for the speed-test prompt
 /// and 24 greedy steps, then compares them with the reference head logits written by the local driver
@@ -20,16 +22,10 @@ public sealed class Qwen4ExpMtpOracleTests
     private const int Generate = 24;
     private const float Tolerance = 0.12f;
 
-    private static string? FindTrunk() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindTrunk() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     private static string? FindMtp() => ModelLocator.FindDeep("mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf");
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void MtpHead_PerStep_MatchesTheReferenceWithinTolerance()
@@ -128,19 +124,4 @@ public sealed class Qwen4ExpMtpOracleTests
         Assert.Equal(0, failures);
     }
 
-    private static bool Top5Contains(ReadOnlySpan<float> logits, int id)
-    {
-        var top = new int[5];
-        for (int k = 0; k < 5; k++)
-        {
-            int best = -1;
-            for (int i = 0; i < logits.Length; i++)
-            {
-                if (Array.IndexOf(top, i, 0, k) >= 0) continue;
-                if (best < 0 || logits[i] > logits[best]) best = i;
-            }
-            top[k] = best;
-        }
-        return Array.IndexOf(top, id) >= 0;
-    }
 }

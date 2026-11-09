@@ -21,7 +21,7 @@ public sealed class Qwen4ExpChunkedPrefillTests
         "in Mainz around 1440, which made books far cheaper to produce. Over the next decades the technology spread across " +
         "Europe, reaching Venice, Paris and London, and it transformed how knowledge was shared. In summary,";
 
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
     [Fact]
     public async Task ChunkedPrefill_GivesTheSameGreedyContinuation_AsUnchunked()

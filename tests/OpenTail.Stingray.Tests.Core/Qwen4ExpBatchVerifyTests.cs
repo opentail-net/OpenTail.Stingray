@@ -5,6 +5,8 @@ using OpenTail.Stingray.Engine.Verification;
 
 namespace OpenTail.Stingray.Tests.Core;
 
+using static OpenTail.Stingray.Tests.Core.Qwen4ExpTestSupport;
+
 /// <summary>
 /// Qwen 3.8 plan, Phase 4 (batched verify, replay form): on the real qwen4exp checkpoint, <c>BatchVerify</c> returns exactly the
 /// logits that sequential <c>Forward</c> calls give, and a rollback to a position inside the block, followed by a different
@@ -14,14 +16,8 @@ public sealed class Qwen4ExpBatchVerifyTests
 {
     private const string Text = "The printing press was one of the most important inventions in history.";
 
-    private static string? FindModel() => ModelLocator.FindDeep("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf");
+    private static string? FindModel() => ModelLocator.FindDeep(Qwen4ExpTestSupport.TrunkFileName);
 
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > logits[best]) best = i;
-        return best;
-    }
 
     [Fact]
     public void BatchVerify_MatchesSequentialForward_AndRollbackReplaysExactly()
