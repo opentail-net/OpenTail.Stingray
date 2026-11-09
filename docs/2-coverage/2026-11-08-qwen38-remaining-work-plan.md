@@ -149,12 +149,15 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 4. MTP speculative decoding
 
-- [ ] **Per-step oracle against the reference.** 2026-11-08: owner approved the fork build (D2). Fork driver
-      `llama-mtp-check.exe` (Debug) run on the saved hand-off: it exits with code 139 (segfault) during graph reservation,
-      after the recurrent memory is allocated, and writes no reference logits. Still blocked by the fork crash. Blocked: the pinned llama.cpp `bed0a8566` has a stub embedding-state
-      setter, so the MTP context cannot receive the trunk state. Next oracle is the unsloth fork (see D2). Also
-      recorded: fork builds crash on the head's null recurrent memory (`build_rs_inp_impl`) and fork `llama-server`
-      with `-md` segfaults during draft setup.
+- [x] **Per-step oracle against the reference: CLOSED 2026-11-09 under D1 (token criterion).** Reference: the unsloth fork
+      `mtp/qwen4exp-nextn` at `ca142690` (github.com/unslothai/llama.cpp, PR 144 closed), built Release outside the repository,
+      local only, nothing committed or published. The local driver (`llama-mtp-check`) loads the trunk, then the shared head file
+      with the trunk as `model_shared`, and runs the head's steps in one MTP context. Earlier crashes (exit 139, `build_rs_inp_impl`,
+      `llama-server -md`) came from loading the head as a standalone model; the fork needs `model_shared`.
+      Inputs: Stingray's trunk hidden state, token and position for the speed-test prompt plus 24 greedy steps (44 steps), dumped
+      by `Qwen4ExpMtpOracleTests` (skipped unless `STINGRAY_MTP_ORACLE_DIR` is set). Result: the top-1 token is identical at 43
+      of 44 steps; at step 13 the reference's top is inside Stingray's top-5 within 0.12 logits, so it passes D1. 44 of 44 pass.
+      Logits: cosine worst 0.99747 (the plan's dropped 0.998 bar sits at the noise floor), maximum absolute difference up to 1.10.
 - [ ] Acceptance rate, multi-token acceptance, rollback on rejection. **Lossless with rollback, 2026-11-08** (`Qwen4ExpSpeculativeLosslessTests`, real trunk and head, test-side loop, no product change): greedy speculation with a chain of K=3 head drafts, verified by the trunk, and restored from `Qwen4ExpSequenceState.Snapshot`/`Restore` on rejection, gives exactly the plain greedy tokens for 24 generated tokens (4 rollbacks; 17 of 30 chained drafts accepted). The product MTP decoder is not wired to the qwen4exp pass (it assumes one hidden stream; qwen4exp drafts from the four-stream residual), so the product path is still open. **Acceptance measured 2026-11-08** (`Qwen4ExpMtpAcceptanceTests`, real trunk and shared Q4_K_M head): 31 of 40 greedy positions (**77.5%**), one prompt (21 prompt tokens, 40 decode steps). The head's draft for the next token equals the trunk's own greedy token. Chance is about zero for a 248k vocabulary, so the head is doing real work. Still open: multi-token (chained) acceptance, rollback on rejection (needs the MTP decoder wired to the qwen4exp pass: `HasMtpHead`, `MtpForward`, `MtpLastHidden`, `PrefillMtp`, `MtpTruncateTo`, `MtpResetCache`, and a per-position hidden history), and more prompts.
 - [x] Separate speed measurement (2026-11-08, `Qwen4ExpMtpSpeedTests`, three repetitions, 24 tokens, same prompt): plain greedy
       2.35, 2.51, 2.52 tok/s; the product MTP decoder 2.49, 2.50, 2.47 tok/s, with the same tokens and acceptance 75%. No gain on
@@ -305,9 +308,16 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 7. Serving and product
 
-- [ ] Telemetry for Qwen sessions.
-- [ ] Knowledge collections.
-- [ ] Developer workflows.
+- [ ] Telemetry for Qwen sessions. **Spec (decided 2026-11-09, no owner spec existed):** emit the qwen4exp counters that already
+      exist on the pass (PLE gather rows and bytes, MTP drafts and accepted, held snapshot bytes, indexer selections) through the
+      existing `EngineEvents` and `TelemetryAttributePolicy`, with no new sink. Done when a real session reports them and a Core
+      test checks the event fields.
+- [ ] Knowledge collections. **Spec (decided 2026-11-09):** a named text collection whose prefix state is kept in a hot session
+      (Phase 3) and reused by later questions on that collection, so only the question is prefilled again. Done when a second
+      question on a real checkpoint prefills only its own tokens and gives the same answer as a cold run.
+- [ ] Developer workflows. **Spec (decided 2026-11-09):** one scripted, documented path for Qwen 3.8 that runs scout, the CLI
+      and server smoke runs, and the gates, writing its results to the scratchpad. Done when the path runs end to end on this
+      machine and its outputs are recorded in the plan.
 - [ ] Browser UI (7F): **parked by the owner 2026-11-08.** Leave unchecked; do not start.
 
 ## Real-weight qualification (from the original port plan's Phase 6, reconciled)
@@ -363,6 +373,11 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       on 2026-11-09). The override `--ignore-preflight` would load it, but CLAUDE.md rule 15 says not to run a checkpoint
       known to exceed the budget, so it was not used for a documented run. Earlier server runs used
       `STINGRAY_IGNORE_PREFLIGHT=1`. Owner to choose: document the override, require a larger host, or a smaller quant.
+      Checked 2026-11-09: the same refusal from PowerShell (the shell is not the cause). Lowering the context does not get
+      under the limit: estimate 66.0 GiB at the default, 64.2 GiB at `-c 4096`, 63.3 GiB at `-c 2048`, against 63.3 GiB. The
+      estimate counts the paged weights as resident, while the plan records a 9.6 GB free run and sparse PLE touch of 1440
+      bytes per token (6.2). So the estimate looks pessimistic for mmap-paged models, but it is a shared guard across families,
+      and changing it is an owner decision.
 - [x] Admission (D4): `Qwen4ExpArchitecture` descriptor `Status = Admitted`. Tool calls use the default Qwen wrapper
       (`ToolCallAdapterRegistry`); no `qwen4exp` literal was added outside `Engine/Architectures/` (the literal ratchet and
       `Registry_QwenFamilyWrapperServesQwen4Exp` both require this). The facts baseline line for `qwen4exp` changed to `Admitted`.
@@ -372,7 +387,9 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 ## Out of scope for this plan
 
 - `deepseek41`, `deepseek32`, `glm-dsa`, `glm5next` work: other families, see the programme plan.
-- Vision towers for other families, CUDA and Vulkan graph paths for Qwen 3.8, new ports.
+- Vision towers for other families, new ports.
+- CUDA graph path for Qwen 3.8: **owner decision 2026-11-09: do not attempt CUDA.** This machine has no NVIDIA GPU, so it
+  cannot be verified here. Vulkan graph path stays in scope (verifiable on the iGPU for correctness only, CLAUDE.md rule 13).
 
 ## Doc hygiene (stale or conflicting statements to fix when these items are touched)
 
