@@ -351,6 +351,11 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       `MeasureTextThroughput_OnTheRealCheckpoint`, paged UD-IQ1_S, 63 GB RAM): prefill 1.30 tok/s over 63 prompt tokens, decode
       1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
       fix: "Speed of the Qwen path is not measured yet"). The Q5_K numerics change (`MatVecLlamaNumerics`) is a candidate to measure.
+      Baseline, 2026-11-09 (`Qwen4ExpMtpSpeedTests`, real trunk and shared head, 24 generated tokens, three repetitions, no code
+      changed): plain greedy 2.415, 2.479, 2.550 tok/s (mean 2.48); product MTP decoder 2.471, 2.486, 2.489 tok/s (mean 2.48),
+      draft acceptance 0.75 over 12 drafts; the MTP tokens equal the plain tokens. On this CPU MTP gives no speed gain, which
+      matches its exclusion from the admitted scope. No optimisation has been attempted yet, so these numbers are a baseline,
+      not a result of the performance pass.
 - [x] Docs and status: `docs/STATUS.md` qwen4exp row (text generation and tool calls only), written after D4 (rule 10 and rule 14).
       Architecture card `docs/models/qwen38-flash-next.md` and its index row in `docs/models/README.md` (2026-11-09).
 - [ ] RUNNING.md row and WHAT-YOU-CAN-DO line: not added (open, owner decision). On this 63.3 GiB host the CLI refuses
