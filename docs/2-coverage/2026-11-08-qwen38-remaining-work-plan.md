@@ -163,6 +163,14 @@ Runnable now. Test cases only, no new disk or implementation.
       2.35, 2.51, 2.52 tok/s; the product MTP decoder 2.49, 2.50, 2.47 tok/s, with the same tokens and acceptance 75%. No gain on
       CPU: the sequential MTP path runs one trunk forward per emitted token. The gain needs the batched verify path (`BatchVerify`),
       which qwen4exp does not implement. The performance pass (rule 7) is still open.
+      **Batched verify, contract done 2026-11-09 (replay form; no speed gain):** `Qwen4ExpForwardPass` implements `BatchVerify`,
+      `BatchForward2`, `RestoreBatchSnapshot`, `MtpTruncateTo` and `HiddenAt`. The block is replayed token by token from a
+      state snapshot, so rollback restores the snapshot and replays the accepted prefix. On the real checkpoint:
+      `BatchVerify` and `BatchForward2` equal sequential `Forward` exactly, rollback then a different token equals a fresh run
+      exactly (`Qwen4ExpBatchVerifyTests`), and the MTP decoder on the batched path emits the plain greedy tokens (24 of 24).
+      But the batched decoder ran at 2.04 tok/s against 2.6 plain (the snapshot clone and the replay cost more than the saved
+      reads), so `BatchVerifyEnabled` is off by default and the decoder stays sequential. The default MTP acceptance is
+      unchanged (31 of 40, 77.5%). The multi-row pass that gives the real gain is still open.
       **Batched verify, decided 2026-11-09:** the qwen4exp "batched" prefill (`Qwen4ExpBatchedForwardPass.PrefillWithCache`,
       `PrefillPackedMulti`, `BatchForwardMulti`) is a loop of single-token `Forward` calls, so it reads the weights once per
       token. Measured: prefill 2.21 tok/s and decode 2.47 tok/s, the same per-token rate. Other families' batched prefill is much

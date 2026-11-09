@@ -1482,9 +1482,87 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         _seq.QsaPooledKeys[_numLayers].Clear();
     }
 
-    /// <summary>Not supported: the head cannot be rewound to a length. The sequential MTP path never calls it.</summary>
-    public void MtpTruncateTo(int length) => throw new NotSupportedException(
-        "Qwen4ExpForwardPass: MtpTruncateTo is not implemented; only the sequential MTP path is supported.");
+    /// <summary>
+    /// Keeps the MTP head's first <paramref name="length"/> positions. The head holds one K, V and raw indexer-K entry per
+    /// position, and one pooled key per complete pool of <c>_indexerKPool</c> positions. Assumes the head was fed from position
+    /// 0 (<see cref="PrefillMtp"/> with start 0), so list index equals position.
+    /// </summary>
+    public void MtpTruncateTo(int length)
+    {
+        if (length < 0) throw new ArgumentOutOfRangeException(nameof(length));
+        int head = _numLayers;
+        TruncateCache(_seq.QsaKeyCache[head], length);
+        TruncateCache(_seq.QsaValCache[head], length);
+        TruncateCache(_seq.QsaRawIndexKCache[head], length);
+        TruncateCache(_seq.QsaPooledKeys[head], length / _indexerKPool);
+    }
+
+    /// <summary>The trunk hidden at an absolute position, from the MTP hidden history. Empty when that position is not recorded.</summary>
+    public ReadOnlySpan<float> HiddenAt(int position)
+        => (uint)position < (uint)_mtpHistory.Count ? _mtpHistory[position] : default;
+
+    private static void TruncateCache(List<float[]> cache, int count)
+    {
+        if (count < cache.Count) cache.RemoveRange(count, cache.Count - count);
+    }
+
+    // Batched verify, replay form: the weights are read once per token, so this is not a speed path yet. It keeps the
+    // state before the block, and a rollback restores it and replays the accepted prefix. A multi-row pass is the real gain.
+    private Qwen4ExpSequenceState? _batchSnapshot;
+    private int _batchStart;
+    private int[] _batchTokens = Array.Empty<int>();
+
+    /// <summary>Cap on one verify block; each block takes a full state snapshot, so the cap keeps that cost bounded.</summary>
+    public int MaxBatchVerifyTokens => 8;
+
+    /// <summary>
+    /// Off by default: the replay form is slower than the sequential MTP path on this CPU (the decoder's batched run measured
+    /// about 2.0 tok/s against 2.5 plain), so the decoder stays sequential unless a caller opts in.
+    /// </summary>
+    public bool BatchVerifyEnabled { get; set; }
+
+    public bool SupportsBatchVerify => BatchVerifyEnabled;
+
+    public float[][] BatchVerify(int[] tokens, int startPos)
+    {
+        BeginBatch(tokens, startPos);
+        var result = new float[tokens.Length][];
+        for (int i = 0; i < tokens.Length; i++)
+            result[i] = Forward(tokens[i], startPos + i).ToArray();
+        return result;
+    }
+
+    public void BatchForward2(int t1, int t2, int startPos, out ReadOnlySpan<float> logits1, out ReadOnlySpan<float> logits2)
+    {
+        BeginBatch(new[] { t1, t2 }, startPos);
+        logits1 = Forward(t1, startPos).ToArray();
+        logits2 = Forward(t2, startPos + 1).ToArray();
+    }
+
+    /// <summary>Rolls the state back to <paramref name="lengthAfter"/> (inside the last block) by restoring the snapshot and replaying the accepted prefix.</summary>
+    public void RestoreBatchSnapshot(int lengthAfter)
+    {
+        if (_batchSnapshot is null)
+            throw new InvalidOperationException("No verify block to roll back: call BatchVerify or BatchForward2 first.");
+        int keep = lengthAfter - _batchStart;
+        if (keep < 0 || keep > _batchTokens.Length)
+            throw new ArgumentOutOfRangeException(nameof(lengthAfter), $"lengthAfter must lie inside the last block [{_batchStart}, {_batchStart + _batchTokens.Length}].");
+        _seq.Restore(_batchSnapshot);
+        if (lengthAfter < _mtpHistory.Count) _mtpHistory.RemoveRange(lengthAfter, _mtpHistory.Count - lengthAfter);
+        for (int i = 0; i < keep; i++)
+            Forward(_batchTokens[i], _batchStart + i);
+    }
+
+    private void BeginBatch(int[] tokens, int startPos)
+    {
+        if (tokens.Length == 0 || tokens.Length > MaxBatchVerifyTokens)
+            throw new ArgumentOutOfRangeException(nameof(tokens), $"a verify block takes 1 to {MaxBatchVerifyTokens} tokens.");
+        if (_seq.TokensProcessed != startPos)
+            throw new InvalidOperationException($"BatchVerify at {startPos}, but the sequence holds {_seq.TokensProcessed} tokens.");
+        _batchSnapshot = _seq.Snapshot();
+        _batchStart = startPos;
+        _batchTokens = (int[])tokens.Clone();
+    }
 
     private void RecordMtpHistory(int position)
     {
