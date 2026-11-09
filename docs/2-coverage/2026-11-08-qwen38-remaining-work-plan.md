@@ -260,6 +260,14 @@ Runnable now. Test cases only, no new disk or implementation.
       position, which is wrong for M-RoPE. The engine calls `_fwd.ResetCache()` and
       then splices, so the default sequence is the right target.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
+      **Engine path done 2026-11-09 (server path open):** `InferenceEngine.GenerateVideoChunksAsync` takes `QwenVideoInput`
+      (pre-decoded CHW frames, side, fps; the host decodes, the engine never does). The prompt carries one `<|video_pad|>`; prefill
+      expands `VideoPromptLayout.Segments`: text segments as tokens, each frame pair as `ForwardVideo` plus one
+      `ForwardImageChunk` with M-RoPE, between the vision markers. `Qwen4ExpEngineVideoTests` (real checkpoint, ffmpeg-made
+      red-then-blue clip, 4 fps, 224 px, greedy 96 tokens, 148 s): "The colors red and blue appear in the video, with red being
+      the first color shown and blue being the second." This is the same text as the direct pass test and the reference
+      (`Qwen4ExpVideoAnswerTests`). **Still open:** the server path: decoding `video_url` content (an operator-installed ffmpeg,
+      never bundled), writing the `<|video_pad|>` marker into the prompt, and the HTTP smoke run (blocked by preflight).
       Design, recorded before code (investigation 2026-11-08):
       - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
         two patch embeddings, but for a still image both kernels see the same pixels. Video needs the two kernels on two

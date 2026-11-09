@@ -78,6 +78,8 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     private const string GenericImageMarker = "<|image|>";
     /// <summary>What a Qwen projector gets in its place: the image pad between the vision markers.</summary>
     private const string QwenImageMarkers = "<|vision_start|><|image_pad|><|vision_end|>";
+    /// <summary>The one placeholder a prompt carries per video (see <see cref="SpliceQwenVideos"/>).</summary>
+    private const string QwenVideoPadMarker = "<|video_pad|>";
 
     // Observability counters (updated via Interlocked).
     private int _pendingCount;
@@ -408,6 +410,90 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     public bool SupportsImageInput => (_visionEmbedder is not null && _fwd.SupportsEmbeddingInput) || _qwenEncoder is not null;
 
     /// <summary>
+    /// qwen4exp video prefill (Phase 5.3): one <c>&lt;|video_pad|&gt;</c> per video stands for the layout of its frames
+    /// (<see cref="VideoPromptLayout"/>): text segments are ordinary tokens, and each frame pair is one
+    /// <see cref="Qwen4ExpForwardPass.ForwardImageChunk"/> with M-RoPE positions wrapped in the vision markers. Returns the
+    /// logits of the last token; <paramref name="endPos"/> is the next position.
+    /// </summary>
+    private ReadOnlySpan<float> SpliceQwenVideos(int[] tokens, IReadOnlyList<QwenVideoInput> videos,
+        CancellationToken ct, out int endPos)
+    {
+        var pass = (Qwen4ExpForwardPass)_fwd;
+        var encoder = _qwenEncoder!;
+        int videoPadId = SingleTokenId(QwenVideoPadMarker);
+        int visionStartId = SingleTokenId("<|vision_start|>");
+        int visionEndId = SingleTokenId("<|vision_end|>");
+
+        int padCount = 0;
+        foreach (int id in tokens) if (id == videoPadId) padCount++;
+        if (padCount != videos.Count)
+            throw new InvalidOperationException(
+                $"Video count mismatch: the rendered prompt has {padCount} <|video_pad|> placeholder(s) " +
+                $"but {videos.Count} video(s) were supplied.");
+
+        int pos = 0, videoIdx = 0;
+        bool lastWasVideo = false;
+        ReadOnlySpan<float> logits = default;
+        foreach (int id in tokens)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (id != videoPadId)
+            {
+                logits = pass.Forward(id, pos++);
+                lastWasVideo = false;
+                continue;
+            }
+
+            var video = videos[videoIdx++];
+            int grid = video.Side / (_qwenVision!.PatchSize * 2);
+            var segments = VideoPromptLayout.Segments(VideoPromptLayout.Parts(video.FramesChw.Count, video.Fps));
+            foreach (var seg in segments)
+            {
+                if (seg.Text is not null)
+                {
+                    foreach (int t in _tokenizer.Encode(seg.Text)) logits = pass.Forward(t, pos++);
+                    continue;
+                }
+
+                int a = seg.Frames![0], b = seg.Frames.Length > 1 ? seg.Frames[1] : a;
+                float[] soft = encoder.ForwardVideo(video.FramesChw[a], video.FramesChw[b], video.Side, video.Side, out int nTok);
+                if (nTok != grid * grid)
+                    throw new InvalidOperationException($"Qwen video chunk has {nTok} soft tokens, expected {grid * grid}.");
+
+                logits = pass.Forward(visionStartId, pos++);
+                int basePos = pos;
+                var placeholderIds = new int[nTok];
+                var posT = new int[nTok];
+                var posY = new int[nTok];
+                var posX = new int[nTok];
+                for (int k = 0; k < nTok; k++)
+                {
+                    placeholderIds[k] = _imgPlaceholderId;
+                    posT[k] = basePos;
+                    posY[k] = basePos + k / grid;
+                    posX[k] = basePos + k % grid;
+                }
+                pass.ForwardImageChunk(soft, placeholderIds, posT, posY, posX, pass.DefaultSequence);
+                pos = basePos + grid;
+                logits = pass.Forward(visionEndId, pos++);
+            }
+            lastWasVideo = true;
+        }
+        if (lastWasVideo)
+            throw new InvalidOperationException("The prompt must have text after the last video.");
+        endPos = pos;
+        return logits;
+    }
+
+    private int SingleTokenId(string text)
+    {
+        var ids = _tokenizer.Encode(text);
+        if (ids.Count != 1)
+            throw new InvalidOperationException($"'{text}' must be a single token for this model; it encodes to {ids.Count}.");
+        return ids[0];
+    }
+
+    /// <summary>
     /// qwen4exp image prefill (Phase 5, server path): one <c>&lt;|image_pad|&gt;</c> per image stands for the image's soft tokens.
     /// Each image is one <see cref="Qwen4ExpForwardPass.ForwardImageChunk"/> call with M-RoPE positions (time = start position,
     /// rows and columns from the grid), and the text after it resumes at start + max(nx, ny). The vision start and end markers
@@ -718,12 +804,31 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         return GenerateCore(prompt, sp, ct, canonicalHistoryPrefix: null, imageBytes);
     }
 
+    /// <summary>
+    /// qwen4exp video input (Phase 5.3): the prompt carries one <c>&lt;|video_pad|&gt;</c> per video, which prefill expands
+    /// into the video's layout. Needs the Qwen projector (<see cref="EnableQwenImageInput"/>).
+    /// </summary>
+    public IAsyncEnumerable<GenerateChunk> GenerateVideoChunksAsync(
+        string prompt,
+        IReadOnlyList<QwenVideoInput> videos,
+        SamplingParams sp,
+        CancellationToken ct = default)
+    {
+        if (_qwenEncoder is null)
+            throw new NotSupportedException("Video input needs the Qwen projector (EnableQwenImageInput).");
+        ArgumentNullException.ThrowIfNull(videos);
+        if (videos.Count == 0)
+            throw new ArgumentException("At least one video is required.", nameof(videos));
+        return GenerateCore(prompt, sp, ct, canonicalHistoryPrefix: null, imageBytes: null, videos);
+    }
+
     private async IAsyncEnumerable<GenerateChunk> GenerateCore(
         string prompt,
         SamplingParams sp,
         [EnumeratorCancellation] CancellationToken ct,
         string? canonicalHistoryPrefix,
-        IReadOnlyList<byte[]>? imageBytes)
+        IReadOnlyList<byte[]>? imageBytes,
+        IReadOnlyList<QwenVideoInput>? videos = null)
     {
         // The server writes the generic image marker; a Qwen projector needs its own marker sequence around the image pad.
         if (imageBytes is { Count: > 0 } && _qwenEncoder is not null)
@@ -954,7 +1059,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     }
                     // Image input (#253) splices precomputed embeddings during prefill; neither
                     // MTP's PrefillMtp / batched verify nor DSpark's tap replay model that.
-                    if (imageBytes is { Count: > 0 }) { useMtp = false; useDSpark = false; }
+                    if (imageBytes is { Count: > 0 } || videos is { Count: > 0 }) { useMtp = false; useDSpark = false; }
 
                     // Grammar-constrained decoding (#374) masks logits per token, which the
                     // batched-verify paths don't model — fall back to per-token decode so the
@@ -990,7 +1095,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     prefillStartTicks = Stopwatch.GetTimestamp();
                     ReadOnlySpan<float> logits;
 
-                    if (imageBytes is { Count: > 0 })
+                    if (imageBytes is { Count: > 0 } || videos is { Count: > 0 })
                     {
                         // Image input (#253): no prefix reuse — project each image and splice its
                         // soft tokens in place of its placeholder during a fresh prefill.
@@ -1008,7 +1113,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         if (_slotTokens is not null) _slotTokens[0] = null;
                         _fwd.ResetCache();
                         suffixTokens = tokens;
-                        logits = SplicePrefillImages(tokens, imageBytes, ct, out startPos);
+                        logits = videos is { Count: > 0 }
+                            ? SpliceQwenVideos(tokens, videos, ct, out startPos)
+                            : SplicePrefillImages(tokens, imageBytes!, ct, out startPos);
                     }
                     else
                     {
@@ -1495,7 +1602,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     // cancelled token; skip capture in that case to avoid stale state.
                     // Image requests run fresh each time (no prefix reuse) and their positions
                     // don't correspond to plain token positions, so don't snapshot them.
-                    if (!useCanonicalSnapshot && !ct.IsCancellationRequested && imageBytes is null)
+                    if (!useCanonicalSnapshot && !ct.IsCancellationRequested && imageBytes is null && videos is null)
                     {
                         _fwd.CaptureSnapshot();
                         var snap = fullSeq.ToArray();
