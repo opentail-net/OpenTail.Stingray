@@ -186,9 +186,15 @@ Runnable now. Test cases only, no new disk or implementation.
       That is new CPU kernel work, not wiring, and it needs its own measurement gate.
       **Measured 2026-11-09 (per-section timing, local uncommitted instrumentation, reverted; 2 rounds of 12 decode tokens, UD-IQ1_S,
       63 GB RAM, one prompt):** wall 410 ms per token (about 2.4 tok/s). Per token: MoE routed and shared experts 155 ms (38%); GDN
-      mixers 103 ms (25%); QSA attention 15 ms (4%); output projection 12 ms (3%); PLE 7 ms (2%). Not attributed: about 118 ms (29%),
-      most likely the per-layer HC mix and combine and the norms, which were not timed. The output projection is small, so the
-      earlier estimate that put it first was wrong. The two rounds differ by about 1%.
+      mixers 103 ms (25%); QSA attention 15 ms (4%); output projection 12 ms (3%); PLE 7 ms (2%). Not attributed: about 118 ms (29%).
+      **The unattributed part is the HC residual, measured 2026-11-09:** `Qwen4ExpGatedResidual.Mix` and `Combine` take 115 ms per
+      token (116.3 and 114.8 ms over two rounds; 96 calls, so about 1.2 ms per call). Cause (reading the code and the tensor list,
+      not yet timed by part): the HC up and down matrices are stored as Q8_0 (`hc_attn_up`, `hc_ffn_up`, `hc_attn_down`,
+      `hc_ffn_down`, each 320 x 10,240), but `Mix` reads them as F32 from the dequantisation cache, so each call streams about 26 MB
+      of float weights (about 2.5 GB per token). A Q8_0 dot with float activations would read about a quarter of those bytes. Keep
+      only if it is measurably faster and the parity tests (logit parity, MTP oracle, acceptance) still pass; the numerics move only
+      by summation order. The output projection is small, so the earlier estimate that put it first was wrong. The two rounds
+      differ by about 1%.
       **The earlier estimate, kept for the record (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
       layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
       Q5_K and Q6_K, about 50M multiply-adds per layer. The output projection is 248,320 x 2,560, about 636M multiply-adds. At 2.5
