@@ -242,11 +242,17 @@ Runnable now. Test cases only, no new disk or implementation.
       the Qwen vision markers. Tests: Server.Fast with a fake engine for the loader and markers; Vision for the engine path on the
       real mmproj, compared with `Qwen4ExpImageAnswerTests`. The server cannot load the real checkpoint on this host (preflight),
       so the real-model proof is through the test harness, and the server smoke run is a recorded gap.
-      **Next step, found 2026-11-09:** the Gemma splice loop in `SplicePrefillImages` gives each image token one sequential
-      position, which is wrong for M-RoPE. So the Qwen case is a separate branch inside `SplicePrefillImages` (the Gemma loop is
-      left alone), taken when `_fwd` is `Qwen4ExpForwardPass`. The branch needs `ForwardImageChunk` on the pass's default sequence
-      state (a public accessor for it does not exist yet), per-image `nx`/`ny` from the Qwen encoder, and a prompt with one
-      placeholder per image token (today the server renders one placeholder per image). The engine calls `_fwd.ResetCache()` and
+      **Code landed 2026-11-09 (not yet verified on the real checkpoint):** `SpliceQwenImages` in `InferenceEngine` is a separate
+      branch, chosen when `EnableQwenImageInput` ran. It encodes each image with `QwenVlVisionEncoder`, preprocesses with
+      `QwenImagePreprocessor` (32-aligned, at most 256 soft tokens, [-1, 1]), and writes each image in one
+      `ForwardImageChunk` on `Qwen4ExpForwardPass.DefaultSequence` with M-RoPE positions. Text resumes at start + max(nx, ny).
+      The loader accepts an mmproj for `ImageProjectorKind.QwenVl` (set on qwen4exp); the public `SupportsImageInput` stays false.
+      Tests: `QwenImagePreprocessorTests` (5, Vision, synthetic); Vision full 218 total, 0 failed, 54 skipped (models absent);
+      Server.Fast 692 total, 0 failed. The server prompt still renders one `<|image_pad|>` per image, which the splice expands.
+      **Still open:** the chat template's vision markers for qwen4exp, a real-checkpoint run of the engine path compared with
+      `Qwen4ExpImageAnswerTests`, and the server smoke run (blocked by preflight on this host).
+      Earlier note (the design the code followed): the Gemma splice loop gives each image token one sequential
+      position, which is wrong for M-RoPE. The engine calls `_fwd.ResetCache()` and
       then splices, so the default sequence is the right target.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
       Design, recorded before code (investigation 2026-11-08):

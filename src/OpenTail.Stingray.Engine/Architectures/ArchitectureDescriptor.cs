@@ -20,6 +20,14 @@ public enum SupportedBackends
     All = Cpu | Vulkan | Cuda,
 }
 
+/// <summary>Which vision projector an architecture's image input uses. None: text only.</summary>
+public enum ImageProjectorKind
+{
+    None,
+    GemmaUv,
+    QwenVl,
+}
+
 public enum ForwardPassFamily
 {
     Dense,
@@ -147,6 +155,13 @@ public sealed class ArchitectureDescriptor
     }
 
     public bool SupportsImageInput { get; init; }
+
+    /// <summary>
+    /// The projector a server mmproj loads into. Set before <see cref="SupportsImageInput"/> is true: the loader accepts an
+    /// mmproj for this kind, while the public image flag stays false until the server path is verified on a real checkpoint.
+    /// </summary>
+    public ImageProjectorKind ImageProjector { get; init; }
+
     public bool SupportsAudioInput { get; init; }
 
     /// <summary>

@@ -55,8 +55,20 @@ public static class ImagePreprocessor
 
         var (w, h) = CalcSizePreservedRatio(srcWidth, srcHeight, align, minPixels, maxPixels);
 
-        // align-corners bilinear resize -> planar CHW float, normalized x/255.
-        var chw = new float[3 * h * w];
+        // llama.cpp truncates the resized u8, then divides by 255 -> match the truncation.
+        var u8 = ResizeToU8Chw(rgbHwc, srcWidth, srcHeight, w, h);
+        var chw = new float[u8.Length];
+        for (int i = 0; i < chw.Length; i++) chw[i] = u8[i] / 255f;
+        return new PreprocessedImage(chw, w, h);
+    }
+
+    /// <summary>
+    /// Align-corners bilinear resize of an interleaved 8-bit RGB image to planar CHW bytes at <paramref name="w"/> x
+    /// <paramref name="h"/>. Each value is the truncated resized byte, so callers normalise it themselves.
+    /// </summary>
+    public static byte[] ResizeToU8Chw(byte[] rgbHwc, int srcWidth, int srcHeight, int w, int h)
+    {
+        var chw = new byte[3 * h * w];
         int plane = h * w;
         float xRatio = w > 1 ? (float)(srcWidth - 1) / (w - 1) : 0f;
         float yRatio = h > 1 ? (float)(srcHeight - 1) / (h - 1) : 0f;
@@ -82,13 +94,11 @@ public static class ImagePreprocessor
                 {
                     float top = Lerp(rgbHwc[i00 + c], rgbHwc[i10 + c], xf);
                     float bottom = Lerp(rgbHwc[i01 + c], rgbHwc[i11 + c], xf);
-                    // llama.cpp truncates the resized u8, then divides by 255 -> match the truncation.
-                    byte u8 = (byte)Lerp(top, bottom, yf);
-                    chw[c * plane + outIdx] = u8 / 255f;
+                    chw[c * plane + outIdx] = (byte)Lerp(top, bottom, yf);
                 }
             }
         }
-        return new PreprocessedImage(chw, w, h);
+        return chw;
     }
 
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;

@@ -66,6 +66,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     // Image requests splice projected soft tokens at each placeholder during a fresh
     // (no-prefix-reuse) prefill.
     private GemmaUvVisionEmbedder? _visionEmbedder;
+    // Qwen-VL projector for the qwen4exp pass (engine-owned); null unless EnableQwenImageInput ran.
+    private QwenVlVisionModel? _qwenVision;
+    private QwenVlVisionEncoder? _qwenEncoder;
     // DSpark draft head (PR #413 Phase 6) — attached post-construction by the loader;
     // engine-owned (disposed in DisposeCore before the forward pass it drafts against).
     private IDSparkDraft? _dspark;
@@ -346,6 +349,24 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     }
 
     /// <summary>
+    /// Enable Qwen-VL image input for the qwen4exp pass. Takes ownership of <paramref name="model"/>: <see cref="DisposeCore"/>
+    /// disposes it. <paramref name="openId"/>, <paramref name="closeId"/>, <paramref name="placeholderId"/> are the
+    /// <c>&lt;|vision_start|&gt;</c>, <c>&lt;|vision_end|&gt;</c> and <c>&lt;|image_pad|&gt;</c> token ids.
+    /// </summary>
+    public void EnableQwenImageInput(QwenVlVisionModel model, int openId, int closeId, int placeholderId)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        if (_fwd is not Qwen4ExpForwardPass)
+            throw new InvalidOperationException(
+                $"Qwen image input needs the qwen4exp forward pass, not {_fwd.GetType().Name}.");
+        _qwenVision = model;
+        _qwenEncoder = new QwenVlVisionEncoder(model);
+        _imgOpenId = openId;
+        _imgCloseId = closeId;
+        _imgPlaceholderId = placeholderId;
+    }
+
+    /// <summary>
     /// Attach a DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) so greedy
     /// no-thinking requests decode through <see cref="DSparkDecoder"/>. The caller
     /// must have called <see cref="IForwardPass.EnableHiddenTaps"/> on the forward
@@ -380,7 +401,76 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     }
 
     /// <inheritdoc/>
-    public bool SupportsImageInput => _visionEmbedder is not null && _fwd.SupportsEmbeddingInput;
+    public bool SupportsImageInput => (_visionEmbedder is not null && _fwd.SupportsEmbeddingInput) || _qwenEncoder is not null;
+
+    /// <summary>
+    /// qwen4exp image prefill (Phase 5, server path): one <c>&lt;|image_pad|&gt;</c> per image stands for the image's soft tokens.
+    /// Each image is one <see cref="Qwen4ExpForwardPass.ForwardImageChunk"/> call with M-RoPE positions (time = start position,
+    /// rows and columns from the grid), and the text after it resumes at start + max(nx, ny). The vision start and end markers
+    /// are ordinary text tokens. Returns the logits of the last token; <paramref name="endPos"/> is the next position.
+    /// </summary>
+    private ReadOnlySpan<float> SpliceQwenImages(int[] tokens, IReadOnlyList<byte[]> imageBytes,
+        CancellationToken ct, out int endPos)
+    {
+        var pass = (Qwen4ExpForwardPass)_fwd;
+        var encoder = _qwenEncoder!;
+        var blocks = new (float[] Soft, int Nx, int Ny, int NTok)[imageBytes.Count];
+        for (int i = 0; i < imageBytes.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            byte[] rgb;
+            int w, h;
+            using (var ms = new MemoryStream(imageBytes[i], writable: false))
+                rgb = ImageIO.LoadRgb(ms, out w, out h);
+            var pre = QwenImagePreprocessor.Preprocess(rgb, w, h);
+            float[] soft = encoder.Forward(pre.Chw, pre.Width, pre.Height, out int nTok);
+            int nx = pre.Width / QwenImagePreprocessor.Align, ny = pre.Height / QwenImagePreprocessor.Align;
+            if (nx * ny != nTok)
+                throw new InvalidOperationException($"Qwen image grid {nx}x{ny} does not match {nTok} soft tokens.");
+            blocks[i] = (soft, nx, ny, nTok);
+        }
+
+        int placeholders = 0;
+        foreach (int id in tokens) if (id == _imgPlaceholderId) placeholders++;
+        if (placeholders != imageBytes.Count)
+            throw new InvalidOperationException(
+                $"Image count mismatch: the rendered prompt has {placeholders} <|image_pad|> placeholder(s) " +
+                $"but {imageBytes.Count} image(s) were supplied.");
+
+        int pos = 0, imgIdx = 0;
+        bool lastWasImage = false;
+        ReadOnlySpan<float> logits = default;
+        foreach (int id in tokens)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (id != _imgPlaceholderId)
+            {
+                logits = pass.Forward(id, pos);
+                pos++;
+                lastWasImage = false;
+                continue;
+            }
+            var (soft, nx, ny, nTok) = blocks[imgIdx++];
+            var placeholderIds = new int[nTok];
+            var posT = new int[nTok];
+            var posY = new int[nTok];
+            var posX = new int[nTok];
+            for (int k = 0; k < nTok; k++)
+            {
+                placeholderIds[k] = _imgPlaceholderId;
+                posT[k] = pos;
+                posY[k] = pos + k / nx;
+                posX[k] = pos + k % nx;
+            }
+            pass.ForwardImageChunk(soft, placeholderIds, posT, posY, posX, pass.DefaultSequence);
+            pos += Math.Max(nx, ny);
+            lastWasImage = true;
+        }
+        if (lastWasImage)
+            throw new InvalidOperationException("The prompt must have text after the last image.");
+        endPos = pos;
+        return logits;
+    }
 
     /// <summary>
     /// Issue #253 image prefill: project each image to its soft-token block, then walk the
@@ -393,6 +483,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     private ReadOnlySpan<float> SplicePrefillImages(int[] tokens, IReadOnlyList<byte[]> imageBytes,
         CancellationToken ct, out int endPos)
     {
+        if (_qwenEncoder is not null) return SpliceQwenImages(tokens, imageBytes, ct, out endPos);
         var vision = _visionModel!;
         var embedder = _visionEmbedder!;
         int embDim = vision.EmbeddingLength;
@@ -1592,6 +1683,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         foreach (var d in _owned)
             d.Dispose();
         _visionModel?.Dispose();
+        _qwenVision?.Dispose();
         _gate.Dispose();
         _shutdownCts.Dispose();
     }

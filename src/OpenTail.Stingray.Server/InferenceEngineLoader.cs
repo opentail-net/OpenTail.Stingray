@@ -93,11 +93,14 @@ public static class InferenceEngineLoader
 
         if (!string.IsNullOrWhiteSpace(plan.Modality?.MmprojPath) && instance.Engine is InferenceEngine ieVision)
         {
-            if (ArchitectureRegistry.Find(targetArch)?.SupportsImageInput != true)
+            var imageDescriptor = ArchitectureRegistry.Find(targetArch);
+            var projector = imageDescriptor?.ImageProjector ?? ImageProjectorKind.None;
+            bool qwenVision = projector == ImageProjectorKind.QwenVl;
+            if (imageDescriptor?.SupportsImageInput != true && !qwenVision)
                 throw new InvalidOperationException(
-                    "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for architectures that declare image input (currently Gemma 4, gemma4uv) " +
+                    "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for architectures that declare image input (currently Gemma 4, gemma4uv, qwen4exp) " +
                     $"text models; this model's architecture is '{targetArch}'.");
-            if (!instance.ForwardPass.SupportsEmbeddingInput)
+            if (!qwenVision && !instance.ForwardPass.SupportsEmbeddingInput)
                 throw new InvalidOperationException(
                     "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
                     "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload of a Gemma 4 model " +
@@ -107,19 +110,40 @@ public static class InferenceEngineLoader
                     "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
 
             var mmprojPath = ResolvePath(plan.Modality.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
-            var visionModel = VisionModel.Open(mmprojPath);
-            try
+            if (qwenVision)
             {
-                var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
-                int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
-                int imgClose = instance.Tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
-                int imgPlaceholder = instance.Tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880;
-                ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
+                var specials = instance.Tokenizer.SpecialTokens;
+                if (!specials.TryGetValue("<|vision_start|>", out int qOpen) || !specials.TryGetValue("<|vision_end|>", out int qClose)
+                    || !specials.TryGetValue("<|image_pad|>", out int qPad))
+                    throw new InvalidOperationException(
+                        "The qwen4exp tokenizer does not define <|vision_start|>, <|vision_end|> and <|image_pad|>; image input cannot be placed.");
+                var qwenModel = QwenVlVisionModel.Open(mmprojPath);
+                try
+                {
+                    ieVision.EnableQwenImageInput(qwenModel, qOpen, qClose, qPad);
+                }
+                catch
+                {
+                    qwenModel.Dispose();
+                    throw;
+                }
             }
-            catch
+            else
             {
-                visionModel.Dispose();
-                throw;
+                var visionModel = VisionModel.Open(mmprojPath);
+                try
+                {
+                    var visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
+                    int imgOpen = instance.Tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
+                    int imgClose = instance.Tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
+                    int imgPlaceholder = instance.Tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880;
+                    ieVision.EnableImageInput(visionEmbedder, visionModel, imgOpen, imgClose, imgPlaceholder);
+                }
+                catch
+                {
+                    visionModel.Dispose();
+                    throw;
+                }
             }
         }
 

@@ -1292,6 +1292,9 @@ public sealed unsafe class Qwen4ExpForwardPass : IForwardPass
         }
     }
 
+    /// <summary>The state that <see cref="Forward(int, int)"/> writes to. <c>ResetCache</c> clears it in place, so it stays valid.</summary>
+    public Qwen4ExpSequenceState DefaultSequence => _seq;
+
     public void ResetCache()
     {
         _seq.Reset();

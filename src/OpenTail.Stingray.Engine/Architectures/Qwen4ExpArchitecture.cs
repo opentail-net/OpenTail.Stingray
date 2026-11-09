@@ -9,6 +9,7 @@ internal static class Qwen4ExpArchitecture
         EvidenceDoc = "docs/2-coverage/2026-11-08-qwen38-remaining-work-plan.md",
         StatusAnchor = "Qwen 3.8 Flash Next (`qwen4exp`)",
         ForwardPassFamily = ForwardPassFamily.HybridGdn, // Gated-DeltaNet hybrid, like qwen35
+        ImageProjector = ImageProjectorKind.QwenVl, // the loader accepts an mmproj; SupportsImageInput stays false until verified
         // Admitted 2026-11-09 for text generation and tool calls on the UD-IQ1_S checkpoint. Image input, video,
         // MTP speculation and the per-step MTP oracle are not admitted (waivers in the plan's admission entry).
         CreateForwardPass = BuildForwardPass,
