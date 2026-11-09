@@ -93,7 +93,6 @@ public sealed class ArchitectureRegistryTests
     [InlineData("glm-dsa")]
     [InlineData("glm5next")]
     [InlineData("diffusion-gemma")]
-    [InlineData("qwen4exp")]
     [InlineData("deepseek41")]
     [InlineData("deepseek4")]
     [InlineData("deepseek32")]

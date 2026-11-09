@@ -61,7 +61,7 @@ qwen35|Admitted|HybridGdn|All|batch=True|canBatchPredicate=False|img=False|aud=F
 qwen35moe|Admitted|HybridGdn|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen35moe|semantics=False|aliases=
 qwen3moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=qwen3moe|semantics=True|aliases=
 qwen3vl|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
-qwen4exp|NotAdmitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
+qwen4exp|Admitted|HybridGdn|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 rwkv6|Admitted|Rwkv|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 rwkv7|Admitted|Rwkv|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 smollm3|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=

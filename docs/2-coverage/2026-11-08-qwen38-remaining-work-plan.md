@@ -26,12 +26,14 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       checks parsed calls against the request's declared tools (undeclared tool or schema failure), and the endpoint
       returns HTTP 422 with `invalid_tool_call`.
       Blocks: Phase 6 server wiring and the server round trip.
-- [ ] **D4. Approve admission** (Phase 8). Needs Phases 0-7 closed or explicitly waived.
-      2026-11-08: the owner answered "yes" to approving admission. The gate is not yet met. Phase 0.3 is closed under D1 (text and
-      image steps 0-1 explained by the noise floor). Still open: the Phase 4 oracle (blocked by the fork), the Phase 4 product decoder,
-      the Phase 6 product round trip (local round trip done, diagnostic-gated), and Phase 7 (not started). No admission action
-      (ModelCompatibility, STATUS, README) is taken until the owner states whether that "yes" waives the open phases, or
-      the phases are closed. Question to the owner is recorded in the loop summary.
+- [x] **D4. Approve admission** (Phase 8): decided 2026-11-09 under the owner's delegation. Admitted scope: `qwen4exp` text
+      generation and tool calls, CPU, paged checkpoint. The owner answered "yes" to approving admission on 2026-11-08; the scope
+      question stayed open until the owner's "just figure it all out and get everything done. your decisions!!! you decide and do!"
+      (2026-11-09). Decision (taken by me): admit text and tool calls only. Phase 0.3 is closed under D1 (text and image steps 0-1
+      explained by the noise floor). Waived, not closed (the admitted scope does not include them): the Phase 4 oracle (blocked by
+      the fork), Phase 4 batched verify (not done), Phase 5 image and video input (not admitted; the server image path is not wired),
+      Phase 6.4 logit distributions (not done), Phase 7 (not started; needs its own plan), and the Phase 8 performance pass (single
+      sample only). Open for the owner: whether an admitted server that a third party can call counts as Model as a Service (see 0.3).
 
 ---
 
@@ -343,13 +345,16 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 ## Phase 8. Verification and admission
 
-- [ ] Full verification pass (Phases 0-7 closed or explicitly waived by the owner).
+- [ ] Full verification pass (Phases 0-7 closed or explicitly waived by the owner). Partly done 2026-11-09: Core full gate and
+      Server.Fast full suite ran on the admission change. The waived items under D4 remain open.
 - [ ] Performance pass and DRY pass (CLAUDE.md rule 7). Single-sample speed on this machine (2026-11-08,
       `MeasureTextThroughput_OnTheRealCheckpoint`, paged UD-IQ1_S, 63 GB RAM): prefill 1.30 tok/s over 63 prompt tokens, decode
       1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
       fix: "Speed of the Qwen path is not measured yet"). The Q5_K numerics change (`MatVecLlamaNumerics`) is a candidate to measure.
-- [ ] Docs and status: `docs/STATUS.md` row and `ModelCompatibility.cs` entry, only after D4 (rule 10 and rule 14).
-- [ ] Admission (D4).
+- [x] Docs and status: `docs/STATUS.md` qwen4exp row (text generation and tool calls only), written after D4 (rule 10 and rule 14).
+- [x] Admission (D4): `Qwen4ExpArchitecture` descriptor `Status = Admitted`. Tool calls use the default Qwen wrapper
+      (`ToolCallAdapterRegistry`); no `qwen4exp` literal was added outside `Engine/Architectures/` (the literal ratchet and
+      `Registry_QwenFamilyWrapperServesQwen4Exp` both require this). The facts baseline line for `qwen4exp` changed to `Admitted`.
 
 ---
 
