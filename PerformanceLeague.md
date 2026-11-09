@@ -1095,6 +1095,21 @@ This section reads across the ratio tables above; it does not replace them.
 
 ---
 
+## MoE expert residency under memory pressure, CPU (2026-11-09)
+
+Question (SharpMind review, item R2): how much does CPU MoE decode depend on the OS keeping the memory-mapped expert pages resident? Protocol and fixed thresholds: [2026-11-09-moe-expert-residency-measurement-plan.md](docs/4-performance/2026-11-09-moe-expert-residency-measurement-plan.md). Binary: `stingray` NativeAOT from commit `5d6e2044`. Model: `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf` (17.28 GB, `qwen3moe`, 48 layers, 128 experts, 8 used). Command: `stingray -f <~181-token prompt> -n 128 --temp 0 --repeat-penalty 1.0 -t 8 -g 0 --single-turn`. Hardware: Ryzen 7 5700G, 64 GB RAM, model on a Samsung 870 QVO SATA SSD (F:). Session 2026-11-09, one run at a time, order A B A B A B.
+
+| Condition | Runs | Free RAM during run | Decode t/s: median (runs) | Prefill t/s (median) | Wall s (median) | Hard-fault reads per run | Output |
+|---|---|---:|---|---:|---:|---|---|
+| A, control (no ballast) | 3 | 40-48 GB | **14.1** (15.3, 14.1, 13.4) | 56.5 | 24.9 | 0.0 (warm), 4.6, 5.2 GiB | `69195351a9d6b52a` |
+| B, pressure (ballast to about 8 GB free) | 3 | 8-9 GB | **5.6** (5.6, 4.8, 7.1) | 6.4 | 54.8 | 17.3, 20.2, 18.5 GiB | `69195351a9d6b52a` |
+
+Ratio B/A: decode **0.40**, prefill **0.11**. All six generated texts are identical (the paging does not change the numerics). Attempt 1, invalid for condition B (constant-byte ballast compressed away; sampler and hash defects), is recorded in the plan, section 7.1.
+
+Verdict against the rules fixed before the runs: H0 (B at least 0.90 of A) is rejected. H1 needs the hard-fault reads to be the dominant cost. The read volume is consistent with that (about 18-20 GiB in 50-60 s, roughly 350-400 MB/s on average, against a drive rated at about 560 MB/s sequential), but the drive's random-fault throughput was not measured, so dominance is not shown. Not enough for a residency prototype yet.
+
+What this does show: when the mapped expert working set does not fit in available RAM, CPU MoE decode on this machine runs at about 0.4x, and prefill at about 0.1x. What it does not show: whether a process-managed residency policy would read fewer bytes. That needs routing traces under the same budget (hit rate of a pinned set versus the OS's LRU), which were not collected.
+
 ## Opt-in and no-go items
 
 - **CUDA:** no numbers. All CUDA rows are from prior hardware (†) and are historical.
