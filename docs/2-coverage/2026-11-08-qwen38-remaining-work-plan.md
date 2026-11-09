@@ -444,6 +444,12 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
 
 - [ ] Full verification pass (Phases 0-7 closed or explicitly waived by the owner). Partly done 2026-11-09: Core full gate and
       Server.Fast full suite ran on the admission change. The waived items under D4 remain open.
+      **Real-checkpoint pass, 2026-11-09:** every Qwen real-checkpoint class ran in the heavy suites (Core 35 classes, Vision 5,
+      Sessions 1), with the image and video inputs set. All classes that ran passed with 0 failures. The long-prompt test ran at
+      4,182 tokens, past the indexer top-k of 2,048 (2,207 s): passed. The logit-parity test (24 steps: worst cosine 0.996936,
+      worst total variation 0.072374) and the MTP-oracle test (44 steps: worst cosine 0.997465) passed on rerun with their inputs.
+      The reference-dump tests are developer-only and skipped. Not closed by this pass: the items waived under D4 (the multi-row
+      pass, the HTTP runs, the performance pass, docs and the licence).
 - [ ] Performance pass and DRY pass (CLAUDE.md rule 7). Single-sample speed on this machine (2026-11-08,
       `MeasureTextThroughput_OnTheRealCheckpoint`, paged UD-IQ1_S, 63 GB RAM): prefill 1.30 tok/s over 63 prompt tokens, decode
       1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
