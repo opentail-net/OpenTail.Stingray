@@ -517,6 +517,13 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       estimate counts the paged weights as resident, while the plan records a 9.6 GB free run and sparse PLE touch of 1440
       bytes per token (6.2). So the estimate looks pessimistic for mmap-paged models, but it is a shared guard across families,
       and changing it is an owner decision.
+      **Resident working set, measured 2026-11-09** (`Process.WorkingSet64`, real trunk, the long-prompt text, greedy prefill, no
+      preflight involved): after load 0.09 GiB; after 1,024 tokens 26.71 GiB; 2,048 tokens 29.08 GiB; 3,072 tokens 30.32 GiB;
+      4,096 tokens 31.19 GiB; after 32 decode tokens 31.21 GiB. Private memory 3.07 GiB. The increments fall from about 2.4 GiB
+      per 1,024 tokens to under 1 GiB, so the working set is levelling off well below the 66.0 GiB estimate and the 63.3 GiB host.
+      Limits of this evidence: one prompt, contexts up to 4,096 tokens, one 4,096-token run; a longer and more varied workload is
+      not yet measured. An earlier 512-token run (24.6 GiB peak) is consistent. A defensible qwen4exp estimate would need this
+      calibration plus a longer diverse run, and the guard change is still the owner's decision.
 - [x] Admission (D4): `Qwen4ExpArchitecture` descriptor `Status = Admitted`. Tool calls use the default Qwen wrapper
       (`ToolCallAdapterRegistry`); no `qwen4exp` literal was added outside `Engine/Architectures/` (the literal ratchet and
       `Registry_QwenFamilyWrapperServesQwen4Exp` both require this). The facts baseline line for `qwen4exp` changed to `Admitted`.
