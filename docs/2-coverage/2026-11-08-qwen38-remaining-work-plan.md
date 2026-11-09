@@ -184,6 +184,13 @@ Runnable now. Test cases only, no new disk or implementation.
       (`Q6KPrefillGemm.TryMatMulBatched`). Not found: Q5_K (the engine notes it has no int8 dot path), IQ2_XXS, IQ2_S, Q2_0, IQ4_XS
       and IQ4_NL. The experts (IQ2_XXS and IQ2_S) carry most of the compute, so their batched dequant-dot kernels come first.
       That is new CPU kernel work, not wiring, and it needs its own measurement gate.
+      **Estimate before the profile (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
+      layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
+      Q5_K and Q6_K, about 50M multiply-adds per layer. The output projection is 248,320 x 2,560, about 636M multiply-adds. At 2.5
+      tok/s the decode moves about 1.5 to 2 GB of weights per token, so it is either memory-bound or dequant-bound. A block of k
+      tokens shares weight reads only where the routed experts overlap, so the verify gain is bounded by that overlap. The next
+      step is a per-section timing of one decode token (PLE, GDN, QSA attention, MoE, output head), taken on a local, uncommitted
+      instrumentation, before any kernel change.
       **Batched verify, decided 2026-11-09:** the qwen4exp "batched" prefill (`Qwen4ExpBatchedForwardPass.PrefillWithCache`,
       `PrefillPackedMulti`, `BatchForwardMulti`) is a loop of single-token `Forward` calls, so it reads the weights once per
       token. Measured: prefill 2.21 tok/s and decode 2.47 tok/s, the same per-token rate. Other families' batched prefill is much
