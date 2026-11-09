@@ -216,7 +216,12 @@ Runnable now. Test cases only, no new disk or implementation.
       token 7 Stingray picks ` **` (id 2972, logit 20.652) and the reference picks ` two` (id 1330, logit 20.640), the runner-up,
       0.012 logits behind. That is inside the 0.12 tolerance. The continuations differ after that ("squares" against "shapes"), and
       later tokens are not comparable because the runs fed different tokens. Not exact byte equality over 40 tokens; equal under D1.
-- [ ] Image input through the tool and server paths.
+- [ ] Image input through the tool and server paths. **Server path not wired (checked 2026-11-09):** with `STINGRAY_MMPROJ` the
+      server refuses qwen4exp ("only supported for architectures that declare image input (currently Gemma 4, gemma4uv)";
+      `InferenceEngineLoader`). The server's image pipeline (`InferenceEngine.GenerateImageChunksAsync`, `ImageContent`) is built for
+      Gemma 4. Closing this means a qwen4exp branch in that pipeline (projector embeddings through `ForwardImageChunk` with M-RoPE
+      positions), the vision markers in the prompt, and `SupportsImageInput` on the descriptor. The local image path is covered by
+      `Qwen4ExpImageAnswerTests`; the tool path with an image is not tested.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
       Design, recorded before code (investigation 2026-11-08):
       - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
