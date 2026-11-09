@@ -74,6 +74,10 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
     private IDSparkDraft? _dspark;
     private VisionModel? _visionModel;
     private int _imgOpenId, _imgCloseId, _imgPlaceholderId;
+    /// <summary>The image marker the server writes into a prompt (the Gemma token text).</summary>
+    private const string GenericImageMarker = "<|image|>";
+    /// <summary>What a Qwen projector gets in its place: the image pad between the vision markers.</summary>
+    private const string QwenImageMarkers = "<|vision_start|><|image_pad|><|vision_end|>";
 
     // Observability counters (updated via Interlocked).
     private int _pendingCount;
@@ -721,6 +725,10 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         string? canonicalHistoryPrefix,
         IReadOnlyList<byte[]>? imageBytes)
     {
+        // The server writes the generic image marker; a Qwen projector needs its own marker sequence around the image pad.
+        if (imageBytes is { Count: > 0 } && _qwenEncoder is not null)
+            prompt = prompt.Replace(GenericImageMarker, QwenImageMarkers, StringComparison.Ordinal);
+
         // Link the caller's token with the engine-shutdown token so Dispose can stop this
         // generation's background worker (issue #132). Everything below uses `ct` — the
         // linked token — so cancellation from either source aborts decode and releases the

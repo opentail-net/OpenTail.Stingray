@@ -249,8 +249,13 @@ Runnable now. Test cases only, no new disk or implementation.
       The loader accepts an mmproj for `ImageProjectorKind.QwenVl` (set on qwen4exp); the public `SupportsImageInput` stays false.
       Tests: `QwenImagePreprocessorTests` (5, Vision, synthetic); Vision full 218 total, 0 failed, 54 skipped (models absent);
       Server.Fast 692 total, 0 failed. The server prompt still renders one `<|image_pad|>` per image, which the splice expands.
-      **Still open:** the chat template's vision markers for qwen4exp, a real-checkpoint run of the engine path compared with
-      `Qwen4ExpImageAnswerTests`, and the server smoke run (blocked by preflight on this host).
+      Prompt markers, 2026-11-09: the server writes the generic `<|image|>` marker; `InferenceEngine.GenerateCore` rewrites it to
+      `<|vision_start|><|image_pad|><|vision_end|>` when a Qwen projector is attached, so the server is unchanged.
+      Real checkpoint, engine level (`Qwen4ExpEngineImageTests`, Vision, synthetic 224 px image with a red and a blue square on
+      white, greedy, 96 tokens, 46 s): the answer is "The colours in this picture are red and blue." This is the engine's own
+      splice path, not the direct pass test.
+      **Still open:** the server smoke run through HTTP (blocked by preflight on this host), and a comparison of the engine
+      answer's token ids with `Qwen4ExpImageAnswerTests` (the text answers match in content; ids are not compared yet).
       Earlier note (the design the code followed): the Gemma splice loop gives each image token one sequential
       position, which is wrong for M-RoPE. The engine calls `_fwd.ResetCache()` and
       then splices, so the default sequence is the right target.
