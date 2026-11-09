@@ -337,9 +337,13 @@ Runnable now. Test cases only, no new disk or implementation.
       first turn (49 tokens, prefill only); the question (11 tokens) prefilled exactly 11 tokens; the 96-token answer is the same
       as a cold session that gets the document and the question in one turn ("Mainz.", after the same reasoning trace). Not
       built: a named-collection registry or any product surface; the mechanism is the hot session itself.
-- [ ] Developer workflows. **Spec (decided 2026-11-09):** one scripted, documented path for Qwen 3.8 that runs scout, the CLI
-      and server smoke runs, and the gates, writing its results to the scratchpad. Done when the path runs end to end on this
-      machine and its outputs are recorded in the plan.
+- [x] Developer workflows (done 2026-11-09). **Spec (decided, no owner spec existed):** `scripts/qwen38-workflow.ps1` runs scout,
+      the CLI smoke, the five Qwen real-checkpoint Core classes, the Sessions knowledge test and Server.Fast, writing logs and a
+      summary to a folder (`-Full` adds the full Core gate). First end-to-end run, 2026-11-09: build 0; scout 0 (`scout.json`
+      written); CLI smoke 1 (the expected preflight refusal, 66.0 GiB against 63.3 GiB); Core Qwen classes 5 of 5 passed (Single
+      token, Turn snapshot, MTP decoder, Telemetry, Sharded loading with shard counts and the managed-heap check); Sessions
+      knowledge test 1 of 1 passed (91 s); Server.Fast 692 total, 0 failed, 1 skipped (the earlier runs showed 2 skipped, so one
+      skip depends on the environment). Not in the default run: the full Core gate (`-Full`).
 - [ ] Browser UI (7F): **parked by the owner 2026-11-08.** Leave unchecked; do not start.
 
 ## Real-weight qualification (from the original port plan's Phase 6, reconciled)
