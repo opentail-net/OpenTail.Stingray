@@ -335,11 +335,18 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       decode steps gives "! We’ve noticed that", identical to `llama-completion` (`Qwen4ExpSingleTokenTests`). K-pool boundaries are
       crossed by the 63-token chunked prompt (pool ratio 4, so 15 boundaries) and by the 2,376-token prompt. The sparse selection
       threshold is crossed by the 2,376-token prompt (top-k 2048), with the identical continuation above.
-- [ ] 6.4 External parity gate: greedy token sequence and logit distributions against the pinned llama.cpp (`bed0a8566`)
+- [x] 6.4 External parity gate (closed 2026-11-09 for the 21-token prompt; see the result below): greedy token sequence and logit distributions against the pinned llama.cpp (`bed0a8566`)
       or TensorSharp. Overlaps Phase 0 and Phase 1; close them together.
       2026-11-08 status: greedy text matches `llama-completion` on the single-token prompt, the 2,376-token prompt (16 tokens),
       and the Phase 1 prompts within the tolerance. Logit distributions are not compared with the reference (llama-completion
       prints none), so 6.4 stays open on that part.
+      Result, 2026-11-09 (`Qwen4ExpLogitParityTests`, reference `llama-logit-dump` on the pinned `bed0a8566` build, local, not
+      committed): the speed-test prompt (21 tokens) and 24 greedy steps. The reference's greedy tokens are teacher-forced
+      through Stingray; Stingray's top-1 equals the reference's at all 24 steps (so its own greedy continuation is the same 24
+      tokens). Logit distributions: cosine mean 0.99856, worst 0.99694; total variation mean 0.0304, worst 0.0724 (step 6).
+      The mean is at the 0.03 noise floor of Phase 0.2, and 11 of 24 steps are above it, so the distributions are close to the
+      reference but not inside the floor on every step. The verdict is the D1 token criterion, which passes at every step.
+      One prompt only; more prompts are a follow-up.
 - [x] Check the Hugging Face file list for `unsloth/Qwen3.8-Flash-Next-GGUF` (2026-11-08, read-only API). 77 files, last modified
       2026-11-07, commit `084c631`. The local files match the repository's sizes: UD-IQ1_S shards 10,946,618 / 37,568,095,648 /
       28,800,138,432 bytes; shared MTP Q4_K_M 1,907,151,936 bytes; `mmproj-F16` 904,004,000 bytes.
