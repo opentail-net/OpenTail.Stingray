@@ -24,16 +24,92 @@ public sealed class Tensor : IDisposable
     public void Dispose() { /* backend-owned; disposed via backend */ }
 }
 
-/// <summary>N-dimensional shape descriptor.</summary>
-public readonly record struct TensorShape(long[] Dims)
+/// <summary>
+/// N-dimensional shape descriptor. Immutable: the constructor copies the dimensions and no member
+/// exposes them for writing. Dimensions are 64-bit. A zero dimension gives an empty shape and is
+/// accepted; a negative dimension, or an element count that overflows 64 bits, is rejected.
+/// </summary>
+public readonly record struct TensorShape
 {
-    public int Rank => Dims.Length;
-    public long ElementCount => Dims.Aggregate(1L, (a, d) => a * d);
+    private readonly long[] _dims;
+    private readonly long _elementCount;
+
+    /// <summary>Creates a shape from a copy of <paramref name="dims"/>. An empty array is a scalar.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="dims"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A dimension is negative, or the element count overflows 64 bits.</exception>
+    public TensorShape(long[] dims)
+    {
+        ArgumentNullException.ThrowIfNull(dims);
+        _dims = (long[])dims.Clone();
+        _elementCount = CountElements(_dims);
+    }
+
+    /// <summary>Number of dimensions.</summary>
+    public int Rank => _dims.Length;
+
+    /// <summary>Total number of elements: the product of the dimensions, or 1 for a scalar.</summary>
+    public long ElementCount => _elementCount;
+
+    /// <summary>Dimension sizes, read-only. The span covers this shape's private copy.</summary>
+    public ReadOnlySpan<long> Dims => _dims;
 
     public static TensorShape D1(long d0) => new([d0]);
     public static TensorShape D2(long d0, long d1) => new([d0, d1]);
     public static TensorShape D3(long d0, long d1, long d2) => new([d0, d1, d2]);
     public static TensorShape D4(long d0, long d1, long d2, long d3) => new([d0, d1, d2, d3]);
+
+    /// <summary>Value equality: the same dimensions in the same order.</summary>
+    public bool Equals(TensorShape other) => _dims.AsSpan().SequenceEqual(other._dims);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        foreach (long d in _dims)
+            hash.Add(d);
+        return hash.ToHashCode();
+    }
+
+    /// <summary>Formats the dimensions as <c>(d0, d1, ...)</c>, for example <c>(2, 3, 4)</c>.</summary>
+    public override string ToString()
+    {
+        var sb = new System.Text.StringBuilder("(");
+        for (int i = 0; i < _dims.Length; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(_dims[i]);
+        }
+        return sb.Append(')').ToString();
+    }
+
+    /// <summary>
+    /// Validates the dimensions and returns their product. A zero anywhere gives 0 even when the
+    /// other dimensions alone would overflow, because the product is then exactly zero.
+    /// </summary>
+    private static long CountElements(long[] dims)
+    {
+        bool hasZero = false;
+        for (int i = 0; i < dims.Length; i++)
+        {
+            if (dims[i] < 0)
+                throw new ArgumentOutOfRangeException(nameof(dims), dims[i], $"Dimension {i} must not be negative.");
+            if (dims[i] == 0) hasZero = true;
+        }
+        if (hasZero) return 0;
+
+        long count = 1;
+        foreach (long d in dims)
+        {
+            try
+            {
+                count = checked(count * d);
+            }
+            catch (OverflowException)
+            {
+                throw new ArgumentOutOfRangeException(nameof(dims), "Element count overflows 64 bits.");
+            }
+        }
+        return count;
+    }
 }
 
 /// <summary>
