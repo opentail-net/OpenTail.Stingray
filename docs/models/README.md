@@ -25,6 +25,7 @@
 |---|---|---|---|
 | **Qwen Series** | Qwen 2.5, Qwen 3, Qwen 3.5 MoE, Qwen-Coder | Default catalogue model (`0.5b`), weighted QK-norm, Gated DeltaNet MoE | [qwen.md](qwen.md) |
 | **Qwen 3.5 / 3.6 / 3.8 Hybrid** | `qwen35`, `qwen35moe`, Ornith 1.0 | Gated DeltaNet recurrence with periodic full attention, MoE variants, MTP self-speculation | [qwen35.md](qwen35.md) |
+| **Qwen 3.8 Flash Next** | `qwen4exp` | Gated DeltaNet with QSA sparse attention, four-stream hyper-connections, per-layer token table, 512-expert MoE; text and tool calls admitted (CPU) | [qwen38-flash-next.md](qwen38-flash-next.md) |
 | **gpt-oss** | `gpt-oss` | Attention sinks, alternating sliding window, biased MoE, native MXFP4 | [gpt-oss.md](gpt-oss.md) |
 | **DeepSeek** | DeepSeek-V2, V2.5, V3, R1 | Multi-Head Latent Attention (MLA, 3.5× KV reduction), DeepSeekMoE, thinking traces | [deepseek.md](deepseek.md) |
 | **RWKV** | RWKV-6 Finch, RWKV-7 Goose | Zero KV cache overhead, $O(1)$ constant RAM, matrix decay state evolution | [rwkv.md](rwkv.md) |

@@ -352,6 +352,12 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       1.69 tok/s over 12 steps. One sample, not a performance pass; the performance pass itself has not been done (programme plan, Phase 0.2 Q5_K
       fix: "Speed of the Qwen path is not measured yet"). The Q5_K numerics change (`MatVecLlamaNumerics`) is a candidate to measure.
 - [x] Docs and status: `docs/STATUS.md` qwen4exp row (text generation and tool calls only), written after D4 (rule 10 and rule 14).
+      Architecture card `docs/models/qwen38-flash-next.md` and its index row in `docs/models/README.md` (2026-11-09).
+- [ ] RUNNING.md row and WHAT-YOU-CAN-DO line: not added (open, owner decision). On this 63.3 GiB host the CLI refuses
+      the checkpoint: the preflight estimate is 66.0 GiB (`stingray -m ... -p ... -n 128 --temp 0` stops with "Not loading"
+      on 2026-11-09). The override `--ignore-preflight` would load it, but CLAUDE.md rule 15 says not to run a checkpoint
+      known to exceed the budget, so it was not used for a documented run. Earlier server runs used
+      `STINGRAY_IGNORE_PREFLIGHT=1`. Owner to choose: document the override, require a larger host, or a smaller quant.
 - [x] Admission (D4): `Qwen4ExpArchitecture` descriptor `Status = Admitted`. Tool calls use the default Qwen wrapper
       (`ToolCallAdapterRegistry`); no `qwen4exp` literal was added outside `Engine/Architectures/` (the literal ratchet and
       `Registry_QwenFamilyWrapperServesQwen4Exp` both require this). The facts baseline line for `qwen4exp` changed to `Admitted`.
