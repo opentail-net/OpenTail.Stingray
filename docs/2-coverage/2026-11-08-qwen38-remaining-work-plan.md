@@ -242,6 +242,12 @@ Runnable now. Test cases only, no new disk or implementation.
       the Qwen vision markers. Tests: Server.Fast with a fake engine for the loader and markers; Vision for the engine path on the
       real mmproj, compared with `Qwen4ExpImageAnswerTests`. The server cannot load the real checkpoint on this host (preflight),
       so the real-model proof is through the test harness, and the server smoke run is a recorded gap.
+      **Next step, found 2026-11-09:** the Gemma splice loop in `SplicePrefillImages` gives each image token one sequential
+      position, which is wrong for M-RoPE. So the Qwen case is a separate branch inside `SplicePrefillImages` (the Gemma loop is
+      left alone), taken when `_fwd` is `Qwen4ExpForwardPass`. The branch needs `ForwardImageChunk` on the pass's default sequence
+      state (a public accessor for it does not exist yet), per-image `nx`/`ny` from the Qwen encoder, and a prompt with one
+      placeholder per image token (today the server renders one placeholder per image). The engine calls `_fwd.ResetCache()` and
+      then splices, so the default sequence is the right target.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
       Design, recorded before code (investigation 2026-11-08):
       - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
