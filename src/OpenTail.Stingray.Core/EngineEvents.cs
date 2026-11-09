@@ -16,6 +16,8 @@ public enum EngineEventKind
     MtpStep,
     /// <summary>Process exit GC summary. <c>A</c>/<c>B</c>/<c>C</c> = gen0/gen1/gen2 collections, <c>Ms</c> = total pause, <c>Detail</c> = sizes.</summary>
     GcStats,
+    /// <summary>Forward-pass counters after a generation. <c>Name</c> = architecture, <c>A</c>/<c>B</c>/<c>C</c> = counter values, named by the emitter.</summary>
+    ForwardCounters,
 }
 
 /// <summary>One telemetry event. A plain struct so emitting allocates nothing unless the caller builds <c>Detail</c>.</summary>

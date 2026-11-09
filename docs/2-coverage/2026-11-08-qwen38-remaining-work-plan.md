@@ -163,6 +163,13 @@ Runnable now. Test cases only, no new disk or implementation.
       2.35, 2.51, 2.52 tok/s; the product MTP decoder 2.49, 2.50, 2.47 tok/s, with the same tokens and acceptance 75%. No gain on
       CPU: the sequential MTP path runs one trunk forward per emitted token. The gain needs the batched verify path (`BatchVerify`),
       which qwen4exp does not implement. The performance pass (rule 7) is still open.
+      **Batched verify, decided 2026-11-09:** the qwen4exp "batched" prefill (`Qwen4ExpBatchedForwardPass.PrefillWithCache`,
+      `PrefillPackedMulti`, `BatchForwardMulti`) is a loop of single-token `Forward` calls, so it reads the weights once per
+      token. Measured: prefill 2.21 tok/s and decode 2.47 tok/s, the same per-token rate. Other families' batched prefill is much
+      faster than their decode, so the batch gain comes from a multi-row path they have and qwen4exp lacks. Work: (1) a multi-row
+      trunk pass for qwen4exp (GDN recurrence over k tokens, QSA attention over k queries, MoE on k rows, PLE gather for k rows),
+      modelled on `ForwardPass.PrefillCore`; (2) `BatchVerify` on top, returning logits for every position, with
+      `RestoreBatchSnapshot` for rollback; (3) measure prefill and MTP speed before and after, three repetitions each.
 
 ## Phase 5. Image and video input
 
@@ -227,6 +234,14 @@ Runnable now. Test cases only, no new disk or implementation.
       Gemma 4. Closing this means a qwen4exp branch in that pipeline (projector embeddings through `ForwardImageChunk` with M-RoPE
       positions), the vision markers in the prompt, and `SupportsImageInput` on the descriptor. The local image path is covered by
       `Qwen4ExpImageAnswerTests`; the tool path with an image is not tested.
+      **Design, decided 2026-11-09 (code not started):** (1) `InferenceEngine` holds the vision embedder as an interface, not
+      `GemmaUvVisionEmbedder`; the Gemma embedder implements it unchanged. (2) A Qwen embedder wraps `QwenVlVisionEncoder` and
+      returns the soft tokens plus the grid per image. (3) `SplicePrefillImages` registers each image with `AddMRopeImage` (as
+      `RunCommand.Image` does for the CPU pass) and feeds the tokens with `ForwardImageChunk`. (4) `InferenceEngineLoader` accepts
+      `MmprojPath` when the descriptor declares `SupportsImageInput`, and the descriptor for qwen4exp sets it. (5) The prompt uses
+      the Qwen vision markers. Tests: Server.Fast with a fake engine for the loader and markers; Vision for the engine path on the
+      real mmproj, compared with `Qwen4ExpImageAnswerTests`. The server cannot load the real checkpoint on this host (preflight),
+      so the real-model proof is through the test harness, and the server smoke run is a recorded gap.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
       Design, recorded before code (investigation 2026-11-08):
       - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
@@ -308,10 +323,14 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 7. Serving and product
 
-- [ ] Telemetry for Qwen sessions. **Spec (decided 2026-11-09, no owner spec existed):** emit the qwen4exp counters that already
-      exist on the pass (PLE gather rows and bytes, MTP drafts and accepted, held snapshot bytes, indexer selections) through the
-      existing `EngineEvents` and `TelemetryAttributePolicy`, with no new sink. Done when a real session reports them and a Core
-      test checks the event fields.
+- [x] Telemetry for Qwen sessions (done 2026-11-09 for the PLE counters; the rest is a follow-up). **Decided, no owner spec
+      existed.** Built: `EngineEventKind.ForwardCounters` (Name = architecture id from the descriptor, A = PLE gather rows,
+      B = PLE gather bytes, C = PLE table bytes, cumulative since load), emitted by `ForwardCounterEvents` after a CLI
+      single-prompt run, and written to the `STINGRAY_STATS_JSON` file as `ple_gather_rows`, `ple_gather_bytes`,
+      `ple_table_bytes`. MTP drafts already emit `MtpStep`. Not built yet: held snapshot bytes and indexer selections (the pass
+      does not count indexer selections; add the counter first). Tests: `RunStatsJsonSinkTests` (CLI, synthetic events),
+      `Qwen4ExpTelemetryTests` (real trunk: the event matches the pass counters after real tokens). The CLI run itself is not
+      exercised on this host: the preflight refuses the checkpoint (see the RUNNING item above).
 - [ ] Knowledge collections. **Spec (decided 2026-11-09):** a named text collection whose prefix state is kept in a hot session
       (Phase 3) and reused by later questions on that collection, so only the question is prefilled again. Done when a second
       question on a real checkpoint prefills only its own tokens and gives the same answer as a cold run.

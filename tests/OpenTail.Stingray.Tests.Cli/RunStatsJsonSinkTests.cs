@@ -42,4 +42,20 @@ public sealed class RunStatsJsonSinkTests
         Assert.Equal(new[] { "perturbed", "schema_version" }, names);
         Assert.DoesNotContain("secret", sink.Render());
     }
+
+    [Fact]
+    public void Render_CarriesTheQwenCounters_OnlyWhenAForwardCountersEventArrived()
+    {
+        var sink = new RunStatsJsonSink("unused.json");
+        using (var before = JsonDocument.Parse(sink.Render()))
+            Assert.False(before.RootElement.TryGetProperty("ple_gather_rows", out _));
+
+        sink.OnEvent(new(EngineEventKind.ForwardCounters, "qwen4exp", A: 42, B: 67_584, C: 28_800_138_240));
+
+        using var doc = JsonDocument.Parse(sink.Render());
+        var r = doc.RootElement;
+        Assert.Equal(42, r.GetProperty("ple_gather_rows").GetDouble());
+        Assert.Equal(67_584, r.GetProperty("ple_gather_bytes").GetDouble());
+        Assert.Equal(28_800_138_240, r.GetProperty("ple_table_bytes").GetDouble());
+    }
 }

@@ -14,6 +14,7 @@ namespace OpenTail.Stingray.Cli;
 ///   schema_version, architecture, forward_pass, load_ms, prompt_tokens, prefill_ms, prefill_tokens_per_second,
 ///   decode_tokens (incl. hidden reasoning tokens), visible_tokens, decode_ms, decode_tokens_per_second,
 ///   speculative_steps, speculative_drafts_proposed, speculative_drafts_accepted,
+///   ple_gather_rows, ple_gather_bytes, ple_table_bytes (qwen4exp only; cumulative since load),
 ///   perturbed (true when a diagnostic profile switch was on: never compare such a run).
 /// A field is omitted when its event never happened. When a run has several prefill/decode phases the last one wins.
 /// </summary>
@@ -25,6 +26,8 @@ internal sealed class RunStatsJsonSink : IEngineEventSink
     private double _loadMs = -1, _prefillMs = -1, _decodeMs = -1;
     private long _promptTokens = -1, _decodeTokens = -1, _visibleTokens = -1;
     private long _specSteps, _specProposed, _specAccepted;
+    private bool _hasCounters;
+    private long _pleRows, _pleBytes, _pleTableBytes;
 
     public RunStatsJsonSink(string path) => _path = path;
 
@@ -53,6 +56,12 @@ internal sealed class RunStatsJsonSink : IEngineEventSink
                     _specSteps++;
                     _specProposed += e.B;
                     _specAccepted += e.C;
+                    break;
+                case EngineEventKind.ForwardCounters:
+                    _hasCounters = true;
+                    _pleRows = e.A;
+                    _pleBytes = e.B;
+                    _pleTableBytes = e.C;
                     break;
             }
         }
@@ -92,6 +101,9 @@ internal sealed class RunStatsJsonSink : IEngineEventSink
         Num("speculative_steps", _specSteps, _specSteps > 0);
         Num("speculative_drafts_proposed", _specProposed, _specSteps > 0);
         Num("speculative_drafts_accepted", _specAccepted, _specSteps > 0);
+        Num("ple_gather_rows", _pleRows, _hasCounters);
+        Num("ple_gather_bytes", _pleBytes, _hasCounters);
+        Num("ple_table_bytes", _pleTableBytes, _hasCounters);
         bool perturbed = Environment.GetEnvironmentVariable("STINGRAY_MOE_PHASE_TIMING") == "1"
                          || Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1";
         sb.Append(",\n  \"perturbed\": ").Append(perturbed ? "true" : "false").Append("\n}\n");

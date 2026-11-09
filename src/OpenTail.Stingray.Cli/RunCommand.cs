@@ -430,8 +430,12 @@ public sealed partial class RunCommand : Command<RunCommand.Settings>
                 return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng,
                     activeForwardPass.MaxSeqLen);
             if (settings.Prompt is not null)
-                return RunSinglePrompt(settings, forward, prefill, tokenizer, sp, rng, mtpFwd,
+            {
+                int singleExit = RunSinglePrompt(settings, forward, prefill, tokenizer, sp, rng, mtpFwd,
                     activeForwardPass.MaxSeqLen);
+                ForwardCounterEvents.Emit(activeForwardPass);
+                return singleExit;
+            }
             return RunInteractive(settings, forward, prefill, resetCache, tokenizer, sp, rng, mtpFwd,
                 activeForwardPass.MaxSeqLen);
         }
