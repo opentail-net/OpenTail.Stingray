@@ -196,6 +196,36 @@ public sealed class ToolCallValidationEndpointTests : IDisposable
         Assert.DoesNotContain("tool_use", body, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Anthropic_ArgumentTypeMismatch_ReturnsAnError_NotAToolUseBlock()
+    {
+        // A declared integer argument with non-numeric text: the type check must refuse it.
+        var fake = new FakeInferenceEngine("qwen3-coder", [
+            (GenerateChunkKind.Text, "<function=get_weather><parameter=days>soon</parameter></function>"),
+        ]);
+        var client = CreateClient(fake, "qwen3coder");
+
+        var response = await client.PostAsJsonAsync("/v1/messages", new
+        {
+            model = "qwen3-coder",
+            messages = new[] { new { role = "user", content = "Weather?" } },
+            max_tokens = 50,
+            stream = false,
+            tools = new[] { new
+            {
+                name = "get_weather",
+                description = "Get weather",
+                input_schema = new { type = "object", properties = new { days = new { type = "integer" } }, required = new[] { "days" } }
+            } }
+        });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("invalid_tool_call", body, StringComparison.Ordinal);
+        Assert.Contains("expected an integer", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("tool_use", body, StringComparison.Ordinal);
+    }
+
     private static string AfterMarker(string body, string marker)
     {
         int at = body.IndexOf(marker, StringComparison.Ordinal);
