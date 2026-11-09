@@ -11,11 +11,11 @@ public sealed class HotSessionSnapshotAccountingTests
     private const long KvPerToken = 10;
     private const long Fixed = 1000;
 
-    private static SessionRequestDigest Digest(string val) => SessionRequestDigest.FromCanonicalValue(val);
+    internal static SessionRequestDigest Digest(string val) => SessionRequestDigest.FromCanonicalValue(val);
 
-    private static readonly SamplingParams Sampling = new() { Temperature = 0f, MaxNewTokens = 1 };
+    internal static readonly SamplingParams Sampling = new() { Temperature = 0f, MaxNewTokens = 1 };
 
-    private sealed class Tokenizer : ITokenizer
+    internal sealed class Tokenizer : ITokenizer
     {
         public int VocabSize => 64;
         public int BosTokenId => 0;
@@ -30,7 +30,7 @@ public sealed class HotSessionSnapshotAccountingTests
     }
 
     /// <summary>A cache that reports a snapshot's held bytes once a turn has started from a snapshot.</summary>
-    private sealed class SnapshotCache(long snapshotBytes) : IRewindableSequenceKvCache, ISnapshotAccountedSequenceKvCache
+    internal sealed class SnapshotCache(long snapshotBytes) : IRewindableSequenceKvCache, ISnapshotAccountedSequenceKvCache
     {
         public int LogicalPosition { get; set; }
         public bool HasSnapshot { get; set; }
@@ -41,17 +41,17 @@ public sealed class HotSessionSnapshotAccountingTests
     }
 
     /// <summary>Never stops on its own. A turn that starts after earlier positions takes a snapshot, as the Qwen pass does.</summary>
-    private sealed class SnapshotForwardPass(long snapshotBytes) : IBatchedForwardPass
+    internal sealed class SnapshotForwardPass(long snapshotBytes, bool keepsTurnSnapshot = true) : IBatchedForwardPass
     {
         private static readonly float[] NonStopLogits = CreateLogits(NonStopToken);
         public bool SnapKvEnabled => false;
         public long KvBytesPerToken => KvPerToken;
         public long FixedBytesPerSequence => Fixed;
-        public bool KeepsTurnSnapshot => true;
+        public bool KeepsTurnSnapshot => keepsTurnSnapshot;
         public int MaxSeqLen => 64;
         public bool PrefillDequantCacheActive => false;
 
-        public ISequenceKvCache CreateCache() => new SnapshotCache(snapshotBytes);
+        public ISequenceKvCache CreateCache() => new SnapshotCache(keepsTurnSnapshot ? snapshotBytes : 0);
 
         public ReadOnlySpan<float> PrefillWithCache(IReadOnlyList<int> tokens, ISequenceKvCache cache, int startPos = 0)
         {
