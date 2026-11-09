@@ -191,9 +191,13 @@ Runnable now. Test cases only, no new disk or implementation.
       token (116.3 and 114.8 ms over two rounds; 96 calls, so about 1.2 ms per call). Cause (reading the code and the tensor list,
       not yet timed by part): the HC up and down matrices are stored as Q8_0 (`hc_attn_up`, `hc_ffn_up`, `hc_attn_down`,
       `hc_ffn_down`, each 320 x 10,240), but `Mix` reads them as F32 from the dequantisation cache, so each call streams about 26 MB
-      of float weights (about 2.5 GB per token). A Q8_0 dot with float activations would read about a quarter of those bytes. Keep
-      only if it is measurably faster and the parity tests (logit parity, MTP oracle, acceptance) still pass; the numerics move only
-      by summation order. The output projection is small, so the earlier estimate that put it first was wrong. The two rounds
+      of float weights (about 2.5 GB per token). A Q8_0 dot with float activations would read about a quarter of those bytes.
+      **Tried 2026-11-09 and reverted (dead end in this form):** the up and down matrices read as Q8_0 with `SimdKernels.DotQ8_0_Q8_0`
+      (Q8_0 weights, float activations, on the rounded activation that production uses). Wall time 1,125 ms per token against about
+      405 ms for the float path, so about 2.8 times slower. The likely cause is the per-row Q8 kernel with float input, which is far
+      slower than the float dot; the per-call pin is not the cause. The Q8_0 by Q8_0 integer path (quantise the activation once, then
+      an int8 dot, the llama.cpp scheme) is the other option, but it changes the numerics, so it needs the parity gates. Not pursued
+      further here. The output projection is small, so the earlier estimate that put it first was wrong. The two rounds
       differ by about 1%.
       **The earlier estimate, kept for the record (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
       layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
