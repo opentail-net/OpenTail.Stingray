@@ -199,6 +199,13 @@ Runnable now. Test cases only, no new disk or implementation.
       an int8 dot, the llama.cpp scheme) is the other option, but it changes the numerics, so it needs the parity gates. Not pursued
       further here. The output projection is small, so the earlier estimate that put it first was wrong. The two rounds
       differ by about 1%.
+      **MoE expert path, read 2026-11-09 (no change yet):** the IQ2_XXS experts already use a vectorised Q8_K kernel
+      (`DotIq2Xxs_Q8K`, AVX2 variant) and the row loop is parallel (`MatVecQ8KDispatch`, one work item per row once there are at
+      least `MinRowsForParallel` rows). The cost is structural: each token makes 1,152 separate expert matvecs (8 experts, three
+      matrices, 48 layers), and each opens its own parallel region over 640 rows, with the input quantised again each time.
+      Candidate experiment: fuse the gate and up matvecs of all selected experts into one parallel region per layer, and the
+      down matvecs into a second, so 2 regions per layer instead of 24. Each row still uses the same kernel on the same quantised
+      input, so the output should be bit-identical; that makes the check exact. Keep only if measurably faster.
       **The earlier estimate, kept for the record (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
       layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
       Q5_K and Q6_K, about 50M multiply-adds per layer. The output projection is 248,320 x 2,560, about 636M multiply-adds. At 2.5
