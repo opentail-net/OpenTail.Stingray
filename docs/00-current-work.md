@@ -26,31 +26,31 @@ Part A of the plan is for starting now, in this order. Part B waits for an owner
 
 Source: [2026-11-08-qwen38-remaining-work-plan](2-coverage/2026-11-08-qwen38-remaining-work-plan.md). Qwen 3.8 stays not admitted and not advertised until Phase 8 (CLAUDE.md rule 14). Its owner decisions (parity criterion, unsloth fork reference, validator behaviour, admission) are in that plan.
 
-3. **Broader real-weight verification (Phase 1).** Runnable now on the 62 GB checkpoint on E:. First step: three fixed prompts, one crossing a prefill/decode chunk boundary, compared with the pinned llama.cpp `bed0a8566` through `Qwen4ExpRefDumpTests`.
-4. **Memory accounting completion (Job 3).** Source: [programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Job 3. First step: full Core run on the part (a) change, then `HeldSnapshotBytes` and its residency and reservation tests.
-5. **Real-checkpoint cancellation memory check (Phase 2).** Assert sequence-cache disposal in `Qwen4ExpBatchingTests`.
-6. **Logit-level image comparison (Phase 5).** Compare the first generated logits with `llama-mtmd-cli`, then assert exact 40-token equality.
+- [ ] 3. **Broader real-weight verification (Phase 1).** Runnable now on the 62 GB checkpoint on E:. First step: three fixed prompts, one crossing a prefill/decode chunk boundary, compared with the pinned llama.cpp `bed0a8566` through `Qwen4ExpRefDumpTests`.
+- [ ] 4. **Memory accounting completion (Job 3).** Source: [programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Job 3. First step: full Core run on the part (a) change, then `HeldSnapshotBytes` and its residency and reservation tests.
+- [ ] 5. **Real-checkpoint cancellation memory check (Phase 2).** Assert sequence-cache disposal in `Qwen4ExpBatchingTests`.
+- [ ] 6. **Logit-level image comparison (Phase 5).** Compare the first generated logits with `llama-mtmd-cli`, then assert exact 40-token equality.
 
 ### 3. Items not yet in the merged plan
 
 These six were in the old queue and did not make it into the merged plan. They are kept here so nothing is lost. Decide whether each one goes into the merged plan or is dropped.
 
-- **Gemma 4 26B-A4B, one bounded step.** For the word-3 divergence: capture llama.cpp's top-k logprobs with `llama-server` `/completion` and `n_probs`. If the reference is confident, bisect the layer stack. If it is near a tie, park it. Do not re-measure on new prompts. Source: [2026-11-07 TensorSharp reference comparison](1-correctness/2026-11-07-gemma4-tensorsharp-reference-comparison.md).
-- **Memory returned to the OS after unload.** Two-model `singleslot` host, four switch cycles, working set after each unload; trace the private-memory growth of about 130 MB per cycle. Source: former hub item E4 (its 2026-11-05 measurements are in git history of this file).
-- **Protocol corpus status per case.** Record a status and error type for every case in `protocol-smoke.json`; add streaming tool-call and error cases for Anthropic and Chat Completions. Source: former hub item E5 (git history of this file).
-- **Admit one real model with the playbook.** Candidate `ornith-ai/Ornith-1.5-35B-A3B-GGUF`. Start with `stingray scout -r <repo> -f <file> --budget <host RAM> -c <ctx>` before any download. Source: [scout plan](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md), [playbook](reference/architecture-admission-agent-playbook.md).
-- **Multi-model durable session restore.** Source: [032 multi-model plan](3-product-and-runtime/032-multi-model-inference-runtime-plan.md). First step: write the restore test that fails today.
-- **Configuration ownership.** List every config switch with its owner and mark the obsolete-looking ones for an owner decision. Source: [QoL plan](3-product-and-runtime/2026-11-08-product-plan.md).
+- [ ] **Gemma 4 26B-A4B, one bounded step.** For the word-3 divergence: capture llama.cpp's top-k logprobs with `llama-server` `/completion` and `n_probs`. If the reference is confident, bisect the layer stack. If it is near a tie, park it. Do not re-measure on new prompts. Source: [2026-11-07 TensorSharp reference comparison](1-correctness/2026-11-07-gemma4-tensorsharp-reference-comparison.md).
+- [ ] **Memory returned to the OS after unload.** Two-model `singleslot` host, four switch cycles, working set after each unload; trace the private-memory growth of about 130 MB per cycle. Source: former hub item E4 (its 2026-11-05 measurements are in git history of this file).
+- [ ] **Protocol corpus status per case.** Record a status and error type for every case in `protocol-smoke.json`; add streaming tool-call and error cases for Anthropic and Chat Completions. Source: former hub item E5 (git history of this file).
+- [ ] **Admit one real model with the playbook.** Candidate `ornith-ai/Ornith-1.5-35B-A3B-GGUF`. Start with `stingray scout -r <repo> -f <file> --budget <host RAM> -c <ctx>` before any download. Source: [scout plan](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md), [playbook](reference/architecture-admission-agent-playbook.md).
+- [ ] **Multi-model durable session restore.** Source: [032 multi-model plan](3-product-and-runtime/032-multi-model-inference-runtime-plan.md). First step: write the restore test that fails today.
+- [ ] **Configuration ownership.** List every config switch with its owner and mark the obsolete-looking ones for an owner decision. Source: [QoL plan](3-product-and-runtime/2026-11-08-product-plan.md).
 
 ### 4. Coverage ports (behind Qwen; rule 14 applies)
 
 Ported families stay not admitted and not advertised until a real checkpoint and an independent reference verify them. Status ladder: [ported-families-todo](2-coverage/ported-families-todo.md).
 
-1. **GLM-5.x** (`glm-dsa`, `glm5next`): paged real-weight run and K-pool selection gating attention reads. Blocked on disk for the full checkpoint ([programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Phase 2B).
-2. **DeepSeek V4**: YaRN rope scaling (factor 16) verified against the pinned reference, then a non-zero `compress_ratios` test. Paged run blocked on size (86 GB file).
-3. **DiffusionGemma**: Q4_K_M Level 4 run. Checkpoint needed.
-4. **MiniMax-H3**, **Muse-Glimmer** (admitted 2026-10-03, text, CPU only): next steps in their plans.
-5. **Candidate reassessment** (report only, cheap): survey Muse Spark, MiniMax M3.1 and others.
+- [ ] 1. **GLM-5.x** (`glm-dsa`, `glm5next`): paged real-weight run and K-pool selection gating attention reads. Blocked on disk for the full checkpoint ([programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Phase 2B).
+- [ ] 2. **DeepSeek V4**: YaRN rope scaling (factor 16) verified against the pinned reference, then a non-zero `compress_ratios` test. Paged run blocked on size (86 GB file).
+- [ ] 3. **DiffusionGemma**: Q4_K_M Level 4 run. Checkpoint needed.
+- [ ] 4. **MiniMax-H3**, **Muse-Glimmer** (admitted 2026-10-03, text, CPU only): next steps in their plans.
+- [ ] 5. **Candidate reassessment** (report only, cheap): survey Muse Spark, MiniMax M3.1 and others.
 
 Lower priority, not planned: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large), DeepSeek-OCR v1 (no checkpoint), LTX-2.3 / 2.5 (a later campaign), ONNX shared-pipeline extraction (SenseVoice, Paraformer).
 
@@ -58,24 +58,24 @@ Lower priority, not planned: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow Apri
 
 Resume from [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md). Rules: [performance-measurement-rules](reference/performance-measurement-rules.md). Do not reopen the closed Q4_K repacked-GEMM investigation. When the owner resumes, this is the order:
 
-1. SmolLM2 prefill at about 0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE and attention.
-2. int8 alignment with ggml Q8_K (ADR-0003 gap): the Q8_KS variant of the repacked Q4_Kx8 GEMM.
-3. Batched prefill for partially offloaded dense models and the remaining per-token paths.
-4. MTP on Qwen3.6-27B (UD-Q3_K_XL) is slower than plain (0.77-0.81x). Check the tensor-dtype coverage of the shared-decode kernels first. Source: [ADR-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md).
-5. Raw-quant matvec bandwidth on Vulkan (gpt-oss MXFP4 decode, about 18 GB/s).
-6. FLUX.1 DiT: 132 s against the 99.8 s sd.cpp target ([diffusion-performance Part 2](4-performance/diffusion/diffusion-performance.md#part-2-flux1-vulkan-gemm-handoff)).
-7. Image-token prefill in VLMs, the remaining per-token segment path.
-8. Cross-model DRY and perf-doc consistency (diffusion umbrella Phase 9).
-9. MusicGen / AudioGen performance and DRY passes.
-10. CosyVoice3 ODE step count: the fewer-steps A/B by ear and with a Whisper round trip (never run; the default is still 10).
-11. Stable Audio 3 `IStableAudio3Engine` consolidation.
+- [ ] 1. SmolLM2 prefill at about 0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE and attention.
+- [ ] 2. int8 alignment with ggml Q8_K (ADR-0003 gap): the Q8_KS variant of the repacked Q4_Kx8 GEMM.
+- [ ] 3. Batched prefill for partially offloaded dense models and the remaining per-token paths.
+- [ ] 4. MTP on Qwen3.6-27B (UD-Q3_K_XL) is slower than plain (0.77-0.81x). Check the tensor-dtype coverage of the shared-decode kernels first. Source: [ADR-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md).
+- [ ] 5. Raw-quant matvec bandwidth on Vulkan (gpt-oss MXFP4 decode, about 18 GB/s).
+- [ ] 6. FLUX.1 DiT: 132 s against the 99.8 s sd.cpp target ([diffusion-performance Part 2](4-performance/diffusion/diffusion-performance.md#part-2-flux1-vulkan-gemm-handoff)).
+- [ ] 7. Image-token prefill in VLMs, the remaining per-token segment path.
+- [ ] 8. Cross-model DRY and perf-doc consistency (diffusion umbrella Phase 9).
+- [ ] 9. MusicGen / AudioGen performance and DRY passes.
+- [ ] 10. CosyVoice3 ODE step count: the fewer-steps A/B by ear and with a Whisper round trip (never run; the default is still 10).
+- [ ] 11. Stable Audio 3 `IStableAudio3Engine` consolidation.
 
 The rest of the performance boxes are in [perf-sweep-plan](4-performance/2026-11-08-performance-plan.md), [diffusion-performance](4-performance/diffusion/diffusion-performance.md), [vulkan-gemm](4-performance/gpu/vulkan-gemm/vulkan-gemm.md) and [080](4-performance/audio/080-tts-asr-gpu-residency-checklist.md).
 
 ## Owner decisions and actions outside the plans
 
-- **Release 1.0.10.** Not ready: no tag, no version bump, no pack. Everything since 1.0.9 stays unpublished until the owner says so.
-- **Stable Audio 3 Small quality.** Waiting on the owner's listening verdict on `docs/audio-samples/sa3_small_*_POSTTRAINED_*`. If the post-trained clips are better, add GGUF loading.
+- [ ] **Release 1.0.10.** Not ready: no tag, no version bump, no pack. Everything since 1.0.9 stays unpublished until the owner says so.
+- [ ] **Stable Audio 3 Small quality.** Waiting on the owner's listening verdict on `docs/audio-samples/sa3_small_*_POSTTRAINED_*`. If the post-trained clips are better, add GGUF loading.
 
 The other owner decisions are in Part B of the merged plan, each with a recommended default.
 
