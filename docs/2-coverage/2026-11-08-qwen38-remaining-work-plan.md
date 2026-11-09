@@ -154,7 +154,10 @@ Runnable now. Test cases only, no new disk or implementation.
       recorded: fork builds crash on the head's null recurrent memory (`build_rs_inp_impl`) and fork `llama-server`
       with `-md` segfaults during draft setup.
 - [ ] Acceptance rate, multi-token acceptance, rollback on rejection. **Lossless with rollback, 2026-11-08** (`Qwen4ExpSpeculativeLosslessTests`, real trunk and head, test-side loop, no product change): greedy speculation with a chain of K=3 head drafts, verified by the trunk, and restored from `Qwen4ExpSequenceState.Snapshot`/`Restore` on rejection, gives exactly the plain greedy tokens for 24 generated tokens (4 rollbacks; 17 of 30 chained drafts accepted). The product MTP decoder is not wired to the qwen4exp pass (it assumes one hidden stream; qwen4exp drafts from the four-stream residual), so the product path is still open. **Acceptance measured 2026-11-08** (`Qwen4ExpMtpAcceptanceTests`, real trunk and shared Q4_K_M head): 31 of 40 greedy positions (**77.5%**), one prompt (21 prompt tokens, 40 decode steps). The head's draft for the next token equals the trunk's own greedy token. Chance is about zero for a 248k vocabulary, so the head is doing real work. Still open: multi-token (chained) acceptance, rollback on rejection (needs the MTP decoder wired to the qwen4exp pass: `HasMtpHead`, `MtpForward`, `MtpLastHidden`, `PrefillMtp`, `MtpTruncateTo`, `MtpResetCache`, and a per-position hidden history), and more prompts.
-- [ ] Separate speed measurement (rule 7 applies later).
+- [x] Separate speed measurement (2026-11-08, `Qwen4ExpMtpSpeedTests`, three repetitions, 24 tokens, same prompt): plain greedy
+      2.35, 2.51, 2.52 tok/s; the product MTP decoder 2.49, 2.50, 2.47 tok/s, with the same tokens and acceptance 75%. No gain on
+      CPU: the sequential MTP path runs one trunk forward per emitted token. The gain needs the batched verify path (`BatchVerify`),
+      which qwen4exp does not implement. The performance pass (rule 7) is still open.
 
 ## Phase 5. Image and video input
 
@@ -208,7 +211,11 @@ Runnable now. Test cases only, no new disk or implementation.
       per token, while the image measurement is a single decode step on both sides. So this does not isolate an image-only
       component. It does show the same kind of cumulative drift on text, which points to the known numerical path rather
       than a new image break. Superseded: Phase 0.3 is closed under D1 (see the Phase 0 item above).
-- [ ] Exact 40-token equality. The current test compares text only.
+- [x] Exact 40-token equality under the D1 criterion (2026-11-08, `Qwen4ExpImageAnswerTests` against `llama-mtmd-cli -n 40 --temp 0`,
+      generated image: a red and a blue square on white). The two agree token for token for 7 tokens ("The image contains **"). At
+      token 7 Stingray picks ` **` (id 2972, logit 20.652) and the reference picks ` two` (id 1330, logit 20.640), the runner-up,
+      0.012 logits behind. That is inside the 0.12 tolerance. The continuations differ after that ("squares" against "shapes"), and
+      later tokens are not comparable because the runs fed different tokens. Not exact byte equality over 40 tokens; equal under D1.
 - [ ] Image input through the tool and server paths.
 - [ ] 5.3 Video input. The owner reopened it on 2026-11-08 (start once the other work is done or blocked).
       Design, recorded before code (investigation 2026-11-08):
