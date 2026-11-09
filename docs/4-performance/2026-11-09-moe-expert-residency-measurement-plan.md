@@ -122,3 +122,10 @@ The same protocol, with the three defects of attempt 1 fixed. Full table: `Perfo
 - **Verdict (fixed rules).** H0 rejected: 0.40 is far below 0.90. H1 needs the hard-fault reads to be the dominant cost. The read volume is consistent with that, but the drive's random-fault throughput was not measured, so dominance is not shown. **No residency prototype is justified by this measurement.**
 - **Open question, not measured:** whether a process-managed expert residency policy would read fewer bytes than the OS's LRU under the same budget. That needs routing traces (hit rate of a pinned set against LRU at about 8 GB). It is the next measurement if the owner wants the question pursued; it is not started.
 - Model-specific: Qwen3-Coder-30B-A3B on one SATA SSD. The review's point (OS page cache is adequate) holds only while the working set fits in RAM, which it does not here.
+
+### 7.3 Decision (2026-11-09, owner)
+
+- **Copy-based CPU expert residency is discarded**, meaning private copies of hot MoE experts (the SharpMind approach). **Owner's reason: duplicate memory.** Copied experts take private RAM on top of the mapped GGUF, which is the cost the OS page cache avoids.
+- The thrash mechanism (section 6a.1) was not established. That did not drive this decision, and nothing in these measurements contradicts it.
+- **Not discarded:** pinning the mapped expert pages in place with `VirtualLock`. It avoids the copy, so it does not have the duplicate-memory cost. It has not been tested. Testing it would need the owner's go-ahead, since it is an engine change.
+- Recorded in the "Already tried" table of `docs/4-performance/2026-11-08-performance-plan.md`.

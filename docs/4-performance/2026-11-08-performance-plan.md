@@ -144,6 +144,7 @@ The expert GEMM plan ([2026-10-04-q4k-expert-gemm-plan.md](2026-10-04-q4k-expert
 | OpenBLAS | Never faster than the in-house kernels |
 | Naive and tiled GPU attention shaders for SDXL UNet | Both measured and root-caused as failures; do not retry |
 | Per-call GPU residency for SDXL attention | Failed twice; see sweep Phase 13 |
+| Copy-based CPU expert residency (SharpMind-style: private copies of hot MoE experts) | **Discarded 2026-11-09 (owner decision).** Reason: duplicate memory, since copied experts take private RAM on top of the mapped GGUF. Not the same as in-place pinning of mapped pages (`VirtualLock`), which is not discarded and is untested. See [the residency measurement plan](2026-11-09-moe-expert-residency-measurement-plan.md). |
 
 ## Standing claims that need care
 
