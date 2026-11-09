@@ -158,17 +158,18 @@ public static class OpenAiEndpoints
         // Image content parts (issue #253) collected (base64 → bytes) and replaced by the
         // model's <|image|> placeholder; the engine splices each image's soft tokens at it.
         var images = new List<byte[]>();
+        var videos = new List<OpenTail.Stingray.Engine.QwenVideoInput>();
         try
         {
             if (toolsActive)
             {
-                var (richMessages, tools) = BuildRichMessageList(req, adapter, images, preserveThinking);
+                var (richMessages, tools) = BuildRichMessageList(req, adapter, images, videos, preserveThinking);
                 prompt = chatTemplate.Format(richMessages, enableThinking, tools);
                 canonicalHistoryPrefix = chatTemplate.Format(richMessages, enableThinking, tools, addGenerationPrompt: false);
             }
             else
             {
-                var messages = BuildMessageList(req.Messages!, req.ResponseFormat?.Type, images, preserveThinking);
+                var messages = BuildMessageList(req.Messages!, req.ResponseFormat?.Type, images, videos, preserveThinking);
                 prompt = chatTemplate.Format(messages, enableThinking);
                 canonicalHistoryPrefix = chatTemplate.Format(messages, enableThinking, addGenerationPrompt: false);
             }
@@ -196,7 +197,7 @@ public static class OpenAiEndpoints
             return;
         }
 
-        if (images.Count > 0 && !engine.SupportsImageInput)
+        if ((images.Count > 0 || videos.Count > 0) && !engine.SupportsImageInput)
         {
             ctx.Response.StatusCode = 400;
             ctx.Response.ContentType = "application/json";
@@ -424,17 +425,17 @@ public static class OpenAiEndpoints
         RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
-            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true, req.Tools);
+            await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, videos, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true, req.Tools);
         }
         else
         {
-            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, sp, requestId, created, req.OpentailTiming == true, stops, req.Tools);
+            await HandleNonStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, videos, sp, requestId, created, req.OpentailTiming == true, stops, req.Tools);
         }
     }
 
     private static async Task HandleNonStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created,
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, IReadOnlyList<OpenTail.Stingray.Engine.QwenVideoInput> videos, SamplingParams sp, string requestId, long created,
         bool includeTiming = false, string[]? stops = null, OaiTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
@@ -448,7 +449,7 @@ public static class OpenAiEndpoints
 
         try
         {
-            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.GenerateMedia(engine, prompt, canonicalHistoryPrefix, images, videos, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 if (c.Kind == GenerateChunkKind.Usage)
                 {
@@ -566,7 +567,7 @@ public static class OpenAiEndpoints
 
     private static async Task HandleStreaming(
         HttpContext ctx, IInferenceEngine engine, ServerMetrics metrics, IToolCallAdapter adapter,
-        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false, OaiTool[]? declaredTools = null)
+        bool toolsActive, string prompt, string? canonicalHistoryPrefix, IReadOnlyList<byte[]> images, IReadOnlyList<OpenTail.Stingray.Engine.QwenVideoInput> videos, SamplingParams sp, string requestId, long created, string[]? stops = null, bool includeUsage = false, OaiTool[]? declaredTools = null)
     {
         using var timing = metrics.BeginServingRequest("openai.chat_completions", engine.ModelId, ctx.RequestAborted);
         var stopMatch = new StopSequenceMatch();
@@ -686,7 +687,7 @@ public static class OpenAiEndpoints
         bool truncatedByMaxTokens = false;
         try
         {
-            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.Generate(engine, prompt, canonicalHistoryPrefix, images, sp, ct), stopMatch, ctx.RequestAborted))
+            await foreach (var c in StopSequences.Apply(stops, ct => ImageContent.GenerateMedia(engine, prompt, canonicalHistoryPrefix, images, videos, sp, ct), stopMatch, ctx.RequestAborted))
             {
                 // Out-of-band usage chunk (issue #150): not a generated token and carries no
                 // text. The streaming response doesn't emit a usage object (OpenAI gates that
@@ -828,7 +829,7 @@ public static class OpenAiEndpoints
     }
 
     private static List<(string role, string content)> BuildMessageList(
-        OaiMessage[] messages, string? responseFormatType, List<byte[]> images, bool preserveThinking)
+        OaiMessage[] messages, string? responseFormatType, List<byte[]> images, List<OpenTail.Stingray.Engine.QwenVideoInput> videos, bool preserveThinking)
     {
         var list = new List<(string, string)>(messages.Length + 1);
         if (responseFormatType == "json_object")
@@ -836,7 +837,7 @@ public static class OpenAiEndpoints
         foreach (var m in messages)
         {
             var role = m.Role ?? "user";
-            var content = FlattenContent(m.Content, images);
+            var content = FlattenContent(m.Content, images, videos);
             if (role == "assistant")
                 content = preserveThinking
                     ? ChatTemplate.InjectThinking(content, m.ReasoningContent)
@@ -852,7 +853,7 @@ public static class OpenAiEndpoints
     /// <paramref name="images"/> (in document order) and replacing each with the model's
     /// <c>&lt;|image|&gt;</c> placeholder (issue #253). Only base64 data URLs are supported.
     /// </summary>
-    private static string FlattenContent(JsonElement? contentEl, List<byte[]> images)
+    private static string FlattenContent(JsonElement? contentEl, List<byte[]> images, List<OpenTail.Stingray.Engine.QwenVideoInput> videos)
     {
         if (contentEl is null) return "";
         var el = contentEl.Value;
@@ -870,6 +871,20 @@ public static class OpenAiEndpoints
             {
                 if (part.TryGetProperty("text", out var tv))
                     sb.Append(tv.GetString());
+            }
+            else if (type == "video_url")
+            {
+                // An extension: OpenAI has no standard video part. The value is {url: "data:video/mp4;base64,..."} or a bare string.
+                string url = "";
+                if (part.TryGetProperty("video_url", out var vu))
+                    url = vu.ValueKind == JsonValueKind.String
+                        ? vu.GetString() ?? ""
+                        : vu.ValueKind == JsonValueKind.Object && vu.TryGetProperty("url", out var vurl) ? vurl.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(url))
+                    throw new ImageContentException($"{type} content part is missing a base64 'video_url'.");
+                VideoContent.CheckCap(videos.Count);
+                videos.Add(VideoContent.FromDataUrl(url));
+                sb.Append(VideoContent.Placeholder);
             }
             else if (type is "image_url" or "input_image")
             {
@@ -944,14 +959,14 @@ public static class OpenAiEndpoints
     /// <c>role:"tool"</c> message with <c>tool_call_id</c>.
     /// </summary>
     private static (List<Dictionary<string, object?>> messages, List<object?>? tools)
-        BuildRichMessageList(ChatCompletionRequest req, IToolCallAdapter adapter, List<byte[]> images, bool preserveThinking)
+        BuildRichMessageList(ChatCompletionRequest req, IToolCallAdapter adapter, List<byte[]> images, List<OpenTail.Stingray.Engine.QwenVideoInput> videos, bool preserveThinking)
     {
         var messages = new List<Dictionary<string, object?>>();
 
         foreach (var m in req.Messages!)
         {
             var role = m.Role ?? "user";
-            var content = FlattenContent(m.Content, images);
+            var content = FlattenContent(m.Content, images, videos);
 
             if (role == "tool")
             {

@@ -266,8 +266,16 @@ Runnable now. Test cases only, no new disk or implementation.
       `ForwardImageChunk` with M-RoPE, between the vision markers. `Qwen4ExpEngineVideoTests` (real checkpoint, ffmpeg-made
       red-then-blue clip, 4 fps, 224 px, greedy 96 tokens, 148 s): "The colors red and blue appear in the video, with red being
       the first color shown and blue being the second." This is the same text as the direct pass test and the reference
-      (`Qwen4ExpVideoAnswerTests`). **Still open:** the server path: decoding `video_url` content (an operator-installed ffmpeg,
-      never bundled), writing the `<|video_pad|>` marker into the prompt, and the HTTP smoke run (blocked by preflight).
+      (`Qwen4ExpVideoAnswerTests`). **Still open:** the server path. Decode helper written 2026-11-09 (`VideoContent`: base64
+      MP4 data URL, the operator's ffmpeg via STINGRAY_FFMPEG or PATH, 224 px, 4 fps, at most 32 frames, one video per request).
+      Wired 2026-11-09: the OpenAI endpoint's `video_url` content part (an extension; OpenAI has no standard video part) writes
+      `<|video_pad|>` and decodes at request time; `videos` is threading through the builders and both handlers; the media
+      dispatch (`ImageContent.GenerateMedia`) sends a video request to `GenerateVideoChunksAsync` (added to `IInferenceEngine`
+      with a default that throws). `VideoContentEndpointTests` (3, Server.Fast, fake engine): a non-MP4 or bad-base64 payload,
+      and a garbage MP4 (ffmpeg absent or not), each give HTTP 400 before any engine call. The Anthropic endpoints do not take
+      video. **Still open:** a real MP4 through HTTP to the qwen4exp engine (needs the preflight override on this host), and the
+      Anthropic side if wanted. Still to add: a Server.Fast test with a fake engine that records a successful video call (needs
+      an MP4 and ffmpeg on the test host, so it will skip without them).
       Design, recorded before code (investigation 2026-11-08):
       - What exists: the projector has `v.patch_embd.weight.1` (the temporal kernel), and `QwenVlVisionEncoder` already sums
         two patch embeddings, but for a still image both kernels see the same pixels. Video needs the two kernels on two

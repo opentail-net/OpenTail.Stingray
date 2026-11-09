@@ -47,6 +47,14 @@ internal static class ImageContent
             ? engine.GenerateImageChunksAsync(prompt, images, sp, ct)
             : engine.GenerateChunksAsync(prompt, sp, ct, canonical);
 
+    /// <summary>A request with a video goes to the engine's video entry point; otherwise images or text as <see cref="Generate"/>.</summary>
+    public static IAsyncEnumerable<GenerateChunk> GenerateMedia(
+        IInferenceEngine engine, string prompt, string? canonical, IReadOnlyList<byte[]> images,
+        IReadOnlyList<OpenTail.Stingray.Engine.QwenVideoInput> videos, SamplingParams sp, CancellationToken ct)
+        => videos.Count > 0
+            ? engine.GenerateVideoChunksAsync(prompt, videos, sp, ct)
+            : Generate(engine, prompt, canonical, images, sp, ct);
+
     /// <summary>Decode a base64 image payload to bytes and validate it is a PNG.</summary>
     public static byte[] FromBase64(string base64)
     {

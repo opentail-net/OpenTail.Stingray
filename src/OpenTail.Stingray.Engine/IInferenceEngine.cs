@@ -94,6 +94,15 @@ public interface IInferenceEngine
         throw new NotSupportedException(
             $"{GetType().Name} does not support image input. Check SupportsImageInput first.");
 
+    /// <summary>Video input (qwen4exp, Phase 5.3): the prompt carries one <c>&lt;|video_pad|&gt;</c> per video.</summary>
+    IAsyncEnumerable<GenerateChunk> GenerateVideoChunksAsync(
+        string prompt,
+        IReadOnlyList<QwenVideoInput> videos,
+        SamplingParams sp,
+        CancellationToken ct = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support video input. Only the qwen4exp pass with its projector does.");
+
     /// <summary>
     /// Generate text from a pre-formatted prompt string. Yields decoded text chunks
     /// (one or more characters) as they are produced. Reasoning content emitted inside
