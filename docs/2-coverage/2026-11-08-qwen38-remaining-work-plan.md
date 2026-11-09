@@ -331,9 +331,12 @@ Runnable now. Test cases only, no new disk or implementation.
       does not count indexer selections; add the counter first). Tests: `RunStatsJsonSinkTests` (CLI, synthetic events),
       `Qwen4ExpTelemetryTests` (real trunk: the event matches the pass counters after real tokens). The CLI run itself is not
       exercised on this host: the preflight refuses the checkpoint (see the RUNNING item above).
-- [ ] Knowledge collections. **Spec (decided 2026-11-09):** a named text collection whose prefix state is kept in a hot session
-      (Phase 3) and reused by later questions on that collection, so only the question is prefilled again. Done when a second
-      question on a real checkpoint prefills only its own tokens and gives the same answer as a cold run.
+- [x] Knowledge collections (done 2026-11-09). **Spec (decided, no owner spec existed):** a named text collection whose prefix
+      state is kept in a hot session (Phase 3) and reused by later questions, so only the question is prefilled again. Result on
+      the real checkpoint (`QwenKnowledgeCollectionRealModelTests`, heavy: `STINGRAY_RUN_HEAVY_TESTS=1`): the document is the
+      first turn (49 tokens, prefill only); the question (11 tokens) prefilled exactly 11 tokens; the 96-token answer is the same
+      as a cold session that gets the document and the question in one turn ("Mainz.", after the same reasoning trace). Not
+      built: a named-collection registry or any product surface; the mechanism is the hot session itself.
 - [ ] Developer workflows. **Spec (decided 2026-11-09):** one scripted, documented path for Qwen 3.8 that runs scout, the CLI
       and server smoke runs, and the gates, writing its results to the scratchpad. Done when the path runs end to end on this
       machine and its outputs are recorded in the plan.
