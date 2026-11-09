@@ -184,7 +184,12 @@ Runnable now. Test cases only, no new disk or implementation.
       (`Q6KPrefillGemm.TryMatMulBatched`). Not found: Q5_K (the engine notes it has no int8 dot path), IQ2_XXS, IQ2_S, Q2_0, IQ4_XS
       and IQ4_NL. The experts (IQ2_XXS and IQ2_S) carry most of the compute, so their batched dequant-dot kernels come first.
       That is new CPU kernel work, not wiring, and it needs its own measurement gate.
-      **Estimate before the profile (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
+      **Measured 2026-11-09 (per-section timing, local uncommitted instrumentation, reverted; 2 rounds of 12 decode tokens, UD-IQ1_S,
+      63 GB RAM, one prompt):** wall 410 ms per token (about 2.4 tok/s). Per token: MoE routed and shared experts 155 ms (38%); GDN
+      mixers 103 ms (25%); QSA attention 15 ms (4%); output projection 12 ms (3%); PLE 7 ms (2%). Not attributed: about 118 ms (29%),
+      most likely the per-layer HC mix and combine and the norms, which were not timed. The output projection is small, so the
+      earlier estimate that put it first was wrong. The two rounds differ by about 1%.
+      **The earlier estimate, kept for the record (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
       layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
       Q5_K and Q6_K, about 50M multiply-adds per layer. The output projection is 248,320 x 2,560, about 636M multiply-adds. At 2.5
       tok/s the decode moves about 1.5 to 2 GB of weights per token, so it is either memory-bound or dequant-bound. A block of k
