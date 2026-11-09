@@ -2,7 +2,9 @@
 
 Date: 2026-11-08. Scope: only the open items for Qwen 3.8 Flash Next. General coverage work for all
 families stays in [2026-11-07-coverage-completion-programme-plan.md](2026-11-07-coverage-completion-programme-plan.md).
-Qwen 3.8 stays **not admitted and not advertised** until Phase 8 (CLAUDE.md rule 14).
+Qwen 3.8 is **admitted on 2026-11-09 for CPU text generation and tool calls** (decision D4 below, `docs/STATUS.md`).
+Image input, video input and product MTP speculation are **not admitted**. The Qwen Community License question for a hosted
+service is open for the owner (section 0.3).
 
 Sources for each item are the dated sections of the programme plan (Qwen sections, lines ~109-905) and
 [../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md](../done/2026-11-08-superseded-2026-10-03-qwen38-flash-next-port-plan.md). Where those two
@@ -30,10 +32,12 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
       generation and tool calls, CPU, paged checkpoint. The owner answered "yes" to approving admission on 2026-11-08; the scope
       question stayed open until the owner's "just figure it all out and get everything done. your decisions!!! you decide and do!"
       (2026-11-09). Decision (taken by me): admit text and tool calls only. Phase 0.3 is closed under D1 (text and image steps 0-1
-      explained by the noise floor). Waived, not closed (the admitted scope does not include them): the Phase 4 oracle (blocked by
-      the fork), Phase 4 batched verify (not done), Phase 5 image and video input (not admitted; the server image path is not wired),
-      Phase 6.4 logit distributions (not done), Phase 7 (not started; needs its own plan), and the Phase 8 performance pass (single
-      sample only). Open for the owner: whether an admitted server that a third party can call counts as Model as a Service (see 0.3).
+      explained by the noise floor). Status of the items this decision named, as of 2026-11-09 (later entries are authoritative):
+      the Phase 4 per-step oracle is **closed** (under D1); Phase 6.4 is **closed for one prompt**; Phase 7 is **done** except the
+      browser UI (7F), which the owner parked; Phase 4 batched verify has its **contract** (replay form, opt-in, no speed gain);
+      Phase 5 image and video are **verified at engine level** but the server HTTP path is **not** run on this host (preflight);
+      the Phase 8 performance pass has a measured baseline and three reverted experiments, and its DRY review is **not** done.
+      Open for the owner: whether an admitted server that a third party can call counts as Model as a Service (see 0.3).
 
 ---
 
@@ -470,7 +474,15 @@ execution. Keep these open until each is done on the 62 GB checkpoint:
       modify, distribute, fine-tune and host are permitted, including the weights. Conditions: keep the copyright notice; if the
       Software is used in a commercial product with more than 100,000,000 monthly active users or US$20,000,000 monthly revenue,
       show the model name prominently in the UI; a Model-as-a-Service or AI Work Assistant business needs a separate licence
-      from Qwen, except internal use that does not make the Software or its outputs available to a third party. **For the owner:**
+      from Qwen, except internal use that does not make the Software or its outputs available to a third party.
+      **Verified text, 2026-11-09:** fetched from `Qwen/Qwen3.8-Flash-Next` (`LICENSE`, "Qwen Community License 1.0"). Clause 2:
+      "If the licensee or any of its affiliates conducts a Model as a Service or AI Work Assistant business, the licensee shall
+      obtain a separate license from Qwen before Using the Software or its derivative works for any commercial purpose." The
+      internal-use exception applies "provided that such Use does not make the Software, its outputs, or its underlying model
+      capabilities available to any third party." Model as a Service means giving a third party access to inference "via API or a
+      hosted endpoint" with "meaningful control over the inputs, parameters, or training data". Contact in the licence:
+      model-business@notice.qwencloud.com. This records the text only; whether any OpenTail deployment is a commercial Model as a
+      Service is the owner's decision. **For the owner:**
       whether an admitted OpenTail server (which a third party could call) would count as Model as a Service is a question to
       settle before D4.
 
