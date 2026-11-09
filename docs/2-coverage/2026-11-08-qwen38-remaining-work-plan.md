@@ -145,7 +145,14 @@ Runnable now. Test cases only, no new disk or implementation.
       second turn of 7 tokens keeps a turn-start snapshot of 118,081,056 bytes. That is the fixed state (118,079,488) plus 1,568 bytes of
       list headers. The KV rows are shared copy-on-write with the live cache, so they are not held until the live cache diverges.
       The first turn holds none (0 bytes).
-- [ ] Cross-session copy-on-write page sharing (Job 8). **Design only**; not started. Deferred.
+- [x] Cross-session copy-on-write sharing (Job 8), closed 2026-11-09 as implemented at the row level, with the remaining copy
+      measured. The QSA history rows are shared by reference between a sequence and its clones (`CopyLists`, Phase 3 result
+      2026-11-08, `Qwen4ExpSequenceSharingTests`). Cross-session forks use the same clone path: `ForwardPass` prefix capture and
+      `ForkPrefix` both call `Qwen4ExpSequenceState.Clone`, so two sessions forked from one prefix hold the same history rows.
+      What is still copied per session is the fixed recurrent state (the GDN conv and state buffers and the PLE history): about
+      118 MB per sequence (`fixed=118079488`, 2026-11-08 and 2026-11-09). It is copied, not shared, because the recurrence rewrites
+      it on every token, so it has no immutable pages to share. The Llama-style `PagedKvCache` page sharing does not apply to the
+      Qwen history, which is not paged. Closing Job 8 as this row-level sharing leaves the fixed-state copy as an accepted cost.
 
 ## Phase 4. MTP speculative decoding
 
@@ -171,6 +178,12 @@ Runnable now. Test cases only, no new disk or implementation.
       But the batched decoder ran at 2.04 tok/s against 2.6 plain (the snapshot clone and the replay cost more than the saved
       reads), so `BatchVerifyEnabled` is off by default and the decoder stays sequential. The default MTP acceptance is
       unchanged (31 of 40, 77.5%). The multi-row pass that gives the real gain is still open.
+      **Scope of the multi-row pass, from the checkpoint's tensor types (`stingray list-tensors`, 2026-11-09):** 2-D weights are
+      Q8_0 (338 tensors), BF16 (195), Q6_K (84), Q5_K (72), IQ2_XXS (71, the MoE experts), Q2_0 (48), IQ2_S (25), IQ4_XS (1) and
+      IQ4_NL (1). Batched kernels found: Q8_0 (`Q8_0BatchedLinear.MatMul`), BF16 (`SimdKernels.MatMulPairBF16`), Q6_K
+      (`Q6KPrefillGemm.TryMatMulBatched`). Not found: Q5_K (the engine notes it has no int8 dot path), IQ2_XXS, IQ2_S, Q2_0, IQ4_XS
+      and IQ4_NL. The experts (IQ2_XXS and IQ2_S) carry most of the compute, so their batched dequant-dot kernels come first.
+      That is new CPU kernel work, not wiring, and it needs its own measurement gate.
       **Batched verify, decided 2026-11-09:** the qwen4exp "batched" prefill (`Qwen4ExpBatchedForwardPass.PrefillWithCache`,
       `PrefillPackedMulti`, `BatchForwardMulti`) is a loop of single-token `Forward` calls, so it reads the weights once per
       token. Measured: prefill 2.21 tok/s and decode 2.47 tok/s, the same per-token rate. Other families' batched prefill is much
