@@ -206,6 +206,11 @@ Runnable now. Test cases only, no new disk or implementation.
       Candidate experiment: fuse the gate and up matvecs of all selected experts into one parallel region per layer, and the
       down matvecs into a second, so 2 regions per layer instead of 24. Each row still uses the same kernel on the same quantised
       input, so the output should be bit-identical; that makes the check exact. Keep only if measurably faster.
+      **Tried 2026-11-09 and reverted:** the fused version was not faster (404 to 443 ms per token against 409 to 422 ms for the
+      current path, which is within noise), and its output was not bit-identical (decode logit hash `19e1cb92d94c4e6f` against
+      `842190253fe9b307`). The mismatch was not investigated, because the speed result already rules the change out; it is in the
+      experimental path, not in production. The expert time is therefore not the per-region dispatch overhead; the remaining cost
+      is the kernel work itself.
       **The earlier estimate, kept for the record (not a measurement):** per decoded token the routed experts read about 1.25 MB per expert per
       layer (IQ2_XXS gate and up, Q2_0 down), so about 480 MB for 8 experts over 48 layers. The attention and GDN projections are
       Q5_K and Q6_K, about 50M multiply-adds per layer. The output projection is 248,320 x 2,560, about 636M multiply-adds. At 2.5
