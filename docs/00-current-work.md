@@ -119,7 +119,8 @@ As of 2026-11-08. This file is the entry point and the parent of the open work i
 
 Source: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctness/2026-10-02-prefill-numerics-investigation.md), "Follow-ups from the MoE audit".
 
-- [ ] **a. Small-prompt path:** measure the folded-dispatch path for prompts of 32 tokens or fewer. Decide whether it needs a special case. Record the measurement either way.
+- [x] **a. Small-prompt path:** measure the folded-dispatch path for prompts of 32 tokens or fewer. Decide whether it needs a special case. Record the measurement either way.
+  - **Done 2026-11-10: no special case needed.** `tests/OpenTail.Stingray.Tests.ForwardPass/MoeSmallPromptDispatchMeasurementTests.cs` (heavy; OLMoE-1B-7B Q4_K_M, CPU, min of 5 interleaved repeats, both arms in one process after warm-up). Batched MoE prefill vs folded sequential (the per-token decode-style dispatch): 8 tokens 100.0 vs 172.6 ms (sequential 1.73 times slower); 16 tokens 140.5 vs 340.6 ms (2.42); 32 tokens 226.1 vs 683.2 ms (3.02); 64 tokens 403.7 vs 1406.7 ms (3.48). Routing the short prompts through the folded decode-style dispatch would be slower, so the batched path stays for N of 32 or fewer. Found on the way, not this item's question: with default settings the two arms disagree on the greedy token at 8 tokens, and the largest logit gap is about 1.2 at every length (see item b).
 - [ ] **b. Per-weight-type comparison:** compare Q8_KS with ggml Q8_K for each weight type. The first two boxes are closed (`Q8ActivationQuantizationTests`). Next step: pick one weight type and compare the dot products on identical rows.
 - [ ] **Done when:** each weight type has its comparison recorded, with the error next to the reference.
 
