@@ -1,6 +1,6 @@
 # Correctness plan
 
-Status 2026-11-08. The one plan for correctness work outside the Qwen port and the bug log. It replaces the open boxes of the prefill-numerics investigation and the documentation reconciliation plan. The bug log ([bugstofix.md](bugstofix.md)) keeps its one open entry, listed here. Unverified port claims are in [2026-10-03-unverified-port-claims.md](2026-10-03-unverified-port-claims.md), with the owner's approvals in the merged plan ([../2026-11-08-open-work-merged.md](../2026-11-08-open-work-merged.md), B5).
+Status 2026-11-08. The one plan for correctness work outside the Qwen port and the bug log. It replaces the open boxes of the prefill-numerics investigation and the documentation reconciliation plan. The bug log ([bugstofix.md](bugstofix.md)) keeps its one open entry, listed here. Unverified port claims are in [2026-10-03-unverified-port-claims.md](2026-10-03-unverified-port-claims.md), with the owner's approvals in the merged plan ([../00-current-work.md](../00-current-work.md), Queue 1, Part B, B5).
 
 **Rules:** a correctness claim names its reference and the revision used. Numerics changes are gated by perplexity against llama.cpp and recorded in an ADR (see [numerics-investigation-method](../reference/numerics-investigation-method.md)). "Reproducible is not accurate": a stable result is not the same as a correct one.
 
@@ -31,7 +31,7 @@ Status 2026-11-08. The one plan for correctness work outside the Qwen port and t
 
 ## Part B: Decisions
 
-1. **Documentation claim reconciliation, R2 (HunyuanVideo and Wan 2.2).** The owner has decided "duplicate first". The item is blocked by the checkpoints and, for HunyuanVideo v1, the missing independent reference (see [../2026-11-08-open-work-merged.md](../2026-11-08-open-work-merged.md), Part C).
+1. **Documentation claim reconciliation, R2 (HunyuanVideo and Wan 2.2).** The owner has decided "duplicate first". The item is blocked by the checkpoints and, for HunyuanVideo v1, the missing independent reference (see [../00-current-work.md](../00-current-work.md), Queue 1, Part C).
 
 ---
 

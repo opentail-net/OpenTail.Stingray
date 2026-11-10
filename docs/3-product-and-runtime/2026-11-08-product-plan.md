@@ -17,7 +17,7 @@ Contracts that every item must satisfy: `Tests.Core` before merging; no secrets,
 
 - **Why:** `ServerEnvironmentOverrides` centralises the precedence, and `/status` already publishes a `configuration.bound` snapshot and the resolved loader route. Missing: actual device and cache allocation, which the operator needs to match the budget against the machine.
 - **Next step:** publish allocation figures (device bytes, cache bytes) from the loader in `/status`, using only numbers, never paths or values from the environment.
-- **Depends on:** the device memory figure in [../2026-11-08-open-work-merged.md](../2026-11-08-open-work-merged.md), section A5, so the figures are the measured ones.
+- **Depends on:** the device memory figure in [../00-current-work.md](../00-current-work.md), item A5, so the figures are the measured ones.
 - **Done when:** `/status` shows allocation for a loaded model, a test checks that no path or raw environment value appears, and the figure matches the ledger within the tolerance in A5.
 
 ### A2. Golden capability fixtures where a loader runs the route
@@ -89,7 +89,7 @@ Contracts that every item must satisfy: `Tests.Core` before merging; no secrets,
 2. **Fair scheduling: measure, then decide** (multi-model phase 6). The measurement is in the merged plan (B2). The default stays off until the measurement shows no loss.
 3. **Speak default licence.** The Piper `en_US-lessac` licence restricts use more than the known-good plan's wording says. Kokoro is Apache-2.0 and is the current default for `speak`. Owner decision: keep Kokoro as the default, and whether Piper stays as an alternative in the catalog.
 4. **Scout calibration and Hugging Face discovery** (scout phases 4 and 5b). Deferred by the scout plan. Start only when the owner wants repository discovery, and calibrate against the misses recorded in its calibration notes.
-5. **Piper licence acceptance** for the first-run check: owner action, see [../2026-11-08-open-work-merged.md](../2026-11-08-open-work-merged.md), B6.
+5. **Piper licence acceptance** for the first-run check: owner action, see [../00-current-work.md](../00-current-work.md), item B6.
 
 ---
 

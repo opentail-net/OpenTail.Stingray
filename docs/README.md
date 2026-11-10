@@ -46,10 +46,10 @@ ordered list of open work**; the folders hold the detail docs behind its items. 
 is the priority.
 
 The latest session report and proposed next plan (what was done with evidence, what was found wrong in the docs, ranked next steps,
-owner decisions) is [2026-11-08-open-work-merged.md#open-steps-from-the-2026-10-31-session](2026-11-08-open-work-merged.md#open-steps-from-the-2026-10-31-session). It is a report, not
+owner decisions) is [00-current-work.md](00-current-work.md). It is a report, not
 the backlog: move any item from it into 00-current-work.md when someone takes it on.
 
-The plan being worked from it is [2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31](00-current-work.md#open-work-as-of-2026-11-03) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](00-current-work.md#open-work-as-of-2026-11-03), and what is worth doing after that, checked against the code, is [plan 4](00-current-work.md#open-work-as-of-2026-11-03).
+The plan being worked from it is [00-current-work.md](00-current-work.md) (open items, each with a box); the finished items and their evidence are in its [done half](done/2026-10-31-autonomous-plan-2-completed-items-2026-10.md). What remains after it is in [plan 3](00-current-work.md#open-work-as-of-2026-11-03), and what is worth doing after that, checked against the code, is [plan 4](00-current-work.md#open-work-as-of-2026-11-03).
 Two reference documents came out of it: the [request parameter audit](reference/request-parameter-audit-2026-10-31.md) (which fields of the OpenAI
 and Anthropic endpoints are honoured, refused or ignored, and why) and the [specs for the client-disconnect test and the server
 telemetry canary](done/2026-10-31-server-lifecycle-and-canary-specs.md).

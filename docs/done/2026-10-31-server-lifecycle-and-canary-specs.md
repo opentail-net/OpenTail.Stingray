@@ -1,7 +1,7 @@
 # Specs: HTTP disconnect test (plan 2 P8) and server telemetry canary (plan 2 P5)
 
 Status: specification only. Nothing here is implemented or run. Written against main at b9b00e1 (2026-10-31).
-Parent plan: [2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31](2026-11-08-open-work-merged.md#open-work-from-plan-2-2026-10-31), rows P5 and P8.
+Parent plan: [00-current-work.md](../00-current-work.md), rows P5 and P8.
 
 ## Contracts this must satisfy (read 2026-10-31)
 
