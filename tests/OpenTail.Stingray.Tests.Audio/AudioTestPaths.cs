@@ -34,6 +34,34 @@ internal static class AudioTestPaths
         ?? FindRepoOrModel("models/" + name.Replace('\\', '/'))
         ?? FindRepoOrModel("models/_models/" + name.Replace('\\', '/'));
 
+    /// <summary>
+    /// As <see cref="FindRepoOrModel"/>, but a directory (a checkpoint folder such as <c>cosyvoice2_tokenizer</c>) also counts. The repo walk-up goes first;
+    /// for a path under <c>models/</c> the same relative path is then tried under every model root from <see cref="ModelLocator.Roots"/>.
+    /// </summary>
+    public static string? FindRepoPathOrModel(string rel)
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, rel);
+            if (File.Exists(p) || Directory.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        string norm = rel.Replace('\\', '/');
+        if (!norm.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) return null;
+        string tail = norm["models/".Length..];
+        if (tail.StartsWith("_models/", StringComparison.OrdinalIgnoreCase)) tail = tail["_models/".Length..];
+        if (tail.Length == 0) return null;
+        foreach (var root in ModelLocator.Roots())
+        {
+            var candidate = Path.Combine(root, tail);
+            if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
     /// <summary>"models/x/y.bin" or "models/_models/y.bin": try <c>x/y.bin</c> (or <c>y.bin</c>) under every model root, then a flat file name one folder down.</summary>
     internal static string? FindUnderModelFolders(string rel)
     {
