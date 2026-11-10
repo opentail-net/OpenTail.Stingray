@@ -172,7 +172,7 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 
 ## Open items moved from 058-deepseek-full-lineage-implementation-plan.md (2026-10-30)
 
-- [ ] *(blocked 2026-11-03: no DeepSeek V1 checkpoint on C, E, F or H; only DeepSeek-V2-Lite and deepseek-ocr-2 are present.)* Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
+- [ ] *(blocked 2026-11-03; re-checked 2026-11-10: still no DeepSeek V1 checkpoint on C, E, F or H. Present: DeepSeek-V2-Lite, deepseek-ocr-2 and DeepSeek V4 Flash on E:, which is a different family.)* Port `deepseek` (V1) — plain dense transformer, no MLA/MoE. Expected near-free once `deepseek2`'s
   dense-layer code path (`leading_dense_block_count` layers) is confirmed working, since V1 is
   architecturally a subset.
 

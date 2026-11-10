@@ -121,11 +121,9 @@ Source: [1-correctness/2026-10-02-prefill-numerics-investigation.md](1-correctne
 
 Each file below has open checkboxes. For each box: check it against the code. Close it with the evidence, or keep it and write the blocker next to it. No box is left unexplained.
 
-- [ ] [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md): 16 boxes.
-- [ ] [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md): 11 boxes.
-- [ ] [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md): 14 boxes.
-- [ ] [3-product-and-runtime/2026-11-08-product-plan.md](3-product-and-runtime/2026-11-08-product-plan.md): 10 boxes; all five live when read on 2026-11-03.
-- [ ] [3-product-and-runtime/2026-11-08-product-plan.md](3-product-and-runtime/2026-11-08-product-plan.md): one open box (real-model fork on the GPU, hybrid and GDN passes).
+- [x] [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md): the "16 boxes" and "11 boxes" entries are stale. On 2026-11-10 the file has no `- [ ]` line at all, so nothing is left to check or close here. Closed with that evidence.
+- [ ] [3-product-and-runtime/2026-11-08-product-plan.md](3-product-and-runtime/2026-11-08-product-plan.md): the "10 boxes" entry is stale: the file has no `- [ ]` line on 2026-11-10. Its one real open item is the section `### A10. Forking: real-model test on the GPU, hybrid and GDN passes`, which is not a checkbox. Blocker: each pass needs its own real-model fork test (the `HotSessionForkRealModelTests` pattern) on a named checkpoint. Nothing is written yet. Actionable; not done this session.
+- [ ] [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md): 16 unchecked lines; the "14 boxes" count was stale. Lines 78 to 93 are the per-family checklist, a template that applies to every family, so they are kept as the template and not as tasks. The other seven are kept, each with its blocker: line 109 Qwen 3.8 broader real-weight verification (needs heavy runs; the trunk is on E:); line 125 `glm-dsa` real-weight parity (disk budget, rescoped to hyperparameter parsing); line 126 `glm5next` Phase 2B (not started); line 137 Muse-Glimmer vision tower (deferred by its plan); line 150 DiffusionGemma real-weight ladder (checkpoint on E:; needs a heavy run and a llama.cpp reference); line 160 MiniMax-H3 (points to its plan's checklist); line 175 DeepSeek V1 (re-checked 2026-11-10: still no V1 checkpoint; the note's list of present files is now corrected).
 
 ##### A11. Housekeeping
 
