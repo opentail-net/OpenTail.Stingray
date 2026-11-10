@@ -142,7 +142,7 @@ public sealed unsafe class SimdKernelsIq1STests
 
     /// <summary>Real before/after timing, same shape/rationale as the other backlog benchmarks.</summary>
     [Fact]
-    public void FastKernel_IsFasterThanDequantFallback()
+    public void FastKernel_TimingIsRecordedNotAsserted()
     {
         BenchmarkGate.SkipWhenDisabled();
         const int rows = 17408, cols = 5120;
