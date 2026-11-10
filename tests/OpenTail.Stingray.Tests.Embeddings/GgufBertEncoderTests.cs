@@ -27,9 +27,8 @@ public sealed class GgufBertEncoderTests
     {
         string? env = Environment.GetEnvironmentVariable("STINGRAY_TEST_MINILM_GGUF");
         if (env is { Length: > 0 } && File.Exists(env)) return env;
-        string? models = BertEncoderOnnxParityTests.FindRepoDir("models/_models");
-        string? inRepo = models is null ? null : Path.Combine(models, "all-MiniLM-L6-v2.Q8_0.gguf");
-        if (inRepo is not null && File.Exists(inRepo)) return inRepo;
+        string? found = BertEncoderOnnxParityTests.FindModelFileHeavy("all-MiniLM-L6-v2.Q8_0.gguf", "all-MiniLM-L6-v2-Q8_0.gguf");
+        if (found is not null) return found;
         const string scratch = @"E:\_models\embeddings\minilm-q8.gguf";
         return File.Exists(scratch) ? scratch : null;
     }
@@ -107,9 +106,8 @@ public sealed class GgufBertEncoderTests
     {
         string? env = Environment.GetEnvironmentVariable("STINGRAY_TEST_ARCTIC_GGUF");
         if (env is { Length: > 0 } && File.Exists(env)) return env;
-        string? models = BertEncoderOnnxParityTests.FindRepoDir("models/_models");
-        string? inRepo = models is null ? null : Path.Combine(models, "snowflake-arctic-embed-l-v2.0-q8_0.gguf");
-        if (inRepo is not null && File.Exists(inRepo)) return inRepo;
+        string? found = BertEncoderOnnxParityTests.FindModelFileHeavy("snowflake-arctic-embed-l-v2.0-q8_0.gguf");
+        if (found is not null) return found;
         const string scratch = @"E:\_models\embeddings\arctic-l-v2-q8.gguf";
         return File.Exists(scratch) ? scratch : null;
     }

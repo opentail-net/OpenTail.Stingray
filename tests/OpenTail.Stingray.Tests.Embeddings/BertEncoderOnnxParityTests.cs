@@ -33,7 +33,27 @@ public sealed class BertEncoderOnnxParityTests
             if (parent is null) break;
             dir = parent.FullName;
         }
+        // Checkpoints kept on the model drives are searched only in heavy mode, so a default run does not load multi-GB models it was not asked for.
+        const string modelsPrefix = "models/_models/";
+        if (relPath.StartsWith(modelsPrefix, StringComparison.Ordinal)
+            && Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1")
+            foreach (var root in OpenTail.Stingray.Engine.Verification.ModelLocator.Roots())
+            {
+                var p = Path.Combine(root, relPath.Substring(modelsPrefix.Length));
+                if (Directory.Exists(p)) return p;
+            }
         return null;
+    }
+
+    /// <summary>A checkpoint file by name: the repo's <c>models/_models</c> first (any mode), then the model folders on every drive, which only heavy mode searches (same rule as <see cref="FindRepoDir"/>).</summary>
+    internal static string? FindModelFileHeavy(params string[] names)
+    {
+        string? repoModels = FindRepoDir("models/_models");
+        if (repoModels is not null)
+            foreach (var name in names)
+                if (File.Exists(Path.Combine(repoModels, name))) return Path.Combine(repoModels, name);
+        return Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1"
+            ? OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(names) : null;
     }
 
     internal static string? FindOnnx(string dir) =>

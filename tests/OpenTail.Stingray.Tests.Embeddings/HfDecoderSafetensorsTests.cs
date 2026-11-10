@@ -24,8 +24,7 @@ public sealed class HfDecoderSafetensorsTests
     public void Qwen3_06B_Safetensors_MatchesGgufLogitsAndGreedy()
     {
         string? dir = BertEncoderOnnxParityTests.FindRepoDir("models/_models/hf/Qwen__Qwen3-0.6B");
-        string? models = BertEncoderOnnxParityTests.FindRepoDir("models/_models");
-        string? gguf = models is null ? null : Path.Combine(models, "Qwen3-0.6B-Q8_0.gguf");
+        string? gguf = BertEncoderOnnxParityTests.FindModelFileHeavy("Qwen3-0.6B-Q8_0.gguf");
         Assert.SkipUnless(dir != null && gguf != null && File.Exists(gguf), "Qwen3-0.6B safetensors or Q8_0 GGUF not found");
 
         var report = ModelPackageInspector.Inspect(dir!);
