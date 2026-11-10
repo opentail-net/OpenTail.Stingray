@@ -15,9 +15,9 @@ public sealed class RealPackageTouchpointTests
 {
     private static string? PackagePath()
     {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        foreach (var root in OpenTail.Stingray.Engine.Verification.ModelLocator.Roots())
         {
-            string candidate = Path.Combine(dir.FullName, "models", "SmolLM2-135M-Instruct");
+            string candidate = Path.Combine(root, "SmolLM2-135M-Instruct");
             if (File.Exists(Path.Combine(candidate, "config.json"))) return candidate;
         }
         return null;

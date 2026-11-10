@@ -95,18 +95,8 @@ public sealed class ChatTemplateCorpusTests
         return entries;
     }
 
-    private static IEnumerable<string> CandidateModelDirs()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var models = Path.Combine(dir, "models");
-            if (Directory.Exists(models)) yield return models;
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        if (Directory.Exists(@"E:\models")) yield return @"E:\models";
-    }
+    private static IEnumerable<string> CandidateModelDirs() =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.Roots();
 
     public static IEnumerable<object?[]> Corpus()
     {

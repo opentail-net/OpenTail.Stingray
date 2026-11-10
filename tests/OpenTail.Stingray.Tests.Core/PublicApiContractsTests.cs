@@ -2,6 +2,7 @@
 
 using OpenTail.Stingray;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Engine.Verification;
 using OpenTail.Stingray.Executors;
 using Xunit;
 
@@ -127,8 +128,8 @@ public class PublicApiContractsTests
     [Fact]
     public void Model_Load_And_MultipleContexts_Lifecycle()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         Assert.False(string.IsNullOrEmpty(model.Architecture));
@@ -155,8 +156,8 @@ public class PublicApiContractsTests
     [Fact]
     public void Model_Dispose_DisposesActiveChildContexts()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         var model = Model.Load(modelPath);
         var ctx = model.CreateContext();
@@ -170,8 +171,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task InteractiveExecutor_DualStreaming_And_PrefixHistory()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -210,8 +211,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task StatelessExecutor_ResetsContext_And_DoesNotPassPrefix()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -231,8 +232,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task BatchedExecutor_DelegatesToEngine()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -302,8 +303,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task ChatSession_DualStreaming_And_MultiTurnHistoryTracking()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -353,8 +354,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ChatSession_DefaultChatMLFormat_FormatsCorrectly()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -373,8 +374,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ChatSession_CustomPromptFormatter_OverridesDefault()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         using var model = Model.Load(modelPath);
         using var ctx = (ModelContext)model.CreateContext();
@@ -400,8 +401,8 @@ public class PublicApiContractsTests
         // 4. ChatSession
         // 5. Dual-stream chat: string streaming and typed chunk streaming
 
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "all-MiniLM-L6-v2-Q8_0.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("all-MiniLM-L6-v2-Q8_0.gguf");
+        if (modelPath is null) Assert.Skip("all-MiniLM-L6-v2-Q8_0.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath)
         {
@@ -453,25 +454,13 @@ public class PublicApiContractsTests
         Assert.Contains(chunks, c => c.Kind == GenerateChunkKind.Usage);
     }
 
-    private static readonly string RepoRoot = FindRepoRoot();
-
-    private static string FindRepoRoot()
-    {
-        string? root = AppContext.BaseDirectory;
-        while (root is not null && !File.Exists(Path.Combine(root, "CLAUDE.md")))
-            root = Path.GetDirectoryName(root);
-        return root ?? Directory.GetCurrentDirectory();
-    }
-
-    // Real-weights check (silently no-ops without the checkpoint; a genuine run takes seconds).
-    // Expected text is the CPU greedy baseline in docs/2-coverage/2026-10-05-forward-pass-selection-matrix.md.
-    // Real-weights check (silently no-ops without the checkpoint; a genuine run takes seconds).
+    // Real-weights check: skips visibly (Assert.Skip) when the checkpoint is missing; a genuine run takes seconds.
     // Expected text is the CPU greedy baseline in docs/2-coverage/2026-10-05-forward-pass-selection-matrix.md.
     [Fact]
     public async Task ChatSession_RealSmolLM2_GreedyMatchesCliBaseline_AndStatefulTurns()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -505,8 +494,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ModelContext_Reset_ClearsEngineState()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -522,8 +511,8 @@ public class PublicApiContractsTests
     [Fact]
     public void BatchedExecutor_ConstructsRealContinuousBatchingEngine()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -536,8 +525,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task InferenceParams_Seed_ProducesDeterministicOutput()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -565,8 +554,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ModelParams_ExplicitVulkanBackend_ConfiguresGpuForwardPass()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "vulkan", GpuLayerCount = -1 };
         using var model = Model.Load(modelParams);
@@ -579,8 +568,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ModelParams_UnsupportedBackend_RefusesCleanly()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "nonexistent_backend" };
         using var model = Model.Load(modelParams);
@@ -593,8 +582,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ModelParams_UnsupportedOptions_ThrowsNotSupportedException()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { UseMemoryLock = true }));
         Assert.Throws<NotSupportedException>(() => Model.Load(new ModelParams(modelPath) { UseMemoryMap = false }));
@@ -605,8 +594,8 @@ public class PublicApiContractsTests
     [Fact]
     public void ModelContext_UnknownTurboQuantMode_RefusesCleanly()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -619,8 +608,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task BatchedExecutor_ConcurrentDualInference_ExecutesConcurrentlyOnContinuousBatchingEngine()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var modelParams = new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 };
         using var model = Model.Load(modelParams);
@@ -805,8 +794,8 @@ public class PublicApiContractsTests
     [Fact]
     public async Task Model_ConcurrentContextCreationAndDisposal_IsDeadlockFreeAndSafe()
     {
-        var modelPath = Path.Combine(RepoRoot, "models", "_models", "SmolLM2-135M-Instruct-Q4_K_M.gguf");
-        if (!File.Exists(modelPath)) return;
+        var modelPath = ModelLocator.FindDeep("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) Assert.Skip("SmolLM2-135M-Instruct-Q4_K_M.gguf not found (checkpoint missing).");
 
         var model = Model.Load(new ModelParams(modelPath) { Backend = "cpu", GpuLayerCount = 0 });
 

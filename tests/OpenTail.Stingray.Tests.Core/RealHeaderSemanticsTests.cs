@@ -11,20 +11,8 @@ namespace OpenTail.Stingray.Tests.Core;
 /// </summary>
 public sealed class RealHeaderSemanticsTests
 {
-    private static string? Find(string name)
-    {
-        var dir = AppContext.BaseDirectory;
-        for (int i = 0; i < 10 && dir is not null; i++)
-        {
-            foreach (var sub in new[] { "models", Path.Combine("models", "_models") })
-            {
-                var p = Path.Combine(dir, sub, name);
-                if (File.Exists(p)) return p;
-            }
-            dir = Path.GetDirectoryName(dir);
-        }
-        return null;
-    }
+    private static string? Find(string name) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(name);
 
     private static ResolvedModelArchitecture Resolve(string file, out GgufModel gguf)
     {

@@ -43,19 +43,8 @@ public sealed class TekkenTokenizerTests
         return null;
     }
 
-    private static IEnumerable<string> CandidateModelDirs()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var models = Path.Combine(dir, "models");
-            if (Directory.Exists(models)) yield return models;
-            if (Directory.GetParent(dir) is not { } parent) break;
-            dir = parent.FullName;
-        }
-        // Secondary location used by the other model-gated suites in this project.
-        if (Directory.Exists(@"E:\models")) yield return @"E:\models";
-    }
+    private static IEnumerable<string> CandidateModelDirs() =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.Roots();
 
     [Theory]
     // A word keeps its leading space — the property `\w+|[^\w\s]+` cannot express, and the
