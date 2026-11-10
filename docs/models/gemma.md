@@ -56,7 +56,7 @@ Gemma models, built by Google DeepMind, introduce several non-standard transform
 | **Gemma 2 2B** | Q4_K_M | 4,096 | ~2.5 GB | CPU SIMD (AVX2/AVX-512) |
 | **Gemma 4 E4B** | Q4_K_M | 4,096 | ~4.2 GB | CPU SIMD or Vulkan / CUDA GPU |
 | **Gemma 4 E4B** | Q8_0 | 4,096 | ~8.9 GB | Discrete GPU (Vulkan / CUDA) or 16 GB+ RAM |
-| **Gemma 2 9B** | Q4_K_M | 8,192 | ~8.5 GB | CPU only (not run here; Vulkan and CUDA do not support Gemma 2) |
+| **Gemma 2 9B** | Q4_K_M | 8,192 | ~8.5 GB | CPU only. Golden verified 2026-11-10: `NearTie`, 3 teacher-forced 48-token cases (`gemma2-9b.golden.json`, llama-server 10306, file sha256 `13b2a7b4115b…`). Decode 2 to 4 tok/s on CPU. Vulkan and CUDA do not support Gemma 2. |
 
 ---
 

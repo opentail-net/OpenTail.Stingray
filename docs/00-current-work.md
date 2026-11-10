@@ -188,7 +188,8 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Blocker:** the 9B file needs a download, and F: has 3.7 GB free. Put it on E: or H:, never F: (see [2-coverage/2026-10-31-gemma-family-plan.md](2-coverage/2026-10-31-gemma-family-plan.md)).
 - **Next step:** check free space on E: and H:. Download only if the golden is still the goal.
 - **Progress 2026-11-10:** the blocker above no longer holds: E: has 128 GB free. Scout (`--budget 40G -c 4096`): architecture `gemma2` admitted, no static blockers, estimated peak 13.4 GiB, fits. Downloaded `bartowski/gemma-2-9b-it-GGUF` at revision `d731033f3dc4`, file `gemma-2-9b-it-Q4_K_M.gguf` (5.37 GiB) to `E:\_models\gemma-2-9b-it-GGUF`. SHA-256 verified by the downloader: `13b2a7b4115b...`, matching the hash scout read. Golden capture is next: three teacher-forced 48-token cases with the 2B golden's prompts, from the vendored llama-server. It needs the GPU and CPU free, so it runs after the Vulkan heavy suite.
-- [ ] **Done when:** a Gemma 2 9B golden is recorded against the verified file.
+- [x] **Done when:** a Gemma 2 9B golden is recorded against the verified file.
+  - **Done 2026-11-10.** Golden `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/gemma2-9b.golden.json` (3 teacher-forced 48-token cases: `prose-1`, `prose-2`, `prose-3`, the 2B prompts; llama-server 10306 (6b5c2efb4); file sha256 `13b2a7b4115b…`). `stingray admit-arch -m E:/_models/gemma-2-9b-it-GGUF/gemma-2-9b-it-Q4_K_M.gguf --golden …`: `gemma2: PASS (NearTie)`. `prose-1` 47/48 matched (one near-tie where the reference was undecided, margin 0.066); `prose-2` and `prose-3` Exact 48/48. Stepwise vs prefill: argmax agrees. Decode 2.2 to 3.9 tok/s on CPU. The golden has no machine paths (checked). Row updated in `docs/models/gemma.md`.
 
 ##### B5. Bonsai2 PRISM claim (approval needed)
 
