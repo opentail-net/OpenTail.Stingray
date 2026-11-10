@@ -9,48 +9,44 @@ As of 2026-11-08. This file is the entry point. The open work is in one plan, [2
 3. An item is done only when its **Done when** line is true, with real weights and an independent reference where one applies. Then update the STATUS.md row, the RUNNING.md row if a command changed, and commit. Move the finished text to [done/](done).
 4. Heavy runs one at a time (64 GB host). Perf claims need an idle machine, interleaved A/B, three or more runs and equal output (CLAUDE.md rule 7).
 5. A new item needs a named failure, a user-visible limit, a measurable gain or a recurring cost.
+6. **One parent per item.** An item's text and its checkbox live in one parent document: the open plan that holds its Why, Next step and Done when. This file keeps only the items that have no open parent, and points to every other item's parent. It does not copy their state.
 
 ## Queue
 
 ### 1. Open work (merged plan, in order)
 
-Part A of the plan is for starting now, in this order. Part B waits for an owner decision, an approval, a download, or a quiet machine. Part C is blocked or parked. Section numbers below are the plan's.
-
-- **A1–A4, bugs and test reliability:** cancellation flake under low CPU; fixed timing ceilings in two tests; the finder sweep for heavy test projects; the hybrid MoE NaN.
-- **A5–A8, memory and handoff:** device memory figure; warm-up after a dense-llama handoff; receipts for more dense families; handoff cases not yet exercised.
-- **A9–A13, numerics, sweeps, housekeeping:** MoE activation numerics; stale open boxes; housekeeping; OpenTelemetry acceptance; heavy runs on a quiet machine.
-- **Part B, waiting:** resident-bytes accounting choice (B1); fair turn gate (B2, after B1); which Phi-3.5-MoE file is real (B3); Gemma 2 9B golden (B4, disk first); Bonsai2 reference approval (B5); Piper licence (B6); MoE expert GEMM numerics choice (B7); Q5 API follow-ups (B8); performance and scout follow-ups (B9).
-- **Part C, blocked or parked:** hardware, checkpoints that do not fit, unverified families, parked items.
+The open items and their state are in the merged plan (Part A, Part B, Part C), with a checkbox on each. They are not copied here.
 
 ### 2. Qwen 3.8 Flash Next (`qwen4exp`), in progress
 
 Source: [2026-11-08-qwen38-remaining-work-plan](2-coverage/2026-11-08-qwen38-remaining-work-plan.md). Qwen 3.8 stays not admitted and not advertised until Phase 8 (CLAUDE.md rule 14). Its owner decisions (parity criterion, unsloth fork reference, validator behaviour, admission) are in that plan.
 
-- [ ] 3. **Broader real-weight verification (Phase 1).** Runnable now on the 62 GB checkpoint on E:. First step: three fixed prompts, one crossing a prefill/decode chunk boundary, compared with the pinned llama.cpp `bed0a8566` through `Qwen4ExpRefDumpTests`.
-- [ ] 4. **Memory accounting completion (Job 3).** Source: [programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Job 3. First step: full Core run on the part (a) change, then `HeldSnapshotBytes` and its residency and reservation tests.
-- [ ] 5. **Real-checkpoint cancellation memory check (Phase 2).** Assert sequence-cache disposal in `Qwen4ExpBatchingTests`.
-- [ ] 6. **Logit-level image comparison (Phase 5).** Compare the first generated logits with `llama-mtmd-cli`, then assert exact 40-token equality.
+The parent of its open items is that plan's unchecked boxes. They are not copied here.
 
-### 3. Items not yet in the merged plan
+### 3. Items with no open parent
 
-These six were in the old queue and did not make it into the merged plan. They are kept here so nothing is lost. Decide whether each one goes into the merged plan or is dropped.
+These items have no open owner document, so this file is their parent. Decide whether each one goes into the merged plan or is dropped.
 
-- [ ] **Gemma 4 26B-A4B, one bounded step.** For the word-3 divergence: capture llama.cpp's top-k logprobs with `llama-server` `/completion` and `n_probs`. If the reference is confident, bisect the layer stack. If it is near a tie, park it. Do not re-measure on new prompts. Source: [2026-11-07 TensorSharp reference comparison](1-correctness/2026-11-07-gemma4-tensorsharp-reference-comparison.md).
 - [ ] **Memory returned to the OS after unload.** Two-model `singleslot` host, four switch cycles, working set after each unload; trace the private-memory growth of about 130 MB per cycle. Source: former hub item E4 (its 2026-11-05 measurements are in git history of this file).
-- [ ] **Protocol corpus status per case.** Record a status and error type for every case in `protocol-smoke.json`; add streaming tool-call and error cases for Anthropic and Chat Completions. Source: former hub item E5 (git history of this file).
 - [ ] **Admit one real model with the playbook.** Candidate `ornith-ai/Ornith-1.5-35B-A3B-GGUF`. Start with `stingray scout -r <repo> -f <file> --budget <host RAM> -c <ctx>` before any download. Source: [scout plan](3-product-and-runtime/2026-10-09-checkpoint-scout-and-ai-admission-plan.md), [playbook](reference/architecture-admission-agent-playbook.md).
-- [ ] **Multi-model durable session restore.** Source: [032 multi-model plan](3-product-and-runtime/032-multi-model-inference-runtime-plan.md). First step: write the restore test that fails today.
 - [ ] **Configuration ownership.** List every config switch with its owner and mark the obsolete-looking ones for an owner decision. Source: [QoL plan](3-product-and-runtime/2026-11-08-product-plan.md).
+
+Moved to their parents, no longer tracked here:
+- Gemma 4 26B-A4B word-3 divergence: parent is [2026-11-07 TensorSharp reference comparison](1-correctness/2026-11-07-gemma4-tensorsharp-reference-comparison.md), which records the root cause as fixed.
+- Protocol corpus status per case: parent is the product plan, item A4.
+- Multi-model durable session restore: parent is the [032 multi-model plan](3-product-and-runtime/032-multi-model-inference-runtime-plan.md), phase 7.
 
 ### 4. Coverage ports (behind Qwen; rule 14 applies)
 
 Ported families stay not admitted and not advertised until a real checkpoint and an independent reference verify them. Status ladder: [ported-families-todo](2-coverage/ported-families-todo.md).
 
-- [ ] 1. **GLM-5.x** (`glm-dsa`, `glm5next`): paged real-weight run and K-pool selection gating attention reads. Blocked on disk for the full checkpoint ([programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Phase 2B).
-- [ ] 2. **DeepSeek V4**: YaRN rope scaling (factor 16) verified against the pinned reference, then a non-zero `compress_ratios` test. Paged run blocked on size (86 GB file).
-- [ ] 3. **DiffusionGemma**: Q4_K_M Level 4 run. Checkpoint needed.
-- [ ] 4. **MiniMax-H3**, **Muse-Glimmer** (admitted 2026-10-03, text, CPU only): next steps in their plans.
-- [ ] 5. **Candidate reassessment** (report only, cheap): survey Muse Spark, MiniMax M3.1 and others.
+Each port's open boxes live in its parent. They are not copied here:
+
+1. **GLM-5.x**: parent is the [programme plan](2-coverage/2026-11-07-coverage-completion-programme-plan.md), Phase 2B.
+2. **DeepSeek V4**: parent is the programme plan, Phase 3.
+3. **DiffusionGemma**: parent is its [port plan](2-coverage/2026-10-03-diffusiongemma-port-plan.md), the Level 4 box.
+4. **MiniMax-H3** and **Muse-Glimmer**: parents are their port plans, [MiniMax-H3](2-coverage/2026-10-03-minimax-h3-port-plan.md) and [Muse-Glimmer](2-coverage/2026-10-03-muse-glimmer-port-plan.md).
+5. **Candidate reassessment**: parent is the programme plan, Phase 4.
 
 Lower priority, not planned: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow Apriel, Ant Ling (`bailingmoe2`), MiniMax-M2 (too large), DeepSeek-OCR v1 (no checkpoint), LTX-2.3 / 2.5 (a later campaign), ONNX shared-pipeline extraction (SenseVoice, Paraformer).
 
@@ -65,7 +61,7 @@ Resume from [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11
 - [ ] 5. Raw-quant matvec bandwidth on Vulkan (gpt-oss MXFP4 decode, about 18 GB/s).
 - [ ] 6. FLUX.1 DiT: 132 s against the 99.8 s sd.cpp target ([diffusion-performance Part 2](4-performance/diffusion/diffusion-performance.md#part-2-flux1-vulkan-gemm-handoff)).
 - [ ] 7. Image-token prefill in VLMs, the remaining per-token segment path.
-- [ ] 8. Cross-model DRY and perf-doc consistency (diffusion umbrella Phase 9).
+- 8. Cross-model DRY and perf-doc consistency: parent is [diffusion-performance Phase 9](4-performance/diffusion/diffusion-performance.md), an open box. Not copied here.
 - [ ] 9. MusicGen / AudioGen performance and DRY passes.
 - [ ] 10. CosyVoice3 ODE step count: the fewer-steps A/B by ear and with a Whisper round trip (never run; the default is still 10).
 - [ ] 11. Stable Audio 3 `IStableAudio3Engine` consolidation.
@@ -81,10 +77,7 @@ The other owner decisions are in Part B of the merged plan, each with a recommen
 
 ## Parked by owner decision (do not start)
 
-- The HTTP image endpoints stay 501 (`/v1/images/generations` and `/edits` are not connected to the real pipelines).
-- Gemma 2 GPU soft-capping (Gemma 2 is CPU only).
-- The Qwen3-Coder NaN hunt. Keep the canary line; reopen only if the canary fires.
-- The browser UI for the local server (Qwen phase 7F).
+Parent: Part C of the merged plan, which lists these items. Not copied here.
 
 ## Rules
 
