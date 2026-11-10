@@ -84,6 +84,8 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf", 4, -1)]
     [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf", 12, -1)]
     [InlineData("qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", 4, -1)]   // sharded; 4 KV heads, 28 layers
+    // Qwen2.5 Coder 1.5B: the qwen2 family again (2 KV heads), code-tuned weights; the same receipt covers it.
+    [InlineData("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf", 4, -1)]
     // Granite 3.3 2B (the granite receipt): GQA with 8 KV heads, logit_scale applied on the hybrid.
     [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 4, -1)]
     [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 8, -1)]
