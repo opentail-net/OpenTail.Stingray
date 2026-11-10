@@ -65,6 +65,16 @@ public sealed class ImageCommandSmokeTests : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(name)),
     };
 
+    /// <summary>The repo file if it exists. Otherwise the one copy of that file name on the model drives (ModelLocator), but only when there is exactly one:
+    /// names such as tokenizer.json that occur in many folders are not guessed. Null when neither applies.</summary>
+    private static string? ResolveModelFile(string root, string rel)
+    {
+        string local = Path.Combine(root, rel);
+        if (File.Exists(local)) return local;
+        var copies = OpenTail.Stingray.Engine.Verification.ModelLocator.FindAll(Path.GetFileName(rel));
+        return copies.Count == 1 ? copies[0] : null;
+    }
+
     [Theory]
     [MemberData(nameof(Pipelines))]
     public void Pipeline_MatchesStoredReference(string name)
@@ -74,14 +84,15 @@ public sealed class ImageCommandSmokeTests : IDisposable
 
         string root = RepoRoot();
         var (steps, modelArgs) = Case(name);
-        var missing = modelArgs.Where((a, i) => i % 2 == 1 && !File.Exists(Path.Combine(root, a))).ToList();
+        var missing = modelArgs.Where((a, i) => i % 2 == 1 && ResolveModelFile(root, a) is null).ToList();
         Assert.True(missing.Count == 0, $"{name}: checkpoint files missing (this smoke test fails rather than skips):\n  " +
             string.Join("\n  ", missing));
 
+        var resolvedArgs = modelArgs.Select((a, i) => i % 2 == 1 ? ResolveModelFile(root, a)! : a).ToArray();
         string png = Path.Combine(_tmp, name + ".png");
         string[] args =
         [
-            "image", .. modelArgs, "-p", Prompt, "-W", "256", "-H", "256", "--steps", steps.ToString(CultureInfo.InvariantCulture),
+            "image", .. resolvedArgs, "-p", Prompt, "-W", "256", "-H", "256", "--steps", steps.ToString(CultureInfo.InvariantCulture),
             "--seed", "42", "--backend", "cpu", "-o", png,
         ];
         RunCli(args);
