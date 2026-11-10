@@ -33,13 +33,14 @@ public sealed class PrefillHandoffFamiliesTests
     }
 
     /// <summary>
-    /// Families that were tried on the Vulkan hybrid on 2026-10-31 and did not pass (docs/2026-10-31-autonomous-plan-2.md, P2): gemma2 and
-    /// granite disagree with the CPU pass before any handoff is involved (sequential hybrid against CPU, min cosine about 0.80); phi3 has a
-    /// fused attn_qkv the hybrid cannot run. They must not become Admitted by accident.
+    /// Families that did not pass the Vulkan hybrid on 2026-10-31 (docs/2026-10-31-autonomous-plan-2.md, P2) and still have no receipt:
+    /// gemma2 (the hybrid refuses its final logit soft-capping) and phi3 (a fused attn_qkv the hybrid cannot run). They must not become
+    /// Admitted by accident. granite was in this list until 2026-11-10: its 2026-10-31 mismatch (min cosine about 0.80) came from scale
+    /// fields the hybrid did not apply then; it applies them now, and Granite 3.3 2B has its own receipt (tested by the handoff rows).
     /// </summary>
     [Theory]
     [InlineData("gemma2")]
-    [InlineData("granite")]
+
     [InlineData("phi3")]
     public void FamiliesThatFailedTheVulkanHybridParityRun_StayUnverified(string arch)
     {

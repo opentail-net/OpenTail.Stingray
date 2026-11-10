@@ -84,6 +84,9 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
     [InlineData("qwen2.5-1.5b-instruct-q4_k_m.gguf", 4, -1)]
     [InlineData("qwen2.5-3b-instruct-q4_k_m.gguf", 12, -1)]
     [InlineData("qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", 4, -1)]   // sharded; 4 KV heads, 28 layers
+    // Granite 3.3 2B (the granite receipt): GQA with 8 KV heads, logit_scale applied on the hybrid.
+    [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 4, -1)]
+    [InlineData("ibm-granite_granite-3.3-2b-instruct-Q4_K_M.gguf", 8, -1)]
     // Qwen3-Coder (128 experts, top-8, 16 slots): which experts run on the GPU and which in the CPU fallback depends on when the background
     // prefetcher's uploads land, so the same 40 tokens give slightly different logits run to run (with the prefetcher and warm-up off,
     // 8 of 8 runs were bit-identical). Over 2,000 decode steps from 50 runs the median cosine was 0.99955, 1% of steps fell below 0.990 and the

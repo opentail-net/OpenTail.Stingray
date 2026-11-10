@@ -73,6 +73,14 @@ public static class PrefillHandoffFamilies
                 "Llama-3.1-8B-Instruct Q4_K_M (bartowski, carries rope_freqs.weight; 2026-11-01, -g 4): prefill cosine 0.999724 at context 1024 (47.5 s), 40 decode steps >= 0.9990; with a 1,774-token prompt at context 4096 prefill cosine 0.999252, 40 decode steps >= 0.9966 (394 s), all above the 0.99 bar. Not exercised: LongRoPE, sliding-window llama variants, contexts above 4096, startPos > 0 (refused: a later chat turn prefills token by token). " +
                 "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
                 $"{LlamaArchitecture.Descriptor.Id}|attention.head_count_kv=32"),
+            [("qwen2", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests (Qwen2.5-1.5B-Instruct Q4_K_M, 4 and 8 GPU layers, 2026-11-10): prefill cosine 0.999028 (-g 4) and 0.998840 (-g 8); " +
+                "lowest decode-step cosine over 150 tokens 0.99921 (-g 4) and 0.99896 (-g 8). Dense Q/K/V biases, 2 KV heads, rope base 1e6.",
+                "qwen2|attention.head_count_kv=2"),
+            [("granite", HandoffPath.VulkanHybrid)] = new(
+                "HybridCpuPrefillHandoffTests (Granite 3.3 2B Instruct Q4_K_M, 4 and 8 GPU layers, 2026-11-10): prefill cosine 0.999037 (-g 4) and 0.999099 (-g 8); " +
+                "lowest decode-step cosine over 150 tokens 0.99872 (-g 4) and 0.99832 (-g 8). Carries logit_scale, applied on the hybrid.",
+                "granite|attention.head_count_kv=8"),
             [(QwenArchitectures.Qwen2.Id, HandoffPath.VulkanHybrid)] = new(
                 "HybridCpuPrefillHandoffTests, dense Qwen2.5 (Q/K/V biases, GQA with 2 KV heads) on the Vulkan hybrid (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
                 "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992), " +
