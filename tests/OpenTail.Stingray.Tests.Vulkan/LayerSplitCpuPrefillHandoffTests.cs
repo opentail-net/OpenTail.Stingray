@@ -269,13 +269,6 @@ public sealed class LayerSplitCpuPrefillHandoffTests : HeavyTestBase
         return null;
     }
 
-    private static string? FindModelPath(string modelFile)
-    {
-        string h = Path.Combine(@"H:\_models", modelFile);
-        if (File.Exists(h)) return h;
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", modelFile), Path.Combine(dir.FullName, "models", "_models", modelFile) })
-                if (File.Exists(p)) return p;
-        return null;
-    }
+    private static string? FindModelPath(string modelFile) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
 }

@@ -21,17 +21,8 @@ public sealed class Gemma4CpuPrefillHandoffTests : HeavyTestBase
         "language models trained on vast text collections can summarise, translate and reason about problems that no " +
         "single programmer anticipated, running on hardware whose memory bandwidth matters more than its clock speed.";
 
-    private static string? Find(string file)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", file), Path.Combine(dir.FullName, "models", "_models", file) })
-                if (System.IO.File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     private static int Argmax(ReadOnlySpan<float> v)
     {

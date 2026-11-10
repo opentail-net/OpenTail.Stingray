@@ -16,20 +16,8 @@ public sealed class Qwen3VlVulkanMRopeParityTests : HeavyTestBase
     private readonly ITestOutputHelper _out;
     public Qwen3VlVulkanMRopeParityTests(ITestOutputHelper output) => _out = output;
 
-    private static string? Find(string file)
-    {
-        if (Environment.GetEnvironmentVariable("STINGRAY_QWEN3VL_DIR") is { Length: > 0 } envDir
-            && File.Exists(Path.Combine(envDir, file)))
-            return Path.Combine(envDir, file);
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            foreach (var p in new[] { Path.Combine(dir, "models", file), Path.Combine(dir, "models", "_models", file) })
-                if (File.Exists(p)) return p;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     /// <summary>224x224 RGB with four solid quadrants (red, green / blue, yellow), so 2D positions matter.</summary>
     private static byte[] QuadrantImage(int size)

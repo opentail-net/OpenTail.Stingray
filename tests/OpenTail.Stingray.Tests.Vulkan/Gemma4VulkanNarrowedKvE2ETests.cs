@@ -31,29 +31,8 @@ public sealed class Gemma4VulkanNarrowedKvE2ETests : HeavyTestBase
         catch { return null; }
     }
 
-    private static string? FindModelPath(string fileName)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"E:\models\{fileName}",
-            $@"C:\p\opentail-llm\models\{fileName}",
-        };
-        foreach (var p in absoluteCandidates)
-            if (File.Exists(p)) return p;
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", fileName);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", fileName);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string fileName) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 
     private static int Argmax(ReadOnlySpan<float> logits)
     {

@@ -2865,23 +2865,8 @@ public sealed unsafe class VulkanShaderTests : HeavyTestBase
             "models\\Llama-4-Scout-17B-16E-Instruct-Q2_K.gguf");
     }
 
-    private static string? FindModelPath(params string[] candidates)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var candidate in candidates)
-            {
-                var fullPath = Path.Combine(dir, candidate);
-                if (File.Exists(fullPath))
-                    return fullPath;
-            }
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(params string[] candidates) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(Array.ConvertAll(candidates, c => Path.GetFileName(c) ?? c));
 
     /// <summary>
     /// Regression test for issue #2 (MoE+hybrid produced NaN/garbled output) and the

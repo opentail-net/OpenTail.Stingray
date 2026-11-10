@@ -36,21 +36,8 @@ public sealed class Gemma4VisionVulkanE2ETests : HeavyTestBase
         catch { return null; }
     }
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { $@"C:\p\opentail-llm\models\{file}", $@"E:\models\{file}" })
-            if (File.Exists(p)) return p;
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8 && dir is not null; i++)
-        {
-            var p = Path.Combine(dir, "models", file);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", file);
-            if (File.Exists(pNested)) return pNested;
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     [Fact]
     public void Gemma4_Vulkan_Image_SplicesAndSteersDecode()

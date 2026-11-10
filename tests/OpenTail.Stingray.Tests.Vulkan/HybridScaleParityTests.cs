@@ -15,12 +15,8 @@ public sealed unsafe class HybridScaleParityTests : HeavyTestBase
         "replaced vacuum tubes, integrated circuits replaced transistors, and the cost of a calculation fell by many " +
         "orders of magnitude.";
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file), Path.Combine(@"H:\_models", file) })
-            if (File.Exists(p)) return p;
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     private static double Cosine(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
     {

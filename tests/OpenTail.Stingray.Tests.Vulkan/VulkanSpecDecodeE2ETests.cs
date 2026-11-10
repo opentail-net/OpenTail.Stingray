@@ -42,29 +42,8 @@ public sealed class VulkanSpecDecodeE2ETests : HeavyTestBase
         catch { return null; }
     }
 
-    private static string? FindModelPath(string modelFile)
-    {
-        string[] absoluteCandidates =
-        {
-            $@"C:\p\opentail-llm\models\{modelFile}",
-            $@"E:\models\{modelFile}",
-        };
-        foreach (var p in absoluteCandidates)
-            if (File.Exists(p)) return p;
-
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, "models", modelFile);
-            if (File.Exists(p)) return p;
-            var pNested = Path.Combine(dir, "models", "_models", modelFile);
-            if (File.Exists(pNested)) return pNested;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string modelFile) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
 
     // SnapKV pinned off: BatchVerify is unsupported once SnapKV evicts, and VRAM-scaled
     // auto-SnapKV could otherwise engage and flip SupportsBatchVerify to false. Mirrors

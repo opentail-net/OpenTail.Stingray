@@ -209,21 +209,6 @@ public sealed class GpuFfnScratchGuardTests : HeavyTestBase
             "models\\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
     }
 
-    private static string? FindModelPath(params string[] candidates)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            foreach (var candidate in candidates)
-            {
-                var fullPath = Path.Combine(dir, candidate);
-                if (File.Exists(fullPath))
-                    return fullPath;
-            }
-            var parent = Directory.GetParent(dir);
-            if (parent == null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(params string[] candidates) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(Array.ConvertAll(candidates, c => Path.GetFileName(c) ?? c));
 }

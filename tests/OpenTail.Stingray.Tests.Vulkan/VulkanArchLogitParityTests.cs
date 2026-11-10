@@ -115,15 +115,6 @@ public sealed class VulkanArchLogitParityTests : HeavyTestBase
         return d / (Math.Sqrt(na) * Math.Sqrt(nb));
     }
 
-    private static string? FindModelPath(string file)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", file), Path.Combine(dir.FullName, "models", "_models", file) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 }

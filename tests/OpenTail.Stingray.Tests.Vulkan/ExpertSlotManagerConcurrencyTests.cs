@@ -11,19 +11,8 @@ public sealed class ExpertSlotManagerConcurrencyTests : HeavyTestBase
 {
     private const string Olmoe = "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf";
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file) })
-            if (File.Exists(p)) return p;
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", file), Path.Combine(dir.FullName, "models", "_models", file) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     [Fact]
     public void LookupsDoNotWaitForUploads_AndConcurrentPreloadsAreSafe()

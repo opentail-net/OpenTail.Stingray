@@ -27,19 +27,8 @@ public sealed unsafe class HybridCpuPrefillHandoffTests : HeavyTestBase
         "language models trained on vast text collections can summarise, translate and reason about problems that no " +
         "single programmer anticipated, running on hardware whose memory bandwidth matters more than its clock speed.";
 
-    private static string? Find(string file)
-    {
-        foreach (var p in new[] { Path.Combine(@"F:\_models", file), Path.Combine(@"E:\_models", file), Path.Combine(@"H:\_models", file) })
-            if (File.Exists(p)) return p;
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", file), Path.Combine(dir.FullName, "models", "_models", file) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? Find(string file) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(file);
 
     private static int Argmax(ReadOnlySpan<float> v)
     {

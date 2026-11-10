@@ -91,15 +91,6 @@ public sealed class GptOssGpuParityTests : HeavyTestBase
         return d / (Math.Sqrt(na) * Math.Sqrt(nb));
     }
 
-    private static string? FindModelPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            foreach (var p in new[] { Path.Combine(dir.FullName, "models", ModelFile), Path.Combine(dir.FullName, "models", "_models", ModelFile) })
-                if (File.Exists(p)) return p;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+    private static string? FindModelPath() =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(ModelFile);
 }
