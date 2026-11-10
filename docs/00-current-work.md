@@ -146,7 +146,7 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - [x] **b. Cost tiers:** every instrument has a cost tier (plan section 4.1). Test that only tier 1 does work with no listener attached, and that tier 3 output is labelled as perturbed.
   - **Status 2026-11-08: met by a passing test.** `EngineTelemetryTierGatingTests` (ForwardPass.Fast, 1 test, 0 skipped, 0.21 s) checks that the tier-2 gate is closed with no listener, with a tier-1-only listener, and that it opens with a tier-2 listener and closes again after it. It also checks that tier-3 instruments are absent without diagnostic mode and that their definitions start with "DIAGNOSTIC". Not re-checked here: that every instrument in code has a row in the tier table; `EngineTelemetryContractTests` is the place for that.
   - **a is not done:** the overhead bound needs a quiet machine and a method that isolates the no-listener cost. Left open.
-- [ ] **c. Growth seams:** the seams in plan section 14. Add each one when a new metric needs it. Do not add them speculatively.
+- [x] **c. Growth seams:** deferred 2026-11-10, with a reason: the plan says add each seam only when a new metric needs it, and no metric was added in this session, so none was needed. Revisit when one is.
 - [ ] **Done when:** a and b have measured or tested evidence on their line, and c is met or deferred with a reason.
 
 ##### A13. Heavy runs that need a quiet machine (one at a time)
