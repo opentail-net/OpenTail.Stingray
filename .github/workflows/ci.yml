@@ -91,6 +91,9 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Mlx.Fast/OpenTail.Stingray.Tests.Mlx.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 5
           dotnet test tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 70
           dotnet test tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 38
+          # Embeddings: 46 discovered, but only 6 pass without model checkpoints, and the floor counts executed passing tests
+          # (measured 2026-11-10: floor 6 passes, 7 fails). The floor is set to 5, which is about 17% below 6.
+          dotnet test tests/OpenTail.Stingray.Tests.Embeddings/OpenTail.Stingray.Tests.Embeddings.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 5
 
   # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
   # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
@@ -158,7 +161,7 @@ jobs:
         run: |
           $suites = @(
             @('Core', 450), @('Pipeline', 40), @('TurboQuant', 60), @('Cli', 300), @('Vision', 55),
-            @('Server.Fast', 200), @('Sessions.Fast', 100), @('ForwardPass.Fast', 480), @('Mlx.Fast', 5), @('Audio.Fast', 70), @('Vulkan.Fast', 38))
+            @('Server.Fast', 200), @('Sessions.Fast', 100), @('ForwardPass.Fast', 480), @('Mlx.Fast', 5), @('Audio.Fast', 70), @('Vulkan.Fast', 38), @('Embeddings', 5))
           foreach ($s in $suites) {
             dotnet test "tests/OpenTail.Stingray.Tests.$($s[0])/OpenTail.Stingray.Tests.$($s[0]).csproj" -c Release --no-restore --no-build -- --minimum-expected-tests $s[1]
             if ($LASTEXITCODE -ne 0) { throw "suite $($s[0]) failed (exit $LASTEXITCODE)" }
