@@ -48,21 +48,8 @@ public sealed class LtxVideoRealWeightsTests : HeavyTestBase
         Assert.False(model.CrossAttentionGated);
     }
 
-    private static string? FindRepoFile(string relativePath)
-    {
-        string direct = Path.Combine(@"C:\Git-Public\OpenTail.Stingray", relativePath.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(direct) || Directory.Exists(direct)) return direct;
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     [Fact]
     public void GenerateApple_20Steps_LtxVideo_Cpu()

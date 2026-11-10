@@ -46,19 +46,8 @@ public sealed class StableAudioPipelineGoldenParityTests : HeavyTestBase
     private const float CfgScale = 6.0f;
     private const float DurationSeconds = 0.5f;
 
-    private static string? FindRepoDir(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            if (Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoDir(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     private static string? FindGoldenDir()
     {

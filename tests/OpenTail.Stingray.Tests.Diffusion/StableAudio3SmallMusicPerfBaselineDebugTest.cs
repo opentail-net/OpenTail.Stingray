@@ -16,19 +16,8 @@ public sealed class StableAudio3SmallMusicPerfBaselineDebugTest
     private const string T5GemmaDirRelative = "models/stable-audio-3-t5gemma";
     private const int Runs = 3;
 
-    private static string? FindRepoDir(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            if (Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoDir(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     [Fact]
     public void Bench_Generate_3sAudio_8Steps()

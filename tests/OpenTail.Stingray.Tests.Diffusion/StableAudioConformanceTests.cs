@@ -6,19 +6,8 @@ public sealed class StableAudioConformanceTests : HeavyTestBase
 {
     private const string DitDirRelative = "models/stable-audio-3-small-music-base";
 
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     /// <summary>Shape-only smoke test on the real DiT (accuracy is covered by
     /// <c>StableAudioDiTGoldenParityTests</c>) -- this class has fixed real dimensions (1024/20/16),

@@ -26,6 +26,8 @@ public sealed class ZzFlux2ProfTmp
     [Fact]
     public void Flux2Pipeline_GpuDoubleBlocks_EndToEndProducesFiniteImage()
     {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("STINGRAY_RUN_HEAVY_TESTS") == "1",
+            "heavy: profiling scratch loads a real Flux2 checkpoint; set STINGRAY_RUN_HEAVY_TESTS=1");
         string? ditPath = FindModelPath("flux2-dev-Q4_K_S.gguf");
         string? mistralPath = FindModelPath("Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S.gguf");
         string? vaePath = FindModelPath("flux2-vae.safetensors");
