@@ -98,7 +98,8 @@ As of 2026-11-08. This file is the entry point and the parent of the open work i
 
 - **Why:** the first decode after a CPU-prefill handoff on the Vulkan hybrid costs about 1.9 s (24 tokens at 6-7 tok/s; 160 tokens at 12.5-13 tok/s; steady rate about 15 tok/s). The cause is a hypothesis: GPU pipelines created on first use. It is not profiled.
 - **Next step:** find where `HybridForwardPass` creates its GPU pipelines (the lazily created pipeline fields in `VulkanBackend`). Profile the first decode to confirm or reject the hypothesis. If confirmed, create the pipelines at load, or finish the handoff with one throwaway token.
-- [ ] **Done when:** the 24-token decode rate matches the 160-token rate, and greedy output is unchanged.
+- [x] **Done when:** the 24-token decode rate matches the 160-token rate, and greedy output is unchanged.
+  - **Status 2026-11-10: met on Qwen2.5-1.5B Q4_K_M, not by a fix; the original slow first decode did not reproduce.** Hybrid handoff (`-g 8`, `STINGRAY_HYBRID_CPU_PREFILL=all`, the path shows `HybridForwardPass` and no refusal), temperature 0, eight runs each: 24 new tokens 22.3 to 26.0 tok/s (median about 24.8); 160 new tokens 20.9 to 28.3 tok/s (median about 26.2). The 6 to 7 tok/s figure in the item could not be reproduced on this model, and the model it came from is not recorded in the docs. The single 12.9 tok/s run earlier was noise. SmolLM2-1.7B gave 15.7 to 21.6 tok/s for 24 tokens over three runs. Greedy output is unchanged because no code changed. The hypothesis (GPU pipelines created on first use) was not profiled, because no slow first decode showed up to profile. Re-open if the 6 to 7 tok/s case is found with its model name.
 
 ##### A7. Handoff receipts for more dense families
 
