@@ -21,7 +21,7 @@ public sealed class SttCommandRoutingTests
     [Fact]
     public void ResolveVoxtralPath_FindsDirectGgufFile()
     {
-        string? ggufPath = FindRepoFile("models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf");
+        string? ggufPath = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("voxtral-mini-4b-realtime-2602-q8_0.gguf");
         Assert.SkipUnless(ggufPath is not null, "Voxtral GGUF not present in this environment");
 
         string? resolved = SttCommand.ResolveVoxtralPath(ggufPath);
@@ -53,7 +53,7 @@ public sealed class SttCommandRoutingTests
     [Fact]
     public void SttCommand_ExecutesVoxtralGguf_Successfully()
     {
-        string? ggufPath = FindRepoFile("models/Voxtral-Mini-4B-Realtime-2602-GGUF/voxtral-mini-4b-realtime-2602-q8_0.gguf");
+        string? ggufPath = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("voxtral-mini-4b-realtime-2602-q8_0.gguf");
         string? wavPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
         Assert.SkipUnless(ggufPath is not null, "Voxtral GGUF not present in this environment");
         Assert.SkipUnless(wavPath is not null, "sample audio not present in this environment");

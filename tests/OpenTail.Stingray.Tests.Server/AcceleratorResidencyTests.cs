@@ -219,26 +219,9 @@ public sealed class AcceleratorResidencyTests
         }
     }
 
-    /// <summary><c>models/</c> or <c>models/_models/</c> above the test, else a <c>_models</c> folder at the root of any fixed drive.</summary>
-    private static string? FindModelAnywhere(string fileName)
-    {
-        for (var dir = new DirectoryInfo(Directory.GetCurrentDirectory()); dir is not null; dir = dir.Parent)
-            foreach (string candidate in new[] { Path.Combine(dir.FullName, "models", fileName), Path.Combine(dir.FullName, "models", "_models", fileName) })
-                if (File.Exists(candidate)) return candidate;
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
-        {
-            string root = Path.Combine(drive.RootDirectory.FullName, "_models");
-            string candidate = Path.Combine(root, fileName);
-            if (File.Exists(candidate)) return candidate;
-            if (!Directory.Exists(root)) continue;
-            foreach (string folder in Directory.EnumerateDirectories(root))   // checkpoints are often kept one folder down (E:\_models\qwen35-0.8b\...)
-            {
-                candidate = Path.Combine(folder, fileName);
-                if (File.Exists(candidate)) return candidate;
-            }
-        }
-        return null;
-    }
+    /// <summary>Resolved through ModelLocator (repo models folders first, then the model drives).</summary>
+    private static string? FindModelAnywhere(string fileName) =>
+        OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(fileName);
 
     private static void SkipUnlessVulkanAvailable()
     {

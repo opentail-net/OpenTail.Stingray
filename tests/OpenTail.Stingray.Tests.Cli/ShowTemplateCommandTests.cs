@@ -49,14 +49,8 @@ public sealed class ShowTemplateCommandTests
     [Fact]
     public void RendersTheReferenceModelTemplate()
     {
-        // Resolve against the repo, not the test output directory — a relative "models/..." never
-        // matches from bin/, so the test would silently skip on the very machine that has the model.
-        string? model = null;
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            string candidate = Path.Combine(dir.FullName, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) { model = candidate; break; }
-        }
+        // Resolved through ModelLocator: the repo models folder first, then the model drives.
+        string? model = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
         Assert.SkipUnless(model is not null, "reference model not present in this environment");
 
         var (exit, output, _) = Run("-m", model, "-p", "Ping", "--system", "Be brief.");

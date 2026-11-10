@@ -28,13 +28,8 @@ public sealed class TranscriptionRealWeightsTests
     /// <summary>The folder holding the installed catalog model: <c>models/</c> or <c>models/_models/</c> above the test, else a <c>_models</c> folder at the root of any fixed drive.</summary>
     private static string? FindModelFolder(CatalogFile file)
     {
-        foreach (string relative in new[] { Path.Combine("models", file.FileName), Path.Combine("models", "_models", file.FileName) })
-            if (FindUpward(relative) is { } found && new FileInfo(found).Length == file.Size) return Path.GetDirectoryName(found);
-        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
-        {
-            string candidate = Path.Combine(drive.RootDirectory.FullName, "_models", file.FileName);
-            if (File.Exists(candidate) && new FileInfo(candidate).Length == file.Size) return Path.GetDirectoryName(candidate);
-        }
+        foreach (string candidate in OpenTail.Stingray.Engine.Verification.ModelLocator.FindAll(file.FileName))
+            if (new FileInfo(candidate).Length == file.Size) return Path.GetDirectoryName(candidate);
         return null;
     }
 

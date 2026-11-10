@@ -120,9 +120,9 @@ public sealed class SafetensorsProductIntegrationTests : IDisposable
 
     private static string? FindRealPackagePath()
     {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        foreach (var root in OpenTail.Stingray.Engine.Verification.ModelLocator.Roots())
         {
-            string candidate = Path.Combine(directory.FullName, "models", "SmolLM2-135M-Instruct");
+            string candidate = Path.Combine(root, "SmolLM2-135M-Instruct");
             if (File.Exists(Path.Combine(candidate, "config.json"))) return candidate;
         }
         return null;
