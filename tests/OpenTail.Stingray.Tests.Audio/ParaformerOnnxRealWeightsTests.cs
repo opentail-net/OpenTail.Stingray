@@ -45,8 +45,8 @@ public sealed class ParaformerOnnxRealWeightsTests
     {
         string? modelPath = FindModelPath("paraformer-zh-small.int8.onnx");
         Assert.SkipUnless(modelPath != null, "paraformer-zh-small.int8.onnx not found");
-        Assert.SkipUnless(File.Exists(@"F:\_models\paraformer-zh-small-tokens.txt"),
-            "paraformer-zh-small-tokens.txt not found at F:\\_models -- real vocab required");
+        Assert.SkipUnless(OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("paraformer-zh-small-tokens.txt") is not null,
+            "paraformer-zh-small-tokens.txt not found in any model folder -- real vocab required");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         using var pipeline = ParaformerOnnxPipeline.Load(modelPath!);

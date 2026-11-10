@@ -52,23 +52,8 @@ internal static class FunAsrGgufTestModelLocator
 
     private static IEnumerable<string> GetCandidatePaths()
     {
-        var modelDirectories = new List<string>();
-        var directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            modelDirectories.Add(Path.Combine(directory, "models"));
-            var parent = Directory.GetParent(directory);
-            if (parent is null)
-                break;
-            directory = parent.FullName;
-        }
-
-        modelDirectories.AddRange([@"C:\p\opentail-llm\models", @"E:\models"]);
-        foreach (var modelDirectory in modelDirectories)
-        {
+        foreach (var modelDirectory in OpenTail.Stingray.Engine.Verification.ModelLocator.Roots())
             yield return Path.Combine(modelDirectory, FileName);
-            yield return Path.Combine(modelDirectory, "_models", FileName);
-        }
     }
 
     private static string? GetMetadataString(GgufModel model, string key) =>

@@ -21,16 +21,16 @@ public sealed class SenseVoiceRealWeightsTests
     [Fact]
     public void Transcribe_OnRealLibriSpeechClip_ProducesNonEmptyText()
     {
-        const string onnxPath = @"F:\_models\sensevoice-small.int8.onnx";
-        const string tokensPath = @"F:\_models\sensevoice-small-tokens.txt";
-        Assert.SkipUnless(File.Exists(onnxPath), $"{onnxPath} not found");
-        Assert.SkipUnless(File.Exists(tokensPath), $"{tokensPath} not found");
+        string? onnxPath = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("sensevoice-small.int8.onnx");
+        Assert.SkipUnless(onnxPath is not null, "sensevoice-small.int8.onnx not found in any model folder");
+        string? tokensPath = SenseVoicePipeline.ResolveTokensPath(onnxPath!);
+        Assert.SkipUnless(tokensPath is not null, "sensevoice tokens file not found next to the model");
 
         string? wavPath = FindRepoFile("examples/audio.cpp/assets/asr_validation/librispeech/librispeech_test_clean_6930-75918-0000.wav");
         Assert.SkipUnless(wavPath != null, "librispeech reference clip not found");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        using var pipeline = SenseVoicePipeline.TryLoad(onnxPath, tokensPath);
+        using var pipeline = SenseVoicePipeline.TryLoad(onnxPath!, tokensPath!);
         Assert.NotNull(pipeline);
 
         var (rawSamples, rawRate, rawChannels) = WavReader.ReadWav(wavPath!);
@@ -54,14 +54,14 @@ public sealed class SenseVoiceRealWeightsTests
     [Fact]
     public void SpeechToTextPipeline_OnRealLibriSpeechClip_MatchesReferenceTranscript()
     {
-        const string onnxPath = @"F:\_models\sensevoice-small.int8.onnx";
-        Assert.SkipUnless(File.Exists(onnxPath), $"{onnxPath} not found");
-        string? tokensPath = SenseVoicePipeline.ResolveTokensPath(onnxPath);
+        string? onnxPath = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep("sensevoice-small.int8.onnx");
+        Assert.SkipUnless(onnxPath is not null, "sensevoice-small.int8.onnx not found in any model folder");
+        string? tokensPath = SenseVoicePipeline.ResolveTokensPath(onnxPath!);
         Assert.SkipUnless(tokensPath is not null, "sensevoice tokens file not found next to the model");
         string? wavPath = FindRepoFile("examples/audio.cpp/assets/asr_validation/librispeech/librispeech_test_clean_6930-75918-0000.wav");
         Assert.SkipUnless(wavPath != null, "librispeech reference clip not found");
 
-        using ISpeechToTextPipeline pipeline = SenseVoicePipeline.TryLoad(onnxPath, tokensPath!)!;
+        using ISpeechToTextPipeline pipeline = SenseVoicePipeline.TryLoad(onnxPath!, tokensPath!)!;
         var (samples, rate, _) = WavReader.ReadWav(wavPath!);
         var result = pipeline.Transcribe(new SpeechToTextRequest { AudioSamples = samples, SampleRate = rate });
 
