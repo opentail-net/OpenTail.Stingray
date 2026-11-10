@@ -13,19 +13,8 @@ public sealed class FunAsrNanoDecoderGoldenTests : HeavyTestBase
     private static string? FindRepoFile(string relPath) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoOrModel(relPath);
 
 
-    private static string? FindRepoDir(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoDir(string relPath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relPath);
 
     [Fact]
     public void Decode_RealAudioEmbeddingsFromFixture_MatchesRealGreedyTokenIds()

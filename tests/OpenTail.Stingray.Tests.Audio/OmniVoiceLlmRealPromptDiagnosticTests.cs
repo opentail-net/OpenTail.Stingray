@@ -11,19 +11,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// input-was-meaningless artifact would not.</summary>
 public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
 {
-    private static string? FindRepoDir(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoDir(string relPath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relPath);
 
     [Fact]
     public void Forward_RealDifferentSentences_ProducesVariedContextSensitiveLogits()

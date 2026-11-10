@@ -10,25 +10,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     private const string Prompt = "Hello, I will make some lunch, darling!";
     private const int Runs = 3;
 
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            if (relativePath.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
-            {
-                var sub = relativePath.Substring("models/".Length);
-                var p2 = Path.Combine(dir, "models", "_models", sub);
-                if (File.Exists(p2) || Directory.Exists(p2)) return p2;
-            }
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     [Fact]
     public void Baseline_QwenTts()

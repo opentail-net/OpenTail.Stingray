@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// and (per a direct tensor dump) identical thinker.audio_tower.*/thinker.model.* tensor names.</summary>
 public sealed class QwenForcedAlignerRealCheckpointLoadDebugTest : HeavyTestBase
 {
-    private static string? FindRepoDir(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoDir(string relPath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relPath);
 
     [Fact]
     public void LoadForcedAlignerCheckpoint_ViaQwenAsrWeights()

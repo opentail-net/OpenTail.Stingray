@@ -8,19 +8,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// confirmed against the real C++ reference implementation.</summary>
 public sealed class QwenForcedAlignerRealAlignmentTests : HeavyTestBase
 {
-    private static string? FindRepoFile(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relPath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relPath);
 
     [Fact]
     public void AlignReal_AWav_ProducesMonotonicWordTimestamps()

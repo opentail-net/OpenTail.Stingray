@@ -11,22 +11,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// for CosyVoice2 right now.</summary>
 public sealed class CosyVoice2GenerateWavDebugTest : HeavyTestBase
 {
-    private static string? FindModelPath(string relPath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relPath);
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            // Large checkpoints live in models/_models (the curated working set on F:).
-            var q = Path.Combine(dir, relPath.Replace("models/", "models/_models/", StringComparison.Ordinal));
-            if (File.Exists(q) || Directory.Exists(q)) return q;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindModelPath(string relPath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relPath);
 
     [Fact]
     public void Generate_RealCosyVoice2Wav()

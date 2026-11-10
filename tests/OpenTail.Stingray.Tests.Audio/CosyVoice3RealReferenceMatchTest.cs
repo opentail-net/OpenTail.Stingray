@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// most direct possible A/B comparison against our own port's output on identical inputs.</summary>
 public sealed class CosyVoice3RealReferenceMatchTest : HeavyTestBase
 {
-    private static string? FindRepoFile(string relativePath)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, relativePath);
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? FindRepoFile(string relativePath) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(relativePath);
 
     [Fact]
     public void Generate_MatchingRealReferenceInputs()

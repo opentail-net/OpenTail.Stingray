@@ -7,19 +7,8 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class ParakeetLibriSpeechTests
 {
-    private static string? Find(string rel)
-    {
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            var p = Path.Combine(dir, rel);
-            if (File.Exists(p) || Directory.Exists(p)) return p;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
-        }
-        return null;
-    }
+    private static string? Find(string rel) =>
+        OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindRepoPathOrModel(rel);
 
     private static int WordEdits(string[] a, string[] b)
     {
