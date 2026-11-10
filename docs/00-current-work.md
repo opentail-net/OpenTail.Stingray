@@ -80,6 +80,7 @@ As of 2026-11-08. This file is the entry point and the parent of the open work i
 - **Next step:** run the control test in a loop with per-layer finite checks on, until it fires. Record the run index, the decode step, and the first layer that goes non-finite. Then compare that layer's inputs with the CPU pass. If the NaN comes from a fused kernel, check its scratch sizing and reads past the end of its buffer.
 - [ ] **Done when:** the cause is fixed with a regression test that fails before the fix. If it is not reproduced, the instrumented repro is committed and names the layer.
 - **Do not** repeat the 12-run check without the per-layer instrumentation. It adds no information.
+- **Deferred 2026-11-10 (owner decision of 2026-11-01 still stands, and the instrumented check is costly):** the owner stopped this hunt on 2026-11-01 (`docs/done/open-work-evidence-2026-10-31-to-11-01.md`, P1c), to be reopened only if the canary fires. No canary firing is on record: this session's Vulkan logs have 0 non-finite or NaN lines. The control test (`Control_SequentialVsSequential_EnvironmentChosenModel`, Qwen3-Coder-30B Q4_K_M at `/f/_models`, 40 decode steps per run) fires about 1 time in 18, so reproduction needs about 40 runs (several hours on the iGPU). A per-layer readback would force a sync and may hide the suspected in-flight expert-upload race, so the instrumentation has to be designed first. Not started. Reopen if the owner wants the hunt resumed.
 
 ##### A5. Device memory figure understates real use
 
