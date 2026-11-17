@@ -624,7 +624,9 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         // stall on demand paging (issue #221). The CPU embedding/output tensors are
         // resolved even on a pure-GPU split (CPU embed lookup / lm_head), so the sweep
         // is not gated on _nCpuLayers > 0. MmapPrefault honours STINGRAY_PREFAULT.
-        MmapPrefault.Run("HybridForwardPass", BuildCpuPrefaultRegions());
+        // Gated on FREE RAM, not total RAM: with the default FitsInRam gate a 48 GiB
+        // mapping passed on a 63 GiB machine while only ~4 GiB was free (2026-11-10 freeze).
+        MmapPrefault.Run("HybridForwardPass", BuildCpuPrefaultRegions(), MmapPrefault.RamGate.FitsInFreeRam);
 
         if (_tqEnabled && _nCpuLayers > 0)
         {

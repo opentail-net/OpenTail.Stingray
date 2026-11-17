@@ -186,6 +186,18 @@ public sealed class MmapPrefaultTests
     }
 
     [Fact]
+    public void ShouldRun_HybridPrefault_FreeRamGateSkipsWhatTotalRamGateAllowed()
+    {
+        // Regression for the 2026-11-10 freeze: HybridForwardPass pre-faulted 48.10 GiB while
+        // ~4.3 GiB was free. Total-RAM gate (old default) allowed it; the free-RAM gate must not.
+        long mapped = (long)(48.10 * Gib);
+        long freeBytes = 4321L << 20;
+        Assert.True(MmapPrefault.ShouldRun(null, mapped, 63L * Gib, MmapPrefault.RamGate.FitsInRam, out _));
+        Assert.False(MmapPrefault.ShouldRun(null, mapped, freeBytes, MmapPrefault.RamGate.FitsInFreeRam, out var reason));
+        Assert.Contains("free RAM", reason);
+    }
+
+    [Fact]
     public void AvailablePhysicalBytes_IsPositiveAndNotAboveTotal()
     {
         long avail = MmapPrefault.AvailablePhysicalBytes();
