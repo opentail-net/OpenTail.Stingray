@@ -16,7 +16,7 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
 
 ## Git workflow (owner rule)
 
-- Work directly on `main`. Commit and push to `origin/main` when the code works.
+- Work directly on `main`. Commit and push to `origin/main` when the relevant tests pass. If there are none, commit and ask before pushing.
 - Do not create feature branches, worktrees or PRs unless the owner asks. If a change seems to need one, ask first.
 - Before editing, check `git branch --show-current` is `main`.
 
