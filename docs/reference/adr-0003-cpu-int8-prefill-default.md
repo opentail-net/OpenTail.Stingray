@@ -1,8 +1,8 @@
-# ADR-0003: int8 activation prefill is the CPU default for dense models
+# ADR-0003: policy for int8 activation prefill on CPU
 
-**Status:** accepted (user decision)  
-**Date:** 2026-10-02  
-**Switch:** `STINGRAY_CPU_PREFILL_Q8` (default on; `=0` restores the per-token prefill path, bit-identical to decode)  
+**Status:** 2026-10-02 decision superseded by the user on 2026-11-18
+**Original decision date:** 2026-10-02
+**Current switch:** `STINGRAY_CPU_PREFILL_Q8` (default off; `=1` opts into batched int8 prefill)
 **Code:** `SimdKernels.Q8PrefillEnabled` (`src/OpenTail.Stingray.Cpu/SimdKernels.cs`)
 
 ## Context
@@ -36,7 +36,7 @@ History:
 
 ## Evidence (all measured on this repo's reference box, 8-core Ryzen 5700G)
 
-| Model | llama.cpp PPL | F32 prefill PPL | int8 prefill PPL | Prefill t/s F32 -> int8 | Source |
+| Model | llama.cpp PPL | Batched F32-activation PPL | Batched int8 PPL | Prefill t/s F32 -> int8 | Source |
 |---|---|---|---|---|---|
 | Qwen2.5-0.5B Q4_K_M | 12.0055 | 11.9702 | 11.9693 | 137 -> 309 (2.2x) | perf-sweep-plan 10.2 |
 | SmolLM2-1.7B Q4_K_M | 6.9414 | 6.9437 (+0.03%) | 6.9891 (+0.69%) | 77.5 -> 227 (2.9x) | perf-sweep-plan 10.2 |
@@ -50,6 +50,16 @@ Re-measured 2026-11-01 at the int8 default (703 to 774-token prompt, three inter
 PPL: wiki.test.raw, `stingray perplexity --batched -g 0 -c 2048`, `[1024,+)` bucket, against
 `llama-perplexity -c 2048 --chunks 1`.
 
+The table's “F32 prefill” wording is historical and means batched prefill with Q8 disabled; it is not
+the sequential per-token path. A paired 2026-11-18 check including the actual per-token default is
+recorded in `docs/00-current-work.md` A9c. On `wiki.test.raw` `[1024,+)`, Qwen2.5-0.5B measured
+11.9818 per-token, 11.9693 batched Q8 and 12.0055 ± 1.03914 in llama.cpp b10306. SmolLM2-1.7B
+measured 6.9839 per-token, 6.9891 batched Q8 and 6.9414 ± 0.54704 in llama.cpp. Thus the
+historical +0.69% SmolLM2 result is batched Q8 versus llama.cpp; the direct batched-Q8 versus
+per-token difference is +0.0052 PPL (+0.074%). Both Stingray paths are within the reported
+llama.cpp spread for these runs. Per-position NLL and greedy-token comparisons remain open under
+correctness item 25.
+
 Greedy parity: DeepSeek-V2-Lite matched llama-server for 16/16 tokens with int8 prefill and
 departed at token 9 with F32 prefill (`DeepSeek2GreedyParityTests` pins int8 on). The Q3_K
 kernel rewrite `e7b7aa8a` later flips that same knife-edge token on both paths; see
@@ -57,7 +67,7 @@ kernel rewrite `e7b7aa8a` later flips that same knife-edge token on both paths; 
 
 ## Decision
 
-- `STINGRAY_CPU_PREFILL_Q8` defaults **on**.
+- **Current decision (2026-11-18):** `STINGRAY_CPU_PREFILL_Q8` defaults **off**. The default prefill uses the per-token kernels and is bit-identical to sequential decode. Set `STINGRAY_CPU_PREFILL_Q8=1` to opt into faster batched int8 prefill.
 - Routed MoE experts are **not** affected. They take int8 only when
   `STINGRAY_MOE_PREFILL_Q8=1` is also set (default off,
   `MoeBatchedExperts.Q8PrefillEnabled`), so the Granite MoE finding that motivated 2026-10-01
@@ -65,18 +75,16 @@ kernel rewrite `e7b7aa8a` later flips that same knife-edge token on both paths; 
 - All-control-token prompts keep their existing F32 exception in `ForwardPass`.
 
 Why:
-- 2.2-2.9x prefill on Q4_K dense models, and Gemma moves from 0.39x to 0.95-0.97x of llama.cpp.
-- The quality cost is neutral to +0.69% PPL on the models measured.
-- It is the same class of approximation llama.cpp ships by default.
-- "Prefill bit-identical to decode" is an internal consistency property, not a fidelity
-  guarantee. The same conclusion came out of the hybrid-GDN investigation (ADR-0002): FP32
-  reduction-order and activation-rounding changes of this size sit inside the noise band the
-  model already has.
+- The user prioritized deterministic numerical consistency between batched prefill and per-token decode for the default path.
+- The measured 2.2-2.9x speedup on Q4_K dense models remains available as an explicit opt-in; this policy does not discard that path.
+- Historical PPL evidence ranges from neutral to +0.69% versus llama.cpp, and the synthetic per-weight dot study found lower activation error for Q8_KS than Q8_K in the tested rows. The direct SmolLM2 per-token versus batched-int8 delta measured 2026-11-18 is +0.074% in the `[1024,+)` bucket. Per-position NLL and greedy parity remain open under correctness item 25 in `docs/1-correctness/bugstofix.md`.
+- Bit-identical prefill and decode is an internal consistency property, not a guarantee of greater fidelity to llama.cpp. The current choice is a default-policy decision; item 25 measures the quality tradeoff separately.
 
 ## Consequences
 
-- Prefill logits on dense CPU models are no longer bit-identical to a token-by-token decode run.
-  Tests that pin the exact path set `SimdKernels.Q8PrefillEnabled = false` explicitly. These
+- With `STINGRAY_CPU_PREFILL_Q8=1`, prefill logits on dense CPU models are no longer bit-identical
+  to a token-by-token decode run. Tests that pin the exact path still set
+  `SimdKernels.Q8PrefillEnabled = false` explicitly. These
   are `MatMulBatchedEquivalenceTests`, `ContinuousBatchingTests`, `PrefillDecodeSelfConsistencyTests`
   (its strict arm) and the MoE strict arms. The int8 arms already had calibrated budgets
   (`PrefillDecodeSelfConsistencyTests`, `OlmoeGreedyParityTests` 0.7137,
@@ -91,13 +99,17 @@ Why:
     same argmax. There's no collapse, and ADR-0002's numbers are unaffected for Q4_K weights.
   - **RWKV is not verified:** no RWKV checkpoint is on this machine. Re-check the repeated-token
     case when one is available.
-- Rows in `docs/RUNNING.md` / `PerformanceLeague.md` measured 2026-10-01..02 used the F32
-  default. Re-measured rows are dated after this change.
+- Rows in `docs/RUNNING.md` / `PerformanceLeague.md` measured 2026-10-01..02 used the per-token
+  default. Rows measured 2026-10-02 through 2026-11-17 used the batched-int8 default. The current
+  per-token default was restored on 2026-11-18; the historical measurements remain labelled by
+  their test setting.
 
 ## Known gap (follow-up, not a blocker)
 
-Our int8 prefill is not numerically llama.cpp's. On SmolLM2 the F32 path matches llama.cpp PPL
-to 0.03%, while ours with int8 is 0.69% off, although llama.cpp also quantizes activations.
+Our int8 prefill is not numerically llama.cpp's. The historical batched-F32 path matches llama.cpp
+PPL to 0.03%, while batched int8 is 0.69% off on SmolLM2, although llama.cpp also quantizes
+activations. The per-token path was not the baseline for that historical comparison; the direct
+per-token versus batched-int8 gap is much smaller in the 2026-11-18 run above.
 
 **Cross-checked 2026-10-02** against the vendored ggml (b10306): `ggml_get_type_traits_cpu`
 quantizer and `vec_dot` called directly, on identical rows of real SmolLM2-1.7B weights, against
@@ -130,10 +142,9 @@ batched format is the more precise one, and the Q4_K batched path already uses i
 the perplexity gate has a spread of about ±75 and cannot separate the two formats; the kernel-level error is the evidence. Decision: keep both formats; moving decode to Q8_KS
 would be a decode-kernel change with no measured benefit and is not planned.
 
-## Rollback
+## Usage
 
-`STINGRAY_CPU_PREFILL_Q8=0` restores the per-token prefill (bit-identical to decode) for the whole
-process, with no rebuild needed. A code rollback is the one-line default in `SimdKernels.Q8PrefillEnabled`. Roll
-back if a parity receipt or PPL check shows int8 prefill materially worse than F32 on a
-supported model: worse than llama.cpp by clearly more than the +0.69% measured here, or a
-greedy receipt that F32 passes and int8 fails for a reason other than a documented knife-edge.
+`STINGRAY_CPU_PREFILL_Q8=1` opts into batched int8 prefill for the process; leave it unset or set
+it to `0` for the per-token path (bit-identical to sequential decode). Item 25 in
+`docs/1-correctness/bugstofix.md` tracks the model-level PPL and greedy-parity follow-up that could
+change this default again.

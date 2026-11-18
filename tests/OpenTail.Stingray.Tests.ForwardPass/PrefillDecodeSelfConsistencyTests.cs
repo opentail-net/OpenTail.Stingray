@@ -117,9 +117,9 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
     }
 
     /// <summary>
-    /// With the int8 prefill gate off, the two routes run the same F32 arithmetic and must agree
-    /// to floating-point noise. This is the invariant proper: any drift here is a genuine defect
-    /// in batched prefill, not a quantisation trade-off.
+    /// With batched Q8 prefill disabled, prompt prefill and token-by-token decode use the same
+    /// per-token kernels and must agree to floating-point noise. This is the invariant proper:
+    /// any drift here is a genuine defect in batched prefill, not a quantisation trade-off.
     /// </summary>
     [Theory]
     [InlineData(2)]
@@ -140,14 +140,14 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
         double cosine = Cosine(ViaDecode(model, hp, tokens), ViaPrefill(model, hp, tokens));
 
         Assert.True(cosine > 0.9999,
-            $"F32 batched prefill diverged from token-by-token decode at {promptLength} tokens "
-            + $"(cosine {cosine:F6}). Both routes run the same arithmetic with the int8 gate off, "
+            $"Per-token batched prefill diverged from token-by-token decode at {promptLength} tokens "
+            + $"(cosine {cosine:F6}). Both routes use the same kernels with batched Q8 disabled, "
             + "so this is a batched-prefill defect, not a quantisation trade-off.");
     }
 
     /// <summary>
-    /// With the gate on (the shipped default) prefill quantizes activations to int8 while decode
-    /// stays in F32, so the two are NOT bit-identical by construction — see
+    /// With the gate on, prefill uses batched activation quantization while decode uses the
+    /// per-token kernels, so the two are NOT bit-identical by construction — see
     /// <see cref="SimdKernels.Q8PrefillEnabled"/>. They must still describe the same distribution.
     /// The bound is deliberately loose: this guards against the path collapsing, and is not a
     /// quality gate (perplexity is). Measured ≈0.988-0.999 on this model across 2-64 tokens.
@@ -171,7 +171,7 @@ public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase
         double cosine = Cosine(ViaDecode(model, hp, tokens), ViaPrefill(model, hp, tokens));
 
         Assert.True(cosine > 0.98,
-            $"int8 prefill diverged from token-by-token decode at {promptLength} tokens "
+            $"Batched Q8 prefill diverged from token-by-token decode at {promptLength} tokens "
             + $"(cosine {cosine:F6}). Expected ≳0.99 — a collapse here means the int8 activation "
             + "path is broken for this shape, not merely lossy. STINGRAY_CPU_PREFILL_Q8=0 "
             + "disables it.");

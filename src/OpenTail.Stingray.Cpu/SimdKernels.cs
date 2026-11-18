@@ -433,13 +433,13 @@ public static unsafe class SimdKernels
     /// <summary>
     /// Whether the int8 (Q8_K/Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
     ///
-    /// <para><b>Default on (user decision 2026-10-02, docs/reference/adr-0003-cpu-int8-prefill-default.md).</b>
+    /// <para><b>Default off (user decision 2026-11-18, docs/reference/adr-0003-cpu-int8-prefill-default.md).</b>
     /// Quantizing activation rows lets each weight row be read once and dotted against 8 tokens per
     /// call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once per token. It is the same technique
     /// llama.cpp's CPU backend uses for its own prompt processing (src1 quantized to the weight's
-    /// <c>vec_dot_type</c>, Q8_K/Q8_0). Measured: SmolLM2-1.7B Q4_K_M 2,194 tokens 81 -> 224 t/s;
-    /// Gemma-3-4B 0.39x -> 0.95x and Gemma-4-12B 0.39x -> 0.97x of llama.cpp prefill (2026-10-02).
-    /// <c>STINGRAY_CPU_PREFILL_Q8=0</c> restores the per-token path (the rollback switch).</para>
+    /// <c>vec_dot_type</c>, Q8_K/Q8_0). It is faster, but not bit-identical to the per-token
+    /// decode kernels. The default preserves that exact path; opt into the batched path with
+    /// <c>STINGRAY_CPU_PREFILL_Q8=1</c> when throughput is preferred.</para>
     ///
     /// <para>The batched int8 dots are NOT byte-exact with the per-token decode kernels, so prefill
     /// logits differ slightly from a token-by-token run. ("F32 prefill" was a misnomer: for K-quant
@@ -457,7 +457,9 @@ public static unsafe class SimdKernels
     /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
     /// </summary>
     public static bool Q8PrefillEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8") != "0";
+        ResolveQ8PrefillDefault(Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8"));
+
+    internal static bool ResolveQ8PrefillDefault(string? setting) => setting == "1";
 
     /// <summary>
     /// Experiment (2026-10-03, TensorSharp ManagedQuantGemm idea): run the dense CPU decode's

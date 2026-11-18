@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 ///
 /// <para>
 /// <see cref="SimdKernels.Q8PrefillEnabled"/> is forced <c>false</c> for the duration of each test
-/// because it is <b>on by default</b>. The int8 path does not reorder the F32 accumulation — it
+/// to pin the exact per-token path regardless of the opt-in setting. The int8 path does not reorder the F32 accumulation — it
 /// quantizes the activations, a different arithmetic operation whose results differ from F32 by
 /// construction. Asserting bit-equality against it would be a category error, so the int8 path has
 /// its own separate contract in <see cref="MatMulBatchedQ8EquivalenceTests"/> (batched Q8 must be

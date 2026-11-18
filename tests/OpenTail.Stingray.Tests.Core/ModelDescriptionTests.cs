@@ -154,6 +154,43 @@ public sealed class ModelDescriptionTests : IDisposable
     }
 
     [Fact]
+    public void FromPackage_Q8Embedding_AccountsForF32GpuExpansion()
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 1u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 512u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 32u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 1u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 1u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 64u)
+        };
+        const int elements = 32 * 64;
+        int q8Bytes = elements / DTypeInfo.BlockSize(DType.Q8_0) * DTypeInfo.BytesPerBlock(DType.Q8_0);
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [32, 64], DType.Q8_0, new byte[q8Bytes]),
+            ("output.weight", [32, 64], DType.Q8_0, new byte[q8Bytes])
+        };
+
+        string path = CreateGguf(metadata, tensors);
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(path));
+
+        Assert.Equal(elements * sizeof(float), desc.PlanningFacts.EmbeddingGpuBytes);
+        Assert.Equal((q8Bytes + 3) & ~3L, desc.PlanningFacts.OutputGpuBytes);
+
+        using var gguf = GgufModel.Open(path);
+        var placement = TierPlanner.Plan(gguf,
+            new ModelHyperparams { EmbeddingDim = 32, NumLayers = 0, VocabSize = 64, HeadDim = 32, NumKvHeads = 1 },
+            new HardwareProfile(8L * 1024 * 1024 * 1024, 16L * 1024 * 1024 * 1024, 8, 0, false),
+            requestedCtxSize: 512,
+            pinGpuLayers: 0);
+        Assert.Equal(elements * sizeof(float) + ((q8Bytes + 3) & ~3L), placement.GpuWeightBytes);
+    }
+
+    [Fact]
     public void CreateForwardPassRequest_SatisfiesForwardPassSelectionWithoutDiskAccess()
     {
         var facts = new ModelPlanningFacts

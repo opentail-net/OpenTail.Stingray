@@ -389,7 +389,10 @@ public sealed record ModelDescription(
     {
         if (info is null) return 0;
         var dt = info.Value.DType;
-        if (dt == DType.Q4_K || dt == DType.Q8_0 || dt == DType.Q6_K)
+        // Both Vulkan embedding upload paths keep Q4_K and Q6_K packed. Q8_0 is
+        // supported as a raw *matvec weight*, but embedding lookup expands it to
+        // F32; counting its GGUF size here underestimates device memory (A5).
+        if (dt is DType.Q4_K or DType.Q6_K)
             return (info.Value.ByteSize + 3) & ~3L;
         return info.Value.ElementCount * sizeof(float);
     }

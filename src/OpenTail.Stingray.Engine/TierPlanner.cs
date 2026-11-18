@@ -381,20 +381,16 @@ public static class TierPlanner
         return info is not null ? ((info.Value.ByteSize + 3) & ~3L) : 0;
     }
 
-    // Embedding-aware: Q4_K / Q8_0 / Q6_K embeddings have a dedicated GPU EmbedLookup* kernel
-    // on BOTH backends, so they stay raw (Q6_K added for the Gemma 4 12B QAT tied table, #124).
-    // Q5_K is deliberately NOT listed: the CUDA path has EmbedLookupQ5K, but the Vulkan path
-    // does not — it dequantizes a Q5_K token_embd to F32 at upload. TierPlanner is backend-
-    // agnostic, so estimating Q5_K embeddings as F32 here is correct for Vulkan and merely
-    // conservative for CUDA (the safe direction — never under-budget VRAM). #73 keeps the
-    // matrix *weights* raw on both backends (the dominant VRAM cost); embeddings are a single
-    // tensor and not what the issue targets. A Vulkan EmbedLookupQ5K would let this go raw too.
+    // Embedding-aware Vulkan footprint. The Vulkan embedding upload path keeps Q4_K and Q6_K
+    // packed, but expands Q8_0 (and Q5_K) to F32. Q8_0 has a raw matvec kernel for ordinary
+    // matrix weights; that does not mean token_embd.weight uses the same storage path. TierPlanner
+    // is backend-agnostic, so F32 is the safe estimate when backends differ.
     private static long MeasureGpuEmbeddingBytes(GgufModel model, string name)
     {
         var info = model.FindTensor(name);
         if (info is null) return 0;
         var dt = info.Value.DType;
-        if (dt == DType.Q4_K || dt == DType.Q8_0 || dt == DType.Q6_K)
+        if (dt is DType.Q4_K or DType.Q6_K)
             return (info.Value.ByteSize + 3) & ~3L;
         return info.Value.ElementCount * sizeof(float);
     }
