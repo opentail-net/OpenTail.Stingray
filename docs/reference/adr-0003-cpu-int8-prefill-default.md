@@ -58,7 +58,10 @@ measured 6.9839 per-token, 6.9891 batched Q8 and 6.9414 ± 0.54704 in llama.cpp.
 historical +0.69% SmolLM2 result is batched Q8 versus llama.cpp; the direct batched-Q8 versus
 per-token difference is +0.0052 PPL (+0.074%). Both Stingray paths are within the reported
 llama.cpp spread for these runs. Per-position NLL and greedy-token comparisons remain open under
-correctness item 25.
+correctness item 25. In one direct first-target check (SmolLM2 raw prompt token `[3717]`, target
+token `446`), llama.cpp b10306 reports NLL 10.1762; batched Q8 is 10.3077 and per-token is
+22.5434. This sample favors Q8 fidelity, despite the selected per-token default's exact
+prefill/decode consistency. It is a single position, not enough to reverse the default policy.
 
 Greedy parity: DeepSeek-V2-Lite matched llama-server for 16/16 tokens with int8 prefill and
 departed at token 9 with F32 prefill (`DeepSeek2GreedyParityTests` pins int8 on). The Q3_K
