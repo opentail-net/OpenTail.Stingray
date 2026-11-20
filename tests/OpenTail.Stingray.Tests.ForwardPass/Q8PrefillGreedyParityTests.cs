@@ -136,8 +136,8 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         int[] capitalPrompt = [785, 6722, 315, 9625, 374];
         int[] capitalContinuation = [12095, 13]; // " Paris."
         int[] answerPrompt = [785, 4226, 374];
-        int[] llamaAnswerContinuation = [220, 16, 17, 13, 20, 13, 1096, 374]; // " 12.5. This is"
-        double[] llamaAnswerLogprobs = [-1.4759, -1.4660, -1.7537, -1.0351, -2.3055, -1.7171, -1.6634, -0.6780];
+        int[] llamaAnswerContinuation = [220, 16, 17, 13, 20, 13, 1096, 374, 279, 5461, 315, 279, 1378, 5109, 2661, 11, 220, 16, 17, 323, 220, 16, 20, 13];
+        double[] llamaAnswerLogprobs = [-1.4759, -1.4660, -1.7537, -1.0351, -2.3055, -1.7171, -1.6634, -0.6780, -0.9429, -2.2425, -0.4119, -0.7292, -1.2408, -0.6725, -1.4193, -0.6946, -0.8826, -0.7339, -1.2058, -0.0757, -0.0101, -0.0722, -0.6396, -0.6493];
         int[] stingrayAnswerPrefix = [220, 16, 17, 13];
         string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(qwenModelFile);
         Assert.SkipWhen(path is null, $"{qwenModelFile} is required for this raw-prefill parity check.");
@@ -167,11 +167,12 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         Console.WriteLine($"Qwen answer mean absolute NLL error vs llama.cpp: per-token={MeanAbsoluteError(perTokenAnswerLogprobs, llamaAnswerLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8AnswerLogprobs, llamaAnswerLogprobs):F4}");
         Assert.Equal(capitalContinuation, perTokenCapital);
         Assert.Equal(capitalContinuation, batchedQ8Capital);
-        // Raw llama-server /completion agrees with Q8 through all eight outputs. Per-token
-        // agrees through four, then selects token 576 where the reference and Q8 select 20.
+        // Raw llama-server /completion agrees with Q8 through 18 outputs; at output 19 Q8
+        // selects 15 instead of the reference's 17. Per-token diverges earlier at output 5.
         Assert.Equal(stingrayAnswerPrefix, perTokenAnswer[..stingrayAnswerPrefix.Length]);
-        Assert.Equal(llamaAnswerContinuation, batchedQ8Answer);
         Assert.Equal(576, perTokenAnswer[4]);
+        Assert.Equal(llamaAnswerContinuation[..18], batchedQ8Answer[..18]);
+        Assert.Equal(15, batchedQ8Answer[18]);
 
         int[] Generate(int[] promptTokens, int continuationLength, bool q8Enabled)
         {
