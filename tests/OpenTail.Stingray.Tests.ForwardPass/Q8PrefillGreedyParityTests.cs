@@ -90,4 +90,45 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
             return logits[tokenId] - max - Math.Log(sum);
         }
     }
+
+    [Fact]
+    public void QwenRawGreedyContinuation_MatchesLlamaCppPrefix()
+    {
+        const string qwenModelFile = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+        int[] promptTokens = [785, 6722, 315, 9625, 374];
+        int[] llamaContinuation = [12095, 13]; // " Paris."
+        string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(qwenModelFile);
+        Assert.SkipWhen(path is null, $"{qwenModelFile} is required for this raw-prefill parity check.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        Assert.Equal(promptTokens, tokenizer.Encode("The capital of France is"));
+
+        var perToken = Generate(q8Enabled: false);
+        var batchedQ8 = Generate(q8Enabled: true);
+
+        Console.WriteLine($"Qwen llama.cpp raw greedy: {string.Join(',', llamaContinuation)}");
+        Console.WriteLine($"Qwen per-token prefill:    {string.Join(',', perToken)}");
+        Console.WriteLine($"Qwen batched-Q8 prefill:   {string.Join(',', batchedQ8)}");
+        Assert.Equal(llamaContinuation, perToken);
+        Assert.Equal(llamaContinuation, batchedQ8);
+
+        int[] Generate(bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(promptTokens);
+            var generated = new int[llamaContinuation.Length];
+            for (int i = 0; i < generated.Length; i++)
+            {
+                generated[i] = Sampler.Greedy(logits);
+                if (i + 1 < generated.Length)
+                    logits = fwd.Forward(generated[i], promptTokens.Length + i);
+            }
+            return generated;
+        }
+    }
 }
