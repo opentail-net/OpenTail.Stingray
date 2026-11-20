@@ -92,36 +92,57 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
     }
 
     [Fact]
-    public void QwenRawGreedyContinuation_MatchesLlamaCppPrefix()
+    public void QwenRawGreedyContinuations_CompareLlamaCppPrefixes()
     {
         const string qwenModelFile = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
-        int[] promptTokens = [785, 6722, 315, 9625, 374];
-        int[] llamaContinuation = [12095, 13]; // " Paris."
+        int[] capitalPrompt = [785, 6722, 315, 9625, 374];
+        int[] capitalContinuation = [12095, 13]; // " Paris."
+        int[] answerPrompt = [785, 4226, 374];
+        int[] llamaAnswerContinuation = [220, 16, 17, 13, 20, 13, 1096, 374]; // " 12.5. This is"
+        double[] llamaAnswerLogprobs = [-1.4759, -1.4660, -1.7537, -1.0351, -2.3055, -1.7171, -1.6634, -0.6780];
+        int[] stingrayAnswerPrefix = [220, 16, 17, 13];
         string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(qwenModelFile);
         Assert.SkipWhen(path is null, $"{qwenModelFile} is required for this raw-prefill parity check.");
 
         using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
         var model = modelHandle.Model;
         var tokenizer = GgufTokenizer.FromGgufModel(model);
-        Assert.Equal(promptTokens, tokenizer.Encode("The capital of France is"));
+        Assert.Equal(capitalPrompt, tokenizer.Encode("The capital of France is"));
+        Assert.Equal(answerPrompt, tokenizer.Encode("The answer is"));
 
-        var perToken = Generate(q8Enabled: false);
-        var batchedQ8 = Generate(q8Enabled: true);
+        var perTokenCapital = Generate(capitalPrompt, capitalContinuation.Length, q8Enabled: false);
+        var batchedQ8Capital = Generate(capitalPrompt, capitalContinuation.Length, q8Enabled: true);
+        var perTokenAnswer = Generate(answerPrompt, llamaAnswerContinuation.Length, q8Enabled: false);
+        var batchedQ8Answer = Generate(answerPrompt, llamaAnswerContinuation.Length, q8Enabled: true);
+        var perTokenAnswerLogprobs = ScoreTargets(answerPrompt, llamaAnswerContinuation, q8Enabled: false);
+        var batchedQ8AnswerLogprobs = ScoreTargets(answerPrompt, llamaAnswerContinuation, q8Enabled: true);
 
-        Console.WriteLine($"Qwen llama.cpp raw greedy: {string.Join(',', llamaContinuation)}");
-        Console.WriteLine($"Qwen per-token prefill:    {string.Join(',', perToken)}");
-        Console.WriteLine($"Qwen batched-Q8 prefill:   {string.Join(',', batchedQ8)}");
-        Assert.Equal(llamaContinuation, perToken);
-        Assert.Equal(llamaContinuation, batchedQ8);
+        Console.WriteLine($"Qwen capital llama.cpp: {string.Join(',', capitalContinuation)}");
+        Console.WriteLine($"Qwen capital per-token: {string.Join(',', perTokenCapital)}");
+        Console.WriteLine($"Qwen capital Q8:        {string.Join(',', batchedQ8Capital)}");
+        Console.WriteLine($"Qwen answer llama.cpp:  {string.Join(',', llamaAnswerContinuation)}");
+        Console.WriteLine($"Qwen answer per-token:  {string.Join(',', perTokenAnswer)}");
+        Console.WriteLine($"Qwen answer Q8:         {string.Join(',', batchedQ8Answer)}");
+        Console.WriteLine($"Qwen answer llama.cpp logP: {string.Join(',', llamaAnswerLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen answer per-token logP: {string.Join(',', perTokenAnswerLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen answer Q8 logP:        {string.Join(',', batchedQ8AnswerLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen answer mean absolute NLL error vs llama.cpp: per-token={MeanAbsoluteError(perTokenAnswerLogprobs, llamaAnswerLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8AnswerLogprobs, llamaAnswerLogprobs):F4}");
+        Assert.Equal(capitalContinuation, perTokenCapital);
+        Assert.Equal(capitalContinuation, batchedQ8Capital);
+        // Raw llama-server /completion agrees with Q8 through all eight outputs. Per-token
+        // agrees through four, then selects token 576 where the reference and Q8 select 20.
+        Assert.Equal(stingrayAnswerPrefix, perTokenAnswer[..stingrayAnswerPrefix.Length]);
+        Assert.Equal(llamaAnswerContinuation, batchedQ8Answer);
+        Assert.Equal(576, perTokenAnswer[4]);
 
-        int[] Generate(bool q8Enabled)
+        int[] Generate(int[] promptTokens, int continuationLength, bool q8Enabled)
         {
             SimdKernels.Q8PrefillEnabled = q8Enabled;
             var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
             var logits = fwd.Prefill(promptTokens);
-            var generated = new int[llamaContinuation.Length];
+            var generated = new int[continuationLength];
             for (int i = 0; i < generated.Length; i++)
             {
                 generated[i] = Sampler.Greedy(logits);
@@ -130,5 +151,36 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
             }
             return generated;
         }
+
+        double[] ScoreTargets(int[] promptTokens, int[] targets, bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(promptTokens);
+            var logprobs = new double[targets.Length];
+            for (int i = 0; i < targets.Length; i++)
+            {
+                logprobs[i] = LogProbability(logits, targets[i], tokenizer.VocabSize);
+                if (i + 1 < targets.Length)
+                    logits = fwd.Forward(targets[i], promptTokens.Length + i);
+            }
+            return logprobs;
+        }
+
+        double LogProbability(ReadOnlySpan<float> logits, int tokenId, int vocabSize)
+        {
+            double max = double.NegativeInfinity;
+            for (int i = 0; i < vocabSize; i++)
+                max = Math.Max(max, logits[i]);
+            double sum = 0;
+            for (int i = 0; i < vocabSize; i++)
+                sum += Math.Exp(logits[i] - max);
+            return logits[tokenId] - max - Math.Log(sum);
+        }
+
+        double MeanAbsoluteError(double[] actual, double[] expected) =>
+            actual.Zip(expected, (a, e) => Math.Abs(a - e)).Average();
     }
 }
