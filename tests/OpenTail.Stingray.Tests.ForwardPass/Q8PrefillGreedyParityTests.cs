@@ -139,6 +139,9 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         int[] llamaAnswerContinuation = [220, 16, 17, 13, 20, 13, 1096, 374, 279, 5461, 315, 279, 1378, 5109, 2661, 11, 220, 16, 17, 323, 220, 16, 20, 13];
         double[] llamaAnswerLogprobs = [-1.4759, -1.4660, -1.7537, -1.0351, -2.3055, -1.7171, -1.6634, -0.6780, -0.9429, -2.2425, -0.4119, -0.7292, -1.2408, -0.6725, -1.4193, -0.6946, -0.8826, -0.7339, -1.2058, -0.0757, -0.0101, -0.0722, -0.6396, -0.6493];
         int[] stingrayAnswerPrefix = [220, 16, 17, 13];
+        int[] mathPrompt = [3838, 374, 220, 17, 488, 220, 17, 30];
+        int[] mathContinuation = [576, 2629, 315, 220, 17, 323, 220, 17, 374, 220, 19, 13];
+        double[] mathLogprobs = [-1.6012, -0.8236, -0.1130, -0.1716, -0.0008, -0.2735, -0.0011, -0.0001, -0.0030, -0.0692, -0.0003, -0.4306];
         string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(qwenModelFile);
         Assert.SkipWhen(path is null, $"{qwenModelFile} is required for this raw-prefill parity check.");
 
@@ -147,6 +150,7 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         Assert.Equal(capitalPrompt, tokenizer.Encode("The capital of France is"));
         Assert.Equal(answerPrompt, tokenizer.Encode("The answer is"));
+        Assert.Equal(mathPrompt, tokenizer.Encode("What is 2 + 2?"));
 
         var perTokenCapital = Generate(capitalPrompt, capitalContinuation.Length, q8Enabled: false);
         var batchedQ8Capital = Generate(capitalPrompt, capitalContinuation.Length, q8Enabled: true);
@@ -154,6 +158,10 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         var batchedQ8Answer = Generate(answerPrompt, llamaAnswerContinuation.Length, q8Enabled: true);
         var perTokenAnswerLogprobs = ScoreTargets(answerPrompt, llamaAnswerContinuation, q8Enabled: false);
         var batchedQ8AnswerLogprobs = ScoreTargets(answerPrompt, llamaAnswerContinuation, q8Enabled: true);
+        var perTokenMath = Generate(mathPrompt, mathContinuation.Length, q8Enabled: false);
+        var batchedQ8Math = Generate(mathPrompt, mathContinuation.Length, q8Enabled: true);
+        var perTokenMathLogprobs = ScoreTargets(mathPrompt, mathContinuation, q8Enabled: false);
+        var batchedQ8MathLogprobs = ScoreTargets(mathPrompt, mathContinuation, q8Enabled: true);
 
         Console.WriteLine($"Qwen capital llama.cpp: {string.Join(',', capitalContinuation)}");
         Console.WriteLine($"Qwen capital per-token: {string.Join(',', perTokenCapital)}");
@@ -173,6 +181,17 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         Assert.Equal(576, perTokenAnswer[4]);
         Assert.Equal(llamaAnswerContinuation[..18], batchedQ8Answer[..18]);
         Assert.Equal(15, batchedQ8Answer[18]);
+        Console.WriteLine($"Qwen math llama.cpp: {string.Join(',', mathContinuation)}");
+        Console.WriteLine($"Qwen math per-token: {string.Join(',', perTokenMath)}");
+        Console.WriteLine($"Qwen math Q8:        {string.Join(',', batchedQ8Math)}");
+        Console.WriteLine($"Qwen math logP reference: {string.Join(',', mathLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen math per-token logP: {string.Join(',', perTokenMathLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen math Q8 logP:        {string.Join(',', batchedQ8MathLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Qwen math mean absolute NLL error vs llama.cpp: per-token={MeanAbsoluteError(perTokenMathLogprobs, mathLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8MathLogprobs, mathLogprobs):F4}");
+        Assert.Equal(mathContinuation[..1], perTokenMath[..1]);
+        Assert.Equal(mathContinuation[..1], batchedQ8Math[..1]);
+        Assert.Equal(4226, perTokenMath[1]);
+        Assert.Equal(4226, batchedQ8Math[1]);
 
         int[] Generate(int[] promptTokens, int continuationLength, bool q8Enabled)
         {
