@@ -329,6 +329,9 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         int[] promptTokens = [1, 450, 1234, 338];
         int[] referenceContinuation = [29901, 29871, 29896, 32007];
         double[] referenceLogprobs = [-2.1159, -1.4387, -1.4626, -1.3351];
+        int[] storyPrompt = [1, 9038, 2501, 263, 931];
+        int[] storyContinuation = [29892, 297, 278, 289, 504, 1847, 4272, 310, 1570, 3088, 29892, 727, 10600, 263, 4123, 7826, 4257, 365, 2354, 29889, 2296, 750, 263, 18036];
+        double[] storyLogprobs = [-0.5293, -0.4981, -0.6531, -2.2103, -0.0041, -0.0002, -1.0714, -0.0493, -2.2745, -0.2743, -0.0300, -0.5471, -0.6118, -0.2192, -1.4172, -2.2106, -0.0245, -1.5601, -0.0838, -0.3634, -0.6932, -0.8712, -1.0442, -1.7987];
         string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
         Assert.SkipWhen(path is null, $"{modelFile} is required for this raw-prefill parity check.");
 
@@ -336,11 +339,16 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         var model = modelHandle.Model;
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         Assert.Equal(promptTokens[1..], tokenizer.Encode("The answer is"));
+        Assert.Equal(storyPrompt[1..], tokenizer.Encode("Once upon a time"));
 
         var perToken = Generate(q8Enabled: false);
         var batchedQ8 = Generate(q8Enabled: true);
         var perTokenLogprobs = Score(q8Enabled: false);
         var batchedQ8Logprobs = Score(q8Enabled: true);
+        var perTokenStory = GenerateSequence(storyPrompt, storyContinuation, q8Enabled: false);
+        var batchedQ8Story = GenerateSequence(storyPrompt, storyContinuation, q8Enabled: true);
+        var perTokenStoryLogprobs = ScoreSequence(storyPrompt, storyContinuation, q8Enabled: false);
+        var batchedQ8StoryLogprobs = ScoreSequence(storyPrompt, storyContinuation, q8Enabled: true);
 
         Console.WriteLine($"Phi-2 llama.cpp: {string.Join(',', referenceContinuation)}");
         Console.WriteLine($"Phi-2 per-token: {string.Join(',', perToken)}");
@@ -349,37 +357,49 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         Console.WriteLine($"Phi-2 per-token logP: {string.Join(',', perTokenLogprobs.Select(x => x.ToString("F4")))}");
         Console.WriteLine($"Phi-2 Q8 logP:        {string.Join(',', batchedQ8Logprobs.Select(x => x.ToString("F4")))}");
         Console.WriteLine($"Phi-2 mean absolute NLL error: per-token={MeanAbsoluteError(perTokenLogprobs, referenceLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8Logprobs, referenceLogprobs):F4}");
+        Console.WriteLine($"Phi-2 story reference: {string.Join(',', storyContinuation)}");
+        Console.WriteLine($"Phi-2 story per-token: {string.Join(',', perTokenStory)}");
+        Console.WriteLine($"Phi-2 story Q8:        {string.Join(',', batchedQ8Story)}");
+        Console.WriteLine($"Phi-2 story mean absolute NLL error: per-token={MeanAbsoluteError(perTokenStoryLogprobs, storyLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8StoryLogprobs, storyLogprobs):F4}");
+        Assert.Equal(storyContinuation[..2], perTokenStory[..2]);
+        Assert.Equal(storyContinuation[..2], batchedQ8Story[..2]);
+        Assert.Equal(263, perTokenStory[2]);
+        Assert.Equal(263, batchedQ8Story[2]);
 
-        int[] Generate(bool q8Enabled)
+        int[] Generate(bool q8Enabled) => GenerateSequence(promptTokens, referenceContinuation, q8Enabled);
+
+        int[] GenerateSequence(int[] prompt, int[] targets, bool q8Enabled)
         {
             SimdKernels.Q8PrefillEnabled = q8Enabled;
             var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
-            var logits = fwd.Prefill(promptTokens);
-            var generated = new int[referenceContinuation.Length];
+            var logits = fwd.Prefill(prompt);
+            var generated = new int[targets.Length];
             for (int i = 0; i < generated.Length; i++)
             {
                 generated[i] = Sampler.Greedy(logits);
                 if (i + 1 < generated.Length)
-                    logits = fwd.Forward(generated[i], promptTokens.Length + i);
+                    logits = fwd.Forward(generated[i], prompt.Length + i);
             }
             return generated;
         }
 
-        double[] Score(bool q8Enabled)
+        double[] Score(bool q8Enabled) => ScoreSequence(promptTokens, referenceContinuation, q8Enabled);
+
+        double[] ScoreSequence(int[] prompt, int[] targets, bool q8Enabled)
         {
             SimdKernels.Q8PrefillEnabled = q8Enabled;
             var hp = ArchitectureModelResolver.ResolveHyperparams(model);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
-            var logits = fwd.Prefill(promptTokens);
-            var logprobs = new double[referenceContinuation.Length];
-            for (int i = 0; i < referenceContinuation.Length; i++)
+            var logits = fwd.Prefill(prompt);
+            var logprobs = new double[targets.Length];
+            for (int i = 0; i < targets.Length; i++)
             {
-                logprobs[i] = LogProbability(logits, referenceContinuation[i], tokenizer.VocabSize);
-                if (i + 1 < referenceContinuation.Length)
-                    logits = fwd.Forward(referenceContinuation[i], promptTokens.Length + i);
+                logprobs[i] = LogProbability(logits, targets[i], tokenizer.VocabSize);
+                if (i + 1 < targets.Length)
+                    logits = fwd.Forward(targets[i], prompt.Length + i);
             }
             return logprobs;
         }
