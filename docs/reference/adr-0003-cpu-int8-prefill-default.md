@@ -61,7 +61,19 @@ llama.cpp spread for these runs. Per-position NLL and greedy-token comparisons r
 correctness item 25. In one direct first-target check (SmolLM2 raw prompt token `[3717]`, target
 token `446`), llama.cpp b10306 reports NLL 10.1762; batched Q8 is 10.3077 and per-token is
 22.5434. This sample favors Q8 fidelity, despite the selected per-token default's exact
-prefill/decode consistency. It is a single position, not enough to reverse the default policy.
+prefill/decode consistency. A 64-target check gives mean absolute NLL error 0.3097 per-token vs
+0.1141 Q8 on SmolLM2; excluding target 1, those errors are 0.1183 and 0.1138. On Qwen2.5-0.5B,
+the corresponding 64-target errors are 0.0575 and 0.0565 (excluding target 1: 0.0544 and
+0.0564). These short samples show no broad quality winner and are not enough to reverse the
+user-selected default policy.
+
+A raw greedy continuation receipt was added in `Q8PrefillGreedyParityTests` (SmolLM2, prompt
+`The capital of France is`, llama.cpp token IDs, no chat template): both Stingray modes match the
+reference's first two tokens (` Paris.`), then choose EOS (id 2) where llama.cpp chooses newline
+(id 198). On that step, llama.cpp assigns log-probabilities -0.9288 to newline and -2.2855 to
+EOS; per-token Stingray has -1.1608 / -1.0281, and batched Q8 has -1.2748 / -0.9673. Q8 is a bit
+farther from the reference at this decision. This is one quantized model and prompt; it reinforces
+that neither mode has a general quality win in the current evidence.
 
 Greedy parity: DeepSeek-V2-Lite matched llama-server for 16/16 tokens with int8 prefill and
 departed at token 9 with F32 prefill (`DeepSeek2GreedyParityTests` pins int8 on). The Q3_K
