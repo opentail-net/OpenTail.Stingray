@@ -321,4 +321,81 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         double MeanAbsoluteError(double[] actual, double[] expected) =>
             actual.Zip(expected, (a, e) => Math.Abs(a - e)).Average();
     }
+
+    [Fact]
+    public void Phi2RawGreedyContinuation_RecordsReferenceParity()
+    {
+        const string modelFile = "phi-2.Q4_K_M.gguf";
+        int[] promptTokens = [1, 450, 1234, 338];
+        int[] referenceContinuation = [29901, 29871, 29896, 32007];
+        double[] referenceLogprobs = [-2.1159, -1.4387, -1.4626, -1.3351];
+        string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
+        Assert.SkipWhen(path is null, $"{modelFile} is required for this raw-prefill parity check.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        Assert.Equal(promptTokens[1..], tokenizer.Encode("The answer is"));
+
+        var perToken = Generate(q8Enabled: false);
+        var batchedQ8 = Generate(q8Enabled: true);
+        var perTokenLogprobs = Score(q8Enabled: false);
+        var batchedQ8Logprobs = Score(q8Enabled: true);
+
+        Console.WriteLine($"Phi-2 llama.cpp: {string.Join(',', referenceContinuation)}");
+        Console.WriteLine($"Phi-2 per-token: {string.Join(',', perToken)}");
+        Console.WriteLine($"Phi-2 Q8:        {string.Join(',', batchedQ8)}");
+        Console.WriteLine($"Phi-2 reference logP: {string.Join(',', referenceLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Phi-2 per-token logP: {string.Join(',', perTokenLogprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Phi-2 Q8 logP:        {string.Join(',', batchedQ8Logprobs.Select(x => x.ToString("F4")))}");
+        Console.WriteLine($"Phi-2 mean absolute NLL error: per-token={MeanAbsoluteError(perTokenLogprobs, referenceLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8Logprobs, referenceLogprobs):F4}");
+
+        int[] Generate(bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(promptTokens);
+            var generated = new int[referenceContinuation.Length];
+            for (int i = 0; i < generated.Length; i++)
+            {
+                generated[i] = Sampler.Greedy(logits);
+                if (i + 1 < generated.Length)
+                    logits = fwd.Forward(generated[i], promptTokens.Length + i);
+            }
+            return generated;
+        }
+
+        double[] Score(bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(promptTokens);
+            var logprobs = new double[referenceContinuation.Length];
+            for (int i = 0; i < referenceContinuation.Length; i++)
+            {
+                logprobs[i] = LogProbability(logits, referenceContinuation[i], tokenizer.VocabSize);
+                if (i + 1 < referenceContinuation.Length)
+                    logits = fwd.Forward(referenceContinuation[i], promptTokens.Length + i);
+            }
+            return logprobs;
+        }
+
+        double LogProbability(ReadOnlySpan<float> logits, int tokenId, int vocabSize)
+        {
+            double max = double.NegativeInfinity;
+            for (int i = 0; i < vocabSize; i++)
+                max = Math.Max(max, logits[i]);
+            double sum = 0;
+            for (int i = 0; i < vocabSize; i++)
+                sum += Math.Exp(logits[i] - max);
+            return logits[tokenId] - max - Math.Log(sum);
+        }
+
+        double MeanAbsoluteError(double[] actual, double[] expected) =>
+            actual.Zip(expected, (a, e) => Math.Abs(a - e)).Average();
+    }
 }
