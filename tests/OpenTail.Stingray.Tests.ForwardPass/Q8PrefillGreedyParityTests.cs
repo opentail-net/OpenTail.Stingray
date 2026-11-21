@@ -418,4 +418,102 @@ public sealed class Q8PrefillGreedyParityTests : HeavyTestBase
         double MeanAbsoluteError(double[] actual, double[] expected) =>
             actual.Zip(expected, (a, e) => Math.Abs(a - e)).Average();
     }
+
+    [Fact]
+    public void Gemma11RawGreedyContinuation_RecordsReferenceParity()
+    {
+        const string modelFile = "gemma-1.1-2b-it-Q8_0.gguf";
+        int[] promptTokens = [2, 714, 3448, 603];
+        int[] referenceContinuation = [235292, 109, 688, 651, 2621, 577, 8377, 573, 2134, 603, 577, 3508];
+        double[] referenceLogprobs = [-0.4309, -1.9742, -0.1748, -1.4890, -2.0548, -0.6534, -0.7266, -0.7303, -2.2569, -0.4113, -0.3436, -1.0668];
+        int[] mathPrompt = [2, 2439, 603, 235248, 235284, 963, 235248, 235284, 235336];
+        int[] mathContinuation = [109, 651, 3448, 603, 235248, 235310, 235265, 109, 235284, 963, 235248, 235284, 589, 235248, 235310, 1];
+        double[] mathLogprobs = [-0.0777, -0.5540, -0.1548, -0.0264, -0.0028, -0.0001, -0.0058, -0.0190, -0.0339, -0.0003, -0.0001, -0.0000, -0.3475, -0.0000, -0.0002, -0.0063];
+        string? path = OpenTail.Stingray.Engine.Verification.ModelLocator.FindDeep(modelFile);
+        Assert.SkipWhen(path is null, $"{modelFile} is required for this raw-prefill parity check.");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        Assert.Equal(promptTokens[1..], tokenizer.Encode("The answer is"));
+        Assert.Equal(mathPrompt[1..], tokenizer.Encode("What is 2 + 2?"));
+
+        var perToken = Run(q8Enabled: false);
+        var batchedQ8 = Run(q8Enabled: true);
+        var perTokenLogprobs = Score(q8Enabled: false);
+        var batchedQ8Logprobs = Score(q8Enabled: true);
+        var perTokenMath = RunSequence(mathPrompt, mathContinuation, q8Enabled: false);
+        var batchedQ8Math = RunSequence(mathPrompt, mathContinuation, q8Enabled: true);
+        var perTokenMathLogprobs = ScoreSequence(mathPrompt, mathContinuation, q8Enabled: false);
+        var batchedQ8MathLogprobs = ScoreSequence(mathPrompt, mathContinuation, q8Enabled: true);
+
+        Console.WriteLine($"Gemma 1.1 llama.cpp: {string.Join(',', referenceContinuation)}");
+        Console.WriteLine($"Gemma 1.1 per-token: {string.Join(',', perToken)}");
+        Console.WriteLine($"Gemma 1.1 Q8:        {string.Join(',', batchedQ8)}");
+        Console.WriteLine($"Gemma 1.1 mean absolute NLL error: per-token={MeanAbsoluteError(perTokenLogprobs, referenceLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8Logprobs, referenceLogprobs):F4}");
+        Assert.Equal(referenceContinuation[..8], perToken[..8]);
+        Assert.Equal(referenceContinuation[..8], batchedQ8[..8]);
+        Assert.Equal(4460, perToken[8]);
+        Assert.Equal(perToken, batchedQ8);
+        Assert.Equal(perTokenLogprobs, batchedQ8Logprobs);
+        Console.WriteLine($"Gemma 1.1 math reference: {string.Join(',', mathContinuation)}");
+        Console.WriteLine($"Gemma 1.1 math per-token: {string.Join(',', perTokenMath)}");
+        Console.WriteLine($"Gemma 1.1 math Q8: {string.Join(',', batchedQ8Math)}");
+        Console.WriteLine($"Gemma 1.1 math mean absolute NLL error: per-token={MeanAbsoluteError(perTokenMathLogprobs, mathLogprobs):F4}, Q8={MeanAbsoluteError(batchedQ8MathLogprobs, mathLogprobs):F4}");
+        Assert.Equal(mathContinuation, perTokenMath);
+        Assert.Equal(mathContinuation, batchedQ8Math);
+        Assert.Equal(perTokenMathLogprobs, batchedQ8MathLogprobs);
+
+        int[] Run(bool q8Enabled) => RunSequence(promptTokens, referenceContinuation, q8Enabled);
+
+        int[] RunSequence(int[] prompt, int[] targets, bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(prompt);
+            var generated = new int[targets.Length];
+            for (int i = 0; i < generated.Length; i++)
+            {
+                generated[i] = Sampler.Greedy(logits);
+                if (i + 1 < generated.Length)
+                    logits = fwd.Forward(generated[i], prompt.Length + i);
+            }
+            return generated;
+        }
+
+        double[] Score(bool q8Enabled) => ScoreSequence(promptTokens, referenceContinuation, q8Enabled);
+
+        double[] ScoreSequence(int[] prompt, int[] targets, bool q8Enabled)
+        {
+            SimdKernels.Q8PrefillEnabled = q8Enabled;
+            var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+            using var backend = new CpuBackend();
+            using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 256);
+            var logits = fwd.Prefill(prompt);
+            var logprobs = new double[targets.Length];
+            for (int i = 0; i < targets.Length; i++)
+            {
+                logprobs[i] = LogProbability(logits, targets[i], tokenizer.VocabSize);
+                if (i + 1 < targets.Length)
+                    logits = fwd.Forward(targets[i], prompt.Length + i);
+            }
+            return logprobs;
+        }
+
+        double LogProbability(ReadOnlySpan<float> logits, int tokenId, int vocabSize)
+        {
+            double max = double.NegativeInfinity;
+            for (int i = 0; i < vocabSize; i++)
+                max = Math.Max(max, logits[i]);
+            double sum = 0;
+            for (int i = 0; i < vocabSize; i++)
+                sum += Math.Exp(logits[i] - max);
+            return logits[tokenId] - max - Math.Log(sum);
+        }
+
+        double MeanAbsoluteError(double[] actual, double[] expected) =>
+            actual.Zip(expected, (a, e) => Math.Abs(a - e)).Average();
+    }
 }
