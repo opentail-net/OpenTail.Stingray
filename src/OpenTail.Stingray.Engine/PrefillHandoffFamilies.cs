@@ -73,17 +73,13 @@ public static class PrefillHandoffFamilies
                 "Llama-3.1-8B-Instruct Q4_K_M (bartowski, carries rope_freqs.weight; 2026-11-01, -g 4): prefill cosine 0.999724 at context 1024 (47.5 s), 40 decode steps >= 0.9990; with a 1,774-token prompt at context 4096 prefill cosine 0.999252, 40 decode steps >= 0.9966 (394 s), all above the 0.99 bar. Not exercised: LongRoPE, sliding-window llama variants, contexts above 4096, startPos > 0 (refused: a later chat turn prefills token by token). " +
                 "Measured effect: SmolLM2-1.7B -g 12 prefill of a 503-token prompt ran at 18.3 tok/s without the handoff against 227 tok/s on the CPU alone.",
                 $"{LlamaArchitecture.Descriptor.Id}|attention.head_count_kv=32"),
-            [("qwen2", HandoffPath.VulkanHybrid)] = new(
-                "HybridCpuPrefillHandoffTests (Qwen2.5-1.5B-Instruct Q4_K_M, 4 and 8 GPU layers, 2026-11-10): prefill cosine 0.999028 (-g 4) and 0.998840 (-g 8); " +
-                "lowest decode-step cosine over 150 tokens 0.99921 (-g 4) and 0.99896 (-g 8). Dense Q/K/V biases, 2 KV heads, rope base 1e6.",
-                "qwen2|attention.head_count_kv=2"),
-            [("granite", HandoffPath.VulkanHybrid)] = new(
+            [(GraniteArchitecture.Descriptor.Id, HandoffPath.VulkanHybrid)] = new(
                 "HybridCpuPrefillHandoffTests (Granite 3.3 2B Instruct Q4_K_M, 4 and 8 GPU layers, 2026-11-10): prefill cosine 0.999037 (-g 4) and 0.999099 (-g 8); " +
                 "lowest decode-step cosine over 150 tokens 0.99872 (-g 4) and 0.99832 (-g 8). Carries logit_scale, applied on the hybrid.",
                 "granite|attention.head_count_kv=8"),
             [(QwenArchitectures.Qwen2.Id, HandoffPath.VulkanHybrid)] = new(
                 "HybridCpuPrefillHandoffTests, dense Qwen2.5 (Q/K/V biases, GQA with 2 KV heads) on the Vulkan hybrid (2026-10-31), byte-exact K/V and prefill logits equal to the CPU pass in every run: " +
-                "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992), " +
+                "Qwen2.5-1.5B-Instruct Q4_K_M (-g 8: decode cosines >= 0.9990 over 40 steps; -g 4: >= 0.9992; re-run 2026-11-10 at -g 4 and -g 8: prefill cosine 0.999028 and 0.998840, lowest decode-step cosine over 150 tokens 0.99921 and 0.99896), " +
                 "Qwen2.5-3B-Instruct Q4_K_M (-g 12: >= 0.9985). Sequential hybrid prefill against the all-CPU pass stays >= 0.998 on the same prompt, so the handoff adds no drift. " +
                 "Qwen2.5-7B-Instruct Q4_K_M (sharded, 4 KV heads, 28 layers; 2026-11-03, -g 4, context 1024, 50 s on real weights): prefill cosine 0.998803, 40 decode steps >= 0.99689 (lowest at step 19; the bar is 0.99). " +
                 "Not exercised: Qwen2.5-0.5B, the Coder and VL variants, contexts above 1024, long-context rope scaling, startPos > 0; the other handoff paths.",

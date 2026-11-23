@@ -40,7 +40,6 @@ public sealed class PrefillHandoffFamiliesTests
     /// </summary>
     [Theory]
     [InlineData("gemma2")]
-
     [InlineData("phi3")]
     public void FamiliesThatFailedTheVulkanHybridParityRun_StayUnverified(string arch)
     {
