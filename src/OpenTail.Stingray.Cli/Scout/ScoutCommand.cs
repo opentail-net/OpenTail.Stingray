@@ -13,6 +13,8 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
     // --max-index-mb default and ceiling in MB, derived from the Core byte constants (ceiling = 4 x default).
     internal const int DefaultMaxIndexMb = (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20);
     internal const int MaxIndexMbCeiling = (int)(RemoteGgufReader.MaxIndexBytesCeiling >> 20);
+    // --max-quants ceiling: 4 x the default file count (QuantPicker.DefaultMaxFiles), the same rule as --max-index-mb.
+    internal const int MaxQuantsCeiling = 4 * QuantPicker.DefaultMaxFiles;
 
     public sealed class Settings : CommandSettings
     {
@@ -37,7 +39,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         public bool Quants { get; init; }
 
         [CommandOption("--max-quants <N>")]
-        [Description("With --quants: most files to inspect (default 40, largest first).")]
+        [Description("With --quants: most files to inspect (default 40, ceiling 160, largest first).")]
         public int? MaxQuants { get; init; }
 
         [CommandOption("--max-index-mb <N>")]
@@ -124,6 +126,8 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
                 if (Quants && EmitSignaturePath is not null) return "--quants and --emit-signature cannot be combined.";
                 if (MaxQuants is not null && !Quants) return "--max-quants only applies with --quants.";
                 if (MaxQuants is <= 0) return "--max-quants must be positive.";
+                if (MaxQuants > MaxQuantsCeiling)
+                    return $"--max-quants {MaxQuants} is above the {MaxQuantsCeiling} ceiling (4 x the default).";
             }
             if (Format is not ("text" or "json")) return "--format must be 'text' or 'json'.";
             if (Budget is not null && !ScoutSize.TryParse(Budget, out _)) return $"--budget '{Budget}' is not a size (try 64G).";

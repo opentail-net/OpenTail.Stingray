@@ -397,7 +397,7 @@ hoc at each read site rather than in one place.
 | `--format <FORMAT>` | diagnostic | Output format: text (default) or json |
 | `--limit <N>` | diagnostic | With --backlog: number of repositories to inspect (default 50, maximum 200). |
 | `--max-index-mb <N>` | diagnostic | With --repo: most MB of a file's header and tensor index to read (default 128 MB, ceiling 512 MB; above the ceiling the command is refused). Past the cap the report says the inspection is incomplete; nothing more is fetched. |
-| `--max-quants <N>` | diagnostic | With --quants: most files to inspect (default 40, largest first). |
+| `--max-quants <N>` | diagnostic | With --quants: most files to inspect (default 40, ceiling 160, largest first); above the ceiling the command is refused. |
 | `--model <PATH>` | diagnostic | Path to a GGUF model file |
 | `--no-builtin-signatures` | diagnostic | Rank only against --signatures <dir>, ignoring the signatures shipped in the binary (for leave-one-out checks and contributor sets) |
 | `--origin-repo <REPO>` | diagnostic | With --emit-signature: Hugging Face repo id the file came from, recorded as provenance (never guessed) |

@@ -149,6 +149,20 @@ public sealed class BacklogTests
     }
 
     [Fact]
+    public void MaxQuants_RejectsAboveCeiling_AcceptsCeiling_NoNetwork()
+    {
+        // The ceiling is 4 x QuantPicker.DefaultMaxFiles (40), so 160. Validation only; no Hub call is made.
+        int ceiling = 4 * QuantPicker.DefaultMaxFiles;
+        Assert.Equal(160, ceiling);
+
+        var above = new ScoutCommand.Settings { Repo = "owner/name", Quants = true, MaxQuants = ceiling + 1 };
+        Assert.Equal($"--max-quants {ceiling + 1} is above the {ceiling} ceiling (4 x the default).", above.Validate());
+
+        var atCeiling = new ScoutCommand.Settings { Repo = "owner/name", Quants = true, MaxQuants = ceiling };
+        Assert.Null(atCeiling.Validate());
+    }
+
+    [Fact]
     public void GatedFlag_HandlesBooleanAndStringFormats()
     {
         string json = """
