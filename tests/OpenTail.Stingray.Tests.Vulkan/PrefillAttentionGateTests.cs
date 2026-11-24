@@ -13,6 +13,10 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// and downloads the output. The OLMoE head shape is read from its GGUF. The test asserts that the outputs agree, not that
 /// either is faster: the decision is read from the printed numbers and recorded in the plan. Integrated GPU only (CLAUDE.md
 /// rule 13).
+///
+/// NOTE (2026-11-24, iteration 41): <c>ComputeBatchedCausalAttention</c> is not the production CPU prefill attention (it has no
+/// production caller). The production-path comparison is <c>GpuWholePromptAttention_IsTimedPerLayer_AndAgreesWithTheReference</c>,
+/// and its numbers, with the round trip, are in docs/2-coverage/2026-10-03-batched-moe-prefill-plan.md.
 /// </summary>
 public sealed class PrefillAttentionGateTests : HeavyTestBase
 {
@@ -110,6 +114,119 @@ public sealed class PrefillAttentionGateTests : HeavyTestBase
                 $"[attn-gate] {basePos,7}  {cpuMs,6:F3}  {plainMs,12:F3}  {flashMs,12:F3}  {flashRoundTripMs,23:F3}  {cpuMs / flashMs,13:F2}  {Math.Max(relPlain, relFlash),11:E2}"));
             Assert.True(relPlain < 1e-3, $"plain GPU attention disagrees with the CPU at basePos {basePos}: {relPlain:E2}");
             Assert.True(relFlash < 1e-3, $"flash GPU attention disagrees with the CPU at basePos {basePos}: {relFlash:E2}");
+        }
+    }
+
+    /// <summary>
+    /// Whole-prompt attention for one layer, GPU against the production CPU prefill (the per-layer numbers are in the plan, from
+    /// <c>STINGRAY_PROFILE_PREFILL=1</c>): one <c>AttentionFlashPrefillGqa</c> dispatch over the whole prompt, and the same prompt
+    /// as 16-token <c>AttentionBatchedFlash</c> chunks, each at its own position (the accounting Phase 2 would pay). The
+    /// reference is <c>ForwardPass.ComputeBatchedCausalAttention</c>, which is correct but not the production kernel; it is used
+    /// only for parity.
+    /// </summary>
+    [Fact]
+    public unsafe void GpuWholePromptAttention_IsTimedPerLayer_AndAgreesWithTheReference()
+    {
+        string? path = ModelLocator.FindDeep(Olmoe);
+        Assert.SkipWhen(path is null, $"{Olmoe} not present");
+        VulkanBackend? gpu;
+        try { gpu = new VulkanBackend(); } catch { gpu = null; }
+        Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
+        using var _gpu = gpu;
+
+        using var model = GgufModel.Open(path!);
+        var hp = ArchitectureModelResolver.ResolveHyperparams(model);
+        int numHeads = hp.NumHeads, numKvHeads = hp.NumKvHeads, headDim = hp.HeadDim;
+        int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
+        float scale = 1f / MathF.Sqrt(headDim);
+        Console.WriteLine("[attn-whole] prompt_tokens  gpu_whole_prompt_per_layer_ms  gpu_chunked16_per_layer_ms  rel_err_whole_vs_reference");
+
+        var rng = new Random(20260607);
+        foreach (int n in new[] { 1224, 2014 })
+        {
+            var qHost = RandomFloats(rng, n * qDim);
+            var kHost = RandomFloats(rng, n * kvDim);
+            var vHost = RandomFloats(rng, n * kvDim);
+            var gq = gpu!.Upload(qHost, TensorShape.D1(qHost.Length));
+            var gk = gpu.Upload(kHost, TensorShape.D1(kHost.Length));
+            var gv = gpu.Upload(vHost, TensorShape.D1(vHost.Length));
+            var gWhole = gpu.Allocate(TensorShape.D1(n * qDim));
+
+            double wholeMs = MedianMs(() =>
+            {
+                gpu.AttentionFlashPrefillGqa(gq, gk, gv, gWhole, (uint)numHeads, (uint)numKvHeads, (uint)headDim, 0, n);
+                gpu.Synchronize();
+            });
+            var wholeHost = new float[n * qDim];
+            gpu.Download(gWhole, wholeHost);
+
+            // The chunked accounting: one tensor per 16-token chunk, uploaded before timing, so the timed work is the dispatches.
+            int chunks = (n + Chunk - 1) / Chunk;
+            var qChunks = new Tensor[chunks];
+            var oChunks = new Tensor[chunks];
+            for (int c = 0; c < chunks; c++)
+            {
+                int rows = Math.Min(Chunk, n - c * Chunk);
+                qChunks[c] = gpu.Upload(qHost.AsSpan(c * Chunk * qDim, rows * qDim), TensorShape.D1(rows * qDim));
+                oChunks[c] = gpu.Allocate(TensorShape.D1(rows * qDim));
+            }
+            double chunkedMs = MedianMs(() =>
+            {
+                for (int c = 0; c < chunks; c++)
+                {
+                    int rows = Math.Min(Chunk, n - c * Chunk);
+                    gpu.AttentionBatchedFlash(qChunks[c], gk, gv, oChunks[c], (uint)numHeads, (uint)numKvHeads, (uint)headDim,
+                        (uint)(c * Chunk), rows, (uint)n);
+                    gpu.Synchronize();
+                }
+            });
+
+            var reference = new float[n * qDim];
+            fixed (float* qPtr = qHost)
+            fixed (float* kPtr = kHost)
+            fixed (float* vPtr = vHost)
+            fixed (float* outPtr = reference)
+                OpenTail.Stingray.Engine.ForwardPass.ComputeBatchedCausalAttention(
+                    qPtr, kPtr, vPtr, outPtr, N: n, startPos: 0, numHeads, numKvHeads, headDim, scale);
+            double rel = RelativeError(wholeHost, reference);
+
+            Console.WriteLine(FormattableString.Invariant(
+                $"[attn-whole] {n,13}  {wholeMs,27:F3}  {chunkedMs,26:F3}  {rel,25:E2}"));
+            Assert.True(rel < 1e-3, $"whole-prompt GPU attention disagrees with the reference at {n} tokens: {rel:E2}");
+
+            gpu.Free(gq); gpu.Free(gk); gpu.Free(gv); gpu.Free(gWhole);
+            foreach (var t in qChunks) gpu.Free(t);
+            foreach (var t in oChunks) gpu.Free(t);
+        }
+    }
+
+    /// <summary>
+    /// The host round trip a batched trunk pays per layer for its activations: an <c>[N x hidden]</c> fp32 block uploaded to the GPU
+    /// and downloaded again (the host MoE step sits between the two), timed with <c>Upload</c> and <c>Download</c> as the backend
+    /// has them. Each upload allocates, so the time is an upper bound for a reused buffer; the figure is recorded in the plan.
+    /// </summary>
+    [Fact]
+    public void ActivationRoundTrip_IsTimedForWholePromptAndChunkBlocks()
+    {
+        VulkanBackend? gpu;
+        try { gpu = new VulkanBackend(); } catch { gpu = null; }
+        Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
+        using var _gpu = gpu;
+        const int hidden = 2048;   // OLMoE embedding width
+        Console.WriteLine("[attn-roundtrip] rows  block_mib  upload_download_ms (median of 5, after 2 warm-ups)");
+        var rng = new Random(20260608);
+        foreach (int rows in new[] { Chunk, 1224, 2014 })
+        {
+            var block = RandomFloats(rng, rows * hidden);
+            var back = new float[rows * hidden];
+            double ms = MedianMs(() =>
+            {
+                var t = gpu!.Upload(block, TensorShape.D1(block.Length));
+                gpu.Download(t, back);
+                gpu.Free(t);
+            });
+            Console.WriteLine(FormattableString.Invariant($"[attn-roundtrip] {rows,5}  {block.Length * 4.0 / (1 << 20),9:F2}  {ms,19:F3}"));
+            Assert.Equal(block, back);   // every element made the trip unchanged
         }
     }
 
