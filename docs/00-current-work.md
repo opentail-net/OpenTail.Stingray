@@ -213,6 +213,47 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 
 ---
 
+##### A15. Single-slot admits a second model while the first is still loading (verified 2026-11-24)
+
+- **Why:** `ModelRuntimeManager.AcquireAsync` checks single-slot residency with `HasBlockingOtherResident` (`src/OpenTail.Stingray.Server/ModelRuntimeManager.cs` around lines 300-306), which looks only at `_resident`. A load in flight sits in `_pendingLoads`, which is not checked for a different model. So with `ModelResidencyMode.SingleSlot`, a cold `AcquireAsync(B)` started while `AcquireAsync(A)` is loading passes the check and starts a second load. Both can end up resident, which breaks invariant 10 ("never evict active work to satisfy single-slot residency").
+- **Next step:** in the single-slot branch, also treat any pending load of a different model as blocking, so the second caller waits on `_residencyChanged` like it does for a busy resident model. `RunLoad` already removes the pending entry and notifies on success and on failure, so a waiter wakes.
+- [ ] **Done when:** a test with a blocking loader shows that `B`'s loader is not called while `A`'s load is in progress, and that `B` loads after `A`'s handle is released. The test fails on the code as it was before the fix (both loaders run concurrently).
+
+##### A16. A failing estimator leaks a loaded engine (verified 2026-11-24)
+
+- **Why:** `RunLoad` (`src/OpenTail.Stingray.Server/ModelRuntimeManager.cs` around lines 630-660) calls `_loader(model)` and then `_estimateBytes(model)` and the `ModelRuntime` constructor. If the estimator throws after the loader succeeded, the `catch` only fails the task. The `LoadedEngine` (engine, `RuntimeInstance`, GGUF mapping) is never disposed.
+- **Next step:** compute the estimate before calling the loader (`_estimateBytes` takes only the `ModelId`, so the order does not change its input). Then a throwing estimator never loads anything.
+- [ ] **Done when:** a test whose estimator throws shows that the loader's engine is not left undisposed (either the loader is not called, or its engine's `Dispose` ran). The test fails on the code as it was before the fix.
+
+##### A17. Lost wake-up for single-slot waiters (verified 2026-11-24, narrow window)
+
+- **Why:** `ModelRuntimeHandle.Dispose` (`src/OpenTail.Stingray.Server/ModelRuntime.cs` around lines 306-316) calls `OnHandleReleased` outside `_lock`, then `NotifyResidencyChanged` (`ModelRuntimeManager.cs` around line 435), which swaps `_residencyChanged` with `Interlocked.Exchange` and does not take the lock. A waiter reads `HandleCount > 0` and then reads `_residencyChanged.Task`. If a release lands between those two reads, the waiter gets the new, never-completed task and waits for a later event.
+- **Next step:** capture `_residencyChanged.Task` before the handle-count checks. Any release after the capture then completes the captured task.
+- [ ] **Done when:** a stress test (many iterations, one held handle released concurrently with a second acquire) completes within its timeout every time, and the fix is in. A deterministic test needs a seam; record it if one is not built.
+
+##### A18. `ModelRuntime.Dispose` skips the model when the engine dispose throws (verified 2026-11-24)
+
+- **Why:** `ModelRuntime.Dispose` (`src/OpenTail.Stingray.Server/ModelRuntime.cs` around lines 265-279) calls `Instance?.Dispose()` and then `Engine.Dispose()` with no try/finally. If either throws, `instance.Model.Dispose()` never runs, so the GGUF mapping leaks, and the state is already `Disposed`, so a retry does nothing.
+- **Next step:** put the model disposal in a `finally`, and keep the `Disposed` state set once.
+- [ ] **Done when:** a test whose engine `Dispose` throws shows the model is still disposed, and a second `Dispose` is a no-op.
+
+##### A19. Fresh cold callers ignore in-flight loads in the byte budget (design gap, not yet changed)
+
+- **Why:** the admission estimate (`TryEnsureAdmissibleLocked`) counts resident bytes only; the design note on `WakeOldestAdmissibleQueuedWaiter` accepts this for queued waiters (one wake at a time). A fresh caller does not go through that gate, so two cold callers can pass the budget against the same headroom.
+- **Next step:** count the estimated bytes of `_pendingLoads` in the admission estimate, after A15 is in.
+- [ ] **Done when:** a test with two cold callers and a budget that fits one shows the second one waits or is refused.
+
+##### A20. Evict-then-fail in the queue wake path (policy; default: keep as documented)
+
+- **Why:** `WakeOldestAdmissibleQueuedWaiter` calls `EvictIdleOthersLocked(null)` before it picks a winner, so when nobody is admissible the idle models are still evicted. `TryEnsureAdmissibleLocked` does the same and is documented that way.
+- **Recommended default (owner-level, taken without asking):** keep the documented behaviour. Record it; change only if the owner asks.
+- [x] **Decision recorded 2026-11-24:** keep as documented.
+
+##### A21. Low-priority checks from the same review (not verified yet)
+
+- `InferenceEngineLoader.BuildLoadedEngine` failure path disposes the model unconditionally (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 72-73), while `ModelRuntime.Dispose` skips the model for `DrainedOnDispose: false`. Check whether the same guard is needed on the failure path.
+- `AdmissionWaitTimeout`, `ResidencyMode`, `ResourceBudget` and `MaxQueuedAdmissions` are read outside the lock while they are mutable (`ModelRuntimeManager.cs` around line 365). Check whether they are only set before the manager is used.
+
 #### Part B: Waiting on you or a machine
 
 ##### B1. Resident-bytes accounting (choice recorded: B)
