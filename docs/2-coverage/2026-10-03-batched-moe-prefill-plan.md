@@ -263,6 +263,27 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
   - Result: the literal gate **passes at long contexts** (kernel: from about 1,000 positions; with the round trip: from about 2,000), and fails below about 1,000. The plain `AttentionBatched` kernel (not on the production prefill path for a 16-token chunk) was slower than the CPU at every length (speedup 0.20 to 0.59, first run). The statements above that this machine's dense numbers "suggest it will not" pass, and that the iGPU "may never beat the CPU", are **superseded** by this measurement for the flash kernel.
   - **Decision (mine, under the plan's own gate; the owner's memory note approves the plan but names no Phase 2 approval):** the gate condition is met on this machine, so Phase 2 may proceed, with a context crossover (CPU below about 1,000 positions, GPU attention above it). The owner may still object to the Phase 2 scope. It is **not started** in this iteration. Before any Phase 2 code, the next measurement must add the per-layer host MoE round trip that the batched hybrid needs (the attention table above excludes it), and a kernel inventory of the batched trunk (`RmsNormBatched`, `MatMulBatched`, `RoPEBatched`, `KvAppendBatched` exist for CUDA; the Vulkan set is not checked yet).
   - Not measured: a discrete GPU (rule 13); the whole-chunk prefill time at these contexts.
+  - **Kernel inventory (2026-11-24, read only; `src/OpenTail.Stingray.Vulkan/VulkanBackend.cs` and `Shaders.cs`).** Every step of the batched trunk has a Vulkan kernel today:
+
+    | Trunk step | Entry point (VulkanBackend.cs) | Shader (Shaders.cs) | Batched callers today |
+    |---|---|---|---|
+    | RMS norm over a chunk | `RmsNormBatched` (2012) | `RmsNormBatched` (76) | `VulkanHybridGdnForwardPass` (1038, 1054), `GpuForwardPass` (2781, 3184, 3260) |
+    | Per-head Q/K norm | `HeadNormBatched` (2044) | `HeadNormBatched` (1490) | `VulkanHybridGdnForwardPass` (1244, 1245) |
+    | Projections (Q, K, V, O, dense FFN) | `MatMulBatched` (2946): Path 3 `SgemmQuant` for Q3_K–Q6_K with cols % 256 = 0, Path 2, and Path 1 capped at `MaxTokensPerDispatch` (16 tokens) | the tiled quantized shaders `MatMulTiledQ4K` (6253), `MatMulTiledQ6K` (6393) and the Path 2/3 kernels | `VulkanHybridGdnForwardPass` `GpuMatMulBatched` (1318); `GpuForwardPass` (2884, 2994–2996, 3170, 3221–3253) |
+    | RoPE on a chunk | `RoPEPartialBatched` (2528), `RoPEBatched` (2766), `RoPEFactorsBatched` (2791) | `RoPEPartialBatched` (1280), `RoPEBatched` (1707), `RoPEFactorsBatched` (1901) | `VulkanHybridGdnForwardPass` (1249, 1250); `GpuForwardPass` (3033–3044) |
+    | KV append for a chunk | `KvAppendBatched` (3405) | `KvAppendBatched` (2334) | `VulkanHybridGdnForwardPass` (1254); `GpuForwardPass` (3123) |
+    | Attention, chunk ≤ 16 | `AttentionBatchedFlash` (3501; head dim ≤ 128, 1–16 queries, optional bf16 K/V); `AttentionBatched` (3425; the plain kernel, slower in the gate) | `AttentionBatchedFlash` (2988), `AttentionBatchedFlashBf16` (3009), `AttentionBatched` (3183) | `GpuForwardPass` (3588, 3601); `VulkanHybridGdnForwardPass` (1263) |
+    | Attention, longer chunks | `AttentionFlashPrefillGqa` (3470) | `FlashPrefillGqa128` (10729), `FlashPrefillGqa64` (10880), `FlashPrefillGqa256` (11029) | `GpuForwardPass` (3583); `VulkanHybridGdnForwardPass` (1260) |
+    | SiLU gate and residual add | `SiLuMul` (2650), `AddInPlace` (2672) | `SiLuMul` (131), `AddInPlace` (211) | `VulkanHybridGdnForwardPass` (1292) |
+
+    **Batched trunks that exist:** `VulkanHybridGdnForwardPass.Prefill` (828) runs attention, the GDN layers and the dense FFN batched (1038–1295); its MoE FFN falls back to one token at a time inside `FfnDispatchBatched` (1296 onward). `GpuForwardPass.Prefill` (1400) runs a batched dense trunk (2994–3260); MoE prompts take the CPU handoff instead (`GpuPrefillHandoff.cs`).
+
+    **The OLMoE path has none:** `HybridForwardPass.Prefill` (793) makes no batched kernel call. A fresh long prompt takes the CPU batched prefill and KV handoff (`HybridPrefillHandoff.cs`); every other prompt runs one token at a time (lines 804–805). The gate's shape came from this model, so **Phase 2 for OLMoE means a new batched GPU trunk in `HybridForwardPass`**, with host MoE between layers. The kernels exist; the trunk does not.
+
+  - **Smallest first step (decision, 2026-11-24):** no Phase 2 code yet. Two numbers decide whether the trunk is worth writing, and each is a measurement, not a build:
+    1. the attention share of the CPU batched prefill for OLMoE at contexts about 1,024 and about 2,048 (`STINGRAY_PROFILE_PREFILL=1` on a fresh prompt of that length), which is the work Phase 2 would move to the GPU; the 740-token profile above gives only 5%;
+    2. the host round trip for one layer of a 16-token chunk (a 16 × 2,048 fp32 block up and down through `VulkanBackend.Upload` and `Download`, timed on the iGPU), which Phase 2 pays once per layer per chunk.
+    Projected Phase 2 time per chunk = CPU chunk time − CPU attention + GPU attention (from the table above) + 16 round trips. Code is written only if that projection is faster than the CPU chunk on prompts of 1,024 tokens or more.
 - [ ] Phase 3 (3a, and 3b only if profiling justifies it), tested on a discrete GPU before any default change
 - [ ] Phase 4 (streamed experts), after the Phase 3 kernels exist, or with the CPU fallback below the gate
 - [ ] Phase 5 wiring: the engine reads the profile, once there is more than one path to choose between
