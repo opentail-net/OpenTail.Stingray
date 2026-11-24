@@ -244,11 +244,15 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Next step:** put the model disposal in a `finally`, and keep the `Disposed` state set once.
 - [x] **Decided 2026-11-24: keep the original `ModelRuntime.Dispose`.** A `try`/`finally` that frees the GGUF mapping after an engine `Dispose` throws was tried and reverted: when an engine's dispose throws, the state of its worker is unknown, so freeing the mapping could be a use-after-free while the worker still reads the weights. The original code skips the model on that path, so the GGUF mapping leaks there. That leak is the recorded trade-off. **Owner may reverse this** (for example, if a process that hits this path must reclaim memory more than it must avoid the rare risk); the reversal needs a decision on what a throwing engine means for its worker.
 
-##### A19. Fresh cold callers ignore in-flight loads in the byte budget (design gap, not yet changed)
+##### A19. Fresh cold callers ignore in-flight loads in the byte budget (fixed 2026-11-24)
 
 - **Why:** the admission estimate (`TryEnsureAdmissibleLocked`) counts resident bytes only; the design note on `WakeOldestAdmissibleQueuedWaiter` accepts this for queued waiters (one wake at a time). A fresh caller does not go through that gate, so two cold callers can pass the budget against the same headroom.
 - **Next step:** count the estimated bytes of `_pendingLoads` in the admission estimate, after A15 is in.
-- [ ] **Done when:** a test with two cold callers and a budget that fits one shows the second one waits or is refused.
+- [x] **Done when:** a test with two cold callers and a budget that fits one shows the second one waits or is refused.
+  - **Done 2026-11-24.** `EstimateAdmissionLocked` (`src/OpenTail.Stingray.Server/ModelRuntimeManager.cs`) adds the pre-load estimate of every in-flight load of another model to the candidate's bytes, and to its accelerator bytes when the candidate has an accelerator footprint on the same target. It is used by both admission checks and by the queue's wake scan. Test `FreshCallerIsRefusedWhileAnotherModelIsStillLoadingAndFillsTheBudget` (`tests/OpenTail.Stingray.Tests.Server.Fast/ModelRuntimeManagerTests.cs`, new `ByteCapacityBudget` fake, which counts resident bytes only, like the real host budget): before the fix the second caller was admitted (`No exception was thrown`); the mutation (in-flight term removed) fails it again; passes after the fix.
+  - **Evidence:** `ModelRuntimeManagerTests` 66 total, 0 failed, three runs; the A19 test 1 of 1; full `Server.Fast` 703 total, 0 failed, 2 skipped (exit 0). Release build 0 warnings, 0 errors. No existing admission test changed; the test file has additions only.
+  - **Decisions taken (recorded):** (1) the 1.25 safety margin of the budget now applies to in-flight bytes too. This is more conservative than a single load, and it is the default kept here. (2) A pending load stores no estimate; it is computed when needed, as `Snapshot` already does. A stored estimate is a small follow-up. (3) The wake scan now counts in-flight loads, but no test covers an in-flight load during a wake scan.
+  - **Caveat:** the real `HostResourceBudget` checks host headroom from GC information. Before this fix an in-flight load was invisible to it as well, so this matters on a real host too.
 
 ##### A20. Evict-then-fail in the queue wake path (policy; default: keep as documented)
 

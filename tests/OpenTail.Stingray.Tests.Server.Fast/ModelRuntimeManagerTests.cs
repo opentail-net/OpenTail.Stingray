@@ -51,6 +51,21 @@ public sealed class ModelRuntimeManagerTests
         }
     }
 
+    /// <summary>Host budget with a fixed capacity. It counts only the bytes <paramref name="residentBytes"/> reports, the way the
+    /// real <see cref="HostResourceBudget"/> counts only what the OS already shows as used, so a load that has not allocated yet
+    /// is invisible to it.</summary>
+    private sealed class ByteCapacityBudget(long capacityBytes, Func<long> residentBytes) : IResourceBudget
+    {
+        public ResourceSnapshot GetCurrent()
+        {
+            long resident = residentBytes();
+            return new ResourceSnapshot(capacityBytes, Math.Max(0, capacityBytes - resident), null, resident, 0);
+        }
+
+        public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0) =>
+            candidateModelBytes > GetCurrent().HostMemoryAvailableBytes ? ResourceAdmission.InsufficientHostMemory : ResourceAdmission.Allowed;
+    }
+
     /// <summary>Unlike <see cref="FakeResourceBudget"/> (externally flag-controlled), this derives
     /// admission from the manager's own <see cref="ModelRuntimeManager.Snapshot"/> — exactly like
     /// the real <see cref="HostResourceBudget"/> does — so it organically reflects in-flight
@@ -1091,6 +1106,52 @@ public sealed class ModelRuntimeManagerTests
     }
 
     // ── Phase 6 slice: bounded queue as the alternative to hard failure ─────
+
+    [Fact]
+    public async Task FreshCallerIsRefusedWhileAnotherModelIsStillLoadingAndFillsTheBudget()
+    {
+        var aEntered = new ManualResetEventSlim();
+        var releaseA = new ManualResetEventSlim();
+        int bLoads = 0;
+        ModelRuntimeManager? manager = null;
+        // Room for exactly one 100-byte model. Resident bytes only: a load that has not allocated yet is invisible to the budget.
+        var budget = new ByteCapacityBudget(
+            capacityBytes: 150,
+            residentBytes: () => manager!.Snapshot().Where(s => s.State != ModelRuntimeState.Loading).Sum(s => s.EstimatedModelBytes));
+        manager = new ModelRuntimeManager(id =>
+        {
+            if (id.Value == "a")
+            {
+                aEntered.Set();
+                Assert.True(releaseA.Wait(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                Interlocked.Increment(ref bLoads);
+            }
+            return Load(id.Value);
+        }, ModelResidencyMode.MultiSlot, estimateBytes: _ => 100) { ResourceBudget = budget };
+
+        try
+        {
+            var acquireA = manager.AcquireAsync(Id("a")).AsTask();
+            Assert.True(aEntered.Wait(TimeSpan.FromSeconds(10)));
+
+            // A is still loading and holds the only room. No queue is configured, so B is refused at once and its loader never runs.
+            await Assert.ThrowsAsync<InsufficientResourcesException>(() => manager.AcquireAsync(Id("b")).AsTask());
+            Assert.Equal(0, Volatile.Read(ref bLoads));
+
+            releaseA.Set();
+            var ha = await acquireA.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(Id("a"), ha.Runtime.Id);
+            ha.Dispose();
+        }
+        finally
+        {
+            releaseA.Set();
+            manager.Dispose();
+        }
+    }
 
     [Fact]
     public async Task AcquireAsync_NoAdmissionWaitTimeoutSet_StillThrowsImmediately_ExistingBehaviorUnchanged()

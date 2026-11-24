@@ -492,11 +492,10 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
 
     /// <summary>Admission-fairness slice (docs/032 Phase 6): picks at most ONE queued waiter to
     /// wake per residency-change event — deliberately not "wake every admissible waiter in one
-    /// pass". <see cref="TryEnsureAdmissibleLocked"/>'s <c>EstimateAdmission</c> only counts
-    /// already-<em>resident</em> bytes, never in-flight <see cref="_pendingLoads"/> — waking two
-    /// waiters from the same snapshot could let both pass admission against resource headroom that
-    /// only actually exists once, since neither's load has registered as resident yet. Waking one
-    /// at a time means the next candidate's check (on the NEXT notify, e.g. once the winner
+    /// pass". <see cref="EstimateAdmissionLocked"/> counts the in-flight <see cref="_pendingLoads"/> of
+    /// other models, but a waiter woken from the same snapshot does not see the other winners' loads
+    /// until they are reserved, so waking two waiters at once could let both pass against the same
+    /// headroom. Waking one at a time means the next candidate's check (on the NEXT notify, e.g. once the winner
     /// finishes loading and itself calls this) sees a state that already reflects the winner
     /// having claimed its share — conservative, not maximally throughput-optimal, but correct
     /// against that accounting gap.
@@ -535,7 +534,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             foreach (var candidate in _admissionQueue)
             {
                 if (winner is not null && candidate.EnqueuedAt >= winner.EnqueuedAt) continue;
-                if (budget.EstimateAdmission(candidate.CandidateBytes, candidate.CandidateAcceleratorBytes, candidate.CandidateAcceleratorTarget)
+                if (EstimateAdmissionLocked(candidate.Model, budget, candidate.CandidateBytes, candidate.CandidateAcceleratorBytes, candidate.CandidateAcceleratorTarget)
                     == ResourceAdmission.Allowed)
                 {
                     winner = candidate;
@@ -633,7 +632,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         long candidateAcceleratorBytes = _estimateAcceleratorBytes(model);
         var candidateTarget = _estimateAcceleratorTarget(model);
 
-        var admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes, candidateTarget);
+        var admission = EstimateAdmissionLocked(model, budget, candidateBytes, candidateAcceleratorBytes, candidateTarget);
         if (admission == ResourceAdmission.Allowed)
         {
             failure = null;
@@ -648,7 +647,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         // Free whatever's safely reclaimable (idle, non-pinned, never the candidate itself) and
         // re-check once before giving up.
         EvictIdleOthersLocked(keep: model);
-        admission = budget.EstimateAdmission(candidateBytes, candidateAcceleratorBytes, candidateTarget);
+        admission = EstimateAdmissionLocked(model, budget, candidateBytes, candidateAcceleratorBytes, candidateTarget);
         if (admission == ResourceAdmission.Allowed)
         {
             failure = null;
@@ -659,6 +658,33 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             model, candidateBytes, candidateAcceleratorBytes, admission, budget.GetCurrent(), candidateTarget);
         return false;
     }
+
+    /// <summary>
+    /// <see cref="IResourceBudget.EstimateAdmission(long, long, AcceleratorTarget?)"/> for <paramref name="model"/>, with the in-flight loads
+    /// of every OTHER model counted too. Those loads are not resident yet, so the budget cannot see their bytes. Each one is counted at the
+    /// same pre-load estimate that <see cref="Snapshot"/> reports for it. The candidate's own pending entry is skipped, so it is never counted
+    /// twice. The in-flight bytes go into the same host and accelerator figures as the candidate's, so the budget's own margin applies to both.
+    /// Caller must hold <see cref="_lock"/>.
+    /// </summary>
+    private ResourceAdmission EstimateAdmissionLocked(
+        ModelId model, IResourceBudget budget, long candidateBytes, long candidateAcceleratorBytes, AcceleratorTarget? candidateTarget)
+    {
+        long inFlightBytes = 0;
+        long inFlightAcceleratorBytes = 0;
+        foreach (var key in _pendingLoads.Keys)
+        {
+            if (key.Equals(model)) continue;
+            inFlightBytes += _estimateBytes(key);
+            // A candidate with no accelerator footprint is never refused on accelerator grounds, so in-flight accelerator loads matter only to an accelerator candidate.
+            if (candidateAcceleratorBytes > 0 && IsOnTarget(_estimateAcceleratorTarget(key), candidateTarget))
+                inFlightAcceleratorBytes += _estimateAcceleratorBytes(key);
+        }
+        return budget.EstimateAdmission(candidateBytes + inFlightBytes, candidateAcceleratorBytes + inFlightAcceleratorBytes, candidateTarget);
+    }
+
+    /// <summary>A load of unknown target counts against every target, because it may sit on any of them.</summary>
+    private static bool IsOnTarget(AcceleratorTarget? loadTarget, AcceleratorTarget? candidateTarget) =>
+        candidateTarget is null || loadTarget is null || loadTarget == candidateTarget;
 
     /// <summary>
     /// Waits for a (possibly shared) model load and records how long this caller waited, with a span that links to the
