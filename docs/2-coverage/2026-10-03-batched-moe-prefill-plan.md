@@ -248,6 +248,21 @@ Facts are in [research/2026-10-31-coverage-facts.md](research/2026-10-31-coverag
 ### Open items
 
 - [ ] Phase 2 decision: proceed only if the Phase 0/1 measurements show GPU attention beating CPU batched attention on the target hardware (hard gate)
+  - **Gate measured 2026-11-24 (iteration 38), on the Ryzen 5700G's integrated Radeon (rule 13: iGPU only).** Test: `PrefillAttentionGateTests` (new, `tests/OpenTail.Stingray.Tests.Vulkan`, heavy-gated, OLMoE shape 16/16 heads, head dim 128, read from its GGUF). Chunk of 16 queries, median of 5 after 2 warm-ups, CPU = `ForwardPass.ComputeBatchedCausalAttention`, GPU = `AttentionBatchedFlash`, which `GpuForwardPass` uses for a chunk of 16 or fewer tokens (the production kernel). Outputs agree to a relative error of 3e-6 at most.
+  - Times in ms (CPU; GPU kernel = dispatch plus fence; round trip = Q upload, kernel and output download):
+
+    | basePos | CPU | GPU flash kernel | flash kernel speedup | flash round trip |
+    |---:|---:|---:|---:|---:|
+    | 0 | 0.107 | 0.116 | 0.92 | 1.436 |
+    | 256 | 0.837 | 0.887 | 0.94 | 2.014 |
+    | 1,024 | 3.235 | 2.960 | 1.09 | 3.977 |
+    | 2,032 | 14.681 | 6.189 | 2.37 | 7.171 |
+    | 3,584 | 31.706 | 12.295 | 2.58 | 14.750 |
+    | 4,080 | 30.686 | 13.928 | 2.20 | 15.955 |
+
+  - Result: the literal gate **passes at long contexts** (kernel: from about 1,000 positions; with the round trip: from about 2,000), and fails below about 1,000. The plain `AttentionBatched` kernel (not on the production prefill path for a 16-token chunk) was slower than the CPU at every length (speedup 0.20 to 0.59, first run). The statements above that this machine's dense numbers "suggest it will not" pass, and that the iGPU "may never beat the CPU", are **superseded** by this measurement for the flash kernel.
+  - **Decision (mine, under the plan's own gate; the owner's memory note approves the plan but names no Phase 2 approval):** the gate condition is met on this machine, so Phase 2 may proceed, with a context crossover (CPU below about 1,000 positions, GPU attention above it). The owner may still object to the Phase 2 scope. It is **not started** in this iteration. Before any Phase 2 code, the next measurement must add the per-layer host MoE round trip that the batched hybrid needs (the attention table above excludes it), and a kernel inventory of the batched trunk (`RmsNormBatched`, `MatMulBatched`, `RoPEBatched`, `KvAppendBatched` exist for CUDA; the Vulkan set is not checked yet).
+  - Not measured: a discrete GPU (rule 13); the whole-chunk prefill time at these contexts.
 - [ ] Phase 3 (3a, and 3b only if profiling justifies it), tested on a discrete GPU before any default change
 - [ ] Phase 4 (streamed experts), after the Phase 3 kernels exist, or with the CPU fallback below the gate
 - [ ] Phase 5 wiring: the engine reads the profile, once there is more than one path to choose between
