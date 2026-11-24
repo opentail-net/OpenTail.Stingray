@@ -249,6 +249,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // suffice, but OLMoE has embDim=2048 / intermDim=1024 and overflows it.
     private readonly float* _moeDownTemp;
 
+    // A3 (performance plan): per-expert down dots for the folded MoE decode sweep, [numActive x embDim].
+    private readonly float* _moeDownDots;
+
     // ── Batched MoE prefill scratch (docs/cpu-architecture-kernel-opportunities.md item 6) ──
     // Routing is per token, so a batched MoE FFN cannot simply widen the dense GEMMs: token 0
     // may pick experts {3,17} while token 1 picks {3,42}. These buffers hold the CSR bucketing
@@ -719,6 +722,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _expertGateAll = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _expertUpAll   = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _moeDownTemp   = Alloc(_embDim);
+            _moeDownDots   = Alloc(hp.NumActiveExperts * _embDim);
 
             if (hp.ParallelDenseMoe)
             {

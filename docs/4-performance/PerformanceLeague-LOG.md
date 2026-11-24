@@ -2107,3 +2107,24 @@ Plan: [2026-11-08-performance-plan.md](2026-11-08-performance-plan.md), Part A11
 * **Decision: no change.** The 1-row kernel is about 3% slower at the default thread count and about 9% slower at 4 threads, and no different at 16. The microbenchmark's advantage at DRAM sizes does not reach decode. The default route stays on the 2-row kernel. The temporary switch is reverted and no environment setting is kept. The bit-identity test stays, since it guards any later change to the row kernels.
 * **A wrong first attempt, discarded:** the first A/B used `-g -1`, which put the whole model on the integrated Vulkan GPU (`GpuForwardPass`, about 29 t/s). Those runs say nothing about the CPU kernel. Rule kept from it: check the backend banner (`ForwardPass` or `GpuForwardPass`) before timing any CPU change.
 * **Limits:** one machine, one model (SmolLM2-1.7B), one run of the microbenchmark. Not measured: Qwen2.5-1.5B, Mistral-7B, the MoE expert path, and the `MatVecDual` gate/up path, which uses the same 2-row family and was not timed on its own. In the microbenchmark's real-shape rows the two kernels' printed checksums differ; the bit-identity test on random rows passes, so the difference is most likely in how the benchmark builds its inputs. This was not investigated further.
+
+## OLMoE CPU decode: the MoE down sweep as one (expert, row-pair) region (A3, 2026-11-24): kept, ratio 0.76 to 0.81
+
+Plan: [2026-11-08-performance-plan.md](2026-11-08-performance-plan.md), Part A3 (OLMoE decode was 0.81x in the plan; re-measured here). Machine: Ryzen 7 5700G, Windows, background load (devenv and Chrome open). Model: OLMoE-1B-7B-0924-Instruct Q4_K_M, `-g 0` (every layer on the CPU `ForwardPass`), 128 new tokens, greedy, 8 threads (the default: physical cores).
+
+* **Reference:** llama.cpp `llama-bench -p 0 -n 128 -t 8`, token generation: 50.60 ± 3.66 t/s (3 repetitions), 51.96 ± 2.18 t/s (5 repetitions). Stingray before the change: 39.58 t/s (6 runs, range 39.0 to 40.1). Ratio 0.76 against the 5-repetition reference.
+* **Profile** (`STINGRAY_MOE_PHASE_TIMING=1`, one run; the timings are perturbed by the profiling, so these are for attribution only): per MoE layer call, 1033.6 µs. Sweep A (gate and up rows, 8 experts) 561.9 µs (54%); sweep B (down rows) 414.2 µs (40%); router 20.7 µs (2%); activation quantisation of the gate/up and down inputs about 30 µs (3%); SiLU×mul 4 µs. The fork-join empty sweeps (about 22 µs) are excluded from the total. Per token, the MoE part is about 68% of the 24 ms.
+* **Cost named:** sweep B ran at about 23 GB/s over the expert down rows (9.4 MB per layer call in 414 µs), against about 34 GB/s for sweep A (18.9 MB in 562 µs). The old loop computed one row at a time, took eight experts per row from eight separate streams, and called the generic dispatcher per dot.
+* **Change:** the down dots are computed first, in one parallel region over (expert, row pair); Q4_K takes the 2-row kernel (bit-identical per row, `DotQ4K2RowBitIdentityTests`); then the reduction runs over the experts in top-k slot order with the same fused multiply-add as before. The old per-row loop stays as the fallback for shapes the buffer does not cover (an odd output width, or more active experts than the model declares).
+* **Bit identity:** the generated text is identical between the old and new loops in 16 of 16 pairs (10 at 8 threads, 3 at 4 threads, 3 at 16 threads). The full `Tests.ForwardPass.Fast` suite passes: 1223 total, 0 failed, 16 skipped.
+* **Interleaved A/B** (the old loop as A, the new as B; the switch was temporary and is removed):
+
+| Threads | A (old loop), mean t/s | B (new loop), mean t/s | Runs |
+|---|---|---|---|
+| 8 (default) | 39.16 (37.5 to 39.7) | 41.11 (40.2 to 41.7) | 10 each |
+| 4 | 23.77 (23.3 to 24.1) | 26.10 | 3 each |
+| 16 | 42.73 | 42.73 | 3 each (a tie) |
+
+* **Final build, default route, 5 runs:** 42.00 t/s (41.6 to 42.6). Ratio 0.81 against 51.96. The target is 0.9, so the item stays open, and the next cost is sweep A (gate and up, 54% of MoE time) plus the non-MoE part of each token (attention, norms, and the output projection).
+* **Doc bug found on the way:** the CLI help and the option inventory said the default CPU thread count is the logical processor count. The code uses `CpuTopology.PhysicalCores` (8 on this machine). Both are corrected.
+* **Limits:** one machine, one model (OLMoE), 10 pairs at the default thread count. Not measured: other MoE models, the Q6_K down layers on their own, prefill (the change is in the folded decode path only), and the Vulkan hybrid.

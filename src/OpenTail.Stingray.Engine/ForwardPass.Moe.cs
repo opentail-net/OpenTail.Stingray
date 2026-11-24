@@ -336,22 +336,67 @@ public sealed unsafe partial class ForwardPass
             QuantizeAct(downDt, gateAll + (long)k * expertDimL, expertDimL, downAct + (long)k * downActBytes);
         long ft5 = MoePhaseTiming.Now();
         MoePhaseTiming.Add(MoePhaseTiming.ActQuantB, ft5 - ft4);
-        SimdKernels.ParallelForCapped(0, embDimL, r =>
+        // The per-row loop is kept as the fallback for shapes the dots buffer does not cover (more active experts than the
+        // model declares, or an odd output width, which the row-pair split cannot take).
+        if (numActiveL > _hp.NumActiveExperts || (embDimL & 1) != 0)
         {
-            float sum = 0f;
-            for (int k = 0; k < numActiveL; k++)
+            SimdKernels.ParallelForCapped(0, embDimL, r =>
             {
-                int ei = sePtr[k];
-                float w = sigGating ? 1f : ewPtr[k];
-                long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
-                float d = DispatchDot(downP + offD, gateAll + (long)k * expertDimL,
-                                      downAct + (long)k * downActBytes, expertDimL, downDt);
-                // Same rounding as WeightedAddInPlace (the per-expert and batched paths): fused
-                // multiply-add where FMA exists, so the three MoE paths stay bit-identical.
-                sum = fma ? MathF.FusedMultiplyAdd(w, d, sum) : sum + w * d;
+                float sum = 0f;
+                for (int k = 0; k < numActiveL; k++)
+                {
+                    int ei = sePtr[k];
+                    float w = sigGating ? 1f : ewPtr[k];
+                    long offD = (long)ei * embDimL * bprDL + (long)r * bprDL;
+                    float d = DispatchDot(downP + offD, gateAll + (long)k * expertDimL,
+                                          downAct + (long)k * downActBytes, expertDimL, downDt);
+                    // Same rounding as WeightedAddInPlace (the per-expert and batched paths): fused
+                    // multiply-add where FMA exists, so the three MoE paths stay bit-identical.
+                    sum = fma ? MathF.FusedMultiplyAdd(w, d, sum) : sum + w * d;
+                }
+                hiddenOut[r] = sum;
+            });
+        }
+        else
+        {
+            // A3: the per-row dots first, as one parallel region over (expert, row pair), then the reduction over k in
+            // top-k slot order. Each row sees the same dot values and the same FMA order as the loop above; Q4_K takes the
+            // 2-row kernel, which is bit-identical per row (DotQ4K2RowBitIdentityTests). Reading each expert's down rows in
+            // one contiguous stream is the point: the old loop touched all eight experts for every row.
+            float* dots = _moeDownDots;
+            int pairs = embDimL / 2;
+            SimdKernels.ParallelForCapped(0, numActiveL * pairs, item =>
+            {
+                int k = item / pairs;
+                int r = 2 * (item - k * pairs);
+                byte* expertDown = downP + (long)sePtr[k] * embDimL * bprDL;
+                byte* act = downAct + (long)k * downActBytes;
+                float* outK = dots + (long)k * embDimL;
+                if (downDt == DType.Q4_K)
+                {
+                    SimdKernels.DotQ4K_Q8KS_2Row(expertDown + (long)r * bprDL, expertDown + (long)(r + 1) * bprDL, act, expertDimL,
+                                     out float d0, out float d1);
+                    outK[r] = d0; outK[r + 1] = d1;
+                }
+                else
+                {
+                    float* input = gateAll + (long)k * expertDimL;
+                    outK[r] = DispatchDot(expertDown + (long)r * bprDL, input, act, expertDimL, downDt);
+                    outK[r + 1] = DispatchDot(expertDown + (long)(r + 1) * bprDL, input, act, expertDimL, downDt);
+                }
+            });
+            for (int r = 0; r < embDimL; r++)
+            {
+                float sum = 0f;
+                for (int k = 0; k < numActiveL; k++)
+                {
+                    float w = sigGating ? 1f : ewPtr[k];
+                    float d = dots[(long)k * embDimL + r];
+                    sum = fma ? MathF.FusedMultiplyAdd(w, d, sum) : sum + w * d;
+                }
+                hiddenOut[r] = sum;
             }
-            hiddenOut[r] = sum;
-        });
+        }
         long ft6 = MoePhaseTiming.Now();
         MoePhaseTiming.Add(MoePhaseTiming.SweepB, ft6 - ft5);
         if (MoePhaseTiming.Enabled)
@@ -419,7 +464,6 @@ public sealed unsafe partial class ForwardPass
     /// Settable so parity and equivalence tests can compare folded and sequential decode within one process.
     /// </summary>
     public static bool MoeFoldedDecodeEnabled { get; set; } = true;
-
     /// <summary>
     /// Master switch for the batched MoE prefill FFN. Set <c>STINGRAY_MOE_BATCHED_PREFILL=0</c>
     /// to force MoE prompts back onto the per-token sequential trunk. Settable so parity tests can

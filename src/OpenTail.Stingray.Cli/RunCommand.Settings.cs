@@ -192,7 +192,7 @@ public sealed partial class RunCommand
         public int RepeatLastN { get; init; }
 
         [CommandOption("-t|--threads")]
-        [Description("CPU worker threads for the SIMD kernels (default: logical processor count, or STINGRAY_CPU_THREADS). Mirrors llama.cpp's -t/--threads.")]
+        [Description("CPU worker threads for the SIMD kernels (default: physical core count, or STINGRAY_CPU_THREADS). Mirrors llama.cpp's -t/--threads.")]
         [DefaultValue(0)]
         public int Threads { get; init; }
 

@@ -375,7 +375,7 @@ hoc at each read site rather than in one place.
 | `--temp` | stable | Temperature (0 = greedy, default: 0.7) |
 | `--tensor-split <SPLIT>` | stable | (llama.cpp compat) Not supported — OpenTail places layers with --auto or an explicit -g <N>. |
 | `--thinking` | stable | Enable reasoning mode (sets enable_thinking=true). Needed for Gemma 4 reasoning finetunes, which default off because stock Gemma 4 instruct models aren't reasoning-trained. |
-| `--threads` | expert | CPU worker threads for the SIMD kernels (default: logical processor count, or STINGRAY_CPU_THREADS). Mirrors llama.cpp's -t/--threads. |
+| `--threads` | expert | CPU worker threads for the SIMD kernels (default: physical core count, or STINGRAY_CPU_THREADS). Mirrors llama.cpp's -t/--threads. |
 | `--tool-grammar` | expert | Constrain tool-call arguments to the --tools JSON Schemas (issue #374): required keys can't be dropped, only declared keys/enum values appear, value shapes match the declared type. Needs --tools and a model family with constraint support (Gemma 4, Qwen/Qwen3-Coder, Llama-3, DeepSeek). Default off → byte-identical to unconstrained decoding. |
 | `--tools <PATH>` | stable | Path to a JSON file of OpenAI-format tool definitions ([[{type:"function", function:{name, description, parameters}}, ...]], or a {"tools":[[...]]} wrapper). Advertised to the model via its chat template; on a single-prompt (-p) run the parsed tool calls are printed after generation. |
 | `--top-k` | stable | Top-k sampling (0 = disabled, default: 40) |

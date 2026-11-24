@@ -35,6 +35,7 @@ Each item says what the item's first step is, and when it is done.
 - **Checkpoint:** `F:\_models\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf`.
 - **First step:** re-measure against llama.cpp with the current build. If decode is at or above 0.9x, close this item with the number. If not, profile decode for MoE routing and expert dispatch.
 - **Done when:** the item is closed with a number, or a profile names the cost to attack.
+- **Status 2026-11-24: open, improved to 0.81x.** Re-measured: llama.cpp tg128 at 8 threads 51.96 ± 2.18 t/s (5 runs); Stingray 39.58 before the change (ratio 0.76), 42.00 after (ratio 0.81; 5 runs). Profile: the MoE down sweep was 40% of MoE time and ran at about 23 GB/s against 34 GB/s for the gate and up sweep. Change: the down dots are one parallel region over (expert, row pair) with the 2-row kernel, then the same k-ordered reduction. Text identical in 16 of 16 A/B pairs; interleaved A/B at 8 threads +5.0% (39.16 to 41.11, 10 pairs each); the 16-thread case is a tie. The 0.9 target is not reached. Next cost named: the gate and up sweep (54% of MoE time) and the non-MoE part of each token. Record: [PerformanceLeague-LOG.md](PerformanceLeague-LOG.md), section "OLMoE CPU decode".
 
 ### A4. Single-row Q8_K GEMV for decode
 
