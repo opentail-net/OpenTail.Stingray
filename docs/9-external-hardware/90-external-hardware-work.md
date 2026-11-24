@@ -97,3 +97,8 @@ Hardware-only verification items taken out of the plans so that the plans carry 
 
 > from: `docs/4-performance/2026-11-08-performance-plan.md`
 - [ ] **A10** CUDA decode attention (`llm_attention`, `_bf16`, `_q8_0`) has the identical one-block-per-head, one-thread-per-key structure; needs an NVIDIA machine to measure before porting.
+
+## Moved from plan docs (2026-11-24)
+
+> from: `docs/2-coverage/2026-10-02-tensorsharp-takeaways-plan.md`
+- [ ] Measure on a many-core host, where TensorSharp measured its gains. (This machine has 16 logical CPUs; a measurement here says nothing about 100+ cores.)

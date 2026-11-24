@@ -279,9 +279,8 @@ Web research was not applicable to the performance question. The HiggsAudio perf
 
 ### Open items
 
-- [ ] 080: 28 open items, phase by phase (see the file)
-- [ ] 079: 7 open items (see the file)
-- [ ] Any residency speed claim needs a discrete-GPU run or an explicit iGPU-only caveat
+- 080 and 079: open items are listed phase by phase above, not counted here.
+- Rule: any residency speed claim needs a discrete-GPU run or an explicit iGPU-only caveat (CLAUDE.md rule 13).
 
 ### Cadence
 

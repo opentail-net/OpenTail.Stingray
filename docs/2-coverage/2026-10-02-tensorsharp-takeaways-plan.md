@@ -75,7 +75,7 @@ nothing about Stingray's pure-C# paths. Every item below is measured here before
   batched expert loops, so the spinners compete with them. A concurrent multi-user server
   workload has also not been measured.
 - **Next, if pursued:**
-  - [ ] Measure on a many-core host, where TensorSharp measured its gains. *(Not possible here: 16 logical CPUs, and a measurement on this host says nothing about 100+ cores.)*
+  - Hardware-blocked, moved to [the external-hardware queue](../9-external-hardware/90-external-hardware-work.md) on 2026-11-24: a measurement on a many-core host.
 - **Measurement caution recorded:** mid-session this machine's memory-bound throughput dropped
   about 25% for reasons outside the code (a HEAD build showed the same drop). Only same-run
   interleaved pairs count.

@@ -75,23 +75,20 @@ exposed** (no admission, no catalog/CLI/STATUS entry). That is the correct end s
 
 ## Per-family checklist (every family)
 
-- [ ] Read the primary reference first (llama.cpp `src/models/<arch>.cpp` when it exists), then
-      TensorSharp's port as a second reading (CLAUDE.md rule 8).
-- [ ] Port: hyperparameters, tensor set, forward pass, and tokenizer/chat template if new.
-- [ ] Structural/synthetic tests only, named as such.
-- [ ] `// <arch> — NOT admitted` block in `src/OpenTail.Stingray.Engine/ModelCompatibility.cs`:
-      what was ported, from which reference (file and commit), and what verification is missing.
-      *(Checked 2026-11-08: no family has this block; the NOT-admitted notes live in the `*Alpha.cs`
-      header comments. Either add the blocks or change this rule.)*
-- [ ] Row in the plan's "Ported, not verified" table (date, code location, reference).
-- [ ] Ported code from TensorSharp goes into the TensorSharp section of `THIRD_PARTY_NOTICES.md`.
-      *(Checked 2026-11-08: present for qwen4exp, MiniMax-H3 and Muse-Glimmer; not for glm-dsa or deepseek4.)*
-- [ ] Nothing in STATUS.md, README, WHAT-YOU-CAN-DO, RUNNING or the catalogs.
-- [ ] Later, for promotion (see the status ladder): a real checkpoint, an independent implementation
-      (`stingray admit-arch` against llama.cpp for text LLMs; pipeline fixtures for media), timed
-      real-weight runs, then the admission/registry entry and the STATUS row in the same pass.
-- [ ] Each plan carries a **Deferred** list (vision, speculative heads, batched/GPU paths, ...) so the
-      initial port doesn't grow.
+Standing rules for every family. They are not tasks, so they are not checkboxes.
+
+- Read the primary reference first (llama.cpp `src/models/<arch>.cpp` when it exists), then TensorSharp's port as a second reading (CLAUDE.md rule 8).
+- Port: hyperparameters, tensor set, forward pass, and tokenizer/chat template if new.
+- Structural/synthetic tests only, named as such.
+- Row in the plan's "Ported, not verified" table (date, code location, reference).
+- Nothing in STATUS.md, README, WHAT-YOU-CAN-DO, RUNNING or the catalogs.
+- Later, for promotion (see the status ladder): a real checkpoint, an independent implementation (`stingray admit-arch` against llama.cpp for text LLMs; pipeline fixtures for media), timed real-weight runs, then the admission/registry entry and the STATUS row in the same pass.
+- Each plan carries a **Deferred** list (vision, speculative heads, batched/GPU paths, ...) so the initial port doesn't grow.
+
+Gaps found against these rules (re-checked 2026-11-24). These are work, so they stay open:
+
+- [ ] **NOT-admitted blocks.** CLAUDE.md rule 14 asks for a `// <arch> — NOT admitted` block in `src/OpenTail.Stingray.Engine/ModelCompatibility.cs`. None exists. The NOT-admitted notes sit in the `*Alpha.cs` header comments, and `DeepSeek4Alpha.cs` says not to add the block there. Owner decision: add the blocks, or change the rule.
+- [ ] **Third-party notices.** `THIRD_PARTY_NOTICES.md` lists qwen4exp, MiniMax-H3 and Muse-Glimmer under TensorSharp. `glm-dsa` is not listed. First check whether `glm-dsa` came from TensorSharp; if it did, add its notice. The DeepSeek ports are credited to llama.cpp (notice lines 147–151), so this rule does not apply to them.
 
 ## Families
 

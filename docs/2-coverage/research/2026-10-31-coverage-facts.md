@@ -2,6 +2,8 @@
 
 > Completed items moved to [2026-10-31-coverage-facts-completed-items-2026-11.md](../../done/2026-10-31-coverage-facts-completed-items-2026-11.md) on 2026-11-24. This file keeps only the open items.
 
+> Completed items moved to [2026-10-31-coverage-facts-completed-items-2026-11.md](../../done/2026-10-31-coverage-facts-completed-items-2026-11.md) on 2026-11-24. This file keeps only the open items.
+
 Companion to the research sections appended to the plans in [docs/2-coverage](..). Each row is a claim the plans make, the value found on the web, and where it was checked. Nothing here changes code.
 
 ## 1. DiffusionGemma (`google/diffusiongemma-26B-A4B-it`)
@@ -71,4 +73,3 @@ From the llama.cpp server history ([PR #10783, "server : fix logprobs, make it O
 
 ## Open checks from this research (status 2026-11-08)
 
-- [ ] llama-server logprob field names: NOT CHECKED. Needs the pinned `bed0a8566` source or a real build. The local `llama-server.exe` is a stub.

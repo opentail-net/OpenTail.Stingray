@@ -1,6 +1,6 @@
 # 2026-10-31-coverage-facts - completed items 2026-11
 
-Ticked items moved from [2026-10-31-coverage-facts.md](../2026-10-31-coverage-facts.md) on 2026-11-08. Each keeps its text and nested lines. Items with open follow-up text stay in the source doc.
+Ticked items moved from [2026-10-31-coverage-facts.md](../2-coverage/research/2026-10-31-coverage-facts.md) on 2026-11-08. Each keeps its text and nested lines. Items with open follow-up text stay in the source doc.
 
 - [x] DiffusionGemma config values and model-card numbers recorded (section 1), 2026-10-31
 - [x] Qwen3.8-Flash-Next UD-IQ1_S size (72.5 GB) confirmed from two sources
@@ -44,3 +44,13 @@ _From: External facts behind the 2-coverage research (2026-10-31) / Open checks 
 _From: External facts behind the 2-coverage research (2026-10-31) / Open checks from this research (status 2026-11-08)_
 
 - [x] File lists recorded: `unsloth/GLM-5.3-GGUF` has LICENSE (custom licence, section 3). `unsloth/DeepSeek-V4-Flash-GGUF` has no LICENSE file, and its HF tag is `mit`. `unsloth/Qwen3.8-Flash-Next-GGUF` has no LICENSE file. Its licence is the Qwen Community License 1.0, from the base repo `Qwen/Qwen3.8-Flash-Next` LICENSE (read 2026-11-08).
+
+---
+
+## Moved 2026-11-24 from 2026-10-31-coverage-facts.md
+
+Open items stay in [2026-10-31-coverage-facts.md](../2-coverage/research/2026-10-31-coverage-facts.md).
+
+_From: External facts behind the 2-coverage research (2026-10-31) / Open checks from this research (status 2026-11-08)_
+
+- [x] llama-server logprob field names: read from the pinned `bed0a8566` source (`examples/llama.cpp/llama.cpp`, HEAD checked; no build). Request: `logprobs` (bool) and `top_logprobs` (int, default 20) set `n_probs` (`tools/server/server-common.cpp:1431-1436`); `top_logprobs` without `logprobs: true` is refused there. Response: `choices[].logprobs.content[]`, each entry with `id`, `token`, `bytes`, `logprob` and `top_logprobs` (`prob` and `top_probs` when post-sampling probabilities are requested) (`tools/server/server-task.cpp:296`, `434`). Streaming puts `logprobs` on the final chunk (`server-task.cpp:1150`). Met 2026-11-24 from source; the local `llama-server.exe` is still a stub, so no run was done.
