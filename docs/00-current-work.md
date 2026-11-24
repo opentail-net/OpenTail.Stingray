@@ -270,25 +270,30 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 
 - **Why:** `ReadGgufArray` (`src/OpenTail.Stingray.Core/GgufModel.cs` around lines 645-657) and `SkipGgufValue` (lines 688-695) call each other with no depth limit. An array whose element type is also an array nests one level per 12 bytes of file, so about 1 MB of header gives roughly 80,000 levels and a stack overflow. A stack overflow ends the process and cannot be caught.
 - **Next step:** pass a depth counter through both methods and refuse above a small limit (8 is enough for every real GGUF) with `InvalidDataException`.
-- [ ] **Done when:** a file with a 64-deep nested array is rejected with `InvalidDataException` (the test fails before the fix, because nothing is thrown) on both the read path and the shard-skip path. The test must not overflow the stack itself.
+- [x] **Done when:** a file with a 64-deep nested array is rejected with `InvalidDataException` (the test fails before the fix, because nothing is thrown) on both the read path and the shard-skip path. The test must not overflow the stack itself.
+  - **Done 2026-11-24.** Depth limit 8 (`MaxArrayNestingLevels`, `src/OpenTail.Stingray.Core/GgufModel.cs`): 8 nested levels are accepted, the ninth is refused. Tests `Open_ArrayNestedSixtyFourDeep_IsRefused` and `Open_ShardSkippedArrayNestedSixtyFourDeep_IsRefused` (`tests/OpenTail.Stingray.Tests.Core/GgufUntrustedInputTests.cs`) fail before the fix (`No exception was thrown`); with the depth check disabled 2 of 12 fail. **Open:** the shard-skip test goes through `GgufModel.Open` with split file names; `ParseIndex`'s skip path is not tested directly.
 
 ##### A23. A tensor rank is allocated before it is checked (verified 2026-11-24)
 
 - **Why:** `ParseTensorInfos` (`src/OpenTail.Stingray.Core/GgufModel.cs` around lines 436-442) runs `new long[nDims]` on the file's `uint` before the `nDims > 8` check at line 454. A rank of `0xFFFFFFFF` asks for a huge array and fails with an out-of-memory or overflow exception, not `InvalidDataException`.
 - **Next step:** move the `nDims > 8` check before the allocation.
-- [ ] **Done when:** a tensor entry with rank `0xFFFFFFFF` throws `InvalidDataException` (fails before the fix) and nothing is allocated for it.
+- [x] **Done when:** a tensor entry with rank `0xFFFFFFFF` throws `InvalidDataException` (fails before the fix) and nothing is allocated for it.
+  - **Done 2026-11-24.** The rank check now runs before `new long[nDims]`. Test `Open_TensorRankOfUInt32Max_IsRefusedBeforeAllocation` failed before the fix with `OverflowException` at the allocation, and passes after.
 
 ##### A24. A quantized tensor whose first dimension is not a block multiple is under-counted (verified 2026-11-24, medium-high: a possible read past the mapped view)
 
 - **Why:** `DTypeInfo.ByteSize` (`src/OpenTail.Stingray.Core/Tensor.cs` line 313) computes `(elementCount / blockSize) * bytesPerBlock`, which floors. A Q4_K tensor with dims `[1, N]` reports too small a size, so the bounds check in `ParseTensorInfos` (around lines 475-511) passes. Kernels that read a whole block per row can then read past the end of the mapped file. GGML itself requires the first dimension to be a multiple of the block size.
 - **Next step:** in `ParseTensorInfos`, reject a quantized tensor whose element count is not a multiple of its block size, with `InvalidDataException`. Unquantized types (block size 1) are unaffected.
-- [ ] **Done when:** a Q4_K tensor with first dimension 1 at the end of the file is rejected with `InvalidDataException` (fails before the fix), and an F32 tensor of the same shape still loads.
+- [x] **Done when:** a Q4_K tensor with first dimension 1 at the end of the file is rejected with `InvalidDataException` (fails before the fix), and an F32 tensor of the same shape still loads.
+  - **Done 2026-11-24, with the rule corrected on review.** The first version checked the total element count. Review showed that is not enough: a `[100, 256]` Q4_K tensor has 25600 elements (a whole number of blocks), but its 100-element rows straddle blocks. GGML's rule is on the first dimension, the row length. The check is now `Dimensions[0] % blockSize`, for quantized types only. Tests: `Open_Q4KTensorWithElementCountNotBlockMultiple_IsRefused` (`[1, 100]`), `Open_Q4KTensorWhoseRowLengthIsNotBlockMultiple_IsRefusedEvenWhenTheTotalIsABlockMultiple` (`[100, 256]`, which fails with the element-count mutation: `No exception was thrown`), and the F32 control `Open_F32TensorWithSameShape_Loads`. The `[100, 256]` case is the one that matters for the read past the view.
 
 ##### A25. Bad `general.alignment` and `general.architecture` values throw the wrong exception (verified 2026-11-24, low impact)
 
 - **Why:** `Convert.ToInt32(alignObj)` (`GgufModel.cs` lines 324-325 and 516-517) accepts any value type: alignment 0 gives `DivideByZeroException` in `AlignUp`, a negative value gives a wrong data start, a value above `int.MaxValue` gives `OverflowException`, and a string gives `FormatException`. `(string)archVal` (around line 345) throws `InvalidCastException` for a non-string architecture.
 - **Next step:** accept only an integer type whose value is a positive power of two no larger than 1 MiB for alignment, and a string for the architecture; anything else throws `InvalidDataException`.
-- [ ] **Done when:** alignment 0, -1, 3 (not a power of two), 2^40 and the string `"x"` each throw `InvalidDataException`, and a non-string architecture does too (each test fails before the fix).
+- [x] **Done when:** alignment 0, -1, 3 (not a power of two), 2^40 and the string `"x"` each throw `InvalidDataException`, and a non-string architecture does too (each test fails before the fix).
+  - **Done 2026-11-24.** `ParseAlignment` accepts only an integer GGUF value that is a positive power of two no larger than 1 MiB; `general.architecture` must be a string. Tests `Alignment_*` (zero, negative, not a power of two, 2^40, string) and `Architecture_Integer` fail before the fix with `DivideByZeroException`, no exception, `OverflowException`, `FormatException` or `InvalidCastException`, and pass after. Control `Alignment_PowerOfTwoWithinLimit_Loads` passes before and after.
+  - **Evidence for all four:** `GgufUntrustedInputTests` 13 total, 0 failed; `GgufModelTests` 29, `GgufIndexTests` 13, `GgufModelIntegrationTests` 2, all pass. Core build 0 warnings, 0 errors. `Server.Fast` 704 total, 0 failed, 2 skipped. The Core project as a whole was not run (it is over 15 minutes).
 
 #### Part B: Waiting on you or a machine
 

@@ -13,6 +13,9 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
 {
     private const uint GgufMagic = 0x46554747; // "GGUF" as little-endian uint32
     private const int DefaultAlignment = 32;
+    // Deepest metadata array nesting accepted. The limit stops a hostile header from driving ReadGgufValue/SkipGgufValue
+    // recursion deep enough to overflow the stack, which cannot be caught.
+    private const int MaxArrayNestingLevels = 8;
 
     // Per-shard memory mapping state (index 0 = first/only shard)
     private readonly MemoryMappedFile[] _shardMmfs;
@@ -322,7 +325,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             }
             alignment = DefaultAlignment;
             if (metadata.TryGetValue("general.alignment", out var alignObj))
-                alignment = Convert.ToInt32(alignObj);
+                alignment = ParseAlignment(alignObj);
         }
         else
         {
@@ -342,7 +345,10 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     /// <summary>Synthetic metadata derived from tensor inspection. Shared by the file loader and <see cref="ParseIndex"/> so both see the same facts.</summary>
     private static void InjectDerivedMetadata(Dictionary<string, object> metadata, List<GgufTensorInfo> allTensors)
     {
-            var arch = metadata.TryGetValue("general.architecture", out var archVal) ? (string)archVal : "llama";
+            string arch = "llama";
+            if (metadata.TryGetValue("general.architecture", out var archVal))
+                arch = archVal as string ?? throw new InvalidDataException(
+                    $"general.architecture must be a string, not {archVal?.GetType().Name}.");
             int attnKCount = 0, attnVCount = 0;
             foreach (var t in allTensors)
             {
@@ -437,6 +443,10 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         {
             var tName  = reader.ReadGgufString();
             var nDims  = reader.ReadUInt32();
+            // Refuse the rank before anything is sized from it: a rank such as 0xFFFFFFFF must never reach new long[nDims].
+            if (nDims > 8)
+                throw new InvalidDataException(
+                    $"Tensor '{tName}' declares {nDims} dimensions; GGUF supports at most 8.");
             var dims   = new long[nDims];
             for (uint d = 0; d < nDims; d++)
                 dims[d] = (long)reader.ReadUInt64();
@@ -449,11 +459,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             var offset = reader.ReadUInt64();
 
             // Validate the geometry here, at the only place the raw header is still in scope.
-            // GGML's own limit is 4 dimensions; a larger rank means the file is malformed (or
-            // hostile) and every later size computation derived from it would be meaningless.
-            if (nDims > 8)
-                throw new InvalidDataException(
-                    $"Tensor '{tName}' declares {nDims} dimensions; GGUF supports at most 8.");
+            // (The rank limit is checked above, before the dimension array is allocated.)
             for (uint d = 0; d < nDims; d++)
                 if (dims[d] <= 0)
                     throw new InvalidDataException(
@@ -485,6 +491,16 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                     $"Tensor '{tensor.Name}' has dimensions whose product overflows a 64-bit size.", ex);
             }
 
+            // GGML's rule: the first dimension (the row length) of a quantized tensor must be a whole number of blocks. A
+            // total element count that is a block multiple is not enough: [100, 256] has 25600 elements, but each 100-element
+            // row straddles a block. DTypeInfo.ByteSize floors, so such a row layout under-counts the data and a block-wise
+            // kernel could read past the mapped view. Unquantized types have block size 1 and are unaffected.
+            int blockSize = DTypeInfo.BlockSize(tensor.DType);
+            if (blockSize > 1 && tensor.Dimensions.Length > 0 && tensor.Dimensions[0] % blockSize != 0)
+                throw new InvalidDataException(
+                    $"Tensor '{tensor.Name}' has row length {tensor.Dimensions[0]}, which is not a multiple of the " +
+                    $"{tensor.DType} block size ({blockSize}).");
+
             if (byteSize < 0)
                 throw new InvalidDataException($"Tensor '{tensor.Name}' has a negative byte size ({byteSize}).");
             // DataOffset is unsigned on the wire but indexed as a signed offset. Reject anything that
@@ -515,6 +531,42 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
 
     private static long AlignUp(long value, int alignment) =>
         (value + alignment - 1) / alignment * alignment;
+
+    /// <summary>
+    /// Reads <c>general.alignment</c>. Only an integer GGUF value that is a positive power of two no larger than 1 MiB is
+    /// accepted. Anything else would divide by zero in <see cref="AlignUp"/>, move the data start backwards, or wrap.
+    /// </summary>
+    private static int ParseAlignment(object? value)
+    {
+        const ulong maxAlignment = 1UL << 20; // 1 MiB
+        ulong alignment;
+        try
+        {
+            alignment = value switch
+            {
+                byte v   => v,
+                ushort v => v,
+                uint v   => v,
+                ulong v  => v,
+                sbyte v  => checked((ulong)v),
+                short v  => checked((ulong)v),
+                int v    => checked((ulong)v),
+                long v   => checked((ulong)v),
+                _        => throw BadAlignment(value), // not an integer type
+            };
+        }
+        catch (OverflowException ex)                   // a negative signed value
+        {
+            throw BadAlignment(value, ex);
+        }
+
+        if (alignment == 0 || alignment > maxAlignment || (alignment & (alignment - 1)) != 0)
+            throw BadAlignment(value);
+        return (int)alignment;
+    }
+
+    private static InvalidDataException BadAlignment(object? value, Exception? inner = null) =>
+        new($"general.alignment must be a positive power of two no larger than 1 MiB; the file declares {value ?? "null"}.", inner);
 
     /// <summary>
     /// Pointer-based reader for parsing GGUF binary data from a memory-mapped region.
@@ -624,7 +676,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         /// <summary>
         /// Reads a typed GGUF metadata value.
         /// </summary>
-        public object ReadGgufValue(GgufValueType type) => type switch
+        public object ReadGgufValue(GgufValueType type, int depth = 0) => type switch
         {
             GgufValueType.UInt8   => ReadByte(),
             GgufValueType.Int8    => (sbyte)ReadByte(),
@@ -638,12 +690,20 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             GgufValueType.UInt64  => ReadUInt64(),
             GgufValueType.Int64   => ReadInt64(),
             GgufValueType.Float64 => ReadFloat64(),
-            GgufValueType.Array   => ReadGgufArray(),
+            GgufValueType.Array   => ReadGgufArray(depth),
             _ => throw new InvalidDataException($"Unknown GGUF value type: {type}")
         };
 
-        private object[] ReadGgufArray()
+        /// <summary>Refuses an array that would nest deeper than <see cref="MaxArrayNestingLevels"/>; <paramref name="depth"/> is how many arrays enclose it.</summary>
+        private static void RequireArrayDepth(int depth)
         {
+            if (depth >= MaxArrayNestingLevels)
+                throw new InvalidDataException($"GGUF metadata arrays nest deeper than {MaxArrayNestingLevels} levels.");
+        }
+
+        private object[] ReadGgufArray(int depth)
+        {
+            RequireArrayDepth(depth);
             var elementType = (GgufValueType)ReadUInt32();
             var count = ReadUInt64();
             if (count > int.MaxValue)
@@ -652,7 +712,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             RequirePlausibleCount(count, minBytesPerEntry: 1, "array elements");
             var array = new object[(int)count];
             for (ulong i = 0; i < count; i++)
-                array[i] = ReadGgufValue(elementType);
+                array[i] = ReadGgufValue(elementType, depth + 1);
             return array;
         }
 
@@ -660,7 +720,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         /// Skips over a GGUF metadata value without allocating. Used when parsing redundant
         /// metadata in shard files 1+.
         /// </summary>
-        public void SkipGgufValue(GgufValueType type)
+        public void SkipGgufValue(GgufValueType type, int depth = 0)
         {
             switch (type)
             {
@@ -687,10 +747,11 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                 }
                 case GgufValueType.Array:
                 {
+                    RequireArrayDepth(depth);
                     var elemType = (GgufValueType)ReadUInt32();
                     var count    = ReadUInt64();
                     for (ulong i = 0; i < count; i++)
-                        SkipGgufValue(elemType);
+                        SkipGgufValue(elemType, depth + 1);
                     break;
                 }
                 default:
