@@ -230,7 +230,7 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Next step:** compute the estimate before calling the loader (`_estimateBytes` takes only the `ModelId`, so the order does not change its input). Then a throwing estimator never loads anything.
 - [x] **Done when:** a test whose estimator throws shows that the loader's engine is not left undisposed (either the loader is not called, or its engine's `Dispose` ran). The test fails on the code as it was before the fix.
   - **Done 2026-11-24.** Test `Acquire_EstimatorThrows_DoesNotLeaveALoadedEngineUndisposed`: before the fix the loader ran once and its engine was never disposed. The estimate is now computed before the loader runs. Mutation (old order restored) fails the test. Passes after the fix. Evidence as for A15 (same build and runs).
-  - **Still open, outside this fix:** a `ModelRuntime` constructor that throws after a successful load would still leak its engine.
+  - **Checked 2026-11-24 (iteration 47): not reachable, no change.** The gap was a `ModelRuntime` constructor that throws after a successful load. The constructor only assigns fields and calls `Touch()` (a clock read); nothing in it can throw, so the load path cannot leak there.
 
 ##### A17. Lost wake-up for single-slot waiters (verified 2026-11-24, narrow window)
 
@@ -311,7 +311,7 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Fix (done):** `StopSequenceList` refuses a stop string longer than 256 characters with a 400 that names the field and the limit (`RequestParameterValidation.cs`). **Owner decision, recommended default taken:** 256 characters; real stop sequences are a few characters. The owner may choose another cap.
 - [x] **Done when:** a 257-character stop string is refused and a 256-character one is accepted (`StopSequence_LongerThan256Chars_IsRefused_AtTheLimitIsAccepted`, `tests/OpenTail.Stingray.Tests.Server.Fast/ServerLibraryTests.cs`; fails with `Assert.NotNull() Failure: Value is null` when the check is removed; passes now). Server.Fast 706 total, 0 failed, 2 skipped.
 
-##### A28. A prompt longer than the context window is a 500, not a 400 (verified by reading 2026-11-24; open)
+##### A28. A prompt longer than the context window is a 500, not a 400 (verified by reading 2026-11-24; fixed 2026-11-24)
 
 - **Why:** the server never checks a prompt's token count against the model's context length. The engine reserves KV space clamped to `MaxSeqLen` (`src/OpenTail.Stingray.Engine/ContinuousBatchingEngine.cs` around line 1012), and the forward pass throws `ArgumentOutOfRangeException` at the first position past the context (`ForwardPass.BatchedIO.cs` around lines 70-76: "Position exceeds the active context length"). Nothing maps that exception, so a client's over-long prompt is a 500. The engine's `ContextLimitExceededException` (`src/OpenTail.Stingray.Engine/ContextLimitExceededException.cs`) exists and is **never thrown**, so the intended error path was never wired. The forward pass's check is correct: it stops memory corruption. The problem is only the status code.
 - **Next step:** at admission, where the prompt's token count is known, refuse a prompt longer than `MaxSequenceLength` with `ContextLimitExceededException` before any work starts; map that exception to a 400 with an OpenAI-style `context_length_exceeded` error in the chat, responses and Anthropic endpoints (for streaming, check before the 200 header is sent).
