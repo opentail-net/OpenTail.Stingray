@@ -44,6 +44,44 @@ public sealed class RunStatsJsonSinkTests
     }
 
     [Fact]
+    public void Render_ReportsPerturbed_WhenAnyDiagnosticSwitchChangesWhatIsMeasured()
+    {
+        // A benchmark script refuses a run whose result says perturbed=true. Any diagnostic switch can add syncs, prints or dumps,
+        // so each one must flag the run: this one (STINGRAY_PROFILE_DECODE) was not checked before, so the flag was false.
+        const string name = "STINGRAY_PROFILE_DECODE";
+        string? before = Environment.GetEnvironmentVariable(name);
+        try
+        {
+            Environment.SetEnvironmentVariable(name, "1");
+            using var doc = JsonDocument.Parse(new RunStatsJsonSink("unused.json").Render());
+            Assert.True(doc.RootElement.GetProperty("perturbed").GetBoolean(), $"{name}=1 must mark the run perturbed");
+        }
+        finally { Environment.SetEnvironmentVariable(name, before); }
+    }
+
+    [Fact]
+    public void Render_DoesNotReportPerturbed_ForAnOutputPathOrAZeroValue()
+    {
+        // STINGRAY_STATS_JSON only names the result file, and a switch set to "0" is off.
+        const string stats = "STINGRAY_STATS_JSON";
+        const string profile = "STINGRAY_PROFILE_PREFILL";
+        string? statsBefore = Environment.GetEnvironmentVariable(stats);
+        string? profileBefore = Environment.GetEnvironmentVariable(profile);
+        try
+        {
+            Environment.SetEnvironmentVariable(stats, "unused.json");
+            Environment.SetEnvironmentVariable(profile, "0");
+            using var doc = JsonDocument.Parse(new RunStatsJsonSink("unused.json").Render());
+            Assert.False(doc.RootElement.GetProperty("perturbed").GetBoolean());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(stats, statsBefore);
+            Environment.SetEnvironmentVariable(profile, profileBefore);
+        }
+    }
+
+    [Fact]
     public void Render_CarriesTheQwenCounters_OnlyWhenAForwardCountersEventArrived()
     {
         var sink = new RunStatsJsonSink("unused.json");

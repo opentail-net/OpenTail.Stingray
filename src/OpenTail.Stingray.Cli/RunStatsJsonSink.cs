@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Cli;
 ///   decode_tokens (incl. hidden reasoning tokens), visible_tokens, decode_ms, decode_tokens_per_second,
 ///   speculative_steps, speculative_drafts_proposed, speculative_drafts_accepted,
 ///   ple_gather_rows, ple_gather_bytes, ple_table_bytes (qwen4exp only; cumulative since load),
-///   perturbed (true when a diagnostic profile switch was on: never compare such a run).
+///   perturbed (true when any diagnostic switch was on: never compare such a run; see <see cref="DiagnosticSwitchOn"/>).
 /// A field is omitted when its event never happened. When a run has several prefill/decode phases the last one wins.
 /// </summary>
 internal sealed class RunStatsJsonSink : IEngineEventSink
@@ -104,11 +104,27 @@ internal sealed class RunStatsJsonSink : IEngineEventSink
         Num("ple_gather_rows", _pleRows, _hasCounters);
         Num("ple_gather_bytes", _pleBytes, _hasCounters);
         Num("ple_table_bytes", _pleTableBytes, _hasCounters);
-        bool perturbed = Environment.GetEnvironmentVariable("STINGRAY_MOE_PHASE_TIMING") == "1"
-                         || Environment.GetEnvironmentVariable("STINGRAY_PROFILE_GPU_SPLIT") == "1";
-        sb.Append(",\n  \"perturbed\": ").Append(perturbed ? "true" : "false").Append("\n}\n");
+        sb.Append(",\n  \"perturbed\": ").Append(DiagnosticSwitchOn() ? "true" : "false").Append("\n}\n");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Diagnostic settings that only name an output file or a location: they do not change what a run measures or does, so
+    /// they do not make a run perturbed.
+    /// </summary>
+    private static readonly string[] s_notPerturbing = ["STINGRAY_STATS_JSON", "STINGRAY_MODEL_DIRS"];
+
+    /// <summary>
+    /// True when any setting classed "diagnostic" is switched on. A diagnostic switch adds synchronisation, prints, dumps or trace
+    /// work, so a run taken with one is never a benchmark. Checked against the whole inventory, not a fixed list, so a new
+    /// diagnostic setting counts without a code change here. "0" and empty are off.
+    /// </summary>
+    internal static bool DiagnosticSwitchOn() =>
+        EnvironmentVariableClasses.All.Any(kv => kv.Value == "diagnostic"
+            && Array.IndexOf(s_notPerturbing, kv.Key) < 0
+            && IsSwitchOn(Environment.GetEnvironmentVariable(kv.Key)));
+
+    private static bool IsSwitchOn(string? value) => !string.IsNullOrEmpty(value) && value != "0";
 
     private static string Escape(string s) => s.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
 }
