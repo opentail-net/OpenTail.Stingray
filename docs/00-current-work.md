@@ -330,6 +330,8 @@ Lower priority, not planned: AI21 Jamba, Kimi Linear, Arcee AFM, ServiceNow Apri
 Resume from [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md). Rules: [performance-measurement-rules](reference/performance-measurement-rules.md). Do not reopen the closed Q4_K repacked-GEMM investigation. When the owner resumes, this is the order:
 
 - [ ] 1. SmolLM2 prefill at about 0.89x of llama.cpp: the Q4_K Path-2 GEMM is 65% of trunk time; then RoPE and attention.
+  - **Profiled 2026-11-24 (default route, SmolLM2-1.7B Q4_K_M, 2550-token prompt, dotnet-stack sampling, 76 working samples):** the batched F32 GEMM (dequantised weights, dequant cache on) is about 80% of working samples and attention about 18%. Prefill ran at 75 tok/s.
+  - **No cheap bit-identical speed-up found yet:** the spin pool (`STINGRAY_CPU_POOL=spin`) runs 8–23 tok/s against 80 tok/s for the default (three runs each, same generated text). Splitting the F32 GEMM into 8 row chunks per thread instead of 2 changes nothing (median 81.8 vs 82.9 tok/s, three runs each, same text). The dequant cache on versus off makes no difference either (about 82 vs 85 tok/s). The int8 batched path remains about 2.7x faster, but it is not bit-identical to decode and changing its default is an owner decision (ADR-0003).
 - [ ] 2. int8 alignment with ggml Q8_K (ADR-0003 gap): the Q8_KS variant of the repacked Q4_Kx8 GEMM.
 - [ ] 3. Batched prefill for partially offloaded dense models and the remaining per-token paths.
 - [ ] 4. MTP on Qwen3.6-27B (UD-Q3_K_XL) is slower than plain (0.77-0.81x). Check the tensor-dtype coverage of the shared-decode kernels first. Source: [ADR-0002](reference/adr-0002-hybrid-gdn-mtp-chunked-prefill.md).
