@@ -70,6 +70,25 @@ public sealed unsafe class GpuBuffer : IDisposable
     }
 
     /// <summary>
+    /// A host-visible, host-cached staging buffer (A31): reads from it are cached on the CPU, where the plain
+    /// <see cref="CreateStaging"/> type may be write-combined and slow to read. Falls back to <see cref="CreateStaging"/> when the
+    /// device advertises no such memory type, so callers do not need to check first.
+    /// </summary>
+    public static GpuBuffer CreateStagingHostCached(VulkanBackend backend, ulong size, VkBufferUsageFlags usage)
+    {
+        try
+        {
+            return Create(backend, size, usage,
+                VkMemoryPropertyFlags.HostVisible | VkMemoryPropertyFlags.HostCoherent | VkMemoryPropertyFlags.HostCached);
+        }
+        catch (InvalidOperationException)
+        {
+            // FindMemoryType throws when no advertised type matches this buffer's memory-type bits; the ordinary staging type is used then.
+            return CreateStaging(backend, size, usage);
+        }
+    }
+
+    /// <summary>
     /// Create a pinned host-visible buffer accessible from both CPU and GPU.
     /// Tries BAR memory (HostVisible + DeviceLocal) first for zero-copy GPU access,
     /// falls back to plain host-visible if BAR is not available.

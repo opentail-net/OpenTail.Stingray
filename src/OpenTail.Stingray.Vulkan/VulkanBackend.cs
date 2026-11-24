@@ -152,15 +152,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         var gpuBuf = GetBuffer(src);
         ulong byteSize = (ulong)((long)floatCount * sizeof(float));
 
-        if (_downloadStaging == null || _downloadStagingSize < byteSize)
-        {
-            _downloadStaging?.Dispose();
-            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
-            _downloadStagingSize = byteSize;
-        }
+        EnsureDownloadStaging(byteSize);
 
         VkBufferCopy copyRegion = new() { size = byteSize };
-        _vkd.vkCmdCopyBuffer(_transferCmd, gpuBuf.Buffer, _downloadStaging.Buffer, 1, &copyRegion);
+        _vkd.vkCmdCopyBuffer(_transferCmd, gpuBuf.Buffer, _downloadStaging!.Buffer, 1, &copyRegion);
     }
 
     /// <summary>CPU map-and-copy from the staging buffer populated by <see cref="RecordDownloadToStaging"/>.</summary>
@@ -168,7 +163,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     {
         float* mapped = (float*)_downloadStaging!.Map();
         new Span<float>(mapped, dst.Length).CopyTo(dst);
-        _downloadStaging.Unmap();
+        _downloadStaging!.Unmap();
     }
 
     /// <summary>Insert a transfer→compute barrier (copy finished before shader reads).</summary>
@@ -940,6 +935,25 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
     }
 
+    /// <summary>One memory type the device advertises: its index, property flags, heap index and that heap's size in bytes.</summary>
+    public readonly record struct MemoryTypeInfo(int Index, VkMemoryPropertyFlags Flags, uint HeapIndex, ulong HeapSize);
+
+    /// <summary>The device's memory types, read-only, for diagnostics (for example, whether a host-cached download staging type exists).</summary>
+    public IReadOnlyList<MemoryTypeInfo> MemoryTypes
+    {
+        get
+        {
+            var list = new List<MemoryTypeInfo>((int)_memoryProperties.memoryTypeCount);
+            for (int i = 0; i < (int)_memoryProperties.memoryTypeCount; i++)
+            {
+                uint heap = _memoryProperties.memoryTypes[i].heapIndex;
+                list.Add(new MemoryTypeInfo(i, _memoryProperties.memoryTypes[i].propertyFlags, heap,
+                    _memoryProperties.memoryHeaps[(int)heap].size));
+            }
+            return list;
+        }
+    }
+
     /// <summary>Find the memory type index matching the requested flags.</summary>
     public uint FindMemoryType(uint typeFilter, VkMemoryPropertyFlags properties)
     {
@@ -1301,6 +1315,28 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     // Cached staging buffer for downloads (avoids per-call alloc/free)
     private GpuBuffer? _downloadStaging;
     private ulong _downloadStagingSize;
+    private bool _downloadStagingCached;
+
+    /// <summary>
+    /// Device-to-host download staging uses a host-cached memory type when the device advertises one (A31; on by default
+    /// since 2026-11-24, measured on the iGPU: a 9.6 MiB download went from 51.8 ms to 1.2 ms). Set to false to fall back to the
+    /// ordinary write-combined staging type. Changing it takes effect at the next download.
+    /// </summary>
+    public bool DownloadStagingHostCached { get; set; } = true;
+
+    /// <summary>Reuses the download staging buffer, or replaces it when it is too small or the cache setting has changed.</summary>
+    private void EnsureDownloadStaging(ulong byteSize)
+    {
+        if (_downloadStaging == null || _downloadStagingSize < byteSize || _downloadStagingCached != DownloadStagingHostCached)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = DownloadStagingHostCached
+                ? GpuBuffer.CreateStagingHostCached(this, byteSize, VkBufferUsageFlags.TransferDst)
+                : GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+            _downloadStagingCached = DownloadStagingHostCached;
+        }
+    }
 
     // Q8_1 activation scratch for the DP4A batched Q4_K matvec (issue #308). Holds the
     // int8-quantized inputs for all nTok tokens: nTok · (cols/32) blocks × 36 bytes. Grown on
@@ -1419,21 +1455,14 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         var gpuBuf = GetBuffer(src);
         ulong byteSize = (ulong)(dst.Length * sizeof(float));
 
-        // Reuse or grow staging buffer
-        if (_downloadStaging == null || _downloadStagingSize < byteSize)
-        {
-            _downloadStaging?.Dispose();
-            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize,
-                VkBufferUsageFlags.TransferDst);
-            _downloadStagingSize = byteSize;
-        }
+        EnsureDownloadStaging(byteSize);
 
-        CopyBuffer(gpuBuf, _downloadStaging, byteSize);
+        CopyBuffer(gpuBuf, _downloadStaging!, byteSize);
 
         var stagingSw = s_profGpuSplit ? System.Diagnostics.Stopwatch.StartNew() : null;
-        float* mapped = (float*)_downloadStaging.Map();
+        float* mapped = (float*)_downloadStaging!.Map();
         new Span<float>(mapped, dst.Length).CopyTo(dst);
-        _downloadStaging.Unmap();
+        _downloadStaging!.Unmap();
         if (stagingSw is not null) s_profStagingCopyMs += stagingSw.Elapsed.TotalMilliseconds;
     }
 
@@ -1477,9 +1506,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         CopyBuffer(gpuBuf, _downloadStaging, byteSize);
 
-        Half* mapped = (Half*)_downloadStaging.Map();
+        Half* mapped = (Half*)_downloadStaging!.Map();
         new ReadOnlySpan<Half>(mapped, dst.Length).CopyTo(dst);
-        _downloadStaging.Unmap();
+        _downloadStaging!.Unmap();
     }
 
     public unsafe Tensor UploadBf16(ReadOnlySpan<ushort> data, TensorShape shape)
@@ -1521,9 +1550,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         CopyBuffer(gpuBuf, _downloadStaging, byteSize);
 
-        ushort* mapped = (ushort*)_downloadStaging.Map();
+        ushort* mapped = (ushort*)_downloadStaging!.Map();
         new ReadOnlySpan<ushort>(mapped, dst.Length).CopyTo(dst);
-        _downloadStaging.Unmap();
+        _downloadStaging!.Unmap();
     }
 
     public unsafe Tensor UploadFp8(ReadOnlySpan<byte> data, TensorShape shape)
@@ -1565,9 +1594,9 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
 
         CopyBuffer(gpuBuf, _downloadStaging, byteSize);
 
-        byte* mapped = (byte*)_downloadStaging.Map();
+        byte* mapped = (byte*)_downloadStaging!.Map();
         new ReadOnlySpan<byte>(mapped, dst.Length).CopyTo(dst);
-        _downloadStaging.Unmap();
+        _downloadStaging!.Unmap();
     }
 
     /// <summary>
