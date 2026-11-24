@@ -493,6 +493,28 @@ public sealed class ModelRuntimeManagerTests
         }
     }
 
+    [Fact]
+    public async Task SingleSlot_HandleReleasedAfterTheBusyCheck_StillWakesTheWaiter()
+    {
+        // A17, deterministic: the release lands after the waiter's busy check and before it takes the residency signal, which is
+        // exactly the window the stress test above can only hit by chance. The waiter must capture the signal before the busy check
+        // (so the release completes it), or it waits on a signal no later event completes and the 5-second timeout fails.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value), ModelResidencyMode.SingleSlot);
+        var hA = await manager.AcquireAsync(Id("a"));
+        bool fired = false;
+        manager.SingleSlotWaitHookForTests = () =>
+        {
+            if (fired) return;
+            fired = true;
+            hA.Dispose();   // releases the only handle of "a" inside the waiter's window
+        };
+
+        using var hB = await manager.AcquireAsync(Id("b")).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(fired, "the hook never ran: the waiter did not take the wait path, so the window was not exercised");
+        Assert.Equal(Id("b"), hB.Runtime.Id);
+    }
+
     // ── Cross-model concurrency / no global lock ────────────────────────────
 
     [Fact]

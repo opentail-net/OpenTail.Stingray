@@ -129,6 +129,12 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     /// that set an entry may remove it (ReferenceEquals), so a stale caller of an earlier load cannot drop
     /// a later load's protection.</summary>
     private readonly Dictionary<ModelId, PendingLoad> _awaitingClaim = new();
+    /// <summary>
+    /// Test seam for the lost-wake-up window (A17), null in production. Runs inside <c>_lock</c> when a single-slot caller has decided
+    /// to wait, just before it takes the residency signal, so a test can release a handle at exactly that point.
+    /// </summary>
+    internal Action? SingleSlotWaitHookForTests { get; set; }
+
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
     private bool _disposed;
@@ -313,6 +319,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     // single-slot residency (invariant 10), and never load a second model alongside
                     // an in-flight one — wait for it to free up instead. RunLoad notifies on both
                     // success and failure, so this wait always ends.
+                    SingleSlotWaitHookForTests?.Invoke();
                     waitForResidencyChange = residencyChanged;
                 }
                 else
