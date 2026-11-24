@@ -18,6 +18,20 @@ public sealed class ParaformerOnnxRealWeightsTests
     private static string? FindModelPath(string fileName) => OpenTail.Stingray.Tests.Audio.AudioTestPaths.FindModelFile(fileName);
 
     [Fact]
+    public void Load_WithoutAnExplicitTokensPath_FindsTheVocabBesideTheModel()
+    {
+        // The pipeline no longer checks a fixed machine path for the vocab: with no tokensPath argument it must find
+        // paraformer-zh-small-tokens.txt beside the model file, and fail with FileNotFoundException when it is not there.
+        string? modelPath = FindModelPath("paraformer-zh-small.int8.onnx");
+        Assert.SkipUnless(modelPath != null, "paraformer-zh-small.int8.onnx not found");
+        string beside = Path.Combine(Path.GetDirectoryName(modelPath!)!, "paraformer-zh-small-tokens.txt");
+        Assert.SkipUnless(File.Exists(beside), "paraformer-zh-small-tokens.txt is not beside the model file");
+
+        var pipeline = ParaformerOnnxPipeline.Load(modelPath!);
+        pipeline.Dispose();
+    }
+
+    [Fact]
     public void Load_RealOnnxCheckpoint_ReadsRealCustomMetadata()
     {
         string? modelPath = FindModelPath("paraformer-zh-small.int8.onnx");

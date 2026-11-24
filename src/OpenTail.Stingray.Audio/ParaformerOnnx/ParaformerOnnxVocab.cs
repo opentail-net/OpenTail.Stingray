@@ -9,8 +9,8 @@ namespace OpenTail.Stingray.Audio.ParaformerOnnx;
 /// File format: one "symbol id" pair per line (`tokens.txt`, sherpa-onnx's standard format).
 /// This project's copy, for the local `paraformer-zh-small.int8.onnx` checkpoint specifically, is
 /// downloaded from the real matching sherpa-onnx release
-/// (`csukuangfj/sherpa-onnx-paraformer-zh-small-2024-03-09`, HuggingFace) to
-/// `F:\_models\paraformer-zh-small-tokens.txt` -- confirmed the real match for THIS checkpoint by
+/// (`csukuangfj/sherpa-onnx-paraformer-zh-small-2024-03-09`, HuggingFace) as
+/// `paraformer-zh-small-tokens.txt` -- confirmed the real match for THIS checkpoint by
 /// line count (8359 lines == this checkpoint's own `vocab_size` custom-metadata value, exactly)
 /// and by `&lt;/s&gt;` sitting at id 2 in both.
 /// </summary>

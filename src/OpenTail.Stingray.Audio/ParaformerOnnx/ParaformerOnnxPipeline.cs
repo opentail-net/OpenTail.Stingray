@@ -46,10 +46,9 @@ public sealed class ParaformerOnnxPipeline : ISpeechToTextPipeline
     }
 
     /// <summary>
-    /// Loads the real ONNX checkpoint plus its matching real `tokens.txt`. `tokensPath` defaults
-    /// to `F:\_models\paraformer-zh-small-tokens.txt` (this session's real downloaded vocab for
-    /// this exact checkpoint) if not given, falling back to a `.tokens.txt` sibling of the model
-    /// file.
+    /// Loads the real ONNX checkpoint plus its matching real `tokens.txt`. `tokensPath` defaults to
+    /// `paraformer-zh-small-tokens.txt` beside the model file when not given. The tokens file is never
+    /// looked up at a fixed machine path: the caller passes it, or places it next to the model.
     /// </summary>
     public static ParaformerOnnxPipeline Load(string onnxPath, string? tokensPath = null)
     {
@@ -61,8 +60,8 @@ public sealed class ParaformerOnnxPipeline : ISpeechToTextPipeline
         {
             model.Dispose();
             throw new FileNotFoundException(
-                "Paraformer tokens.txt not found. Expected at F:\\_models\\paraformer-zh-small-tokens.txt " +
-                "or as a sibling of the ONNX model file.", tokensPath);
+                "Paraformer tokens.txt not found. Pass the tokens path explicitly, or place " +
+                "paraformer-zh-small-tokens.txt beside the ONNX model file.", tokensPath);
         }
 
         var vocab = ParaformerOnnxVocab.Load(tokensPath);
@@ -71,9 +70,6 @@ public sealed class ParaformerOnnxPipeline : ISpeechToTextPipeline
 
     private static string? ResolveTokensPath(string onnxPath)
     {
-        const string wellKnown = @"F:\_models\paraformer-zh-small-tokens.txt";
-        if (File.Exists(wellKnown)) return wellKnown;
-
         var dir = Path.GetDirectoryName(onnxPath);
         if (dir is null) return null;
         var sibling = Path.Combine(dir, "paraformer-zh-small-tokens.txt");
