@@ -228,11 +228,15 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 
 ##### B2. Fair turn gate measurement
 
+- [x] **Status 2026-11-24: done.** The numbers are in the 032 plan under Slice 5 (measured 2026-10-31 with the 1.5B and 0.5B Qwen2.5 pair, and re-run on a quiet machine on 2026-11-24). The gate stays off for CPU models. A B2 harness was started on 2026-11-24 with SmolLM2 models, but it stopped because those checkpoints are not on this machine, and it was not needed: the existing `FairGateMeasurementTests` already runs this protocol.
+  - **Open (new):** the prefill model took 7.9 s in the 2026-10-31 record and 44.8 s on 2026-11-24, for the same three prompts. Not investigated. Check whether this is a regression before anything else uses it as a baseline.
+  - **Not measured:** the shared-GPU case (two engines on one Vulkan device with no arbitration). The 032 plan says this is the one case where the gate could help. This machine has an iGPU, so it could give partial evidence, but per CLAUDE.md rule 13 it would not settle the question.
+
 - **Why:** the gate is built and off by default. No throughput number exists for it.
 - **Next step:** two resident models, one prefill-heavy and one decode-heavy, with and without `FairModelScheduling`. Per-model latency and total throughput, three interleaved runs.
 - **Depends on:** B1 (co-residency depends on the memory figure).
 - **Decision after:** whether to route `InferenceEngine` through the gate.
-- [ ] **Done when:** the numbers are in [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md).
+- [x] **Done when:** the numbers are in [3-product-and-runtime/032-multi-model-inference-runtime-plan.md](3-product-and-runtime/032-multi-model-inference-runtime-plan.md). Met 2026-11-24. Decision (the plan's own conclusion, recorded here): the single-request `InferenceEngine` is not routed through the gate.
 
 ##### B3. Phi-3.5-MoE: which checkpoint is real
 
