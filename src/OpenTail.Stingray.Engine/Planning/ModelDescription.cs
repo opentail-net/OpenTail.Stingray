@@ -110,9 +110,12 @@ public sealed record ModelDescription(
 
         bool cpuFixedWeights = ShouldKeepFixedWeightsOnCpu(tokenEmbd, output);
         long embGpuBytes = cpuFixedWeights ? 0 : MeasureGpuEmbeddingBytes(tokenEmbd);
+        // A tied output (no output.weight) is shared with token_embd and adds no bytes, as TierPlanner.Plan(GgufModel) charges. Charging a second
+        // copy of the embedding here (the old `: embGpuBytes`) double-counted it. A14, 2026-11-24, Qwen3-0.6B Q8_0 at 28 layers: planned 1,830,954,496
+        // bytes, device-local bytes measured on the live Vulkan backend 1,208,645,380; the gap, 622,309,116, is one F32 embedding (622,329,856).
         long outputGpuBytes = cpuFixedWeights
             ? 0
-            : (output is not null ? EstimateGpuTensorBytes(output.Value) : embGpuBytes);
+            : (output is not null ? EstimateGpuTensorBytes(output.Value) : 0);
 
         var perLayerGpuBuilder = ImmutableArray.CreateBuilder<long>(hp.NumLayers);
         var perLayerCpuBuilder = ImmutableArray.CreateBuilder<long>(hp.NumLayers);

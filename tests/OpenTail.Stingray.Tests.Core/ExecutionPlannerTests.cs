@@ -532,6 +532,54 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(baseline, PlanGgufGpuWeightBytes(metadata, [.. baseTensors, .. unnamed], hw));
     }
 
+    /// <summary>
+    /// A14: a tied output (token_embd present, no output.weight) must cost the same GPU weight bytes on both planner paths. The facts path (ExecutionPlanner,
+    /// which the server loader uses) used to charge a second F32 copy of the embedding; TierPlanner.Plan(GgufModel) charges 0 for a tied output. The live
+    /// Vulkan figure for Qwen3-0.6B Q8_0 at 28 layers matches the GGUF path, so the facts path was the one that overstated.
+    /// </summary>
+    [Fact]
+    public void Plan_TiedOutput_FactsPathMatchesGgufPath()
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 100u)
+        };
+        // No output.weight: the output head is tied to token_embd.
+        var tensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        var hw = new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false);
+        var caps = new BackendCapabilities(
+            CudaAvailable: false,
+            VulkanAvailable: true,
+            HardwareProfile: hw,
+            VulkanDeviceName: "Simulated Vulkan GPU",
+            RecommendedThreadCount: 8);
+
+        // Facts path: ExecutionPlanner -> TierPlanner.Plan(ModelPlanningFacts), the path the server loader uses.
+        var desc = ModelDescription.FromPackage(LooseGgufModelPackage.Open(CreateGguf(metadata, tensors)));
+        var plan = ExecutionPlanner.Plan(desc, new ExecutionRequest { PinnedContextSize = 512, PinnedGpuLayers = 2 }, caps);
+        long factsBytes = plan.Placement!.GpuWeightBytes;
+
+        // GGUF path: TierPlanner.Plan(GgufModel, ...), every layer pinned to the GPU.
+        long ggufBytes = PlanGgufGpuWeightBytes(metadata, tensors, hw);
+
+        // One F32 embedding (64 x 100 x 4) plus two layers of one F32 attn_q each (64 x 64 x 4). A second embedding copy would make the facts figure 83,968.
+        long expected = 64 * 100 * 4 + 2 * 64 * 64 * 4;
+        Assert.Equal(expected, ggufBytes);
+        Assert.Equal(ggufBytes, factsBytes);
+    }
+
     // Writes the synthetic GGUF, opens it as a GgufModel and plans it through TierPlanner.Plan(GgufModel, ...).
     // Every layer is pinned to the GPU, so GpuWeightBytes is the fixed embedding/output bytes plus each layer's
     // measured bytes, with no dependence on the auto-pack budget.

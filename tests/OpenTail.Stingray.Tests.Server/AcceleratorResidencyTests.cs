@@ -72,37 +72,50 @@ public sealed class AcceleratorResidencyTests
     }
 
     [Fact]
-    public async Task RealVulkanModel_PartialOffload_AcceleratorEstimate_IsSmallerThanFullFileSize()
+    public async Task RealVulkanModel_PartialOffload_PlansFewerAcceleratorBytesThanFullOffload()
     {
         // docs/032 Phase 3 Slice 8 follow-up: a hybrid/partial-offload model previously reported
         // the whole file size as its accelerator-resident estimate (a documented overestimate).
         // With GpuWeightBytesExact threaded through from TierPlanner's own placement, only a few
         // GPU-resident layers should report a meaningfully smaller figure than the full file —
         // proving the precise value is actually being used, not silently falling back.
+        // A14 (2026-11-24): the file-size premise is wrong for a tied output. The planner counts token_embd once as F32 (622 MB for this
+        // model), so 4 of 28 layers plan about 707 MB, above the 639 MB file, and the live Vulkan backend holds the same (measured with the
+        // B1 live figure: planned 706,659,840 vs live 706,668,036 bytes at 4 layers; 1,208,624,640 vs 1,208,645,380 at 28). So this compares
+        // partial offload with full offload of the same model instead: fewer GPU layers must plan fewer accelerator bytes.
         string? modelPath = FindModel("Qwen3-0.6B-Q8_0.gguf"); // 28 layers total (qwen3.block_count)
         Assert.SkipUnless(modelPath is not null,
             "Qwen3-0.6B-Q8_0.gguf is required for this accelerator-residency test.");
         SkipUnlessVulkanAvailable();
 
+        // well short of 28 — forces the genuinely-partial hybrid path
+        long partial = await LoadAcceleratorEstimateAsync(modelPath!, nGpuLayers: 4);
+        long full = await LoadAcceleratorEstimateAsync(modelPath!, nGpuLayers: 28);
+
+        Assert.True(partial > 0, $"expected a positive accelerator byte estimate for 4/28 layers, got {partial}");
+        Assert.True(full > 0, $"expected a positive accelerator byte estimate for 28/28 layers, got {full}");
+        Assert.True(partial < full,
+            $"partial offload (4/28 layers) should plan fewer accelerator bytes than full offload (28/28), " +
+            $"got {partial:N0} vs {full:N0} bytes.");
+    }
+
+    /// <summary>Loads the model on the Vulkan backend with <paramref name="nGpuLayers"/> GPU layers; returns the accelerator estimate the loaded runtime records.</summary>
+    private static async Task<long> LoadAcceleratorEstimateAsync(string modelPath, int nGpuLayers)
+    {
         using var manager = new ModelRuntimeManager(id => InferenceEngineLoader.Load(
             new OpenTailStingrayServerOptions
             {
                 ModelPath = id.Value,
                 Backend = ServerBackend.Vulkan,
-                NGpuLayers = 4, // well short of 28 — forces the genuinely-partial hybrid path
+                NGpuLayers = nGpuLayers,
                 ContextSize = 512,
             }));
 
-        using var handle = await manager.AcquireAsync(ModelId.Canonicalize(modelPath!));
+        using var handle = await manager.AcquireAsync(ModelId.Canonicalize(modelPath));
 
-        long fileSize = new FileInfo(modelPath!).Length;
         Assert.True(handle.Runtime.IsAcceleratorResident);
         Assert.NotNull(handle.Runtime.Loaded.GpuWeightBytesExact);
-        long estimate = handle.Runtime.AcceleratorResidentBytesEstimate;
-        Assert.True(estimate > 0, $"expected a positive accelerator byte estimate, got {estimate}");
-        Assert.True(estimate < fileSize,
-            $"partial offload (4/28 layers) should report meaningfully less than the full file " +
-            $"size ({fileSize:N0} bytes), got {estimate:N0} bytes — looks like the fix isn't wired up.");
+        return handle.Runtime.AcceleratorResidentBytesEstimate;
     }
 
     // ── Full end-to-end admission through the real HostResourceBudget ───────
