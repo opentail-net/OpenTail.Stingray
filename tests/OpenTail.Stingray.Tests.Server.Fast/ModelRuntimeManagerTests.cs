@@ -1411,7 +1411,8 @@ public sealed class ModelRuntimeManagerTests
         }, ModelResidencyMode.MultiSlot, estimateBytes: id => id.Value == "d" ? 0 : 100)
         {
             ResourceBudget = budget,
-            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            // Longer than A's loader hold (10 s) and than any runner stall: a waiter that times out completes, which the test would read as an admission.
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30),
         };
 
         try
@@ -1422,8 +1423,8 @@ public sealed class ModelRuntimeManagerTests
 
             // C cannot fit beside A's in-flight 100 bytes. It must queue, and its loader must not run.
             var acquireC = manager.AcquireAsync(Id("c")).AsTask();
-            await Task.Delay(200);
-            Assert.False(acquireC.IsCompleted);
+            await WaitUntilQueuedAsync(manager, 1);
+            AssertStillQueued(acquireC, "before D was released");
             Assert.Equal(1, manager.GetStats().QueuedAdmissions);
             Assert.Equal(0, Volatile.Read(ref cLoads));
 
@@ -1432,7 +1433,7 @@ public sealed class ModelRuntimeManagerTests
             handleD.Dispose();
             Assert.Equal(1, manager.GetStats().ModelEvictions);
             await Task.Delay(200);
-            Assert.False(acquireC.IsCompleted);
+            AssertStillQueued(acquireC, "after the wake scan that evicted D");
             Assert.Equal(1, manager.GetStats().QueuedAdmissions);
             Assert.Equal(0, Volatile.Read(ref cLoads));
 
@@ -1451,6 +1452,14 @@ public sealed class ModelRuntimeManagerTests
             releaseA.Set();
             manager.Dispose();
         }
+    }
+
+    /// <summary>Fails with what the acquisition actually did, so a failure names its cause: a timeout, a refusal, or a wrong admission.</summary>
+    private static void AssertStillQueued(Task acquire, string when)
+    {
+        if (!acquire.IsCompleted) return;
+        string outcome = acquire.Exception?.GetBaseException().Message ?? "admitted";
+        Assert.Fail($"the waiter completed {when} while A was still loading: status {acquire.Status}, outcome: {outcome}");
     }
 
     /// <summary>
