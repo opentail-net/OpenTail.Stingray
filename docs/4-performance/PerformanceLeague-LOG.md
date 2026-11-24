@@ -2295,3 +2295,23 @@ Four CLI builds, each from a copy of HEAD (`git archive`, scratch, not in the re
 **Conclusion.** The conversion is real cost, about a quarter of the Q5_0 dot. The managed options tried do not recover it. The remaining option is to precompute float scales at load: 4 extra bytes per 32-weight block (about +18% of Q5_0 tensor bytes, and about +12% of Q8_0). That adds memory traffic, which could cancel the gain when decode streams from DRAM. It is a memory trade, so it is an owner decision and it is not implemented. Recorded as an owner-decision candidate.
 
 **Fused gate and up for Q5_0 (open).** `SimdKernels.MatVecDual` already fuses the Q4_K and Q6_K pairs, but equal-dtype Q5_0 falls to its `default:` branch, which runs two separate `MatVec` calls. That is two input quantisations and two parallel regions per layer. A fused Q5_0 case would save one of each per layer, about 1% of the token by the same arithmetic as before. Not yet measured; below the noise of this machine, so it needs many rounds to show.
+
+## Scale layout for the Q5_0 dot: separate array versus repacked block (2026-11-24, iteration 58)
+
+Scratch harness (not in the repo). FFN gate shape, 4864 x 896 Q5_0. Four scenarios: 1 thread and 8 threads, each cache-warm (one buffer) and rotated over 16 buffers (about 48 MB, past the L3). Three layouts: **C** the control (22-byte blocks, fp16 scale, `HalfConv` per block, bit-identical to production); **S** 22-byte blocks plus a separate float32 scale array (+4 bytes per block); **R** repacked 24-byte blocks with the float32 scale in place (+2 bytes per block; qh and qs unchanged). Identity: S and R against C on all 4864 rows, in both runs: 0 differing.
+
+Medians in µs, 7 interleaved rounds, two runs:
+
+| Layout | Run 1: 1T warm / 1T rot / 8T warm / 8T rot | Run 2: 1T warm / 1T rot / 8T warm / 8T rot |
+|---|---|---|
+| C control | 652 / 630 / 297 / 226 | 779 / 776 / 439 / 431 |
+| S float array | 559 / 588 / 288 / 215 | 540 / 463 / 68 / 93 |
+| R repacked | 479 / 478 / 174 / 169 | 279 / 324 / 60 / 88 |
+| R vs C | -27 / -24 / -42 / -25% | -64 / -58 / -86 / -80% |
+| S vs C | -14 / -7 / -3 / -5% | -31 / -40 / -85 / -78% |
+
+**Reading.** R is faster than the control in all four scenarios in both runs, and faster than S on single-thread speed in both runs. So the sign is consistent. The size is not established: the control's own quartile spread is 2 to 3 times (run 2, 1 thread: q1 387, q3 1025 µs), and the control moved from 652 µs (run 1) to 779 µs (run 2) for the same work. The control here is also about 2 times slower than the iteration-57 control for the same shape (291 µs), so absolute numbers are not comparable across runs. The 8-thread numbers are dominated by background load. S is consistently no worse than the control within this noise, but it costs more bytes than R and is not faster than R, so R is the layout to consider.
+
+**Bytes and memory for Qwen2.5-0.5B (for the owner).** Q5_0 tensors about 165 MB; Q8_0 tensors about 141 MB (attention v and the LM head). R adds +2 bytes per block: Q5_0 +9.1% (about 15 MB per token), Q8_0 with a 36-byte block +5.9% (about 8 MB per token). Total extra streamed bytes per token about 23 MB, roughly +6% of the 388 MB traffic. Resident memory: if the loader repacks and then releases the source mapping, the extra is about 23 MB; if the source stays mapped, the repacked copy is a second resident copy of about 306 MB for this model. That is the memory trade.
+
+**Not done.** No product change and no CLI A/B. The repacked layout needs loader and decode changes, so it is a format and memory decision for the owner (decision (q) in the loop's owner list). If the owner approves, the next measurement is a scratch CLI copy with the repacked layout, A/B by the usual interleaved protocol.
