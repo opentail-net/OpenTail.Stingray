@@ -9,6 +9,7 @@ namespace OpenTail.Stingray.Tests.Server;
 /// that alternates between two real models, which managed objects are still alive after their runtime was disposed and evicted?
 /// Measurement, not a gate: it writes one TSV row per (unload, tracked object) and asserts only that each generation produced tokens.
 /// Opt in with <c>STINGRAY_RUN_MEMORY_PROBE=1</c>; the TSV goes to <c>STINGRAY_RESIDUE_PROBE_OUT</c> (default: the system temp folder).
+/// The number of cycles (one A and one B acquisition each) is 3 by default and set by <c>STINGRAY_RESIDUE_PROBE_CYCLES</c>.
 /// <para>Under <see cref="ModelResidencyMode.SingleSlot"/> an idle runtime stays resident until the other model is acquired, and that
 /// acquisition evicts it. So the acquisitions run A, B, A, B, A, B; every acquisition after the first evicts the one before it, and a
 /// sample is taken after each such eviction. A row with <c>alive = 1</c> and <c>object_model = unload_model</c> is an object of an
@@ -16,6 +17,7 @@ namespace OpenTail.Stingray.Tests.Server;
 /// </summary>
 public sealed class ManagedResidueProbeTests
 {
+    private const int DefaultCycles = 3;
     private const int MaxNewTokens = 8;
     private const int ContextSize = 2048;
     private const string Prompt = "The capital of France is";
@@ -44,8 +46,8 @@ public sealed class ManagedResidueProbeTests
         {
             manager = new ModelRuntimeManager(id => InferenceEngineLoader.Load(OptionsFor(id.Value)), ModelResidencyMode.SingleSlot);
 
-            // A, B, A, B, A, B: three cycles, each cycle is one A and one B acquisition.
-            const int acquisitions = 6;
+            // A, B, A, B, ...: each cycle is one A and one B acquisition. The cycle count comes from STINGRAY_RESIDUE_PROBE_CYCLES.
+            int acquisitions = 2 * ReadCycles();
             for (int k = 0; k < acquisitions; k++)
             {
                 int which = k % 2;
@@ -133,6 +135,18 @@ public sealed class ManagedResidueProbeTests
         {
             rows.Add(new Row(cycle, unloadModel, t.Kind, t.CycleCreated, t.Ref.IsAlive, t.ObjectModel, residentModels, managed, privateBytes));
         }
+    }
+
+    /// <summary>
+    /// Cycles from <c>STINGRAY_RESIDUE_PROBE_CYCLES</c>: unset or empty gives <see cref="DefaultCycles"/>; a value that is not a
+    /// positive integer fails the run rather than silently falling back, so a typo cannot pass for the default.
+    /// </summary>
+    private static int ReadCycles()
+    {
+        string? raw = Environment.GetEnvironmentVariable("STINGRAY_RESIDUE_PROBE_CYCLES");
+        if (string.IsNullOrWhiteSpace(raw)) return DefaultCycles;
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cycles) && cycles > 0) return cycles;
+        throw new InvalidOperationException($"STINGRAY_RESIDUE_PROBE_CYCLES must be a positive integer, got '{raw}'.");
     }
 
     private static OpenTailStingrayServerOptions OptionsFor(string modelPath) => new()
