@@ -1,5 +1,7 @@
 # External-hardware work queue
 
+> Merged into [the HARDWARE BLOCKED plan](../9-external-hardware/2026-11-24-hardware-blocked-plan.md) on 2026-11-24. Kept here as the record of the queue before the merge.
+
 This is deliberately **not** a model-acquisition queue. GGUFs, SafeTensors packages, and mmproj
 fixtures can be copied or downloaded onto this machine; work that can run on CPU or the local AMD
 Vulkan adapter remains in [00-current-work.md](../00-current-work.md). This queue contains only work whose

@@ -39,7 +39,7 @@ say how.
 The development machine has an AMD integrated GPU and no NVIDIA device. Several items can only be
 closed by someone with the right hardware, and a number from one machine is only evidence for that
 machine. The queue is in
-[docs/9-external-hardware/90-external-hardware-work.md](docs/9-external-hardware/90-external-hardware-work.md).
+[docs/9-external-hardware/2026-11-24-hardware-blocked-plan.md](docs/9-external-hardware/2026-11-24-hardware-blocked-plan.md).
 
 A good receipt records: commit SHA, exact model file and quantization, backend / device / driver,
 the command, warm-up, repeated samples, the numerical or token-parity result, and whether other

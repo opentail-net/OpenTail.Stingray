@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        See docs/WANTED.md and docs/9-external-hardware/90-external-hardware-work.md for open items.
+        See docs/WANTED.md and docs/9-external-hardware/2026-11-24-hardware-blocked-plan.md for open items.
         A result from one machine is evidence for that setup only, so please record it exactly.
   - type: input
     id: item

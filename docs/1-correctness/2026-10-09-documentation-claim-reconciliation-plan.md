@@ -110,7 +110,7 @@ Each conclusion must link to the inspected source and test/evidence, and say wha
 
 **Accept when:** the report gives separate outcomes for *implemented*, *dispatch/unit-tested*, *executed on AVX-512 hardware*, and *performance measured*, with concrete evidence for each positive claim. Do not broaden or downgrade the public statement before searching existing receipts and checking later changes.
 
-**Evidence to inspect:** SIMD dispatch and kernel code, ISA-specific tests, CI workflows/artifacts, the [external-hardware work queue](../9-external-hardware/90-external-hardware-work.md), and relevant performance records.
+**Evidence to inspect:** SIMD dispatch and kernel code, ISA-specific tests, CI workflows/artifacts, the [external-hardware work queue](../9-external-hardware/2026-11-24-hardware-blocked-plan.md), and relevant performance records.
 
 ### R4. Environment registry: source-of-truth filename and drift checks
 

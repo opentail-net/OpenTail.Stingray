@@ -7,7 +7,7 @@ of truth. Last reviewed 2026-10-10. How to take part: [CONTRIBUTING.md](../CONTR
 ## You have an NVIDIA GPU
 
 The development machine has none, so these are unproven rather than known-bad. Source:
-[external-hardware queue](9-external-hardware/90-external-hardware-work.md).
+[external-hardware queue](9-external-hardware/2026-11-24-hardware-blocked-plan.md).
 
 - **CUDA release evidence:** dense load/decode/sample, long-context KV dtype, placement output,
   CUDA-hybrid MoE, MTP/speculation receipts.
@@ -23,7 +23,7 @@ The development machine has none, so these are unproven rather than known-bad. S
 Results from an integrated GPU do not generalise to a discrete one, so these defaults are waiting
 for measurements: speculative decoding with a draft model on Vulkan, the UMT5 text-encoder GPU
 path against CPU, and gpt-oss on Vulkan. See items 5-7 in the
-[external-hardware queue](9-external-hardware/90-external-hardware-work.md).
+[external-hardware queue](9-external-hardware/2026-11-24-hardware-blocked-plan.md).
 
 ## You have an ARM64 machine
 
