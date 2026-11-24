@@ -55,7 +55,17 @@ public sealed record BackendCapabilities(
         }
         catch { /* best effort */ }
 
-        var hw = HardwareProfile.Detect(vk);
+        HardwareProfile hw;
+        try
+        {
+            hw = HardwareProfile.Detect(vk);
+        }
+        finally
+        {
+            // Detect reads only VramBytes from this probe device and keeps no reference to it. Left undisposed, each call leaked a
+            // Vulkan instance and device, and every model load runs it (InferenceEngineLoader.BuildPlan).
+            vk?.Dispose();
+        }
         return new BackendCapabilities(
             CudaAvailable: cudaAvailable,
             VulkanAvailable: vulkanAvailable,
