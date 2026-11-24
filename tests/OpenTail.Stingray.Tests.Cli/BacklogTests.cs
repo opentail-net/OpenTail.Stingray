@@ -86,6 +86,66 @@ public sealed class BacklogTests
         Assert.NotNull(requestedUrl);
         Assert.Contains("limit=200", requestedUrl);
         Assert.Equal(200, report.Limit);
+        Assert.Equal(500, report.RequestedLimit);
+        Assert.Equal("--limit 500 was capped to 200 (the Hub listing cap)", report.LimitNote);
+    }
+
+    [Fact]
+    public void LimitCap_AboveHardCap_ReportsRequestedAndEffectiveLimitAndNote()
+    {
+        string json = """
+            [
+              { "id": "org/capped", "downloads": 10, "gguf": { "architecture": "arch_capped" } }
+            ]
+            """;
+
+        var report = Backlog.Parse(json, limit: 500, buildId: "test", new NetworkUse(1, ["huggingface.co"], 100));
+
+        Assert.Equal(500, report.RequestedLimit);
+        Assert.Equal(Backlog.HardCapLimit, report.Limit);
+        Assert.Equal(200, report.Limit);
+        Assert.Equal("--limit 500 was capped to 200 (the Hub listing cap)", report.LimitNote);
+        // The fixture still parses: the cap only changes the request, not the parsing.
+        Assert.Equal(1, report.TotalReposInspected);
+    }
+
+    [Fact]
+    public void LimitCap_InRange_ReportsNoNote()
+    {
+        var report = Backlog.Parse("[]", limit: Backlog.HardCapLimit, buildId: "test", new NetworkUse(1, ["huggingface.co"], 2));
+
+        Assert.Equal(Backlog.HardCapLimit, report.RequestedLimit);
+        Assert.Equal(Backlog.HardCapLimit, report.Limit);
+        Assert.Null(report.LimitNote);
+    }
+
+    [Fact]
+    public void MaxIndexMb_RejectsAboveCeiling_AcceptsCeiling()
+    {
+        int ceilingMb = (int)(RemoteGgufReader.MaxIndexBytesCeiling >> 20);
+        Assert.Equal(4 * (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20), ceilingMb);
+
+        var above = new ScoutCommand.Settings { Repo = "owner/name", MaxIndexMb = ceilingMb + 1 };
+        Assert.Equal($"--max-index-mb {ceilingMb + 1} is above the {ceilingMb} MB ceiling (4 x the default).", above.Validate());
+
+        var atCeiling = new ScoutCommand.Settings { Repo = "owner/name", MaxIndexMb = ceilingMb };
+        Assert.Null(atCeiling.Validate());
+
+        var inRange = new ScoutCommand.Settings { Repo = "owner/name", MaxIndexMb = 128 };
+        Assert.Null(inRange.Validate());
+    }
+
+    [Fact]
+    public void MaxIndexMb_HelpTextStatesTheDerivedDefaultAndCeiling()
+    {
+        // The help text is an attribute literal (not constant-interpolable here), so this keeps it in step with the code.
+        var prop = typeof(ScoutCommand.Settings).GetProperty(nameof(ScoutCommand.Settings.MaxIndexMb))!;
+        var description = prop.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+            .Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+
+        Assert.Contains($"default {RemoteGgufReader.DefaultMaxIndexBytes >> 20} MB", description);
+        Assert.Contains($"ceiling {RemoteGgufReader.MaxIndexBytesCeiling >> 20} MB", description);
+        Assert.Equal(4 * RemoteGgufReader.DefaultMaxIndexBytes, RemoteGgufReader.MaxIndexBytesCeiling);
     }
 
     [Fact]

@@ -32,6 +32,8 @@ public sealed record RemoteIndexResult(RemoteIndexOutcome Outcome, GgufIndex? In
 public static class RemoteGgufReader
 {
     public const long DefaultMaxIndexBytes = 128L << 20;
+    /// <summary>The highest index cap a caller may ask for (<c>scout --max-index-mb</c>): 4 times the default.</summary>
+    public const long MaxIndexBytesCeiling = 4 * DefaultMaxIndexBytes;
     public const int InitialChunkBytes = 2 << 20;
 
     public static async Task<RemoteIndexResult> ReadAsync(

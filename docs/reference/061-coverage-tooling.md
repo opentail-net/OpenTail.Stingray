@@ -101,7 +101,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
   * a 20 GiB community MoE (`ornith-ai/Ornith-1.5-35B-A3B-GGUF`, 3.7 M downloads/30 days): 3.3 s, 9 requests, 16 MiB; it is `qwen35moe`, whose nearest admitted parent differs by exactly the extra next-n (MTP) head;
   * a 56.9 GiB split BF16 model (`unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`, selected by stem): both shard indexes, 3.4 s, 10 MiB.
   * **Guardrails (each has a test against a fake Hub with a misbehaving variant):** all requests pinned to the commit SHA, never `main`; a ranged answer must be `206` with a `Content-Range` that starts where asked and
-    agrees on the file size every time; a server that ignores Range and offers a large file is refused without reading its body; never more bytes than asked, never more than `--max-index-mb` (default 128) per shard;
+    agrees on the file size every time; a server that ignores Range and offers a large file is refused without reading its body; never more bytes than asked, never more than `--max-index-mb` (default 128 MB, ceiling 512 MB, a larger value is refused) per shard;
     past the cap the report says the inspection is **incomplete** (`scout.remote.index_over_cap`) and nothing more is fetched, it never falls back to a download.
   * **Provenance, labelled by source:** `artifact.source` carries repo, full commit, path(s), licence, gated/private, the repo's **30-day** download count (per repository, not per file), the Hub's own declared architecture
     (a disagreement with the file is reported, and the file wins), and the Hub-published SHA-256 (`published_by_huggingface`: the Hub's claim, not hashed here; absent for split models, where two hashes are not one). `network` lists
@@ -140,7 +140,7 @@ stingray scout -m model.gguf --budget 64G [--reserve 8G]        # also report th
     already holds the same structure it adds the file to its origins; a different structure is refused (use a new name). Load with `--signatures <dir>` without rebuilding.
 * **Demand-ranked backlog: `scout --backlog [--limit N]`.** Queries the Hugging Face model list API in one call (`filter=gguf&sort=downloads&direction=-1&limit=N&expand[]=gguf&expand[]=downloads&expand[]=gated`) to identify which GGUF architectures are not yet admitted here, ranked by 30-day downloads.
   * Subject to the external access policy (`STINGRAY_ALLOW_EXTERNAL`, default allowed; `STINGRAY_OFFLINE` / `HF_HUB_OFFLINE` deny).
-  * `--limit N`: number of repositories to inspect (default 50, hard cap 200).
+  * `--limit N`: number of repositories to inspect (default 50, hard cap 200). A value above 200 is capped to 200, and the report carries `requested_limit` and a `limit_note` that says so (the text output prints the note above the table). `limit` stays the value sent to the Hub.
   * Downloads are per repository over 30 days, not per file or inference use (stated in output).
   * List-only: never downloads weights or parses full model files.
   * Architectures are grouped and marked `admitted`, `not admitted`, or `unregistered` via `ArchitectureRegistry.Find`. Ported-but-unverified architectures (`NotAdmitted`) stay internal per CLAUDE.md rule 14 and are displayed as `unregistered`.

@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Cli;
 public sealed class BacklogTriageTests
 {
     private static BacklogReport Report(params BacklogEntry[] entries) =>
-        new(BacklogReport.CurrentSchemaVersion, "t", 10, 1, entries, [], entries, new NetworkUse(0, [], 0));
+        new(BacklogReport.CurrentSchemaVersion, "t", 10, 1, entries, [], entries, new NetworkUse(0, [], 0), 10, null);
 
     [Fact]
     public async Task Triage_inspects_the_smallest_quant_of_each_unregistered_family_and_skips_admitted_ones()

@@ -19,7 +19,11 @@ public sealed record BacklogReport(
     IReadOnlyList<BacklogEntry> Backlog,
     IReadOnlyList<BacklogEntry> Admitted,
     IReadOnlyList<BacklogEntry> All,
-    NetworkUse Network)
+    NetworkUse Network,
+    // Additive (schema stays 1): the --limit the user asked for. Limit above is the value actually sent to the Hub.
+    int RequestedLimit,
+    // Null unless the requested limit was outside the range the Hub listing accepts; then it says what was done.
+    string? LimitNote)
 {
     public const int CurrentSchemaVersion = 1;
 }
@@ -62,20 +66,34 @@ public static class Backlog
         return "not admitted";
     }
 
+    /// <summary>The number of repositories actually requested from the Hub for a <c>--limit</c> value.</summary>
+    public static int EffectiveLimit(int requested) => Math.Clamp(requested, 1, HardCapLimit);
+
+    /// <summary>What was done to a requested limit that the Hub listing could not take as asked; null when it was used unchanged.</summary>
+    public static string? LimitNoteFor(int requested)
+    {
+        int effective = EffectiveLimit(requested);
+        if (requested == effective) return null;
+        return requested > effective
+            ? $"--limit {requested} was capped to {effective} (the Hub listing cap)"
+            : $"--limit {requested} was raised to {effective} (the minimum)";
+    }
+
     public static async Task<BacklogReport> RunAsync(
         ExternalHttpClient http,
         int? limit,
         string buildId,
         CancellationToken ct)
     {
-        int effectiveLimit = Math.Clamp(limit ?? DefaultLimit, 1, HardCapLimit);
-        string urlStr = $"https://huggingface.co/api/models?filter=gguf&pipeline_tag=text-generation&sort=downloads&direction=-1&limit={effectiveLimit}&expand[]=gguf&expand[]=downloads&expand[]=gated";
+        int requested = limit ?? DefaultLimit;
+        string urlStr = $"https://huggingface.co/api/models?filter=gguf&pipeline_tag=text-generation&sort=downloads&direction=-1&limit={EffectiveLimit(requested)}&expand[]=gguf&expand[]=downloads&expand[]=gated";
         var uri = new Uri(urlStr);
 
         string json = await http.GetStringAsync(uri, ct).ConfigureAwait(false);
-        return Parse(json, effectiveLimit, buildId, new NetworkUse(http.Log.Requests, http.Log.Hosts, http.Log.BytesReceived));
+        return Parse(json, requested, buildId, new NetworkUse(http.Log.Requests, http.Log.Hosts, http.Log.BytesReceived));
     }
 
+    /// <summary><paramref name="limit"/> is the value the user asked for; the report's <c>Limit</c> is the effective value after the Hub cap.</summary>
     public static BacklogReport Parse(string json, int limit, string buildId, NetworkUse network)
     {
         using var doc = JsonDocument.Parse(json);
@@ -156,7 +174,8 @@ public static class Backlog
         var backlog = grouped.Where(e => !e.Status.Equals("admitted", StringComparison.OrdinalIgnoreCase)).ToList();
         var admitted = grouped.Where(e => e.Status.Equals("admitted", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        return new BacklogReport(BacklogReport.CurrentSchemaVersion, buildId, limit, repos.Count, backlog, admitted, grouped, network);
+        return new BacklogReport(BacklogReport.CurrentSchemaVersion, buildId, EffectiveLimit(limit), repos.Count, backlog, admitted, grouped, network,
+            limit, LimitNoteFor(limit));
     }
 
     private sealed record HubModelSummary(string Id, long Downloads, bool Gated, string Architecture);
@@ -168,6 +187,8 @@ internal static class BacklogTextRenderer
     {
         AnsiConsole.MarkupLine("[bold]Hugging Face GGUF Architecture Backlog[/]");
         AnsiConsole.MarkupLine("[dim]Downloads are 30-day counts per repository, not per file or inference use. Weights were not downloaded.[/]");
+        if (report.LimitNote is { } limitNote)
+            AnsiConsole.MarkupLine($"[yellow]note:[/] {Markup.Escape(limitNote)}");
         AnsiConsole.WriteLine();
 
         if (report.Backlog.Count == 0)

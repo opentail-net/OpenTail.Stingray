@@ -262,7 +262,10 @@ Source: [4-performance/2026-10-04-q4k-expert-gemm-plan.md](4-performance/2026-10
 Start these after A5 and A6, because the memory figures and the handoff warm-up change what the measurements mean. Quiet machine only.
 
 - [ ] **Allocation leftovers in the perf sweep (items 1.5 and 11.3):** measure whether allocation is a visible cost. If not, record "not worth it" with the measurement and close.
-- [ ] **Scout, Hub limits:** cap and expose the Hub index limits. Small hardening; do it first.
+- [x] **Scout, Hub limits:** cap and expose the Hub index limits. Small hardening; do it first.
+  - **Done 2026-11-24.** `scout --backlog --limit N`: a value above 200 is still capped to 200 (the Hub listing cap), but the report now carries `requested_limit` and `limit_note`, and the text output prints the note. `limit` keeps the value sent to the Hub; the schema stays at version 1 (additive). `--max-index-mb` is refused above a 512 MB ceiling (4 times the 128 MB default, derived from `RemoteGgufReader.MaxIndexBytesCeiling`); the help text and `061-coverage-tooling.md` state both values. Evidence: `OpenTail.Stingray.Tests.Cli` built Release with 0 warnings and 0 errors; full run 778 total, 0 failed, 25 skipped, exit 0 (14.98 s). New no-network tests: above-cap note, in-range no note, ceiling validation, help text against the derived constants. Mutation check (note replaced by null): 2 tests fail, then restored.
+  - **Open (small):** `--max-quants` has no ceiling. Each candidate file costs one Range request, so an unbounded value is a Hub-request cap of its own. Decide whether to cap it the same way (default 40 already in `QuantPicker.DefaultMaxFiles`).
+  - **Machine note (owner):** `global.json` pins SDK 10.0.301, and this machine has only SDK 11.0.100 working (`dotnet --list-sdks`). The 10.0.300, 10.0.301 and 10.0.403 folders exist but have no `dotnet.dll`, so a build run inside the repo cannot find the pinned SDK. This run built and tested from outside the repo, where `global.json` does not apply, with SDK 11.0.100. The 10.x pin is not verified here. Repairing the SDK install is a machine change, so it waits for the owner.
 - [ ] **Scout, semantics-changing metadata:** needs a signature schema change and a re-emit of the checked-in signatures. Do after the hardening.
 - Both scout items need unit tests with no Hub calls.
 

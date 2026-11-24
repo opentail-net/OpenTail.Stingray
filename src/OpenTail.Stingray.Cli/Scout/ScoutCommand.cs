@@ -10,6 +10,10 @@ namespace OpenTail.Stingray.Cli.Scout;
 /// </summary>
 public sealed class ScoutCommand : Command<ScoutCommand.Settings>
 {
+    // --max-index-mb default and ceiling in MB, derived from the Core byte constants (ceiling = 4 x default).
+    internal const int DefaultMaxIndexMb = (int)(RemoteGgufReader.DefaultMaxIndexBytes >> 20);
+    internal const int MaxIndexMbCeiling = (int)(RemoteGgufReader.MaxIndexBytesCeiling >> 20);
+
     public sealed class Settings : CommandSettings
     {
         [CommandOption("-m|--model <PATH>")]
@@ -37,7 +41,7 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
         public int? MaxQuants { get; init; }
 
         [CommandOption("--max-index-mb <N>")]
-        [Description("With --repo: most MB of a file's header and tensor index to read (default 128). Past it the report says the inspection is incomplete; nothing more is fetched.")]
+        [Description("With --repo: most MB of a file's header and tensor index to read (default 128 MB, ceiling 512 MB). Past it the report says the inspection is incomplete; nothing more is fetched.")]
         public int? MaxIndexMb { get; init; }
 
         [CommandOption("--format <FORMAT>")]
@@ -113,6 +117,8 @@ public sealed class ScoutCommand : Command<ScoutCommand.Settings>
                 if (!remote && (File is not null || Revision is not null || MaxIndexMb is not null)) return "-f, --revision and --max-index-mb only apply with -r.";
                 if (remote && HubClient.NormalizeRepoId(Repo) is null) return $"'{Repo}' is not a Hugging Face repo id (owner/name).";
                 if (MaxIndexMb is <= 0) return "--max-index-mb must be positive.";
+                if (MaxIndexMb > MaxIndexMbCeiling)
+                    return $"--max-index-mb {MaxIndexMb} is above the {MaxIndexMbCeiling} MB ceiling ({MaxIndexMbCeiling / DefaultMaxIndexMb} x the default).";
                 if (Quants && !remote) return "--quants needs -r <owner/repo>.";
                 if (Quants && File is not null) return "--quants judges every file; drop -f.";
                 if (Quants && EmitSignaturePath is not null) return "--quants and --emit-signature cannot be combined.";
