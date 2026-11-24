@@ -96,6 +96,44 @@ public sealed class ContextLimitEndpointTests : IDisposable
         Assert.Contains(ContextRefusingEngine.Context.ToString(), error.GetProperty("message").GetString());
     }
 
+    // A28 open follow-up: the Responses and messages streaming paths run the same pre-check before their SSE headers.
+    [Fact]
+    public async Task StreamingResponses_PromptOverTheContext_IsRefused_BeforeTheSseHeaderIsCommitted()
+    {
+        var client = CreateClient(new ContextRefusingEngine(Model, refuseAtPrecheck: true));
+
+        using var response = await client.PostAsJsonAsync("/v1/responses",
+            new { model = Model, input = "hi", stream = true });
+
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal("context_length_exceeded", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task StreamingMessages_PromptOverTheContext_IsRefused_BeforeTheSseHeaderIsCommitted()
+    {
+        var client = CreateClient(new ContextRefusingEngine(Model, refuseAtPrecheck: true));
+
+        using var response = await client.PostAsJsonAsync("/v1/messages", new
+        {
+            model = Model,
+            max_tokens = 16,
+            messages = new[] { new { role = "user", content = "hi" } },
+            stream = true,
+        });
+
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        using var doc = JsonDocument.Parse(body);
+        var error = doc.RootElement.GetProperty("error");
+        Assert.Equal("invalid_request_error", error.GetProperty("type").GetString());
+        Assert.Contains(ContextRefusingEngine.Context.ToString(), error.GetProperty("message").GetString());
+    }
+
     private static object ChatRequest(bool stream) => new
     {
         model = Model,
