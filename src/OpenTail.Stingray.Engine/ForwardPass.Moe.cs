@@ -79,6 +79,7 @@ public sealed unsafe partial class ForwardPass
         // Step 1: Router — compute expert logits and select top-k
         long pt0 = MoePhaseTiming.Now();
         FusedMatVec(_routerLogits, _wGateInp![layer], _normBuf, numExperts, _embDim);
+        StageCapture.Record("cpu", layer, StageCapture.Stages.Router, new ReadOnlySpan<float>(_routerLogits, numExperts));
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];

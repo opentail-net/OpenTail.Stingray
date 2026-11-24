@@ -1032,6 +1032,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         else
             new Span<float>(_cpuHidden, _embDim).CopyTo(new Span<float>(_cpuNormBuf, _embDim));
 
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.AttnNorm, new ReadOnlySpan<float>(_cpuNormBuf, _embDim));
+
         // Q/K/V projections
         SimdKernels.MatVec(_cpuQ, _cpuWq[ci].DataPtr, _cpuNormBuf, _numHeads * _headDim, _embDim, _cpuWq[ci].DType);
         SimdKernels.MatVec(_cpuK, _cpuWk[ci].DataPtr, _cpuNormBuf, _numKvHeads * _headDim, _embDim, _cpuWk[ci].DType);
@@ -1043,6 +1045,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
             SimdKernels.AddInPlace(_cpuK, _cpuBk[ci], _numKvHeads * _headDim);
             SimdKernels.AddInPlace(_cpuV, _cpuBv[ci], _numKvHeads * _headDim);
         }
+
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.VProj, new ReadOnlySpan<float>(_cpuV, _numKvHeads * _headDim));
 
         // NoPE: actual layer index = ci + _nGpuLayers
         int actualLayer = ci + _nGpuLayers;
@@ -1115,10 +1119,13 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         else
             CpuAttention(ci, position, isSwa ? _hp.SlidingWindowSize : _hp.ChunkWindowCode(actualLayer));
 
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.AttnOut, new ReadOnlySpan<float>(_cpuAttnOut, _numHeads * _headDim));
+
         // Output projection
         SimdKernels.MatVec(_cpuHidden, _cpuWo[ci].DataPtr, _cpuAttnOut, _embDim, _numHeads * _headDim, _cpuWo[ci].DType);
         if (_hasAttnOutputBias)
             SimdKernels.AddInPlace(_cpuHidden, _cpuBo[ci], _embDim);
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.OProj, new ReadOnlySpan<float>(_cpuHidden, _embDim));
         if (_cpuPostAttnNorm is not null)
             SimdKernels.RmsNorm(_cpuHidden, _cpuHidden, GetCpuNormWeight(_cpuPostAttnNorm[ci]), _embDim, _hp.RmsNormEps);
         if (_hp.ResidualScale != 1f)
@@ -1126,6 +1133,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         // Residual
         SimdKernels.AddInPlace(_cpuHidden, _cpuResidual, _embDim);
+
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.PostAttnResidual, new ReadOnlySpan<float>(_cpuHidden, _embDim));
 
         // Save residual for FFN
         new Span<float>(_cpuHidden, _embDim).CopyTo(new Span<float>(_cpuResidual, _embDim));
@@ -1151,6 +1160,8 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
 
         // Residual
         SimdKernels.AddInPlace(_cpuHidden, _cpuResidual, _embDim);
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.PostFfnResidual, new ReadOnlySpan<float>(_cpuHidden, _embDim));
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.LayerOutput, new ReadOnlySpan<float>(_cpuHidden, _embDim));
     }
 
     private void CpuDenseFfn(int ci)
@@ -1170,6 +1181,7 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         int numActive = _hp.NumActiveExperts;
 
         SimdKernels.MatVec(_cpuRouterLogits, _cpuWGateInp![ci].DataPtr, _cpuNormBuf, numExperts, _embDim, _cpuWGateInp[ci].DType);
+        StageCapture.Record("cpu", ci + _nGpuLayers, StageCapture.Stages.Router, new ReadOnlySpan<float>(_cpuRouterLogits, numExperts));
         if (_hp.UseSigmoidGating)
             SimdKernels.SigmoidInPlace(_cpuRouterLogits, numExperts);
         else

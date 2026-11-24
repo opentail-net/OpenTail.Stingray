@@ -60,6 +60,9 @@ internal static class StageCapture
 
         /// <summary>Hidden after the per-layer output scale — the layer's final output.</summary>
         public const string LayerOutput = "layer_out";
+
+        /// <summary>Router logits before softmax/sigmoid (A32): compared to see whether a top-k expert set differs between backends.</summary>
+        public const string Router = "router";
     }
 
     /// <summary>Enables recording. Callers must reset <see cref="Records"/> themselves.</summary>
