@@ -134,6 +134,14 @@ public static class ResponsesEndpoints
 
         if (req.Stream == true)
         {
+            // A28: refuse an over-long prompt before the SSE headers are set (they are committed by the first write below).
+            try { engine.CheckPromptFitsContext(prompt); }
+            catch (ContextLimitExceededException ex)
+            {
+                await WriteContextLimitAsync(ctx, ex);
+                return;
+            }
+
             ctx.Response.ContentType = "text/event-stream";
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.Headers.Connection = "keep-alive";
@@ -209,14 +217,22 @@ public static class ResponsesEndpoints
             var sb = new StringBuilder();
             long tokenCount = 0;
             int promptTokens = 0;
-            await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
+            try
             {
-                if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
-                if (chunk.Kind != GenerateChunkKind.Text) continue;
-                timing.MarkAdmitted();
-                timing.MarkFirstToken();
-                tokenCount++;
-                sb.Append(chunk.Text);
+                await foreach (var chunk in engine.GenerateChunksAsync(prompt, sp, ctx.RequestAborted))
+                {
+                    if (chunk.Kind == GenerateChunkKind.Usage) { promptTokens = chunk.PromptTokens; continue; }
+                    if (chunk.Kind != GenerateChunkKind.Text) continue;
+                    timing.MarkAdmitted();
+                    timing.MarkFirstToken();
+                    tokenCount++;
+                    sb.Append(chunk.Text);
+                }
+            }
+            catch (ContextLimitExceededException ex)
+            {
+                await WriteContextLimitAsync(ctx, ex);
+                return;
             }
 
             string text = sb.ToString();
@@ -293,14 +309,18 @@ public static class ResponsesEndpoints
     private static Task WriteBadRequestAsync(HttpContext ctx, string message)
         => WriteErrorResponseAsync(ctx, 400, "invalid_request_error", message);
 
-    private static async Task WriteErrorResponseAsync(HttpContext ctx, int status, string type, string message)
+    private static async Task WriteErrorResponseAsync(HttpContext ctx, int status, string type, string message, string? code = null)
     {
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(
-            JsonSerializer.Serialize(new ErrorResponse(type, message), OpenTailStingrayJsonContext.Default.ErrorResponse),
+            JsonSerializer.Serialize(new ErrorResponse(type, message, code), OpenTailStingrayJsonContext.Default.ErrorResponse),
             ctx.RequestAborted);
     }
+
+    /// <summary>A28: a prompt past the context window, as a 400 with OpenAI's <c>context_length_exceeded</c> code.</summary>
+    private static Task WriteContextLimitAsync(HttpContext ctx, ContextLimitExceededException ex)
+        => WriteErrorResponseAsync(ctx, ContextLimitRefusal.StatusCode, ContextLimitRefusal.ErrorType, ContextLimitRefusal.Message(ex), ContextLimitRefusal.ErrorCode);
 
     /// <summary>
     /// Checks the shape of <c>input</c> before any message is built. Returns null when it is usable, otherwise a message naming the

@@ -41,6 +41,14 @@ public interface IInferenceEngine
     long PrefillTokensReused { get; }
 
     /// <summary>
+    /// Refuses a prompt that cannot fit the context window, without starting generation. Streaming endpoints call it
+    /// before they commit the response, so the refusal can still become a 400. Throws
+    /// <see cref="ContextLimitExceededException"/>. The default does nothing: an engine without a context limit of its
+    /// own keeps it, and the refusal then comes from generation as before.
+    /// </summary>
+    void CheckPromptFitsContext(string prompt) { }
+
+    /// <summary>
     /// Generate typed chunks from a pre-formatted prompt string. Each chunk is tagged as
     /// user-facing <see cref="GenerateChunkKind.Text"/>, internal
     /// <see cref="GenerateChunkKind.Thinking"/> reasoning, a single out-of-band

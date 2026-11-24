@@ -458,6 +458,9 @@ internal sealed class OwnedDisposableEngine(IInferenceEngine inner, RuntimeInsta
         string prompt, SamplingParams sp, CancellationToken ct = default, string? canonicalHistoryPrefix = null)
         => inner.GenerateChunksAsync(prompt, sp, ct, canonicalHistoryPrefix);
 
+    // Forwarded, not defaulted: the interface's no-op default would silently skip the context check for every loaded model.
+    public void CheckPromptFitsContext(string prompt) => inner.CheckPromptFitsContext(prompt);
+
     // RuntimeInstance is the single owner: it disposes the engine, applies the drain guard, then frees backends once.
     public void Dispose() => owner.Dispose();
 }

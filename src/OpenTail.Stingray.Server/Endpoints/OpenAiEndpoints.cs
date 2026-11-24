@@ -425,6 +425,13 @@ public static class OpenAiEndpoints
         RequestParameterValidation.ParseOpenAiStops(req.Stop, out string[]? stops);   // already validated above
         if (req.Stream == true)
         {
+            // A28: refuse an over-long prompt before HandleStreaming writes the 200 SSE header, which is the first write.
+            try { engine.CheckPromptFitsContext(prompt); }
+            catch (ContextLimitExceededException ex)
+            {
+                await WriteContextLimitAsync(ctx, ex);
+                return;
+            }
             await HandleStreaming(ctx, engine, metrics, adapter, toolsActive, prompt, canonicalHistoryPrefix, images, videos, sp, requestId, created, stops, req.StreamOptions?.IncludeUsage == true, req.Tools);
         }
         else
@@ -474,6 +481,11 @@ public static class OpenAiEndpoints
                     textTokens++;
                 }
             }
+        }
+        catch (ContextLimitExceededException ex)
+        {
+            await WriteContextLimitAsync(ctx, ex);
+            return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -923,6 +935,17 @@ public static class OpenAiEndpoints
                 OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
     }
 
+    /// <summary>A28: a prompt past the context window, as a 400 with OpenAI's <c>context_length_exceeded</c> code.</summary>
+    private static async Task WriteContextLimitAsync(HttpContext ctx, ContextLimitExceededException ex)
+    {
+        ctx.Response.StatusCode = ContextLimitRefusal.StatusCode;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(
+                new ErrorResponse(ContextLimitRefusal.ErrorType, ContextLimitRefusal.Message(ex), ContextLimitRefusal.ErrorCode),
+                OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+    }
+
     private static bool IsToolChoiceRequired(JsonElement? toolChoice) =>
         toolChoice is { ValueKind: JsonValueKind.String } tc
         && string.Equals(tc.GetString(), "required", StringComparison.Ordinal);
@@ -1208,10 +1231,11 @@ public sealed record ResponseFormat(string? Type, JsonSchemaSpec? JsonSchema = n
 /// (matching llama.cpp's own server behavior).</summary>
 public sealed record JsonSchemaSpec(string? Name, JsonElement? Schema, bool? Strict = null, bool? Ordered = null);
 
-public sealed record ErrorResponse(string Type, string Message)
+public sealed record ErrorResponse(string Type, string Message, string? Code = null)
 {
     // The flat Type/Message fields stay (existing consumers read them); this adds the {"error": {...}} object OpenAI clients parse.
-    public ErrorDetail Error => new(Message, Type);
+    // Code is OpenAI's machine-readable error code (e.g. "context_length_exceeded"); null is omitted from the JSON.
+    public ErrorDetail Error => new(Message, Type, Code);
 }
 
-public sealed record ErrorDetail(string Message, string Type);
+public sealed record ErrorDetail(string Message, string Type, string? Code = null);

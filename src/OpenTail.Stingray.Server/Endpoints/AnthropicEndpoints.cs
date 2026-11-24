@@ -254,12 +254,29 @@ public static class AnthropicEndpoints
         string[]? stops = req.StopSequences is { Length: > 0 } configuredStops ? configuredStops : null;
         if (req.Stream == true)
         {
+            // A28: refuse an over-long prompt before HandleStreaming writes the 200 SSE header, which is the first write.
+            try { engine.CheckPromptFitsContext(prompt); }
+            catch (ContextLimitExceededException ex)
+            {
+                await WriteContextLimitAsync(ctx, ex);
+                return;
+            }
             await HandleStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, stops, req.Tools);
         }
         else
         {
             await HandleNonStreaming(ctx, engine, metrics, adapter, prompt, canonicalHistoryPrefix, images, sp, msgId, modelId, req.OpentailTiming == true, stops, req.Tools);
         }
+    }
+
+    /// <summary>A28: a prompt past the context window, as a 400 with an Anthropic error body that names the context length.</summary>
+    private static async Task WriteContextLimitAsync(HttpContext ctx, ContextLimitExceededException ex)
+    {
+        ctx.Response.StatusCode = ContextLimitRefusal.StatusCode;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(new AErrorResponse(ContextLimitRefusal.ErrorType, ContextLimitRefusal.Message(ex)),
+                OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
     }
 
     private static async Task HandleNonStreaming(
@@ -298,6 +315,11 @@ public static class AnthropicEndpoints
                 else
                     textSb.Append(chunk.Text);
             }
+        }
+        catch (ContextLimitExceededException ex)
+        {
+            await WriteContextLimitAsync(ctx, ex);
+            return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

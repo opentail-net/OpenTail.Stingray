@@ -372,6 +372,16 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// <summary>Maximum logical sequence length accepted by the active backend.</summary>
     public int MaxSequenceLength => _fwd.MaxSeqLen;
 
+    /// <inheritdoc/>
+    /// <remarks>Tokenizes on the caller's thread and queues nothing. The same rule the batcher applies at admission
+    /// (a prompt of <see cref="MaxSequenceLength"/> tokens or fewer is accepted).</remarks>
+    public void CheckPromptFitsContext(string prompt)
+    {
+        int tokens = _tokenizer.Encode(prompt).Count;
+        if (tokens > _fwd.MaxSeqLen)
+            throw new ContextLimitExceededException(0, tokens, _fwd.MaxSeqLen);
+    }
+
     /// <summary>
     /// docs/028 Phase 2: forks up to <paramref name="maxPrefixLength"/> leading positions off
     /// <paramref name="source"/>'s retained cache for a sibling session to seed from, using this
@@ -1004,6 +1014,20 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 pending.Dequeue();
                 Interlocked.Decrement(ref _pendingCount);
                 req.Output.Writer.TryComplete();
+                ReturnUnstartedRetainedState(req);
+                continue;
+            }
+
+            // A28: a prompt that cannot fit the context window is refused here, before it takes a KV reservation or any
+            // prefill work. Without this the forward pass throws on the first position past MaxSeqLen, which reached
+            // the client as a 500. Positions run TurnStartPosition..TurnStartPosition+len-1, so a fresh request
+            // (TurnStartPosition 0) is refused exactly when its prompt is longer than the window.
+            if (req.TurnStartPosition + tokens.Length > _fwd.MaxSeqLen)
+            {
+                pending.Dequeue();
+                Interlocked.Decrement(ref _pendingCount);
+                req.Output.Writer.TryComplete(
+                    new ContextLimitExceededException(req.TurnStartPosition, tokens.Length, _fwd.MaxSeqLen));
                 ReturnUnstartedRetainedState(req);
                 continue;
             }
