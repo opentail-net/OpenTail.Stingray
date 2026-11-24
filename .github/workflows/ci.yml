@@ -80,20 +80,28 @@ jobs:
       # adjusted then; main CI has not been green since 2026-08-26.
       - name: CPU-safe test suites
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 450
-          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 40
-          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 60
-          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 300
-          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 200
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 100
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 480
-          dotnet test tests/OpenTail.Stingray.Tests.Mlx.Fast/OpenTail.Stingray.Tests.Mlx.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 5
-          dotnet test tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 70
-          dotnet test tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 38
+          # Every suite runs even when an earlier one fails (a bare chain of `dotnet test` lines stops at the first failure and hides the rest).
+          # The step fails at the end, naming every failed suite.
+          failed=()
+          run_suite() {
+            local name=$1 floor=$2
+            dotnet test "tests/OpenTail.Stingray.Tests.$name/OpenTail.Stingray.Tests.$name.csproj" -c Release --no-restore --no-build -- --minimum-expected-tests "$floor" || failed+=("$name")
+          }
+          run_suite Core 450
+          run_suite Pipeline 40
+          run_suite TurboQuant 60
+          run_suite Cli 300
+          run_suite Vision 55
+          run_suite Server.Fast 200
+          run_suite Sessions.Fast 100
+          run_suite ForwardPass.Fast 480
+          run_suite Mlx.Fast 5
+          run_suite Audio.Fast 70
+          run_suite Vulkan.Fast 38
           # Embeddings: 46 discovered, but only 6 pass without model checkpoints, and the floor counts executed passing tests
           # (measured 2026-11-10: floor 6 passes, 7 fails). The floor is set to 5, which is about 17% below 6.
-          dotnet test tests/OpenTail.Stingray.Tests.Embeddings/OpenTail.Stingray.Tests.Embeddings.csproj -c Release --no-restore --no-build -- --minimum-expected-tests 5
+          run_suite Embeddings 5
+          if [ ${#failed[@]} -gt 0 ]; then echo "::error::suites failed: ${failed[*]}"; exit 1; fi
 
   # NativeAOT telemetry check (observability plan D10). Publishes the real CLI and runs `telemetry-selftest`, which needs
   # no model: it fails if Meter/ActivitySource data does not reach an in-process listener in the PUBLISHED binary
@@ -162,10 +170,13 @@ jobs:
           $suites = @(
             @('Core', 450), @('Pipeline', 40), @('TurboQuant', 60), @('Cli', 300), @('Vision', 55),
             @('Server.Fast', 200), @('Sessions.Fast', 100), @('ForwardPass.Fast', 480), @('Mlx.Fast', 5), @('Audio.Fast', 70), @('Vulkan.Fast', 38), @('Embeddings', 5))
+          # Every suite runs even when an earlier one fails; the step fails at the end, naming every failed suite.
+          $failed = @()
           foreach ($s in $suites) {
             dotnet test "tests/OpenTail.Stingray.Tests.$($s[0])/OpenTail.Stingray.Tests.$($s[0]).csproj" -c Release --no-restore --no-build -- --minimum-expected-tests $s[1]
-            if ($LASTEXITCODE -ne 0) { throw "suite $($s[0]) failed (exit $LASTEXITCODE)" }
+            if ($LASTEXITCODE -ne 0) { $failed += $s[0] }
           }
+          if ($failed.Count -gt 0) { throw "suites failed: $($failed -join ', ')" }
       - name: Publish the CLI (NativeAOT, win-x64) and run the telemetry self-test
         shell: pwsh
         run: |
