@@ -87,11 +87,17 @@ public sealed class ContinuousBatchingConstraintTests
     /// <summary>Canned forward pass: every sequence's next-token logits put 'X' on top. Records the
     /// widest batch it was ever asked to decode so a test can confirm two sequences actually co-resided
     /// in one batched step (the per-sequence-vs-batch-wide masking guarantee).</summary>
-    internal sealed class FakeBatchedForwardPass : IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
+    internal sealed class FakeBatchedForwardPass(int maxSeqLen = 8192) : IBatchedForwardPass, IPrefixCacheableBatchedForwardPass
     {
         public bool SnapKvEnabled => false;
         public long KvBytesPerToken => 1;
-        public int MaxSeqLen => 8192;
+        /// <summary>Context window the fake reports to the engine (A28/A29 tests set it small).</summary>
+        public int MaxSeqLen => maxSeqLen;
+
+        private readonly List<int> _decodePositions = [];
+        /// <summary>Every position a batched decode step was asked to run at, in call order (A29).</summary>
+        public int[] DecodePositions { get { lock (_decodePositions) return [.. _decodePositions]; } }
+        private void RecordDecodePositions(int[] positions) { lock (_decodePositions) _decodePositions.AddRange(positions); }
         public bool PrefillDequantCacheActive => false;
         public bool SupportsBatchedGpuArgmax => true;
 
@@ -147,6 +153,7 @@ public sealed class ContinuousBatchingConstraintTests
         public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
             WaitFirstDecodeGate();
+            RecordDecodePositions(positions);
             FullLogitsCalls++;
             RecordWidth(tokens.Length);
             var outp = new float[tokens.Length][];
@@ -157,6 +164,7 @@ public sealed class ContinuousBatchingConstraintTests
         public (int Token, float Logit)[] BatchForwardMultiArgmax(int[] tokens, int[] positions, ISequenceKvCache[] caches)
         {
             WaitFirstDecodeGate();
+            RecordDecodePositions(positions);
             ArgmaxCalls++;
             RecordWidth(tokens.Length);
             var outp = new (int, float)[tokens.Length];

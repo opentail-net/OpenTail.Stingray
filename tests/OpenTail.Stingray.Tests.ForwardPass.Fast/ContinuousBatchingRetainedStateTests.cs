@@ -106,6 +106,46 @@ public sealed class ContinuousBatchingRetainedStateTests
         Assert.Equal((0, 1), fwd.Prefills[^1]);
     }
 
+    // A29: the window is 64 positions in this fake. A retained turn whose prompt fills it has no KV slot for its first
+    // token, and a retained turn may log only what the cache materialised, so it is refused at admission before any prefill.
+    [Fact]
+    public async Task RetainedTurn_PromptFillingTheWindow_IsRefusedBeforeAnyPrefill()
+    {
+        var fwd = new RetainedFakeForwardPass();
+        using var engine = new ContinuousBatchingEngine(fwd, new OneTokenPerCharTokenizer(), "test", maxBatchSize: 1);
+        using var state = new RetainedSequenceState();
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 5 };
+
+        await Assert.ThrowsAsync<ContextLimitExceededException>(
+            () => Drain(engine.GenerateRetainedChunksAsync(new string('x', 64), sp, state)));
+
+        Assert.Empty(fwd.Prefills);
+        Assert.False(state.HasRetainedState);
+        Assert.Equal(0, state.MaterializedPosition);
+    }
+
+    // A29: one token short of the window, the turn runs; decode stops at the window and the session records exactly the
+    // positions the cache wrote (63 prompt + the one pending token), so nothing is logged that the cache does not hold.
+    [Fact]
+    public async Task RetainedTurn_OneTokenShortOfTheWindow_StopsAtTheWindowWithTheCacheAndLogInStep()
+    {
+        var fwd = new RetainedFakeForwardPass { EmitNonStopOnPrefill = true, NonStopDecode = true };
+        using var engine = new ContinuousBatchingEngine(fwd, new OneTokenPerCharTokenizer(), "test", maxBatchSize: 1);
+        using var state = new RetainedSequenceState();
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 5 };
+        var chunks = new List<GenerateChunk>();
+
+        await foreach (var chunk in engine.GenerateRetainedChunksAsync(new string('x', 63), sp, state))
+            chunks.Add(chunk);
+
+        Assert.Equal([(0, 63)], fwd.Prefills);
+        Assert.Equal(64, state.MaterializedPosition);
+        var stop = chunks.Single(c => c.Kind == GenerateChunkKind.Stop);
+        Assert.Equal(1, stop.Stats!.OutputTokens);
+        Assert.True(stop.TruncatedByMaxTokens, "a window stop must report the length reason");
+        Assert.False(stop.TruncatedByResourceBudget);
+    }
+
     private static async Task Drain(IAsyncEnumerable<GenerateChunk> chunks)
     {
         await foreach (var _ in chunks) { }
@@ -120,6 +160,22 @@ public sealed class ContinuousBatchingRetainedStateTests
                 throw new TimeoutException("Condition did not become true before the test timeout.");
             await Task.Delay(10);
         }
+    }
+
+    /// <summary>One token per character, so a prompt of N characters is exactly N tokens (A29 window tests).</summary>
+    private sealed class OneTokenPerCharTokenizer : ITokenizer
+    {
+        public int VocabSize => 64;
+        public int BosTokenId => 0;
+        public int EosTokenId => Eos;
+        public int UnknownTokenId => 0;
+        public int PadTokenId => Eos;
+        public bool AddBosToken => false;
+        public IReadOnlyCollection<int> EogTokenIds => [Eos];
+
+        public IReadOnlyList<int> Encode(string text) => Enumerable.Repeat(1, text.Length).ToArray();
+        public string Decode(IEnumerable<int> tokens) => string.Empty;
+        public byte[] DecodeBytes(int token) => [];
     }
 
     private sealed class SuffixTokenizer : ITokenizer
@@ -151,6 +207,8 @@ public sealed class ContinuousBatchingRetainedStateTests
         public List<(int Start, int Count)> Prefills { get; } = [];
         public bool BlockPrefill { get; init; }
         public bool EmitNonStopOnPrefill { get; init; }
+        /// <summary>Decode steps sample a non-stop token instead of EOS, so only a limit can end the turn (A29).</summary>
+        public bool NonStopDecode { get; init; }
         public bool BlockDecode { get; init; }
         public TaskCompletionSource PrefillStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ManualResetEventSlim ReleasePrefill { get; } = new(false);
@@ -202,7 +260,7 @@ public sealed class ContinuousBatchingRetainedStateTests
                 if (!ReleaseDecode.Wait(TimeSpan.FromSeconds(10)))
                     throw new TimeoutException("The test did not release the blocked decode.");
             }
-            return Enumerable.Repeat(_eosLogits, tokens.Length).ToArray();
+            return Enumerable.Repeat(NonStopDecode ? _nonStopLogits : _eosLogits, tokens.Length).ToArray();
         }
 
         private static float[] CreateLogits(int token)

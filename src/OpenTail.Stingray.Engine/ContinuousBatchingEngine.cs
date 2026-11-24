@@ -180,6 +180,11 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         /// discarded unlogged and unemitted via the `done` disjunction below.
         /// </summary>
         public bool StopAfterStep;
+        /// <summary>
+        /// Set with <see cref="StopAfterStep"/> when the context window, not the KV reservation, ends the sequence
+        /// (A29). Such a stop is not a budget stop: it is reported with the length reason, as MaxNewTokens is.
+        /// </summary>
+        public bool StopAtContextEnd;
         // Per-sequence grammar/FSM constraint (issue #374/#377). Null = unconstrained decoding for
         // this sequence (the common case). When non-null the batcher advances it with every emitted
         // token via Accept and, while it reports IsConstraining, masks this sequence's logits row via
@@ -677,10 +682,36 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             //
             // Entering a step at P, the reservation already covers P+1: either from the initial
             // reservation (prompt + 1) or from the previous step's successful renewal of P+2.
+            //
+            // CONTEXT WINDOW (A29): the same rule bounds EVERY decoding sequence, with or without a renewer.
+            // A step at P writes KV at P, so P must be below MaxSeqLen. The token it samples is materialised
+            // at P+1 on the next step, so it is kept only when P+2 <= MaxSeqLen. Two cases:
+            //   - P >= MaxSeqLen: no step may run. This is reachable only at admission, when the prompt
+            //     filled the window exactly (admission allows prompt == MaxSeqLen). Its first token came from
+            //     the prefill logits and is already emitted, but it has no slot. The sequence retires now with
+            //     the length reason, and that token is removed from its log: the KV never holds it, and a
+            //     retained turn must log only what the cache materialised (HotSession checks that).
+            //   - P+2 > MaxSeqLen: the step still runs (P is in range) and materialises the pending token. The
+            //     token it samples is discarded by the StopAfterStep path, and the stop is reported as length.
+            // The renewer is consulted only when the window allows the step, so it never funds a token past it.
+            for (int i = active.Count - 1; i >= 0; i--)
+            {
+                var seq = active[i];
+                if (seq.Position < _fwd.MaxSeqLen) continue;
+                if (seq.GeneratedTokenIds is { Count: > 0 } logged) logged.RemoveAt(logged.Count - 1);
+                RetireSeq(seq);
+                FlushAndComplete(seq, truncatedByMaxTokens: true);
+                active.RemoveAt(i);
+            }
             for (int i = 0; i < active.Count; i++)
             {
                 var seq = active[i];
-                if (seq.ReservationRenewer is not null && !seq.ReservationRenewer(seq.Position + 2))
+                if (seq.Position + 2 > _fwd.MaxSeqLen)
+                {
+                    seq.StopAfterStep = true;
+                    seq.StopAtContextEnd = true;
+                }
+                else if (seq.ReservationRenewer is not null && !seq.ReservationRenewer(seq.Position + 2))
                     seq.StopAfterStep = true;
             }
 
@@ -827,7 +858,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     // Budget exhaustion is reported on its own flag. It used to fall into the
                     // max-tokens disjunct, telling the caller "you hit your token limit" when the
                     // truth was "the server could not fund another token" — opposite remedies.
-                    bool byBudget = seq.StopAfterStep && !stoppedByStopToken && !cancelled && !seq.ChoiceAlreadyComplete;
+                    // A context-window stop (StopAtContextEnd, A29) is not a budget stop: it falls to the length disjunct.
+                    bool byBudget = seq.StopAfterStep && !seq.StopAtContextEnd && !stoppedByStopToken && !cancelled && !seq.ChoiceAlreadyComplete;
                     FlushAndComplete(seq,
                         truncatedByMaxTokens: !stoppedByStopToken && !cancelled && !byBudget && !seq.ChoiceAlreadyComplete,
                         truncatedByResourceBudget: byBudget);
@@ -1022,7 +1054,10 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             // prefill work. Without this the forward pass throws on the first position past MaxSeqLen, which reached
             // the client as a 500. Positions run TurnStartPosition..TurnStartPosition+len-1, so a fresh request
             // (TurnStartPosition 0) is refused exactly when its prompt is longer than the window.
-            if (req.TurnStartPosition + tokens.Length > _fwd.MaxSeqLen)
+            // A retained (session) turn that fills the window exactly is refused too: its first token would have no KV slot,
+            // and a retained turn may log only what the cache materialised, so the token could not be stored (A29).
+            if (req.TurnStartPosition + tokens.Length > _fwd.MaxSeqLen
+                || (req.RetainedState is not null && req.TurnStartPosition + tokens.Length >= _fwd.MaxSeqLen))
             {
                 pending.Dequeue();
                 Interlocked.Decrement(ref _pendingCount);
