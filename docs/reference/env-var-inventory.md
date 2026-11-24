@@ -609,7 +609,7 @@ dynamically composed names.
 
 ## Owner-review candidates, 2026-11-24
 
-A mechanical pass over the 296 names in `src/OpenTail.Stingray.Core/KnownEnvironmentVariables.cs`. Each name was counted in `src/**/*.cs` (the registry excluded), in `tests/**/*.cs` and in `docs/**/*.md`. The 33 names below appear in source at most twice (one read site and one comment or help string), have no test reference, and have at most two documentation mentions. They are candidates for the owner's retirement decision. **They are not verdicts:** a person must read each read site before removal, and some may be operator-facing despite the counts. **Nothing was removed.**
+A mechanical pass over the 296 names in `src/OpenTail.Stingray.Core/KnownEnvironmentVariables.cs`. Each name was counted in `src/**/*.cs` (the registry excluded), in `tests/**/*.cs` and in `docs/**/*.md`. The 33 names below appear in source at most twice: one read site or dump hook, plus one entry in the classification table `src/OpenTail.Stingray.Core/EnvironmentVariableClasses.cs`. They have no test reference and at most two documentation mentions. **Checked 2026-11-24 by reading each line: every one is a live read (`Environment.GetEnvironmentVariable`) or a `DiffusionParityHooks` dump hook, and none is comment-only.** They are candidates for the owner's retirement decision. **They are not verdicts:** a person must read each read site before removal, and some may be operator-facing despite the counts. **Nothing was removed.**
 
 | Switch | Source mentions | Doc mentions |
 |---|---|---|
