@@ -2280,3 +2280,18 @@ Four CLI builds, each from a copy of HEAD (`git archive`, scratch, not in the re
 **Discarded runs.** A first attempt at this rotation gave outliers of 7.6 to 23 t/s, during heavy background load (Chrome, devenv, shell builds), and its rotation table repeated two variants in two rounds. Neither is in the medians above.
 
 **Decision.** The 2-row kernel stays out of the tree. Pair dispatch is not a lever. Next: the fused gate-and-up dispatch alone (1-row kernel; one parallel region over 2 x 4864 rows; about 24 fewer dispatches per token, estimated about 1%), then a comparison of the ggml Q5_0 AVX2 inner loop with ours, by reading the source.
+
+## Q5_0 per-block scale conversion (2026-11-24, iteration 57)
+
+**Question.** ggml's Q5_0 x Q8_0 AVX2 dot (`examples/audio.cpp/external/ggml/src/ggml-cpu/arch/x86/quants.c`, `ggml_vec_dot_q5_0_q8_0`) has the same arithmetic as `SimdKernels.DotQ5_0_Q8_0_Avx2`: nibble and fifth-bit unpacking, maddubs and madd, one fmadd per block. Checked by reading. The structural difference is the scale: ggml converts fp16 with `GGML_CPU_FP16_TO_FP32`, which on x86 is the F16C instruction when `__F16C__` is defined (`ggml-cpu/ggml-cpu-impl.h`; MSVC treats it as implied by AVX2). Ours calls `HalfConv.ToFloat` per block: a branch, a shift, and one multiply, in software.
+
+**Measurements** (scratch harness, not in the repo; single thread, cache-warm, FFN gate shape 4864 x 896; seven interleaved rounds):
+
+- Row identity: a copy of the kernel with the repo's `HalfConv` matches production on all 4864 rows.
+- Upper bound: removing the conversion (constant scale, so not bit-identical) is 22 to 25% faster (median about 305 µs down to about 230 µs).
+- F16C is not reachable from managed code on this runtime: the type name does not occur in the .NET 9 or .NET 10 reference assemblies (searched the dll metadata). So the hardware conversion is not available.
+- Vectorised conversion of 8 blocks at once (two AVX2 gathers for the 16-bit weight scales and the 32-bit activation scales, the `HalfConv` bit operations on 8 lanes, one multiply): bit-identical on every row and on a row containing inf and NaN scales (exact scalar fallback), but 2.3 times slower (median about 659 µs against 291 µs). Gathers on this Zen 3 cost more than the conversion they replace.
+
+**Conclusion.** The conversion is real cost, about a quarter of the Q5_0 dot. The managed options tried do not recover it. The remaining option is to precompute float scales at load: 4 extra bytes per 32-weight block (about +18% of Q5_0 tensor bytes, and about +12% of Q8_0). That adds memory traffic, which could cancel the gain when decode streams from DRAM. It is a memory trade, so it is an owner decision and it is not implemented. Recorded as an owner-decision candidate.
+
+**Fused gate and up for Q5_0 (open).** `SimdKernels.MatVecDual` already fuses the Q4_K and Q6_K pairs, but equal-dtype Q5_0 falls to its `default:` branch, which runs two separate `MatVec` calls. That is two input quantisations and two parallel regions per layer. A fused Q5_0 case would save one of each per layer, about 1% of the token by the same arithmetic as before. Not yet measured; below the noise of this machine, so it needs many rounds to show.
