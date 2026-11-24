@@ -1056,6 +1056,19 @@ public sealed class OpenTailStingrayJsonContextTests
     }
 
     [Fact]
+    public void StopSequence_LongerThan256Chars_IsRefused_AtTheLimitIsAccepted()
+    {
+        // The matcher's per-token cost grows with a stop string's length, so the validator caps it (RequestParameterValidation).
+        static System.Text.Json.JsonElement Stop(int length) =>
+            System.Text.Json.JsonDocument.Parse("[\"" + new string('x', length) + "\"]").RootElement.Clone();
+
+        Assert.Null(RequestParameterValidation.ParseOpenAiStops(Stop(256), out _));
+        var error = RequestParameterValidation.ParseOpenAiStops(Stop(257), out _);
+        Assert.NotNull(error);
+        Assert.Contains("256", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Default_UsesSnakeCaseLowerNaming()
     {
         // The wire format MUST be snake_case (OpenAI/Anthropic conventions) — guard against

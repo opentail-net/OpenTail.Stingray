@@ -104,9 +104,16 @@ internal static class RequestParameterValidation
         if (list is null) return null;
         if (list.Length > max) return $"{name} accepts at most {max} strings (got {list.Length})";
         foreach (string s in list)
+        {
             if (string.IsNullOrEmpty(s)) return $"{name} must not contain an empty string";
+            if (s.Length > MaxStopSequenceLength) return $"{name} strings must be at most {MaxStopSequenceLength} characters (got {s.Length})";
+        }
         return null;
     }
+
+    /// <summary>A stop string is matched against the output of every token, and the held-back text it needs grows with its length, so the
+    /// per-token cost grows with it. Real stop sequences are a few characters; the cap keeps one request from making every token expensive.</summary>
+    private const int MaxStopSequenceLength = 256;
 
     /// <summary>`/v1/audio/speech` `speed`: OpenAI's documented range; a non-positive or NaN value used to be replaced by 1.0 silently.</summary>
     public static string? ValidateSpeechSpeed(float speed) => Range("speed", speed, 0.25f, 4.0f);
