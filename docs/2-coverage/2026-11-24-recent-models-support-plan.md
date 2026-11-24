@@ -22,7 +22,7 @@ These are my assumptions, labelled as the research note labels them. The owner c
 - [ ] **O2 (A2) Host fit.** Resident limit 55 GiB (63 GiB RAM minus scout's 8 GiB reserve). Confirm the reserve, and say whether the 55 to 110 GiB paged band is ever in scope. The KV cache is not in the file-size test, so confirm that a measured run is the real gate.
 - [ ] **O3 Reference revision.** Which llama.cpp build is the independent oracle for goldens: the local source at `bed0a8566` (built here), the vendored b10306, or a newer master build? Each port records the revision it used. See blocker B1.
 - [ ] **O4 `qwen4exp` status.** The code says Admitted (2026-11-09, UD-IQ1_S). `ported-families-todo.md` and `00-current-work.md` §2 say not admitted. Reconcile before any other item: either the docs are stale, or the code admission must be reverted under rule 14.
-- [ ] **O5 Licences.** Scout reports `other` for Nemotron-3.5-Lightning (an NVIDIA model, in the `ggml-org` repo) and for LiquidAI's LFM3-Omni, and `openmdw-1.1` for Poolside's Laguna. Read each licence before any STATUS row or public text. Licence wording is an owner decision (AFK rule), not a coding step. Apache-2.0 or MIT (Spark, K2-Horizon, North-Mini, Qwen3-Coder-Next, Inkling, Mellum, Ling-3.0-tiny) needs no decision.
+- [x] **O5 Licences.** Resolved by the owner 2026-11-24: the project only runs inference and ships neither weights nor binaries, so licences are not a gate. (Scout reported `other` for Nemotron-3.5-Lightning and LFM3-Omni, and `openmdw-1.1` for Laguna; none of that blocks work.)
 - [ ] **O6 Omni inputs.** LFM3-Omni: admit the text path only, with image and audio deferred? (Proposed: yes.)
 - [ ] **O7 Non-LLM popular families** (audiocpp, qwen_image, mert2, acestep-lm, and others in research §5): do any need a pipeline? Not decided here.
 
@@ -69,7 +69,7 @@ Every port, and every admission, must meet these. Sources: `docs/reference/addin
 - [ ] P1.1 Re-run scout at the revision chosen in O3 for each Tier 1 and Tier 2 repo. The 2026-11-24 runs used each repo's default head at that time; the commit hash is recorded in each scout JSON. Record the revisions used in the research note.
 - [ ] P1.2 Re-fetch the llama.cpp files at the chosen revision. Compare line counts and base classes with the master figures in research §7.
 - [ ] P1.3 Confirm the popularity numbers on the day of each port (30-day figures move).
-- [ ] P1.4 Read the licence for each candidate flagged in O5.
+- [x] P1.4 Licence reads: not needed (O5 resolved 2026-11-24).
 
 ## 7. Phase 2: Tier 0 (already supported architecture, no new code)
 

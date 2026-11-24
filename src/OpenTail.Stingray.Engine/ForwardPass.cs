@@ -140,6 +140,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // explicit Clear before the Q/K/V matvecs.
     private readonly int[]? _layerHeadDim;
     private readonly int[]? _layerRopeDim;
+    private readonly bool _ropeWidthPerLayer; // Spark-X: rotate _layerRopeDim[layer] instead of _ropeDim
     private readonly int[]? _layerKvSrc;
     private readonly bool[]? _isSwaLayer;
     private readonly int _maxHeadDim;
@@ -394,6 +395,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     // [numHeads*headDim] scratch. Gated / embedding-normed models run the per-token trunk only.
     private readonly TensorRef[]? _attnGate;
     private readonly float* _attnGateBuf;
+    private readonly bool _attnGatePerHead; // Spark-X: one gate value per head instead of per element
     private readonly float _postNormEps;
     private readonly bool _perTokenTrunkOnly;
     private readonly float[]? _layerOutputScale;
@@ -451,6 +453,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _layerHeadDim = new int[hp.NumLayers];
             for (int i = 0; i < hp.NumLayers; i++) _layerHeadDim[i] = lhd[i];
         }
+        _ropeWidthPerLayer = hp.RopeWidthPerLayer && hp.LayerRopeDim is not null;
         if (hp.LayerRopeDim is { } lrd)
         {
             _layerRopeDim = new int[hp.NumLayers];
@@ -740,6 +743,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
         _postNormEps = hp.PostNormEps > 0f ? hp.PostNormEps : hp.RmsNormEps;
         _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm;
+        _attnGatePerHead = hp.AttentionOutputGatePerHead;
         if (hp.AttentionOutputGate)
         {
             if (_layerHeadDim is not null || _isMla)

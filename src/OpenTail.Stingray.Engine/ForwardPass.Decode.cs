@@ -286,9 +286,10 @@ public sealed unsafe partial class ForwardPass
                         FusedMatVec(_v, _wv[layer], _normBuf, kvDimL, _embDim);
                     }
                 }
-                // Muse-Glimmer: gate = attn_gate · attn_norm_out, applied after attention (below).
+                // Muse-Glimmer / afmoe: gate = attn_gate · attn_norm_out, applied after attention (below).
+                // Spark-X: one gate row per head (see the apply site).
                 if (_attnGate is not null)
-                    FusedMatVec(_attnGateBuf, _attnGate[layer], _normBuf, qDimL, _embDim);
+                    FusedMatVec(_attnGateBuf, _attnGate[layer], _normBuf, _attnGatePerHead ? _numHeads : qDimL, _embDim);
             }
             if (profDecode)
             {
@@ -410,11 +411,27 @@ public sealed unsafe partial class ForwardPass
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnOut,
                 new ReadOnlySpan<float>(_attnOut, qDimL));
 
-            // Muse-Glimmer attention output gate: attn *= sigmoid(gate) before Wo (muse-glimmer.cpp).
+            // Attention output gate: attn *= sigmoid(gate) before Wo.
             if (_attnGate is not null)
             {
-                SimdKernels.SigmoidInPlace(_attnGateBuf, qDimL);
-                for (int j = 0; j < qDimL; j++) _attnOut[j] *= _attnGateBuf[j];
+                if (_attnGatePerHead)
+                {
+                    // Spark-X (spark2-5.cpp): one sigmoid per head, applied to all headDim values of that head.
+                    int headDimG = qDimL / _numHeads;
+                    SimdKernels.SigmoidInPlace(_attnGateBuf, _numHeads);
+                    for (int h = 0; h < _numHeads; h++)
+                    {
+                        float g = _attnGateBuf[h];
+                        int off = h * headDimG;
+                        for (int j = 0; j < headDimG; j++) _attnOut[off + j] *= g;
+                    }
+                }
+                else
+                {
+                    // Muse-Glimmer / afmoe: one sigmoid per element (muse-glimmer.cpp).
+                    SimdKernels.SigmoidInPlace(_attnGateBuf, qDimL);
+                    for (int j = 0; j < qDimL; j++) _attnOut[j] *= _attnGateBuf[j];
+                }
             }
 
             if (_isMla)
@@ -707,24 +724,27 @@ public sealed unsafe partial class ForwardPass
             cos = mc;
             sin = ms;
         }
+        // Rotated width of this layer. Spark-X (n_rot(il)) rotates a per-layer width; every other family uses the
+        // global RopeDim (_ropeDim), so their numerics are unchanged.
+        int ropeDimL = _ropeWidthPerLayer ? _layerRopeDim![layer] : _ropeDim;
         if (_hp.IsNeoxRope)
         {
             // Partial RoPE (GPT-NeoX/Pythia: rope.dimension_count < headDim, e.g. 16 of 64):
-            // rotate only the leading _ropeDim channels, dims [_ropeDim, layerHd) pass
-            // through. _ropeDim == layerHd for every other architecture, so this is a no-op
+            // rotate only the leading ropeDimL channels, dims [ropeDimL, layerHd) pass
+            // through. ropeDimL == layerHd for every other architecture, so this is a no-op
             // fast path everywhere except gptneox.
-            if (_ropeDim < layerHd)
-                SimdKernels.ApplyRoPECachedNeoxPartial(x, cos, sin, heads, layerHd, _ropeDim);
+            if (ropeDimL < layerHd)
+                SimdKernels.ApplyRoPECachedNeoxPartial(x, cos, sin, heads, layerHd, ropeDimL);
             else
                 SimdKernels.ApplyRoPECachedNeox(x, cos, sin, heads, layerHd);
         }
         else
         {
             // Partial RoPE, "normal"/interleaved convention (GLM4 non-multimodal:
-            // rope.dimension_count=64, headDim=128) — same _ropeDim mechanism as the NEOX
+            // rope.dimension_count=64, headDim=128) — same ropeDimL mechanism as the NEOX
             // branch above, just the interleaved-pair kernel instead of the halfDim-offset one.
-            if (_ropeDim < layerHd)
-                SimdKernels.ApplyRoPECachedPartial(x, cos, sin, heads, layerHd, _ropeDim);
+            if (ropeDimL < layerHd)
+                SimdKernels.ApplyRoPECachedPartial(x, cos, sin, heads, layerHd, ropeDimL);
             else
                 SimdKernels.ApplyRoPECached(x, cos, sin, heads, layerHd);
         }

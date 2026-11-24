@@ -502,6 +502,14 @@ public sealed record ModelHyperparams
     public bool AttentionOutputGate { get; init; }
 
     /// <summary>
+    /// Granularity of <see cref="AttentionOutputGate"/>. False: one sigmoid per element, gate tensor
+    /// [embDim → numHeads·headDim] (Muse-Glimmer, afmoe). True: one sigmoid per head, gate tensor
+    /// [embDim → numHeads], broadcast over that head's headDim values (Spark-X, llama.cpp spark2-5.cpp).
+    /// Only meaningful when <see cref="AttentionOutputGate"/> is set.
+    /// </summary>
+    public bool AttentionOutputGatePerHead { get; init; }
+
+    /// <summary>
     /// Per-Layer-Embedding (PLE) projection width. Gemma 4 E4B = 256. 0 when the
     /// model has no PLE table.
     /// </summary>
@@ -584,6 +592,13 @@ public sealed record ModelHyperparams
     /// global). <c>null</c> when every layer uses <see cref="RopeDim"/>.
     /// </summary>
     public IReadOnlyList<int>? LayerRopeDim { get; init; }
+
+    /// <summary>
+    /// When true, the forward pass rotates <see cref="LayerRopeDim"/>[layer] channels on each layer instead of the
+    /// global <see cref="RopeDim"/> (Spark-X: llama.cpp n_rot(il), 64 on full-attention layers and 256 on SWA layers).
+    /// Other families keep the global width.
+    /// </summary>
+    public bool RopeWidthPerLayer { get; init; }
 
     /// <summary>
     /// Per-layer KV head count. Gemma 4 12B (dense) mixes 8 (GQA) on SWA layers
