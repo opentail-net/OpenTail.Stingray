@@ -266,6 +266,30 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - `InferenceEngineLoader.BuildLoadedEngine` failure path disposes the model unconditionally (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 72-73), while `ModelRuntime.Dispose` skips the model for `DrainedOnDispose: false`. **Checked 2026-11-24, not changed.** `BuildLoadedEngine`'s failure path (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 58-80) disposes the instance and then the model. It runs before any request reaches the engine, so a worker still reading the weights is not expected there. But it does not repeat the `DrainedOnDispose: false` guard that `ModelRuntime.Dispose` applies (`ModelRuntime.cs` lines 276-277). Low risk; if the owner wants the two paths consistent, add the same guard here and apply the same trade-off as A18 (leak rather than use-after-free).
 - `AdmissionWaitTimeout`, `ResidencyMode`, `ResourceBudget` and `MaxQueuedAdmissions` are read outside the lock while they are mutable (`ModelRuntimeManager.cs` around line 365). **Checked 2026-11-24, not changed.** The only runtime assignment in `src` is `manager.ResourceBudget = new HostResourceBudget(manager)` at DI startup (`src/OpenTail.Stingray.Server/ServiceCollectionExtensions.cs` line 88). The other settings are configured before use, so the unsynchronised reads are not a live race in the shipped code. The public setters remain, so a future runtime change would reopen it. If the owner wants it closed, make those settings init-only.
 
+##### A22. A nested GGUF array overflows the stack (verified 2026-11-24, high impact: a crash, not an exception)
+
+- **Why:** `ReadGgufArray` (`src/OpenTail.Stingray.Core/GgufModel.cs` around lines 645-657) and `SkipGgufValue` (lines 688-695) call each other with no depth limit. An array whose element type is also an array nests one level per 12 bytes of file, so about 1 MB of header gives roughly 80,000 levels and a stack overflow. A stack overflow ends the process and cannot be caught.
+- **Next step:** pass a depth counter through both methods and refuse above a small limit (8 is enough for every real GGUF) with `InvalidDataException`.
+- [ ] **Done when:** a file with a 64-deep nested array is rejected with `InvalidDataException` (the test fails before the fix, because nothing is thrown) on both the read path and the shard-skip path. The test must not overflow the stack itself.
+
+##### A23. A tensor rank is allocated before it is checked (verified 2026-11-24)
+
+- **Why:** `ParseTensorInfos` (`src/OpenTail.Stingray.Core/GgufModel.cs` around lines 436-442) runs `new long[nDims]` on the file's `uint` before the `nDims > 8` check at line 454. A rank of `0xFFFFFFFF` asks for a huge array and fails with an out-of-memory or overflow exception, not `InvalidDataException`.
+- **Next step:** move the `nDims > 8` check before the allocation.
+- [ ] **Done when:** a tensor entry with rank `0xFFFFFFFF` throws `InvalidDataException` (fails before the fix) and nothing is allocated for it.
+
+##### A24. A quantized tensor whose first dimension is not a block multiple is under-counted (verified 2026-11-24, medium-high: a possible read past the mapped view)
+
+- **Why:** `DTypeInfo.ByteSize` (`src/OpenTail.Stingray.Core/Tensor.cs` line 313) computes `(elementCount / blockSize) * bytesPerBlock`, which floors. A Q4_K tensor with dims `[1, N]` reports too small a size, so the bounds check in `ParseTensorInfos` (around lines 475-511) passes. Kernels that read a whole block per row can then read past the end of the mapped file. GGML itself requires the first dimension to be a multiple of the block size.
+- **Next step:** in `ParseTensorInfos`, reject a quantized tensor whose element count is not a multiple of its block size, with `InvalidDataException`. Unquantized types (block size 1) are unaffected.
+- [ ] **Done when:** a Q4_K tensor with first dimension 1 at the end of the file is rejected with `InvalidDataException` (fails before the fix), and an F32 tensor of the same shape still loads.
+
+##### A25. Bad `general.alignment` and `general.architecture` values throw the wrong exception (verified 2026-11-24, low impact)
+
+- **Why:** `Convert.ToInt32(alignObj)` (`GgufModel.cs` lines 324-325 and 516-517) accepts any value type: alignment 0 gives `DivideByZeroException` in `AlignUp`, a negative value gives a wrong data start, a value above `int.MaxValue` gives `OverflowException`, and a string gives `FormatException`. `(string)archVal` (around line 345) throws `InvalidCastException` for a non-string architecture.
+- **Next step:** accept only an integer type whose value is a positive power of two no larger than 1 MiB for alignment, and a string for the architecture; anything else throws `InvalidDataException`.
+- [ ] **Done when:** alignment 0, -1, 3 (not a power of two), 2^40 and the string `"x"` each throw `InvalidDataException`, and a non-string architecture does too (each test fails before the fix).
+
 #### Part B: Waiting on you or a machine
 
 ##### B1. Resident-bytes accounting (choice recorded: B)
