@@ -260,10 +260,10 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Recommended default (owner-level, taken without asking):** keep the documented behaviour. Record it; change only if the owner asks.
 - [x] **Decision recorded 2026-11-24:** keep as documented.
 
-##### A21. Low-priority checks from the same review (not verified yet)
+##### A21. Low-priority checks from the same review (checked 2026-11-24, neither changed)
 
-- `InferenceEngineLoader.BuildLoadedEngine` failure path disposes the model unconditionally (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 72-73), while `ModelRuntime.Dispose` skips the model for `DrainedOnDispose: false`. Check whether the same guard is needed on the failure path.
-- `AdmissionWaitTimeout`, `ResidencyMode`, `ResourceBudget` and `MaxQueuedAdmissions` are read outside the lock while they are mutable (`ModelRuntimeManager.cs` around line 365). Check whether they are only set before the manager is used.
+- `InferenceEngineLoader.BuildLoadedEngine` failure path disposes the model unconditionally (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 72-73), while `ModelRuntime.Dispose` skips the model for `DrainedOnDispose: false`. **Checked 2026-11-24, not changed.** `BuildLoadedEngine`'s failure path (`src/OpenTail.Stingray.Server/InferenceEngineLoader.cs` around lines 58-80) disposes the instance and then the model. It runs before any request reaches the engine, so a worker still reading the weights is not expected there. But it does not repeat the `DrainedOnDispose: false` guard that `ModelRuntime.Dispose` applies (`ModelRuntime.cs` lines 276-277). Low risk; if the owner wants the two paths consistent, add the same guard here and apply the same trade-off as A18 (leak rather than use-after-free).
+- `AdmissionWaitTimeout`, `ResidencyMode`, `ResourceBudget` and `MaxQueuedAdmissions` are read outside the lock while they are mutable (`ModelRuntimeManager.cs` around line 365). **Checked 2026-11-24, not changed.** The only runtime assignment in `src` is `manager.ResourceBudget = new HostResourceBudget(manager)` at DI startup (`src/OpenTail.Stingray.Server/ServiceCollectionExtensions.cs` line 88). The other settings are configured before use, so the unsynchronised reads are not a live race in the shipped code. The public setters remain, so a future runtime change would reopen it. If the owner wants it closed, make those settings init-only.
 
 #### Part B: Waiting on you or a machine
 
