@@ -288,6 +288,10 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 // Every attempt, not only the first: a waiter woken by Dispose must fail here, not start a load on a manager that has shut down.
                 ObjectDisposedException.ThrowIf(_disposed, this);
 
+                // Captured before any busy check below. A handle released after this point completes this task (see
+                // NotifyResidencyChanged), so a waiter that sees the handle still held cannot miss the release.
+                var residencyChanged = Volatile.Read(ref _residencyChanged).Task;
+
                 // Fast path: already resident. Handle creation happens while still holding the
                 // lock (via the ctor's OnHandleAcquired) so this can never race the eviction path
                 // below, which also mutates _resident only under this same lock — the
@@ -309,7 +313,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     // single-slot residency (invariant 10), and never load a second model alongside
                     // an in-flight one — wait for it to free up instead. RunLoad notifies on both
                     // success and failure, so this wait always ends.
-                    waitForResidencyChange = _residencyChanged.Task;
+                    waitForResidencyChange = residencyChanged;
                 }
                 else
                 {

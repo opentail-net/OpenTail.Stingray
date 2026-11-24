@@ -458,6 +458,26 @@ public sealed class ModelRuntimeManagerTests
         Assert.Equal(1, Volatile.Read(ref bLoads));
     }
 
+    [Fact]
+    public async Task SingleSlot_HandleReleasedWhileAnotherModelIsAcquiring_NeverLeavesTheWaiterHanging()
+    {
+        // STRESS TEST, NOT A PROOF. The race it targets (a release between a waiter's busy check and its read of the
+        // residency signal) is a few instructions wide and cannot be forced without a seam. Each round races one release
+        // against one acquire; a hang shows up as the 5-second timeout.
+        for (int round = 0; round < 200; round++)
+        {
+            using var manager = new ModelRuntimeManager(id => Load(id.Value), ModelResidencyMode.SingleSlot);
+            var hA = await manager.AcquireAsync(Id("a"));
+            var go = new ManualResetEventSlim(false);
+            var release = Task.Run(() => { go.Wait(); hA.Dispose(); });
+            go.Set();
+            var acquireB = manager.AcquireAsync(Id("b")).AsTask();
+            await release;
+            using var hB = await acquireB.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(Id("b"), hB.Runtime.Id);
+        }
+    }
+
     // ── Cross-model concurrency / no global lock ────────────────────────────
 
     [Fact]
