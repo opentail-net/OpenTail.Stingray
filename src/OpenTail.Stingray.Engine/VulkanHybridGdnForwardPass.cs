@@ -2440,18 +2440,22 @@ public sealed unsafe class VulkanHybridGdnForwardPass : IForwardPass
         _gpu.RecordComputeToHostBarrier();
         _gpu.EndRecordAndSubmit();
         _gpu.Download(_gpuRouterLogits!, _gpuRouterBuf!);
+        // The submit above carried the previous MoE layer's expert matmuls and Download waited for the fence, so the GPU no
+        // longer reads those slots: their leases can go (this layer takes its own below). As in HybridForwardPass.
+        _expertSlotManager!.ReleaseLeases();
 
         Span<int> selectedExperts = stackalloc int[numActive];
         Span<float> expertWeights = stackalloc float[numActive];
         SelectTopK(_gpuRouterBuf!, numActive, selectedExperts, expertWeights, _hp.NormalizeMoeTopKWeights);
 
-        // Promote current-layer experts FIRST (TryGetCached promotes hits), then prefetch.
+        // Look up and lease current-layer experts FIRST (a lookup promotes hits; a lease pins them until the GPU has read them),
+        // then prefetch.
         Span<bool> isGpu = stackalloc bool[numActive];
         ExpertGpuSlot[] cachedSlots = new ExpertGpuSlot[numActive];
         bool hasCpuFallback = false;
         for (int i = 0; i < numActive; i++)
         {
-            isGpu[i] = _expertSlotManager!.TryGetCached(layer, selectedExperts[i], out cachedSlots[i]);
+            isGpu[i] = _expertSlotManager!.TryGetCachedLeased(layer, selectedExperts[i], out cachedSlots[i]);
             if (!isGpu[i]) hasCpuFallback = true;
         }
         _prefetcher?.EnqueuePrefetch(layer, selectedExperts);

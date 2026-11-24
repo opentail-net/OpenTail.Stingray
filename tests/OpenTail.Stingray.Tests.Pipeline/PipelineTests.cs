@@ -499,5 +499,32 @@ public sealed class PipelineTests
         Assert.Equal(8 * 64, plan.Slots);
         Assert.Equal(OpenTail.Stingray.Pipeline.MoeCacheSizingStatus.UnknownExpertSize, plan.Status);
     }
+
+    // A lease is a pin taken on a lookup hit (ExpertSlotManager.TryGetCachedLeased). Pins must hold through the promotions
+    // that a forward pass makes, and must stop holding once unpinned.
+    [Fact]
+    public void ExpertCache_PinTakenAfterAPromotion_HoldsThroughChurn_AndReleasesAfterUnpin()
+    {
+        var cache = new OpenTail.Stingray.Pipeline.ExpertCache<string>(capacity: 8, onEvict: _ => { });
+        cache.Put(0, 0, "x");
+        Assert.True(cache.TryGet(0, 0, out _));  // a hit promotes it to the protected segment
+        cache.Pin(0, 0);
+
+        for (int e = 0; e < 16; e++)
+        {
+            cache.Put(1, e, "a");
+            cache.TryGet(1, e, out _);            // promotions push the protected tail towards eviction
+        }
+        Assert.True(cache.Contains(0, 0), "a pinned entry was evicted by promotions");
+
+        cache.Unpin(0, 0);
+        for (int e = 0; e < 16; e++)
+        {
+            cache.Put(2, e, "b");
+            cache.TryGet(2, e, out _);
+        }
+        Assert.False(cache.Contains(0, 0), "an unpinned entry should be evictable under the same promotions");
+        cache.Dispose();
+    }
 }
 
