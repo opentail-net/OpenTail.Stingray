@@ -1,5 +1,7 @@
 # External facts behind the 2-coverage research (2026-10-31)
 
+> Completed items moved to [2026-10-31-coverage-facts-completed-items-2026-11.md](../../done/2026-10-31-coverage-facts-completed-items-2026-11.md) on 2026-11-24. This file keeps only the open items.
+
 Companion to the research sections appended to the plans in [docs/2-coverage](..). Each row is a claim the plans make, the value found on the web, and where it was checked. Nothing here changes code.
 
 ## 1. DiffusionGemma (`google/diffusiongemma-26B-A4B-it`)
@@ -69,12 +71,4 @@ From the llama.cpp server history ([PR #10783, "server : fix logprobs, make it O
 
 ## Open checks from this research (status 2026-11-08)
 
-- [x] GLM-5.3 UD-Q2_K_XL size: 236.44 GiB from the HF tree listing (section 2).
-- [x] DeepSeek-V4-Flash Q2_K size: no plain `Q2_K` folder; `UD-Q2_K_XL` is 96.8 GB (section 2).
-- [x] Hunyuan-A13B-Instruct licence: EU, UK and South Korea are excluded (section 3).
-- [x] MiniMax-H3 licence text: retrieved. The Applicable Territory excludes the EU, UK, Korea and the USA (section 3).
-- [x] Muse-Glimmer-30B licence: `apache-2.0` for `meta-models/Muse-Glimmer-30B` (section 3). The GGUF repo was not checked.
-- [x] GLM-4.5-Air licence: HF tag `mit`. GLM-5.3 licence: custom, not MIT, with a US$10B Model-as-a-Service condition (section 3).
-- [x] Llama 4 attention defaults: match the unsloth mirror of the Scout config (section 4). Meta's gated repo was not read.
 - [ ] llama-server logprob field names: NOT CHECKED. Needs the pinned `bed0a8566` source or a real build. The local `llama-server.exe` is a stub.
-- [x] File lists recorded: `unsloth/GLM-5.3-GGUF` has LICENSE (custom licence, section 3). `unsloth/DeepSeek-V4-Flash-GGUF` has no LICENSE file, and its HF tag is `mit`. `unsloth/Qwen3.8-Flash-Next-GGUF` has no LICENSE file. Its licence is the Qwen Community License 1.0, from the base repo `Qwen/Qwen3.8-Flash-Next` LICENSE (read 2026-11-08).
