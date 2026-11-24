@@ -41,6 +41,15 @@ Legend: `[ ]` open, `[x]` done. "Runnable now" = no owner decision and no downlo
 
 ---
 
+## Status 2026-11-24 (autonomous loop): what is left, and what blocks it
+
+- **Job 3 (memory accounting): closed** on the real-checkpoint evidence below. Host-side session accounting, not shared with the GPU placement planner fixed for A5 in 3c5be538.
+- **Logit-level comparison (open, blocked on a reference build and a heavy run).** The image step-1 top-1 flip (TV 0.178) has no isolated cause. Next step is per-layer values at the same decode position against the reference's eval-callback. Two things block it: (1) the vendored llama.cpp source is at `bed0a8566`, but the binaries are `b10306-cpu`, so a reference build must first be matched to b10306; (2) each dump is a full 62 GB paged run on this 63 GB host. Toolchain is present (cmake, MSVC BuildTools, ninja).
+- **Image and video server paths (open): the only missing check is the HTTP smoke run with the real checkpoint.** Both code paths are in and the engine tests pass on the real checkpoint. The server cannot load the checkpoint here: host preflight refuses (see the RUNNING.md item in Phase 8). Owner decision needed.
+- **Speculative acceptance, product path (open, code).** Chained acceptance and rollback through the product decoder need the MTP decoder wired to the qwen4exp pass (`HasMtpHead`, `MtpForward`, `MtpLastHidden`, `PrefillMtp`, `MtpTruncateTo`, `MtpResetCache`, a per-position hidden history). This is a substantial code task, not started.
+- **Phase 8 (verification and admission):** needs the items above closed or explicitly waived by the owner, and the owner decides the RUNNING.md and WHAT-YOU-CAN-DO row.
+- **Owner decisions needed:** (a) allow the real-checkpoint server smoke run on this host (preflight override or a different budget), or accept it as a recorded gap; (b) waive or fund the logit-level investigation and the MTP product wiring for Phase 8; (c) the RUNNING.md / WHAT-YOU-CAN-DO row.
+
 ## Phase 0. Numerical parity (real checkpoint, paged)
 
 - [x] **0.3 FFN injection gate: CLOSED under D1 (2026-11-08, later)**, with both paths explained by the float-order noise floor (below).
@@ -127,8 +136,8 @@ Runnable now. Test cases only, no new disk or implementation.
 
 ## Phase 3. Prefix reuse and retained state
 
-- [ ] **Job 3: memory accounting completion.** Design committed in 5c89581f, before code. Parts (a) and (b) are implemented;
-        the remaining open item is the real-checkpoint measurement (below). Pieces:
+- [x] **Job 3: memory accounting completion.** Design committed in 5c89581f, before code. Parts (a) and (b) are implemented;
+        the real-checkpoint measurement (below) is done, so every piece is ticked. Closed 2026-11-24 on that evidence. This is host-side session accounting (KV per token, held snapshots, residency): it shares no code with the GPU placement planner fixed for A5 in 3c5be538. Pieces:
   - [x] `KvBytesPerToken` becomes the exact per-token sum (done; full Core 1417 tests, 0 failed; tests `Qwen4ExpPerTokenBytesTests`, 6; the real-checkpoint value is not measured yet): K and V, raw indexer key, amortised pooled key
         (`ceil(4 x indexerKeyLength / indexerKPool)` bytes), and 4 bytes of PLE history. Counted from the real layer tensors.
         Changes the session ABI fingerprint (acceptable: no persisted qwen4exp sessions exist).
