@@ -2,6 +2,8 @@
 
 As of 2026-11-08. This file is the entry point and the parent of the open work in Queue 1, which was the separate open-work plan and is now merged here. The Qwen 3.8 port has its own plan. Finished items are in [done/](done). The previous version of this file is in git history.
 
+> **PERFORMANCE IS REOPENED (owner, 2026-11-24).** The owner said performance is fair game "as long as it achieves something". The active plan is [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md), Part A (A11, the 1-row Q4_K row kernel, is closed: not worth changing; A4 is next). The only closed performance item is prefill speed on the default CPU route ([2026-11-24-prefill-speed-decision.md](4-performance/2026-11-24-prefill-speed-decision.md)).
+
 ## How to use this file
 
 1. Work the **Queue** top to bottom. Do not reorder because another item looks more interesting.

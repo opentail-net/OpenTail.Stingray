@@ -2089,3 +2089,21 @@ Plan: `docs/done/2026-10-09-scratch-arena-experiment-plan.md`. Question: does re
 * **What does allocate per call: `ForwardPass.PrefillCore`**, about ten large `AllocZeroed` buffers once per prefill call (not per layer). Sizes at N=835: Qwen2.5-1.5B about 95 MiB, Qwen2.5-7B about 200 MiB.
 * **Upper bound on the saving = the whole alloc+zero+touch+free cost.** Measured (median of 25, alloc, touch every page, free; Ryzen 7 5700G, quiet machine): 95 MiB 8.3 ms, 200 MiB 17.9 ms. Against prefill times of 3170 ms (1.5B, 263 t/s) and 14.4 s (7B, 58 t/s): **0.26% and 0.12%**. A reuse scheme cannot save more than that, so it is far under the 2% threshold.
 * **Decision:** stop at P0, close the item. No arena, no env switches kept (the instrumentation was reverted). Scope: CPU prefill on dense Q4_K_M/Q8_0 models, one CPU, Windows allocator; hybrid-GDN and MoE prefill paths and GPU backends were not measured (rule 13).
+
+## Q4_K row kernel, 1-row versus 2-row on the Q8_KS path (A11, 2026-11-24): not worth changing
+
+Plan: [2026-11-08-performance-plan.md](2026-11-08-performance-plan.md), Part A11. Question: the 2026-10-30 findings said the 2-row kernel `DotQ4K_Q8KS_2Row` is about 38% slower per row than the 1-row `DotQ4K_Q8KS` on DRAM-sized matrices, and that switching to 1-row is a cheap bit-identical lead. Machine: Ryzen 7 5700G, Windows, background load (devenv and Chrome open).
+
+* **Microbenchmark** (`tools/kernel-bench-cs q4k-dot`, one run, single thread, `DOTNET_TieredCompilation=0`): DRAM working set (65536 rows, 75 MB): 1-row 152.9 ns/row, 2-row 182.5 (1-row about 16% faster). Shared-expert gate/up 5632 x 2048: 152.9 against 186.4 (about 18%). Qwen3-Coder expert gate/up 768 x 2048: 151.4 against 185.5 (about 18%). In L1, L2 and L3 working sets the 2-row is slightly faster (L1: 137.5 against 143.8). So the claimed 38% is not reproduced here: the gap is 16 to 19% at DRAM sizes.
+* **Bit identity:** the new test `DotQ4K2RowBitIdentityTests` (`tests/OpenTail.Stingray.Tests.ForwardPass.Fast`) compares the two kernels bit for bit on 64 random valid Q4_K rows at 256, 2048 and 5632 columns. It passes, so the 2-row kernel is bit-identical to the 1-row kernel on every row.
+* **End to end, CPU only** (`-g 0`, every layer on `ForwardPass`), SmolLM2-1.7B Q4_K_M, 128 new tokens, greedy. Interleaved A/B, A = the row-pair path (default), B = 1-row only (a temporary switch, since reverted). Generated text identical in 6 of 6 pairs.
+
+| Threads | A (2-row), mean t/s | B (1-row), mean t/s | Runs |
+|---|---|---|---|
+| default | 32.03 (31.6 to 32.3) | 31.10 (30.7 to 31.6) | 6 each |
+| 4 | 24.70 | 22.43 (21.9 to 22.8) | 3 each |
+| 16 | 30.97 | 31.07 | 3 each |
+
+* **Decision: no change.** The 1-row kernel is about 3% slower at the default thread count and about 9% slower at 4 threads, and no different at 16. The microbenchmark's advantage at DRAM sizes does not reach decode. The default route stays on the 2-row kernel. The temporary switch is reverted and no environment setting is kept. The bit-identity test stays, since it guards any later change to the row kernels.
+* **A wrong first attempt, discarded:** the first A/B used `-g -1`, which put the whole model on the integrated Vulkan GPU (`GpuForwardPass`, about 29 t/s). Those runs say nothing about the CPU kernel. Rule kept from it: check the backend banner (`ForwardPass` or `GpuForwardPass`) before timing any CPU change.
+* **Limits:** one machine, one model (SmolLM2-1.7B), one run of the microbenchmark. Not measured: Qwen2.5-1.5B, Mistral-7B, the MoE expert path, and the `MatVecDual` gate/up path, which uses the same 2-row family and was not timed on its own. In the microbenchmark's real-shape rows the two kernels' printed checksums differ; the bit-identity test on random rows passes, so the difference is most likely in how the benchmark builds its inputs. This was not investigated further.

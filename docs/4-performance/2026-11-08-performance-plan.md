@@ -1,12 +1,14 @@
 # Performance plan
 
-Status 2026-11-08. Performance work was paused by the owner on 2026-10-30. This is the one plan for performance. It replaces the pickup guide, the leads plan and the perf sweep, which are now in [done/](../done) as history. Numbers are in [PerformanceLeague.md](../../PerformanceLeague.md).
+> **REOPENED 2026-11-24 by the owner.** Performance work is active again ("fair game, as long as it achieves something"). Part A is open and starts with the items in order; the work is recorded per item here and in [PerformanceLeague-LOG.md](PerformanceLeague-LOG.md). The 2026-11-24 prefill decision closes only prefill speed on the default route, not performance as a whole.
+
+Status 2026-11-08. Performance work was paused by the owner on 2026-10-30; it was reopened on 2026-11-24. This is the one plan for performance. It replaces the pickup guide, the leads plan and the perf sweep, which are now in [done/](../done) as history. Numbers are in [PerformanceLeague.md](../../PerformanceLeague.md).
 
 **Machine.** Ryzen 7 5700G (Zen 3, 8 cores, 16 threads, AVX2 and FMA, no VNNI, no AVX-512), 64 GB DDR4, integrated Radeon that shares system RAM. "Ratio" means Stingray speed divided by reference speed; 1.0x is parity. Default CPU thread count is the number of physical cores (8).
 
 **Rules.** [performance-measurement-rules](../reference/performance-measurement-rules.md) apply. In short: one run at a time; interleaved A/B; three or more runs; equal output before and after; named models; record every result in PerformanceLeague.md. Rule 13: a Vulkan or CUDA loss on this iGPU is not evidence about a discrete GPU, so GPU results here are never performance claims.
 
-**Start rule.** Nothing in Part A starts until the owner unpauses performance (Part B, decision 1). Part C is blocked on hardware or on a checkpoint.
+**Start rule.** Part A is open: the owner unpaused performance on 2026-11-24 (Part B, decision 1, is done). Part C is blocked on hardware or on a checkpoint.
 
 ---
 
@@ -76,11 +78,19 @@ Each item says what the item's first step is, and when it is done.
 - **First step:** run the NLL and greedy-token comparison from the plan's step 0 on OLMoE and the other checkpoints the plan names. Record the result. The decision it informs is in Part B, decision 2.
 - **Done when:** step 0 is recorded in the expert plan, with its numbers.
 
+### A11. Q4_K decode row kernel: 2-row versus 1-row on the Q8_KS path (opened 2026-11-24)
+
+- **Why:** `MatVecQ4K`'s parallel fast path dispatches row pairs to `DotQ4K_Q8KS_2Row`, and its single-thread path does the same. The 2026-10-30 findings (pickup guide, now in done/) measured the 2-row kernel about 38% slower per row than the 1-row `DotQ4K_Q8KS` on DRAM-sized matrices, and noted the switch to 1-row as a cheap bit-identical lead, untested end to end. Decode is the path that matters on this machine (8 physical threads by default).
+- **Claimed:** each row of `DotQ4K_Q8KS_2Row` is bit-identical to `DotQ4K_Q8KS` (the code comments say so). Not yet tested.
+- **First step:** (1) per-row microbenchmark with `tools/kernel-bench-cs q4k-dot` (1-row and 2-row against ggml, DRAM-sized shapes), three or more runs; (2) a bit-identity test of the two kernels on random rows; (3) only if (1) and (2) hold: switch the parallel and single-thread fast paths to 1-row, and measure decode on SmolLM2-1.7B Q4_K_M and Qwen2.5-1.5B Q4_K_M at 8 threads, interleaved A/B, equal greedy output.
+- **Done when:** the microbenchmark, the bit-identity test and the end-to-end decode numbers are recorded in PerformanceLeague-LOG.md, with the default changed only if it wins on repeat runs with equal output. Otherwise the result is recorded as not worth it.
+- **Status 2026-11-24: closed, not worth changing.** Microbenchmark: 1-row is 16 to 19% faster per row at DRAM sizes, not the 38% the 2026-10-30 notes gave; 2-row is slightly faster in cache. Bit identity holds (`DotQ4K2RowBitIdentityTests`, 3 of 3). End to end on the CPU route (SmolLM2-1.7B Q4_K_M, interleaved A/B, identical text in 6 of 6 pairs): 1-row is about 3% slower at the default thread count and about 9% slower at 4 threads, and no different at 16. The default stays on the 2-row kernel and no switch is kept. Full record: [PerformanceLeague-LOG.md](PerformanceLeague-LOG.md), section "Q4_K row kernel, 1-row versus 2-row".
+
 ---
 
 ## Part B: Decisions
 
-1. **Unpause performance.** Owner. Until then Part A is not started.
+1. **Unpause performance.** Owner. **Done 2026-11-24: the owner unpaused performance** ("fair game, as long as it achieves something"). Part A is open.
 2. **Expert GEMM: option A or option B.** Option A (repack each expert into scratch and reuse the repacked GEMM) is faster to build but not bit-identical to the per-token path. Option B (exact tiled GEMM) keeps bit-identical output and needs more code. Decide after A10. Full options: [2026-10-04-q4k-expert-gemm-plan.md](2026-10-04-q4k-expert-gemm-plan.md), section 7.
 3. **FP16-tile GEMM for the diffusion and Vulkan paths (the largest upside left, sweep Phase 3 and the diffusion FP16 project).** It carries a numerics decision. Make the decision before any iGPU measurement, because the measurement can only show the iGPU result (rule 13). Owner doc: [gpu/vulkan-gemm/vulkan-gemm.md](gpu/vulkan-gemm/vulkan-gemm.md), Part 2.
 4. **Whether MoE prefill on the Vulkan hybrid is worth an iGPU measurement.** The CPU handoff already covers dense `llama`; MoE is still per-token on the GPU path. Decide whether to measure it at all on this machine, given rule 13.

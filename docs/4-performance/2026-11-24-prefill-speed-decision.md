@@ -1,6 +1,6 @@
 # Prefill speed on the CPU default route: not doing it (2026-11-24)
 
-**Status:** closed by owner decision on 2026-11-24. No code change. Reopen only under the conditions in the last section.
+**Status:** prefill speed on the default route is closed by owner decision on 2026-11-24 (no code change; reopen only under the conditions in the last section). **Performance as a whole is reopened** the same day by the owner, who said it is fair game as long as it achieves something. The active plan is [2026-11-08-performance-plan.md](2026-11-08-performance-plan.md), Part A.
 
 ## Decision
 
