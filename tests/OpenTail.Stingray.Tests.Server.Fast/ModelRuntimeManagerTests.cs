@@ -808,6 +808,56 @@ public sealed class ModelRuntimeManagerTests
         Assert.Equal(500, manager.GetStats().EstimatedAcceleratorResidentBytes);
     }
 
+    private static LoadedEngine LoadMeasuredOnVulkan(string modelId, long liveBytes) =>
+        new(new DisposableFakeEngine(modelId), "qwen2", null,
+            RuntimeResolution: new ServerRuntimeResolution("vulkan", "fake", "gguf", 512),
+            LiveAcceleratorBytes: liveBytes);
+
+    [Fact]
+    public async Task LiveAcceleratorBytes_ExposedPerRuntime_SummedOnlyOverMeasuredRuntimes_PlannedSumUnchanged()
+    {
+        using var manager = new ModelRuntimeManager(id => id.Value switch
+        {
+            "measured" => LoadMeasuredOnVulkan(id.Value, liveBytes: 1234),
+            "unmeasured" => LoadOnBackend(id.Value, "vulkan"),
+            "cuda" => LoadOnBackend(id.Value, "cuda"),
+            _ => LoadOnBackend(id.Value, "cpu"),
+        }, estimateBytes: id => id.Value == "cpu" ? 300 : 500);
+
+        using var measured = await manager.AcquireAsync(Id("measured"));
+        using var unmeasured = await manager.AcquireAsync(Id("unmeasured"));
+        using var cuda = await manager.AcquireAsync(Id("cuda"));
+        using var cpu = await manager.AcquireAsync(Id("cpu"));
+
+        Assert.Equal(1234, measured.Runtime.LiveAcceleratorResidentBytes);
+        Assert.Null(unmeasured.Runtime.LiveAcceleratorResidentBytes);
+        Assert.Null(cuda.Runtime.LiveAcceleratorResidentBytes);
+        Assert.Null(cpu.Runtime.LiveAcceleratorResidentBytes);
+
+        var perRuntime = manager.Snapshot().ToDictionary(s => s.ModelId);
+        Assert.Equal(1234, perRuntime[Id("measured")].LiveAcceleratorResidentBytes);
+        Assert.Null(perRuntime[Id("unmeasured")].LiveAcceleratorResidentBytes);
+
+        // Live sum: only the measured runtime. Planned sum: every accelerator-resident runtime, unchanged (500 + 500 + 500, CPU excluded).
+        var stats = manager.GetStats();
+        Assert.Equal(1234, stats.LiveAcceleratorResidentBytes);
+        Assert.Equal(1500, stats.EstimatedAcceleratorResidentBytes);
+    }
+
+    [Fact]
+    public async Task LiveAcceleratorBytes_SumIsNull_WhenNoAcceleratorRuntimeWasMeasured()
+    {
+        using var manager = new ModelRuntimeManager(
+            id => LoadOnBackend(id.Value, id.Value == "cuda" ? "cuda" : "vulkan"),
+            estimateBytes: _ => 500);
+
+        using var cuda = await manager.AcquireAsync(Id("cuda"));
+        using var vulkan = await manager.AcquireAsync(Id("vulkan"));
+
+        Assert.Null(manager.GetStats().LiveAcceleratorResidentBytes);
+        Assert.Equal(1000, manager.GetStats().EstimatedAcceleratorResidentBytes);
+    }
+
     // ── Phase 3 slice: wiring the accelerator dimension into admission ──────
 
     [Fact]

@@ -196,15 +196,27 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Next step:** check free RAM and close other work. Run one class. Stop if free RAM goes under 2 GiB.
 - [ ] **Done when:** each class has a result recorded, pass or fail with the output.
 
+##### A14. Partial-offload estimate test fails at HEAD
+
+- **Why:** `AcceleratorResidencyTests.RealVulkanModel_PartialOffload_AcceleratorEstimate_IsSmallerThanFullFileSize` (tests/OpenTail.Stingray.Tests.Server, not heavy-gated, not in CI) asserts that Qwen3-0.6B Q8_0 with 4 of 28 layers on the GPU plans less than the 639,446,688-byte file. It plans 1,328,989,696 bytes. Found 2026-11-24 during B1. Confirmed pre-existing: a clean `git archive HEAD` export, built and run the same way, gives the same failure (`Total 7, Failed 1`). B1 does not change the planned figure.
+- **Hypothesis, not verified:** the planned figure counts the tied `token_embd` twice, once as an F32 expansion for the embedding and once for the output head. 2 × 622,329,856 bytes (151,936 × 1,024 × 4 per copy) leaves about 84 MB for 4 layers, the KV cache and scratch, which is plausible. This is the same tied-output question noted in A5 (2026-11-23).
+- **Next step:** read `ModelPlanningFacts` construction (`BuildPlanningFacts`, src/OpenTail.Stingray.Engine/Planning/ModelDescription.cs) for the tied case. Measure the device with the counter procedure in A5 (`scripts/gpu-process-memory.ps1`) on this model. If the planner double-counts, fix it with a planner test, and check the figure is within 5% of the counter. If the planner is right, the test's premise is wrong, so change the assertion and write the reason next to it.
+- [ ] **Done when:** the test passes, with the cause recorded (planner fix or corrected premise), and the measured figure is in the plan.
+
 ---
 
 #### Part B: Waiting on you or a machine
 
-##### B1. Resident-bytes accounting (choice needed)
+##### B1. Resident-bytes accounting (choice recorded: B)
 
 - **Why:** `ModelRuntime.AcceleratorResidentBytesEstimate` is set once at load from the planned figure and never updated. No live GPU-residency counter exists in `src`. For MoE models the planned figure leaves out the routed experts, on purpose (`TierPlanner.MeasureLayerBytes` excludes `ffn_*_exps`). The Vulkan GDN pass sizes its cache from VRAM minus its uploads minus a 2 GiB margin, and picks CPU MoE when the predicted slots are under half the experts. So at plan time it is not known whether a GPU expert cache exists.
 - **Choice:** (A) a plan-time ceiling, `min(routed expert bytes, expert cache budget)`, for Vulkan MoE plans. Simple, but every MoE model claims the rest of the device and blocks co-residency. (B) two figures: the planned figure, and a live figure from the loader. **Recommended: B.**
-- [ ] **Done when:** the choice is recorded, and the chosen figure is in the runtime and the status output, with a test.
+- **Choice recorded 2026-11-24: B**, the recommended option, taken by the AFK loop because the owner is away (owner decision deferred to the loop by the standing AFK rule). Admission keeps the planned figure unchanged. The live figure is additive: Vulkan only, measured per backend as the device-local bytes that the backend's live allocations hold; CUDA stays "not measured" until a CUDA device can verify it. Status shows both figures.
+- **Stage status 2026-11-24:** stages 1 to 3 are done (see the Done-when line below). B2 is now unblocked.
+- [x] **Done when:** the choice is recorded, and the chosen figure is in the runtime and the status output, with a test.
+  - **Done 2026-11-24 (Vulkan only; CUDA and CPU report "not measured").** Stage 1: `VulkanBackend.LiveDeviceLocalBytes` sums the driver's `allocationSize` of live device-local buffers allocated through that backend instance (`GpuBuffer.Create` and `Dispose`; host-visible staging excluded). Stage 2: `LoadedEngine.LiveAcceleratorBytes` is read from the loaded backend when a Vulkan load completes; no API change was needed. Stage 3: `ModelRuntime.LiveAcceleratorResidentBytes` and `ModelRuntimeStats`/`MultiModelRuntimeStats` carry it (null when unmeasured; the sum covers only measured runtimes). The `InsufficientAcceleratorMemory` message prints both "planned" and "live". Admission still uses the planned figure, and the planned sums are unchanged.
+  - **Evidence:** Release builds with 0 warnings and 0 errors (Server, Server.Fast, Vulkan, Tests.Vulkan). `Server.Fast` full run: 697 total, 0 failed, 2 skipped, exit 0, 16.7 s. The new Vulkan test `VulkanLiveDeviceLocalBytesTests` with `STINGRAY_RUN_HEAVY_TESTS=1`: 1 of 1 passes on the integrated AMD device. Mutation check (the free no longer subtracts): the test fails with `Expected 5376, Actual 4199680`, then the line was restored and the test passes.
+  - **Limits:** the live figure is read once at load, so later allocations are not reflected. A fresh backend already holds 5,376 device-local bytes. It is not measured for real checkpoints in an assertion yet (the real-model test runs the loader but does not assert the figure). A real-model value check is a follow-up.
 
 ##### B2. Fair turn gate measurement
 

@@ -163,6 +163,9 @@ public static class InferenceEngineLoader
 
         var runtimeRes = DescribeRuntime(instance.ForwardPass, plan.ModelFormat) with { GpuLayers = plan.GpuLayers, DeviceIndex = plan.BackendPlan?.DeviceIndex };
         long? gpuWeightBytes = plan.Placement is null ? null : PlannedAcceleratorBytes(plan);
+        // Measured, not planned: device-local bytes the Vulkan backend this instance owns holds now that the load has completed.
+        // CUDA has no live figure here (no measurement path), so it stays null, as does any non-accelerator engine.
+        long? liveAcceleratorBytes = runtimeRes.Backend == "vulkan" ? instance.VulkanBackend?.LiveDeviceLocalBytes : null;
         var engine = instance.Engine is ContinuousBatchingEngine cbe
             ? new OwnedDisposableEngine(cbe, instance)
             : instance.Engine;
@@ -179,7 +182,8 @@ public static class InferenceEngineLoader
             instance.ForwardPass is ForwardPass cpuFwd ? cpuFwd.GetBatchedPrefillCapability() : null,
             runtimeRes,
             gpuWeightBytes,
-            instance);
+            instance,
+            liveAcceleratorBytes);
     }
 
     private static ModelFormat DetectModelFormat(string modelPath) =>

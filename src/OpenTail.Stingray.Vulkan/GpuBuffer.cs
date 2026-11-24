@@ -11,17 +11,32 @@ public sealed unsafe class GpuBuffer : IDisposable
 
     public VkBuffer Buffer { get; }
     public VkDeviceMemory Memory { get; }
+    /// <summary>The size requested for the buffer.</summary>
     public ulong Size { get; }
+    /// <summary>
+    /// The size of the device memory allocation the driver actually made (the allocator's <c>allocationSize</c>, which can
+    /// be larger than <see cref="Size"/> after alignment). This is the figure counted by <see cref="VulkanBackend.LiveDeviceLocalBytes"/>.
+    /// </summary>
+    public ulong AllocatedBytes { get; }
     public bool IsHostVisible { get; }
+
+    /// <summary>
+    /// The backend whose <see cref="VulkanBackend.LiveDeviceLocalBytes"/> includes this buffer's <see cref="AllocatedBytes"/>;
+    /// null when the memory is not device-local (host-visible staging or fallback memory is not counted).
+    /// </summary>
+    private readonly VulkanBackend? _countedOn;
     private bool _disposed;
 
-    private GpuBuffer(VkDeviceApi vkd, VkBuffer buffer, VkDeviceMemory memory, ulong size, bool hostVisible)
+    private GpuBuffer(VkDeviceApi vkd, VkBuffer buffer, VkDeviceMemory memory, ulong size, ulong allocatedBytes,
+        bool hostVisible, VulkanBackend? countedOn)
     {
         _vkd = vkd;
         Buffer = buffer;
         Memory = memory;
         Size = size;
+        AllocatedBytes = allocatedBytes;
         IsHostVisible = hostVisible;
+        _countedOn = countedOn;
     }
 
     /// <summary>
@@ -100,6 +115,7 @@ public sealed unsafe class GpuBuffer : IDisposable
         _disposed = true;
         _vkd.vkDestroyBuffer(Buffer, null);
         _vkd.vkFreeMemory(Memory, null);
+        _countedOn?.TrackDeviceLocalFree(AllocatedBytes);
     }
 
     private static GpuBuffer Create(VulkanBackend backend, ulong size,
@@ -145,6 +161,13 @@ public sealed unsafe class GpuBuffer : IDisposable
         }
 
         bool hostVisible = (memoryFlags & VkMemoryPropertyFlags.HostVisible) != 0;
-        return new GpuBuffer(vkd, buffer, memory, size, hostVisible);
+        // Only memory requested as DeviceLocal counts toward the backend's live device-local total. Staging buffers
+        // (HostVisible only) and the host-visible fallback taken by CreateDeviceLocal are not device-local and are excluded.
+        // Counted after the bind succeeds, so a failed allocation/bind never leaves a count behind.
+        bool deviceLocal = (memoryFlags & VkMemoryPropertyFlags.DeviceLocal) != 0;
+        if (deviceLocal)
+            backend.TrackDeviceLocalAllocation(allocInfo.allocationSize);
+        return new GpuBuffer(vkd, buffer, memory, size, allocInfo.allocationSize, hostVisible,
+            deviceLocal ? backend : null);
     }
 }

@@ -594,6 +594,12 @@ public sealed class NamedModelOptions
 /// placement (CPU-only) — <see cref="ModelRuntime.AcceleratorResidentBytesEstimate"/> then falls back to the file-size
 /// estimate. A custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> leaves this null.
 /// </param>
+/// <param name="LiveAcceleratorBytes">
+/// What the Vulkan backend measured as device-local memory still held by this engine's buffers, read from the loaded
+/// backend when the load completes (<c>InferenceEngineLoader</c>). Not the plan's figure: <see cref="GpuWeightBytesExact"/>
+/// stays the planned figure that admission uses. Null when the engine is not Vulkan-resident (CPU, and CUDA, which is
+/// not measured) or a custom <see cref="OpenTailStingrayServerOptions.EngineFactory"/> does not set it.
+/// </param>
 public sealed record LoadedEngine(
     IInferenceEngine Engine,
     string Architecture,
@@ -606,4 +612,5 @@ public sealed record LoadedEngine(
     OpenTail.Stingray.Engine.CpuBatchedPrefillCapability? CpuBatchedPrefill = null,
     ServerRuntimeResolution? RuntimeResolution = null,
     long? GpuWeightBytesExact = null,
-    OpenTail.Stingray.Engine.Runtime.RuntimeInstance? Instance = null);
+    OpenTail.Stingray.Engine.Runtime.RuntimeInstance? Instance = null,
+    long? LiveAcceleratorBytes = null);

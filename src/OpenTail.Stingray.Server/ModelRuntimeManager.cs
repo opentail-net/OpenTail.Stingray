@@ -196,7 +196,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             foreach (var rt in _resident.Values)
                 list.Add(new ModelRuntimeStats(rt.Id, rt.State, rt.EstimatedModelBytes, rt.HandleCount,
                     rt.ActiveRequests, rt.IsPinned, rt.LastUsed, rt.IsAcceleratorResident,
-                    rt.AcceleratorResidentBytesEstimate, rt.Accelerator));
+                    rt.AcceleratorResidentBytesEstimate, rt.Accelerator, rt.LiveAcceleratorResidentBytes));
             // A model mid-load has no ModelRuntime yet (that's only created once RunLoad
             // succeeds) — without this, it's invisible to every observer between "acquisition
             // started" and "acquisition finished", which for a large GGUF can be a long window.
@@ -217,11 +217,15 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             int active = 0;
             long estimatedBytes = 0;
             long acceleratorBytes = 0;
+            long? liveAcceleratorBytes = null;
             foreach (var rt in _resident.Values)
             {
                 if (rt.HandleCount > 0) active++;
                 estimatedBytes += rt.EstimatedModelBytes;
                 acceleratorBytes += rt.AcceleratorResidentBytesEstimate;
+                // Measured figures only: a runtime with no measurement is left out of the sum, and the sum stays null when none was measured.
+                if (rt.LiveAcceleratorResidentBytes is { } live)
+                    liveAcceleratorBytes = (liveAcceleratorBytes ?? 0) + live;
             }
             int pendingLoads = _pendingLoads.Count;
 
@@ -246,7 +250,8 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 ResidencyPressureEvents: Interlocked.Read(ref _residencyPressureEvents),
                 QueuedAdmissions: _admissionQueue.Count,
                 OldestQueuedAdmissionAge: oldestQueued is { } since ? DateTimeOffset.UtcNow - since : null,
-                AdmissionQueueOverflows: Interlocked.Read(ref _admissionQueueOverflows));
+                AdmissionQueueOverflows: Interlocked.Read(ref _admissionQueueOverflows),
+                LiveAcceleratorResidentBytes: liveAcceleratorBytes);
         }
     }
 

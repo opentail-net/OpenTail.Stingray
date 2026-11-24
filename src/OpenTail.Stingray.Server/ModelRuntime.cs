@@ -98,7 +98,8 @@ public readonly record struct ModelRuntimeStats(
     DateTimeOffset LastUsed,
     bool IsAcceleratorResident,
     long AcceleratorResidentBytesEstimate,
-    AcceleratorTarget? Accelerator = null);
+    AcceleratorTarget? Accelerator = null,
+    long? LiveAcceleratorResidentBytes = null);
 
 /// <summary>
 /// System-wide activity snapshot for <see cref="IModelRuntimeManager"/> (docs/032
@@ -111,7 +112,9 @@ public readonly record struct ModelRuntimeStats(
 /// <see cref="OldestQueuedAdmissionAge"/>/<see cref="AdmissionQueueOverflows"/> are the Phase 6
 /// "queue" step's own counters — see <see cref="IModelRuntimeManager.AdmissionWaitTimeout"/> and
 /// <see cref="IModelRuntimeManager.MaxQueuedAdmissions"/>; all three stay at their zero/null
-/// defaults when that feature is off.
+/// defaults when that feature is off. <see cref="LiveAcceleratorResidentBytes"/> sums only the runtimes that have a
+/// measured live figure (<see cref="ModelRuntime.LiveAcceleratorResidentBytes"/>), so it can cover fewer runtimes than
+/// <see cref="EstimatedAcceleratorResidentBytes"/>; it is null when no runtime has one. The planned sum is unchanged.
 /// </summary>
 public readonly record struct MultiModelRuntimeStats(
     int KnownModels,
@@ -127,7 +130,8 @@ public readonly record struct MultiModelRuntimeStats(
     long ResidencyPressureEvents,
     int QueuedAdmissions,
     TimeSpan? OldestQueuedAdmissionAge,
-    long AdmissionQueueOverflows);
+    long AdmissionQueueOverflows,
+    long? LiveAcceleratorResidentBytes = null);
 
 /// <summary>
 /// A complete, independently executable model runtime — the production successor to
@@ -182,6 +186,16 @@ public sealed class ModelRuntime : IDisposable
     /// </summary>
     public long AcceleratorResidentBytesEstimate =>
         IsAcceleratorResident ? Loaded.GpuWeightBytesExact ?? EstimatedModelBytes : 0;
+
+    /// <summary>
+    /// The accelerator bytes this runtime actually holds, as measured by the backend when its load completed
+    /// (<see cref="LoadedEngine.LiveAcceleratorBytes"/>). Only the Vulkan path measures it today; CUDA and custom
+    /// engine factories leave it null. Null also when not <see cref="IsAcceleratorResident"/>. This is observability
+    /// only: admission keeps using <see cref="AcceleratorResidentBytesEstimate"/>, the planned figure.
+    /// It is read once, when the load completes, so device memory allocated after that point is not reflected.
+    /// </summary>
+    public long? LiveAcceleratorResidentBytes =>
+        IsAcceleratorResident ? Loaded.LiveAcceleratorBytes : null;
 
     /// <summary>
     /// The backend and device this runtime's accelerator bytes are counted against; null when it is not <see cref="IsAcceleratorResident"/>.

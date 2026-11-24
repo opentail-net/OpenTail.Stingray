@@ -53,6 +53,24 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     public VkQueue ComputeQueue => _computeQueue;
     public VkCommandBuffer TransferCmd => _transferCmd;
 
+    // Device-local bytes held by live allocations made through THIS backend instance (see GpuBuffer.Create /
+    // GpuBuffer.Dispose). Per instance, not process-wide. Host-visible staging memory is not counted.
+    private long _liveDeviceLocalBytes;
+
+    /// <summary>
+    /// Device-local memory, in bytes, currently held by live buffers allocated through this backend instance: the actual
+    /// allocation size the driver returned (not the requested size), summed over buffers that have not been disposed.
+    /// Host-visible staging and fallback memory is excluded. A measured figure, read with no lock; it is a snapshot, not a
+    /// reservation. Only meaningful while the backend is alive.
+    /// </summary>
+    public long LiveDeviceLocalBytes => Interlocked.Read(ref _liveDeviceLocalBytes);
+
+    internal void TrackDeviceLocalAllocation(ulong allocatedBytes) =>
+        Interlocked.Add(ref _liveDeviceLocalBytes, (long)allocatedBytes);
+
+    internal void TrackDeviceLocalFree(ulong allocatedBytes) =>
+        Interlocked.Add(ref _liveDeviceLocalBytes, -(long)allocatedBytes);
+
     // Batched recording mode: record multiple dispatches, submit once
     private bool _recording;
 

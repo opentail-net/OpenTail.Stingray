@@ -19,7 +19,8 @@ public readonly record struct ResourceSnapshot(
     long? AcceleratorMemoryAvailableBytes,
     long ResidentModelBytes,
     long EstimatedAcceleratorResidentBytes,
-    IReadOnlyList<AcceleratorSnapshot>? Accelerators = null);
+    IReadOnlyList<AcceleratorSnapshot>? Accelerators = null,
+    long? LiveAcceleratorResidentBytes = null);
 
 /// <summary>
 /// One backend and device as admission sees it (plan 6 G2): its capacity (null when it cannot be probed, which means unknown, not zero) and the
@@ -71,7 +72,8 @@ public sealed class InsufficientResourcesException : InvalidOperationException
             $"Cannot admit model '{model}' (~{candidateAcceleratorBytes:N0} accelerator bytes " +
             $"estimated) — insufficient VRAM even after evicting idle resident models " +
             $"(capacity: {snapshot.AcceleratorMemoryAvailableBytes:N0} bytes, currently " +
-            $"accelerator-resident: {snapshot.EstimatedAcceleratorResidentBytes:N0} bytes).",
+            $"accelerator-resident: {snapshot.EstimatedAcceleratorResidentBytes:N0} bytes planned, " +
+            $"live: {(snapshot.LiveAcceleratorResidentBytes is { } live ? $"{live:N0} bytes measured" : "not measured")}).",
         _ =>
             $"Cannot admit model '{model}' (~{candidateModelBytes:N0} bytes estimated) — insufficient " +
             $"host memory even after evicting idle resident models (available: " +
@@ -209,11 +211,14 @@ public sealed class HostResourceBudget(
 
         long residentBytes = 0;
         long acceleratorResidentBytes = 0;
+        long? liveAcceleratorResidentBytes = null;
         var perTarget = new Dictionary<AcceleratorTarget, long>();
         foreach (var stats in modelRuntimes.Snapshot())
         {
             residentBytes += stats.EstimatedModelBytes;
             acceleratorResidentBytes += stats.AcceleratorResidentBytesEstimate;
+            if (stats.LiveAcceleratorResidentBytes is { } live)
+                liveAcceleratorResidentBytes = (liveAcceleratorResidentBytes ?? 0) + live;
             if (stats.Accelerator is { } target)
                 perTarget[target] = perTarget.GetValueOrDefault(target) + stats.AcceleratorResidentBytesEstimate;
         }
@@ -224,7 +229,8 @@ public sealed class HostResourceBudget(
             AcceleratorMemoryAvailableBytes: s_acceleratorVramCapacityBytes.Value,
             ResidentModelBytes: residentBytes,
             EstimatedAcceleratorResidentBytes: acceleratorResidentBytes,
-            Accelerators: [.. perTarget.Select(kv => new AcceleratorSnapshot(kv.Key, _capacityOf(kv.Key), kv.Value))]);
+            Accelerators: [.. perTarget.Select(kv => new AcceleratorSnapshot(kv.Key, _capacityOf(kv.Key), kv.Value))],
+            LiveAcceleratorResidentBytes: liveAcceleratorResidentBytes);
     }
 
     /// <summary>
