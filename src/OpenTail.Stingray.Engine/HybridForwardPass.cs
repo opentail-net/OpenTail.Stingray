@@ -140,6 +140,13 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
     private ExpertSlotManager? _expertSlotManager;
     private MoEPrefetcher? _prefetcher;
 
+    /// <summary>
+    /// Diagnostic (A32, default off): every routed expert takes the CPU path, whatever the slot cache holds. The output then
+    /// no longer depends on the timing of background expert uploads, so repeated runs are identical. It is not a production
+    /// setting: the CPU path is much slower than the GPU experts on a GPU-resident model.
+    /// </summary>
+    public bool ForceCpuExpertPath { get; set; }
+
     // STINGRAY_MOE_TIMING=1: where a token's GPU-layer MoE time goes (printed when the pass is disposed).
     private static readonly bool s_moeTiming = Environment.GetEnvironmentVariable("STINGRAY_MOE_TIMING") == "1";
     private long _tmSyncTicks, _tmLookupTicks, _tmFallbackTicks, _tmTailTicks;
@@ -1739,6 +1746,11 @@ public sealed unsafe partial class HybridForwardPass : IForwardPass
         {
             isGpu[i] = _expertSlotManager!.TryGetCachedLeased(layer, selectedExperts[i], out cachedSlots[i]);
             if (!isGpu[i]) hasCpuFallback = true;
+        }
+        if (ForceCpuExpertPath)   // A32 diagnostic: the CPU fallback serves every expert
+        {
+            for (int i = 0; i < numActive; i++) isGpu[i] = false;
+            hasCpuFallback = true;
         }
         long tm2 = s_moeTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
