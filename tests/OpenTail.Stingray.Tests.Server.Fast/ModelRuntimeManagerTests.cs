@@ -1172,7 +1172,7 @@ public sealed class ModelRuntimeManagerTests
     {
         using var manager = new ModelRuntimeManager(id => Load(id.Value))
         {
-            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30), // A30: a runner stall past 5 s must not time the waiter out while the test expects it queued
         };
 
         var handleA = await manager.AcquireAsync(Id("a")); // held open, unrelated to the fake below
@@ -1304,7 +1304,7 @@ public sealed class ModelRuntimeManagerTests
         // implementation might have let them compete for the lock.
         using var manager = new ModelRuntimeManager(id => Load(id.Value))
         {
-            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30), // A30: a runner stall past 5 s must not time the waiter out while the test expects it queued
         };
 
         using var handle = await manager.AcquireAsync(Id("holder")); // no budget set yet — always succeeds
@@ -1349,7 +1349,7 @@ public sealed class ModelRuntimeManagerTests
             id => Load(id.Value),
             estimateBytes: id => id.Value == "big" ? 1_000_000_000L : 1_000L)
         {
-            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30), // A30: a runner stall past 5 s must not time the waiter out while the test expects it queued
         };
 
         using var handle = await manager.AcquireAsync(Id("holder")); // no budget set yet — always succeeds
@@ -1492,7 +1492,7 @@ public sealed class ModelRuntimeManagerTests
         var budget = new CapacityFakeResourceBudget(() => manager!.Snapshot(), capacitySlots: 1);
         manager = new ModelRuntimeManager(id => Load(id.Value))
         {
-            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30), // A30: a runner stall past 5 s must not time the waiter out while the test expects it queued
             ResourceBudget = budget,
         };
 

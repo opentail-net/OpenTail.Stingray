@@ -230,6 +230,73 @@ public sealed class PrefillAttentionGateTests : HeavyTestBase
         }
     }
 
+    /// <summary>
+    /// The reused-buffer round trip a whole-prompt batched trunk would pay per layer (Phase 2b): the host writes an
+    /// <c>[N x 2048]</c> block into a pinned buffer, copies it to a device buffer, copies it back to a second pinned buffer, and
+    /// the host reads it. Both pinned buffers and the device buffer are allocated once, outside the timing; the time includes both
+    /// device copies and their synchronisation. Recorded next to the allocating figure in the plan.
+    /// </summary>
+    [Fact]
+    public unsafe void PinnedActivationRoundTrip_WithDeviceCopies_IsTimed()
+    {
+        VulkanBackend? gpu;
+        try { gpu = new VulkanBackend(); } catch { gpu = null; }
+        Assert.SkipWhen(gpu is null, "no Vulkan device available on this host");
+        using var _gpu = gpu;
+        const int hidden = 2048;
+        Console.WriteLine("[attn-pinned] rows  block_mib  pinned_round_trip_ms (host write, copy to device, copy back, host read; median of 5)");
+        var rng = new Random(20260609);
+        foreach (int rows in new[] { 1224, 2014 })
+        {
+            int count = rows * hidden;
+            var block = RandomFloats(rng, count);
+            var back = new float[count];
+            var pinIn = gpu!.AllocatePinned(TensorShape.D1(count));
+            var pinOut = gpu.AllocatePinned(TensorShape.D1(count));
+            var devBuf = gpu.Allocate(TensorShape.D1(count));
+
+            // The four steps are timed separately, so a slow step is named rather than averaged into the total.
+            double writeMs = MedianMs(() => gpu.WritePinned(pinIn, block));
+            double copyInMs = MedianMs(() =>
+            {
+                gpu.BeginRecord();
+                gpu.RecordComputeCopy(devBuf, pinIn);
+                gpu.RecordComputeToHostBarrier();
+                gpu.EndRecordAndSubmit();
+                gpu.Synchronize();
+            });
+            double copyOutMs = MedianMs(() =>
+            {
+                gpu.BeginRecord();
+                gpu.RecordComputeCopy(pinOut, devBuf);
+                gpu.RecordComputeToHostBarrier();
+                gpu.EndRecordAndSubmit();
+                gpu.Synchronize();
+            });
+            double readMs = MedianMs(() =>
+            {
+                float* p = gpu.MapPinned(pinOut);
+                new ReadOnlySpan<float>(p, count).CopyTo(back);
+                gpu.UnmapPinned(pinOut);
+            });
+            Assert.Equal(block, back);   // every element made the trip unchanged
+            Console.WriteLine(FormattableString.Invariant(
+                $"[attn-pinned] {rows,5}  {count * 4.0 / (1 << 20),9:F2}  write {writeMs,9:F3}  copy_in {copyInMs,9:F3}  copy_out {copyOutMs,9:F3}  host_read {readMs,9:F3}  total {writeMs + copyInMs + copyOutMs + readMs,9:F3}"));
+
+            // The path a batched trunk would use instead: device to ordinary (cached) host memory with Download, and back with Upload.
+            double downloadMs = MedianMs(() => gpu.Download(devBuf, back));
+            double uploadMs = MedianMs(() =>
+            {
+                var t = gpu.Upload(block, TensorShape.D1(count));
+                gpu.Free(t);
+            });
+            Console.WriteLine(FormattableString.Invariant(
+                $"[attn-cached] {rows,5}  download {downloadMs,9:F3}  upload_allocating {uploadMs,9:F3}  total {downloadMs + uploadMs,9:F3}"));
+
+            gpu.Free(pinIn); gpu.Free(pinOut); gpu.Free(devBuf);
+        }
+    }
+
     private static double RelativeError(float[] gpu, float[] cpu)
     {
         double maxAbs = 0, refAbs = 1e-12;

@@ -340,6 +340,14 @@ Source: [3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md](3
 - **Evidence:** with the 5.3 s stall still in, the test passes (5.7 s); with the stall removed, five runs pass in about 0.4 s each, and `Tests.Server.Fast` is 714 total, 0 failed, 2 skipped. The stall was removed before the commit (`MUTATION` residue 0).
 - **Not checked:** other tests in `ModelRuntimeManagerTests` that use a 5 s `AdmissionWaitTimeout` may have the same exposure; none failed in CI.
 
+##### A31. Device-to-host reads are slow on the iGPU: the download staging buffer is not host-cached (performance lead, measured 2026-11-24, not changed)
+
+- **Measured:** `Download` of a 9.6 MiB device tensor takes 52 ms (about 185 MB/s); of 15.7 MiB, 85 ms. An allocating `Upload` of the same sizes takes 2.6 and 3.7 ms. A device-to-pinned copy takes 0.5 ms, and a host write into pinned memory 1.4 ms; reading pinned memory from the host takes 305 ms for 9.6 MiB. `PrefillAttentionGateTests.PinnedActivationRoundTrip_WithDeviceCopies_IsTimed` and the plan's round-trip decomposition (iteration 42) hold the figures.
+- **Cause, read in code:** `VulkanBackend.Download` reads a staging buffer created by `GpuBuffer.CreateStaging` with `HostVisible | HostCoherent` only (`GpuBuffer.cs` line 69), with no `HostCached`. On many drivers that memory type is write-combined, and host reads from it are slow. The cause is inferred from the rate and the code, not from the memory-type list of this device, which is not queried yet.
+- **Size of the effect:** decode-time readbacks are small. Logits for a 50k vocabulary are about 200 KiB per token, about 1 ms per token at the measured rate (an estimate, not measured), which is a few percent at 20 tokens per second. The per-layer router readback is 64 floats and latency-bound. The effect is large only for big readbacks, such as activations for a host-side MoE step (Phase 2b).
+- **Next step:** query the device's memory types for a `HostVisible | HostCached` type (`VulkanBackend` memory-type helpers); if one exists, use it for the download staging buffer behind a measured switch; measure `Download` of the 9.6 and 15.7 MiB blocks before and after, and of the logits block; keep the change only if the read rate improves measurably. If no such type exists, record that and close the item.
+- [ ] **Done when:** the memory-type query is recorded, `Download` is measured before and after the change on this iGPU, and the change is kept or dropped on the numbers.
+
 #### Part B: Waiting on you or a machine
 
 ##### B1. Resident-bytes accounting (choice recorded: B)
