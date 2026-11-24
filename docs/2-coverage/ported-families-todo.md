@@ -1,5 +1,7 @@
 # Families to port now, prove later (todo)
 
+> Completed items moved to [ported-families-todo-completed-items-2026-11.md](../done/ported-families-todo-completed-items-2026-11.md) on 2026-11-24. This file keeps only the open items.
+
 > Completed items moved to [done/ported-families-todo-completed-items-2026-10.md](../done/ported-families-todo-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
 > Ticked items moved to [done/ported-families-todo-completed-items-2026-11.md](../done/ported-families-todo-completed-items-2026-11.md) on 2026-11-08.
 
@@ -88,7 +90,6 @@ Standing rules for every family. They are not tasks, so they are not checkboxes.
 Gaps found against these rules (re-checked 2026-11-24). These are work, so they stay open:
 
 - [ ] **NOT-admitted blocks.** CLAUDE.md rule 14 asks for a `// <arch> — NOT admitted` block in `src/OpenTail.Stingray.Engine/ModelCompatibility.cs`. None exists. The NOT-admitted notes sit in the `*Alpha.cs` header comments, and `DeepSeek4Alpha.cs` says not to add the block there. Owner decision: add the blocks, or change the rule.
-- [ ] **Third-party notices.** `THIRD_PARTY_NOTICES.md` lists qwen4exp, MiniMax-H3 and Muse-Glimmer under TensorSharp. `glm-dsa` is not listed. First check whether `glm-dsa` came from TensorSharp; if it did, add its notice. The DeepSeek ports are credited to llama.cpp (notice lines 147–151), so this rule does not apply to them.
 
 ## Families
 

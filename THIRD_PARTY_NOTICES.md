@@ -55,6 +55,7 @@ or inspired by TensorSharp, including:
 - MiniMax-H3 architecture structures, dual flow schedulers, AdaLN timestep curve modulation, and packed sequence layout in `src/OpenTail.Stingray.Diffusion/MiniMaxH3/` (referencing TensorSharp `Models/MiniMaxH3/` and upstream MiniMax-H3)
 - Muse-Glimmer text tower architecture structures, SWA masking, attention output gate, and sandwich norms in `src/OpenTail.Stingray.Engine/` (referencing TensorSharp `Models/MuseGlimmer/` and llama.cpp `src/models/muse-glimmer.cpp`)
 - The MLX (Apple Silicon) backend in `src/OpenTail.Stingray.Mlx/` (ported from TensorSharp's `TensorSharp.Backends.MLX/`; flag-gated, never run — no Mac on this development machine)
+- The GLM-DSA top-k shortcut for short contexts (skip the indexer scoring while every cached key fits under `indexer_top_k`) in `src/OpenTail.Stingray.Engine/GlmDsaForwardPass.cs`, which follows the same behaviour as TensorSharp's `GlmDsaModel.Attention.cs` (the code comment says so; no code was copied)
 
 - Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu
@@ -149,6 +150,8 @@ llama.cpp's `src/models/deepseek32.cpp` and `src/models/deepseek4.cpp`. Their
 functions cite those reference files by line range (`src/OpenTail.Stingray.Engine/DeepSeek32*.cs`,
 `src/OpenTail.Stingray.Engine/DeepSeek4*.cs`). The DeepSeek-V4.1 port (`DeepSeek41*.cs`)
 records `deepseek4.cpp` as its reference in the port plan but does not cite it in code.
+
+The GLM-DSA port (`glm-dsa`, GLM-5.2; `src/OpenTail.Stingray.Engine/GlmDsaAlpha.cs`, `GlmDsaForwardPass.cs`) is **ported from** llama.cpp's `src/models/glm-dsa.cpp` (upstream b10306), as its file header states.
 
 No llama.cpp or ggml binary is bundled with OpenTail.Stingray.
 
