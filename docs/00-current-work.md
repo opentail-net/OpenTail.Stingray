@@ -2,7 +2,7 @@
 
 As of 2026-11-08. This file is the entry point and the parent of the open work in Queue 1, which was the separate open-work plan and is now merged here. The Qwen 3.8 port has its own plan. Finished items are in [done/](done). The previous version of this file is in git history.
 
-> **PERFORMANCE IS REOPENED (owner, 2026-11-24).** The owner said performance is fair game "as long as it achieves something". The active plan is [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md), Part A (A11, the 1-row Q4_K row kernel, is closed: not worth changing. A3, OLMoE CPU decode, is open at 0.81x of llama.cpp after the down-sweep change; its next cost is the gate and up sweep. A4 follows). The only closed performance item is prefill speed on the default CPU route ([2026-11-24-prefill-speed-decision.md](4-performance/2026-11-24-prefill-speed-decision.md)).
+> **PERFORMANCE IS REOPENED (owner, 2026-11-24).** The owner said performance is fair game "as long as it achieves something". The active plan is [4-performance/2026-11-08-performance-plan.md](4-performance/2026-11-08-performance-plan.md), Part A (A11, the 1-row Q4_K row kernel, is closed: not worth changing. A3, OLMoE CPU decode, is open at 0.82x of llama.cpp after the down-sweep and gate-and-up changes; its next cost is the QKV projections and the output projection with the LM head (about a third of each token together with the MoE sweeps being done). A4 follows). The only closed performance item is prefill speed on the default CPU route ([2026-11-24-prefill-speed-decision.md](4-performance/2026-11-24-prefill-speed-decision.md)).
 
 ## How to use this file
 

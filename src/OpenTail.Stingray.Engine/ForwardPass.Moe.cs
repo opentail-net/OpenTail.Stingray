@@ -284,17 +284,55 @@ public sealed unsafe partial class ForwardPass
         MoePhaseTiming.Add(MoePhaseTiming.ActQuantA, ft1 - ft0);
 
         // Phase A: gate + up rows for all (k, r) pairs in one parallel sweep.
-        // Each worker computes row r of expert k's gate and up projection.
-        SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
+        // A11/A3: Q4_K rows go two at a time through the 2-row kernel, bit-identical per row to the 1-row kernel
+        // (DotQ4K2RowBitIdentityTests), so every gate and up value is unchanged. Other dtypes keep one row per dot.
+        // The per-row loop remains the fallback for an odd expert width.
+        if ((expertDimL & 1) == 0)
         {
-            int k = idx / expertDimL;
-            int r = idx % expertDimL;
-            int ei = sePtr[k];
-            long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
-            long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
-            gateAll[idx] = DispatchDot(gateP + offG, normBuf, gateAct, embDimL, gateDt);
-            upAll[idx]   = DispatchDot(upP   + offU, normBuf, upAct, embDimL, upDt);
-        });
+            int pairsA = expertDimL / 2;
+            SimdKernels.ParallelForCapped(0, numActiveL * pairsA, item =>
+            {
+                int k = item / pairsA;
+                int r = 2 * (item - k * pairsA);
+                int ei = sePtr[k];
+                int idx = k * expertDimL + r;
+                long rowG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
+                long rowU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
+                if (gateDt == DType.Q4_K)
+                {
+                    SimdKernels.DotQ4K_Q8KS_2Row(gateP + rowG, gateP + rowG + bprGL, gateAct, embDimL, out float g0, out float g1);
+                    gateAll[idx] = g0; gateAll[idx + 1] = g1;
+                }
+                else
+                {
+                    gateAll[idx]     = DispatchDot(gateP + rowG, normBuf, gateAct, embDimL, gateDt);
+                    gateAll[idx + 1] = DispatchDot(gateP + rowG + bprGL, normBuf, gateAct, embDimL, gateDt);
+                }
+                if (upDt == DType.Q4_K)
+                {
+                    SimdKernels.DotQ4K_Q8KS_2Row(upP + rowU, upP + rowU + bprUL, upAct, embDimL, out float u0, out float u1);
+                    upAll[idx] = u0; upAll[idx + 1] = u1;
+                }
+                else
+                {
+                    upAll[idx]     = DispatchDot(upP + rowU, normBuf, upAct, embDimL, upDt);
+                    upAll[idx + 1] = DispatchDot(upP + rowU + bprUL, normBuf, upAct, embDimL, upDt);
+                }
+            });
+        }
+        else
+        {
+            SimdKernels.ParallelForCapped(0, numActiveL * expertDimL, idx =>
+            {
+                int k = idx / expertDimL;
+                int r = idx % expertDimL;
+                int ei = sePtr[k];
+                long offG = (long)ei * expertDimL * bprGL + (long)r * bprGL;
+                long offU = (long)ei * expertDimL * bprUL + (long)r * bprUL;
+                gateAll[idx] = DispatchDot(gateP + offG, normBuf, gateAct, embDimL, gateDt);
+                upAll[idx]   = DispatchDot(upP   + offU, normBuf, upAct, embDimL, upDt);
+            });
+        }
 
         long ft2 = MoePhaseTiming.Now();
         MoePhaseTiming.Add(MoePhaseTiming.SweepA, ft2 - ft1);
@@ -463,8 +501,7 @@ public sealed unsafe partial class ForwardPass
     /// Default is true. When false, routed experts fall back to sequential per-expert MatVec.
     /// Settable so parity and equivalence tests can compare folded and sequential decode within one process.
     /// </summary>
-    public static bool MoeFoldedDecodeEnabled { get; set; } = true;
-    /// <summary>
+    public static bool MoeFoldedDecodeEnabled { get; set; } = true;    /// <summary>
     /// Master switch for the batched MoE prefill FFN. Set <c>STINGRAY_MOE_BATCHED_PREFILL=0</c>
     /// to force MoE prompts back onto the per-token sequential trunk. Settable so parity tests can
     /// run both arms in one process (the sequential arm is the oracle, and re-launching to get it
