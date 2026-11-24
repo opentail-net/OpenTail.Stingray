@@ -1383,6 +1383,76 @@ public sealed class ModelRuntimeManagerTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await big);
     }
 
+    [Fact]
+    public async Task QueuedWaiterIsNotWokenWhileAnotherModelIsStillLoadingAndFillsTheBudget_AdmittedOnceThatLoadIsReleased()
+    {
+        // A's in-flight load fills the 150-byte budget, so C (100 bytes) queues behind it. "d" is resident with zero bytes, so releasing its handle
+        // frees nothing the budget can see. The wake scan that release triggers can refuse C only through A's in-flight bytes, and that is what this
+        // test pins.
+        var aEntered = new ManualResetEventSlim();
+        var releaseA = new ManualResetEventSlim();
+        int cLoads = 0;
+        ModelRuntimeManager? manager = null;
+        var budget = new ByteCapacityBudget(
+            capacityBytes: 150,
+            residentBytes: () => manager!.Snapshot().Where(s => s.State != ModelRuntimeState.Loading).Sum(s => s.EstimatedModelBytes));
+        manager = new ModelRuntimeManager(id =>
+        {
+            if (id.Value == "a")
+            {
+                aEntered.Set();
+                Assert.True(releaseA.Wait(TimeSpan.FromSeconds(10)));
+            }
+            else if (id.Value == "c")
+            {
+                Interlocked.Increment(ref cLoads);
+            }
+            return Load(id.Value);
+        }, ModelResidencyMode.MultiSlot, estimateBytes: id => id.Value == "d" ? 0 : 100)
+        {
+            ResourceBudget = budget,
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+        };
+
+        try
+        {
+            var handleD = await manager.AcquireAsync(Id("d")); // resident and held: the release below is the wake-scan trigger
+            var acquireA = manager.AcquireAsync(Id("a")).AsTask();
+            Assert.True(aEntered.Wait(TimeSpan.FromSeconds(10))); // A is now a load in flight
+
+            // C cannot fit beside A's in-flight 100 bytes. It must queue, and its loader must not run.
+            var acquireC = manager.AcquireAsync(Id("c")).AsTask();
+            await Task.Delay(200);
+            Assert.False(acquireC.IsCompleted);
+            Assert.Equal(1, manager.GetStats().QueuedAdmissions);
+            Assert.Equal(0, Volatile.Read(ref cLoads));
+
+            // Releasing D's handle runs the wake scan while A is still loading. The scan evicts the idle D (that is how we know it ran), and must still refuse C.
+            Assert.Equal(0, manager.GetStats().ModelEvictions);
+            handleD.Dispose();
+            Assert.Equal(1, manager.GetStats().ModelEvictions);
+            await Task.Delay(200);
+            Assert.False(acquireC.IsCompleted);
+            Assert.Equal(1, manager.GetStats().QueuedAdmissions);
+            Assert.Equal(0, Volatile.Read(ref cLoads));
+
+            // A finishes and its handle is released. The scan now finds room (A is idle, so it is evicted) and admits C.
+            releaseA.Set();
+            var handleA = await acquireA.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(Id("a"), handleA.Runtime.Id);
+            handleA.Dispose();
+
+            using var handleC = await acquireC.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(Id("c"), handleC.Runtime.Id);
+            Assert.Equal(1, Volatile.Read(ref cLoads));
+        }
+        finally
+        {
+            releaseA.Set();
+            manager.Dispose();
+        }
+    }
+
     /// <summary>
     /// Waits until <paramref name="count"/> acquisitions sit in the manager's admission queue, as the manager itself reports it, instead of assuming a fixed
     /// delay was long enough (a slow runner proved it was not). The short sleep after it keeps consecutive waiters' enqueue timestamps apart on a coarse clock.
