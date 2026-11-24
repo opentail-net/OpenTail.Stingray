@@ -92,6 +92,10 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         public required DateTimeOffset StartedAt { get; init; }
         /// <summary>Receives the <c>model.load</c> span's context from the loader, for span links from requests that waited.</summary>
         public OpenTail.Stingray.Engine.EngineTelemetry.LoadContextHolder Holder { get; } = new();
+        /// <summary>Callers currently awaiting this load (guarded by <see cref="_lock"/>): incremented when a
+        /// caller joins, decremented exactly once when it takes its result or leaves. A successful load with
+        /// callers still counted is protected in <see cref="_awaitingClaim"/>.</summary>
+        public int AwaitingCallers { get; set; }
     }
 
     /// <summary>A caller queued under <see cref="AdmissionWaitTimeout"/> (docs/032 Phase 6
@@ -117,6 +121,14 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     private readonly object _lock = new();
     private readonly Dictionary<ModelId, ModelRuntime> _resident = new();
     private readonly Dictionary<ModelId, PendingLoad> _pendingLoads = new();
+    /// <summary>Successfully loaded models that still have callers awaiting them, mapped to the load that
+    /// set the entry (guarded by <see cref="_lock"/>). Such a model is not evictable and counts as busy for
+    /// a SingleSlot waiter on another model. Otherwise that waiter, woken by the load's completion, evicts
+    /// the model before its caller takes the handle, and the caller reloads it. The entry is removed when
+    /// the first awaiting caller takes the result, or when the last one leaves without one. Only the load
+    /// that set an entry may remove it (ReferenceEquals), so a stale caller of an earlier load cannot drop
+    /// a later load's protection.</summary>
+    private readonly Dictionary<ModelId, PendingLoad> _awaitingClaim = new();
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
     private bool _disposed;
@@ -287,12 +299,16 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 {
                     pendingLoad = pending.Tcs.Task;
                     waitedLoad = pending;
+                    pending.AwaitingCallers++;
                 }
-                else if (_residencyMode == ModelResidencyMode.SingleSlot && HasBlockingOtherResident(model))
+                else if (_residencyMode == ModelResidencyMode.SingleSlot
+                    && (HasBlockingOtherResident(model) || HasPendingOtherLoad(model)))
                 {
-                    // A different model is resident and busy (live handles, or pinned). Never
-                    // evict active work to satisfy single-slot residency (invariant 10) — wait
-                    // for it to free up instead of loading a second model alongside it.
+                    // A different model is resident and busy (live handles, or pinned), or a
+                    // different model is still loading. Never evict active work to satisfy
+                    // single-slot residency (invariant 10), and never load a second model alongside
+                    // an in-flight one — wait for it to free up instead. RunLoad notifies on both
+                    // success and failure, so this wait always ends.
                     waitForResidencyChange = _residencyChanged.Task;
                 }
                 else
@@ -339,6 +355,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     else
                     {
                         pendingLoad = StartLoadLocked(model, out waitedLoad);
+                        waitedLoad!.AwaitingCallers++;
                     }
                 }
             }
@@ -388,10 +405,39 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 continue;
             }
 
-            var runtime = await AwaitLoadAsync(pendingLoad!, waitedLoad, cancellationToken).ConfigureAwait(false);
+            // The load this caller joined or started. The caller leaves it exactly once, below.
+            var joinedLoad = waitedLoad!;
+            ModelRuntime runtime;
+            try
+            {
+                runtime = await AwaitLoadAsync(pendingLoad!, joinedLoad, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Leaving without a result (cancelled, the load failed, or the manager shut down). If this was
+                // the last caller awaiting a load that protects its model, drop the protection and wake waiters:
+                // nobody is left to take the model, so it must become evictable.
+                bool wakeWaiters = false;
+                lock (_lock)
+                {
+                    joinedLoad.AwaitingCallers--;
+                    if (joinedLoad.AwaitingCallers == 0 && _awaitingClaim.TryGetValue(model, out var claim)
+                        && ReferenceEquals(claim, joinedLoad))
+                    {
+                        _awaitingClaim.Remove(model);
+                        wakeWaiters = true;
+                    }
+                }
+                if (wakeWaiters) NotifyResidencyChanged(mayHaveFreedResources: false);
+                throw;
+            }
 
             lock (_lock)
             {
+                joinedLoad.AwaitingCallers--;
+                // Taking the result ends the protection: from here the handle below protects the model.
+                if (_awaitingClaim.TryGetValue(model, out var claim) && ReferenceEquals(claim, joinedLoad))
+                    _awaitingClaim.Remove(model);
                 // Re-check under the lock: nothing evicts a Ready runtime in Phase 1, but this
                 // guards the same race for whenever resource-pressure eviction (Phase 3) lands,
                 // without needing to touch this method again.
@@ -399,6 +445,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     return new ModelRuntimeHandle(this, runtime);
             }
             // Lost the race to eviction between load completion and re-acquiring the lock; retry.
+            NotifyResidencyChanged(mayHaveFreedResources: false); // a waiter may have been held back by the claim
         }
     }
 
@@ -512,7 +559,19 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         foreach (var kv in _resident)
         {
             if (kv.Key.Equals(requested)) continue;
-            if (kv.Value.HandleCount > 0 || kv.Value.IsPinned) return true;
+            if (kv.Value.HandleCount > 0 || kv.Value.IsPinned || _awaitingClaim.ContainsKey(kv.Key)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Caller must hold <see cref="_lock"/>. True when a load of a model other than
+    /// <paramref name="requested"/> is in flight. A SingleSlot cold acquire waits on it rather than
+    /// starting a second load alongside it.</summary>
+    private bool HasPendingOtherLoad(ModelId requested)
+    {
+        foreach (var key in _pendingLoads.Keys)
+        {
+            if (!key.Equals(requested)) return true;
         }
         return false;
     }
@@ -531,7 +590,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         {
             if (keep is { } k && key.Equals(k)) continue;
             var rt = _resident[key];
-            if (!rt.IsEvictable) continue;
+            if (!rt.IsEvictable || _awaitingClaim.ContainsKey(key)) continue;
             rt.State = ModelRuntimeState.Evicting;
             _resident.Remove(key);
             (toDispose ??= new List<ModelRuntime>()).Add(rt);
@@ -635,16 +694,24 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         {
             // Lets the engine's model.load span hand its context back, so waiters can link to it.
             OpenTail.Stingray.Engine.EngineTelemetry.LoadHolder.Value = holder;
+            // Estimate before loading: a throwing estimator must not leave a loaded engine (engine,
+            // RuntimeInstance, GGUF mapping) that nothing owns. _estimateBytes takes only the ModelId.
+            long estimate = _estimateBytes(model);
             var loaded = _loader(model);
-            var runtime = new ModelRuntime(model, loaded, _estimateBytes(model), loaded.Instance);
+            var runtime = new ModelRuntime(model, loaded, estimate, loaded.Instance);
             bool managerDisposed;
             lock (_lock)
             {
-                _pendingLoads.Remove(model);
+                _pendingLoads.Remove(model, out var finished);
                 // Dispose() may have run while the loader was working; publishing now would leave an engine
                 // nobody owns and hand a waiter a runtime of a manager that has shut down.
                 managerDisposed = _disposed;
-                if (!managerDisposed) _resident[model] = runtime;
+                if (!managerDisposed)
+                {
+                    _resident[model] = runtime;
+                    // A caller is awaiting this load and must claim it before anything may evict it.
+                    if (finished is not null && finished.AwaitingCallers > 0) _awaitingClaim[model] = finished;
+                }
             }
             if (managerDisposed)
             {

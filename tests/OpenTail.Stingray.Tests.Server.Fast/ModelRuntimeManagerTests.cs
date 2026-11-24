@@ -252,6 +252,28 @@ public sealed class ModelRuntimeManagerTests
         }
         finally { releaseLoader.Set(); }
     }
+
+    [Fact]
+    public async Task Acquire_EstimatorThrows_DoesNotLeaveALoadedEngineUndisposed()
+    {
+        int loads = 0;
+        DisposableFakeEngine? engine = null;
+        using var manager = new ModelRuntimeManager(
+            id =>
+            {
+                Interlocked.Increment(ref loads);
+                engine = new DisposableFakeEngine(id.Value);
+                return new LoadedEngine(engine, "qwen2", null);
+            },
+            estimateBytes: _ => throw new InvalidOperationException("estimator failed"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.AcquireAsync(Id("broken")).AsTask());
+
+        // Either nothing was loaded, or whatever the loader produced has been disposed. A loaded
+        // engine that nobody owns is a leak (engine, RuntimeInstance and GGUF mapping stay alive).
+        Assert.True(Volatile.Read(ref loads) == 0 || engine!.Disposed,
+            $"loader ran {Volatile.Read(ref loads)} time(s) and its engine was never disposed");
+    }
     // ── SingleSlot residency ─────────────────────────────────────────────────
 
     [Fact]
@@ -303,6 +325,137 @@ public sealed class ModelRuntimeManagerTests
         Assert.Equal(Id("b"), hb.Runtime.Id);
         // Both resident at once now — MultiSlot never evicted "a" to make room.
         Assert.True(manager.TryGetResident(Id("a"), out _));
+    }
+
+    [Fact]
+    public async Task SingleSlot_ColdLoadOfAnotherModel_WaitsWhileFirstLoadIsInFlight_NeverRunsTwoLoadersAtOnce()
+    {
+        var aEntered = new ManualResetEventSlim();
+        var releaseA = new ManualResetEventSlim();
+        var probe = new object();
+        int running = 0, maxRunning = 0, aLoads = 0, bLoads = 0;
+        using var manager = new ModelRuntimeManager(id =>
+        {
+            lock (probe) maxRunning = Math.Max(maxRunning, ++running);
+            try
+            {
+                if (id.Value == "a")
+                {
+                    Interlocked.Increment(ref aLoads);
+                    aEntered.Set();
+                    Assert.True(releaseA.Wait(TimeSpan.FromSeconds(10)));
+                }
+                else
+                {
+                    Interlocked.Increment(ref bLoads);
+                }
+                return Load(id.Value);
+            }
+            finally { lock (probe) running--; }
+        }, ModelResidencyMode.SingleSlot);
+
+        var acquireA = manager.AcquireAsync(Id("a")).AsTask();
+        Assert.True(aEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        var acquireB = manager.AcquireAsync(Id("b")).AsTask();
+        await Task.Delay(200);
+        // B must not start its own load while A's load is still in flight.
+        Assert.Equal(0, Volatile.Read(ref bLoads));
+        Assert.False(acquireB.IsCompleted);
+
+        releaseA.Set();
+        var ha = await acquireA.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(Id("a"), ha.Runtime.Id);
+        Assert.Equal(1, Volatile.Read(ref aLoads)); // A's caller gets the model it loaded, not a reload of it
+        ha.Dispose();
+
+        using var hb = await acquireB.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(Id("b"), hb.Runtime.Id);
+        Assert.Equal(1, Volatile.Read(ref bLoads));
+        Assert.Equal(1, maxRunning); // never two loaders running at once
+    }
+
+    [Fact]
+    public async Task SingleSlot_CallerCancelledWhileItsLoadIsInFlight_DoesNotStrandTheModel()
+    {
+        var aEntered = new ManualResetEventSlim();
+        var releaseA = new ManualResetEventSlim();
+        int bLoads = 0;
+        using var manager = new ModelRuntimeManager(id =>
+        {
+            if (id.Value == "a")
+            {
+                aEntered.Set();
+                Assert.True(releaseA.Wait(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                Interlocked.Increment(ref bLoads);
+            }
+            return Load(id.Value);
+        }, ModelResidencyMode.SingleSlot);
+
+        using var cts = new CancellationTokenSource();
+        var acquireA = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
+        Assert.True(aEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquireA);
+
+        releaseA.Set(); // A finishes loading with nobody left to claim it
+        Assert.True(SpinWait.SpinUntil(() => manager.TryGetResident(Id("a"), out _), TimeSpan.FromSeconds(10)));
+
+        // A is idle and unclaimed, so it must be evictable and B must get in within a few seconds.
+        using var hb = await manager.AcquireAsync(Id("b")).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("b"), hb.Runtime.Id);
+        Assert.Equal(1, Volatile.Read(ref bLoads));
+    }
+
+    [Fact]
+    public async Task SingleSlot_FirstOfTwoCallersOnALoadCancels_SecondClaimsIt_AndNextModelWaitsOnlyWhileItIsHeld()
+    {
+        var aEntered = new ManualResetEventSlim();
+        var releaseA = new ManualResetEventSlim();
+        int aLoads = 0, bLoads = 0;
+        using var manager = new ModelRuntimeManager(id =>
+        {
+            if (id.Value == "a")
+            {
+                Interlocked.Increment(ref aLoads);
+                aEntered.Set();
+                Assert.True(releaseA.Wait(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                Interlocked.Increment(ref bLoads);
+            }
+            return Load(id.Value);
+        }, ModelResidencyMode.SingleSlot);
+
+        using var cts = new CancellationTokenSource();
+        var first = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
+        Assert.True(aEntered.Wait(TimeSpan.FromSeconds(10)));
+        var second = manager.AcquireAsync(Id("a")).AsTask();
+        await Task.Delay(100); // let the second caller join the in-flight load
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+
+        var acquireB = manager.AcquireAsync(Id("b")).AsTask();
+        await Task.Delay(100);
+        Assert.False(acquireB.IsCompleted); // A is still loading
+
+        releaseA.Set();
+        var hA = await second.WaitAsync(TimeSpan.FromSeconds(10)); // the surviving caller claims A
+        Assert.Equal(Id("a"), hA.Runtime.Id);
+        await Task.Delay(100);
+        Assert.False(acquireB.IsCompleted); // B waits only while A is held
+
+        hA.Dispose();
+        using var hB = await acquireB.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(Id("b"), hB.Runtime.Id);
+        Assert.Equal(1, Volatile.Read(ref aLoads));
+        Assert.Equal(1, Volatile.Read(ref bLoads));
     }
 
     // ── Cross-model concurrency / no global lock ────────────────────────────
