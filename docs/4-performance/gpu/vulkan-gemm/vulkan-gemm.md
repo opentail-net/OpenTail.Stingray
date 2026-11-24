@@ -586,10 +586,10 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 
 ### Open items
 
-- [ ] Larger prefill chunks (256); check scratch buffers and batched attention/KV-append accept them
+- [x] Larger prefill chunks (256); check scratch buffers and batched attention/KV-append accept them. **Done 2026-11-24 (AFK loop): no gain beyond 128, default unchanged.** The Path 3 cap is already 256 by default (`STINGRAY_VK_PATH3_CHUNK` overrides it). A 1759-token SmolLM2-1.7B prefill on the full GPU path: chunk 128 gives 250.9 t/s, default 256 gives 250.5 t/s, within noise; greedy text identical in 4 of 4 pairs, so the 256-token scratch and attention path accepts the larger chunk. Controls: chunk 16 gives 70.3 t/s and chunk 64 gives 143.0 t/s, so the knob is effective and the rate saturates at 128. Record in [PerformanceLeague-LOG.md](../../PerformanceLeague-LOG.md).
 - [ ] A second dense model under Path 3 (the first measurement is Qwen3-4B only)
-- [ ] Decode regression check on Vulkan
-- [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite
+- [x] Decode regression check on Vulkan. **Done 2026-11-24 (AFK loop).** The change to check is the A31 host-cached download staging, which is on by default and sits on the decode download path. Interleaved A/B, SmolLM2-1.7B Q4_K_M, `-g -1` (the whole model on the integrated Vulkan GPU; every run's banner was `GpuForwardPass`), 128 new tokens, greedy, six pairs: staging not host-cached 27.97 t/s (27.1 to 28.5); host-cached default 28.87 t/s (28.6 to 29.3). The default is not slower, and the text is identical in 6 of 6 pairs. No regression. Record in [PerformanceLeague-LOG.md](../../PerformanceLeague-LOG.md).
+- [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite. **Partly done 2026-11-24:** the class is `tests/OpenTail.Stingray.Tests.Diffusion` (not a `.Fast` project) and has no heavy gate, so it runs in every default run of that project. On the integrated AMD GPU it ran 6 of 6, 0 skipped, 0 failed (1.4 s). Still open: whether the project should be a `.Fast` project under the fast-suite naming rule, which is a naming decision and is left as it is.
 
 ### Decisions for the owner
 
