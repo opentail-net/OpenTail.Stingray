@@ -52,6 +52,7 @@ Each item says what the item's first step is, and when it is done.
 
 ### A6. Small-model decode (SmolLM2-135M, Qwen2.5-0.5B)
 
+- **Status 2026-11-24: open, re-measured.** Qwen2.5-0.5B Q4_K_M at 8 threads: Stingray 75.48 t/s against llama.cpp 97.25 ± 1.23, ratio 0.78 (the old 0.125 to 0.31 figure is stale). The opt-in spin pool is slower here (68.7 against 74.7 t/s, six pairs; not adopted). Thread scaling flattens from 4 to 8 threads. Working hypothesis: about 170 parallel matvec dispatches per token, each with a fork-join of about 10 µs, which would be about 14% of the token; not yet measured directly. Next: count the dispatches per token, measure the empty fork-join, and try the fused Q, K and V and gate-and-up matvecs (the A3 QKV change). Record: [PerformanceLeague-LOG.md](PerformanceLeague-LOG.md), "Small-model CPU decode".
 - **Why:** the two plans disagree. The pickup says about 0.55-0.75x; the sweep says 0.125-0.31x at 135M-500M. Per-token overhead (thread dispatch) is the stated cause. The spin-then-park worker pool is built but opt-in.
 - **First step:** re-measure both models against llama.cpp with the current build. Whichever number holds becomes the figure in PerformanceLeague.md.
 - **Done when:** the current ratio is recorded, and the spin pool's effect at these sizes is measured or the item is closed as not worth it.

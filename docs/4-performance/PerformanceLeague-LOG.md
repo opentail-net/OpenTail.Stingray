@@ -2188,3 +2188,15 @@ Machine: Ryzen 7 5700G, integrated AMD GPU (shared memory), Windows; devenv and 
 | **total** | **34 005** | 100% | matches the submit-and-wait total of the earlier profile |
 
 **Reading.** The model's decode reads about 1.0 GB per token (the Q4_K and Q6_K layers, plus the LM head). At 38 to 40 GB/s that is about 26 ms, and the measured token takes 34 ms, so the token runs at about 80% of the roofline. The remaining headroom is roughly 6 ms, spread over the matvecs (each at 75 to 90%) and over the small-kernel chain. Barriers are not the lever: a barrier costs about 1.7 µs (earlier entry). The honest next step is matvec efficiency on the 2048-row and Q6_K shapes, and the attention and small-kernel chain, not barrier elision. The GPU decode path (28 to 29 t/s here) is slower than the CPU route (about 32 t/s) for this model because the CPU route gets more useful bandwidth from its eight threads; both are near the same DRAM ceiling.
+
+## Small-model CPU decode (A6, AFK loop, 2026-11-24): Qwen2.5-0.5B is at 0.78x, not 0.13 to 0.31x
+
+Setup: Qwen2.5-0.5B-Instruct Q4_K_M (`F:\_models\qwen2.5-0.5b-instruct-q4_k_m.gguf`), `-g 0` (CPU, banner `ForwardPass`), 128 new tokens, greedy, 8 threads (the default: physical cores). The SmolLM2-135M checkpoint named in the plan is not on this machine.
+
+* **Reference:** llama.cpp `llama-bench -p 0 -n 128 -t 8 -r 5`, token generation: 97.25 ± 1.23 t/s.
+* **Stingray:** 75.48 t/s mean over six runs (74.8 to 76.8). Ratio **0.78**. The plan's earlier 0.13 to 0.31 sweep figures are stale and should not be used.
+* **Spin worker pool** (`STINGRAY_CPU_POOL=spin`, opt-in, interleaved A/B, six pairs): default 74.73 t/s (70.9 to 76.4); spin 68.73 (52.9 to 74.9). The spin pool is slower and less stable here. Text identical in 6 of 6 pairs. Not adopted.
+* **Decode profile** (`STINGRAY_PROFILE_DECODE=1`, one run, perturbed): 12.5 ms per token of trunk time. FFN 52.7% (6.6 ms); output projection and LM head 31.9% (4.0 ms; about 112 MB of Q6_K per token); QKV 9.3%; attention 5.2%; norms and RoPE under 1%.
+* **Thread scaling** (two runs each): 2 threads 40.2 t/s; 4 threads 70.1; 8 threads 80.5; 12 threads 74.8. Scaling is good to 4 threads, flattens from 4 to 8, and falls at 12 (SMT). So the matvecs are neither purely compute-bound nor at the DRAM ceiling (the CPU streaming probe peaks at 44 to 45 GB/s; this token reads about 320 MB, about 24 GB/s).
+* **Working hypothesis (not measured directly):** per-matvec fork-join. Qwen 0.5B runs about 170 parallel matvec dispatches per token. The MoE phase timing measured an empty fork-join at about 9 to 12 µs on this machine, which would be about 1.7 ms of the 12.5 ms token (about 14%). That is most of the 22% gap. The next step is to count the dispatches per token and measure the empty fork-join directly, then either fuse matvecs that share an input (Q, K and V; gate and up; bit-identical per row, the same change as the A3 QKV item) or lower the fork-join cost.
+* **Limits:** one model, one machine, background load (devenv and Chrome open). SmolLM2-135M not measured.
