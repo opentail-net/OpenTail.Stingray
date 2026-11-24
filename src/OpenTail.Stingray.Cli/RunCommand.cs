@@ -446,8 +446,10 @@ public sealed partial class RunCommand : Command<RunCommand.Settings>
         }
         finally
         {
-            runtimeInstance.Model?.Dispose();
-            runtimeInstance.Dispose();
+            // The runtime (forward pass, expert prefetcher, expert slots) reads the model's mapped weights, so it goes
+            // first. Freeing the model first let a queued expert preload run against a freed model (A32, 2026-11-24).
+            try { runtimeInstance.Dispose(); }
+            finally { runtimeInstance.Model?.Dispose(); }
         }
     }
 

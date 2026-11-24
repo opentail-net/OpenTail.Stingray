@@ -77,11 +77,28 @@ public sealed class MoEPrefetcher : IDisposable
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>
+    /// How long <see cref="Dispose"/> waits for the worker. Cancellation stops the queue at the worker's next checkpoint,
+    /// so at most one <see cref="IExpertPrefetchTarget.Preload"/> is still running; the caller frees the target as soon as
+    /// Dispose returns, so the wait has to cover that call. The bound is only a backstop against a wedged upload.
+    /// </summary>
+    private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(30);
+
     public void Dispose()
     {
         _cts.Cancel();
         _channel.Writer.TryComplete();
-        try { _worker.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        bool drained;
+        try { drained = _worker.Wait(DisposeDrainTimeout); }
+        catch (AggregateException) { drained = true; }   // the worker faulted, so it has stopped
+        if (!drained)
+        {
+            // Keep the token source alive for the still-running worker; the target may be freed while this Preload runs.
+            Console.Error.WriteLine(
+                $"[MoEPrefetcher] worker still running {DisposeDrainTimeout.TotalSeconds:0} s after dispose; " +
+                "a Preload may be using a target that is being freed.");
+            return;
+        }
         _cts.Dispose();
     }
 }
