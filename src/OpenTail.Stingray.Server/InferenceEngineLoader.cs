@@ -232,7 +232,8 @@ public static class InferenceEngineLoader
             : LooseGgufModelPackage.Open(modelPath);
 
         var modelDesc = ModelDescription.FromPackage(package);
-        var capabilities = BackendCapabilities.Detect();
+        // A CPU-pinned load never uses an accelerator, so it skips the Vulkan/CUDA probe (which creates and destroys a device).
+        var capabilities = BackendCapabilities.Detect(noGpuProbe: opts.Backend == ServerBackend.Cpu);
 
         var request = new ExecutionRequest
         {
