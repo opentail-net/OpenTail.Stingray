@@ -9,7 +9,8 @@ Guide for users: [observability.md](../guides/observability.md). Plan and decisi
 (no release or tag exists; every metric there is marked *Development*; checked 2026-10-12, files
 `docs/gen-ai/gen-ai-metrics.md` and `gen-ai-token-metrics.md`). A later convention change must not silently change what a
 Stingray metric means: this table is the contract. *Standard* = name and unit taken from the convention;
-*Stingray* = our own, no standard equivalent.
+*Stingray* = our own, no standard equivalent. The *Standard or Stingray* column is also the stability tier. New instruments start under `opentail.experimental.*`
+until a release promotes them (plan §14, item 7); the contract test checks the column's values, not that prefix.
 
 **Cost tiers** (principle 11 of the plan): **1** always on and inside the overhead budget; **2** costs something only when a
 listener is attached; **3** explicit diagnostic mode, off by default, perturbs what it measures and must never feed a

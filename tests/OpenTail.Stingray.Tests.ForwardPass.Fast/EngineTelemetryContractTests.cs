@@ -9,7 +9,8 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 [Collection("EngineTelemetry")]
 public sealed class EngineTelemetryContractTests
 {
-    internal sealed record Row(string Meter, string Name, string Type, string Unit, int Tier);
+    /// <summary>One instrument row. <c>Origin</c> is the table's "Standard or Stingray" column, which is the stability tier (plan §14).</summary>
+    internal sealed record Row(string Meter, string Name, string Type, string Unit, int Tier, string Origin = "");
 
     internal static string? FindTable()
     {
@@ -29,7 +30,7 @@ public sealed class EngineTelemetryContractTests
             if (!line.StartsWith("| `OpenTail.Stingray.", StringComparison.Ordinal)) continue;
             var cells = line.Trim().Trim('|').Split('|').Select(c => c.Trim().Trim('`')).ToArray();
             if (cells.Length < 8 || !int.TryParse(cells[4], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int tier)) continue; // the spans table has different columns
-            rows.Add(new Row(cells[0], cells[1], cells[2], cells[3], tier));
+            rows.Add(new Row(cells[0], cells[1], cells[2], cells[3], tier, cells[5]));
         }
         return rows;
     }
@@ -86,5 +87,21 @@ public sealed class EngineTelemetryContractTests
         Assert.Contains(rows, r => r.Tier == 2);
         Assert.Contains(rows, r => r.Tier == 3);
         Assert.Equal(rows.Count, rows.Select(r => r.Meter + "|" + r.Name).Distinct().Count());
+    }
+
+    /// <summary>
+    /// The stability tier seam (plan §14, item 7): every row names its origin with one of the three values the table
+    /// uses, so a new instrument cannot land without saying whether it follows a convention, is our own, or is kept for
+    /// compatibility. The plan's <c>opentail.experimental.*</c> prefix for new instruments is policy and is not enforced here.
+    /// </summary>
+    [Fact]
+    public void EveryRow_NamesAKnownStabilityTier()
+    {
+        string? table = FindTable();
+        Assert.SkipWhen(table is null, "repo docs not found from the test output folder");
+        var rows = ReadRows(table!);
+        Assert.NotEmpty(rows);
+        string[] known = ["Standard (Development)", "Stingray", "Legacy (kept one release)"];
+        Assert.All(rows, r => Assert.Contains(r.Origin, known));
     }
 }
