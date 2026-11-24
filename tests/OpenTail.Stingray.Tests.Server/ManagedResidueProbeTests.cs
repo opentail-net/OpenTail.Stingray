@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Server;
@@ -25,7 +26,8 @@ public sealed class ManagedResidueProbeTests
     private sealed record Tracked(string ObjectModel, int CycleCreated, string Kind, WeakReference Ref);
 
     private sealed record Row(int Cycle, string UnloadModel, string ObjectKind, int CycleCreated, bool Alive, string ObjectModel,
-        int ResidentModels, long ManagedBytes, long PrivateBytes);
+        int ResidentModels, long ManagedBytes, long PrivateBytes, long HeapSizeBytes, long FragmentedBytes, long TotalCommittedBytes,
+        long ManagedCompactedBytes);
 
     [Fact]
     public async Task ManagedObjectsAfterUnload_SingleSlotTwoModels_Probe()
@@ -121,7 +123,12 @@ public sealed class ManagedResidueProbeTests
         return list;
     }
 
-    /// <summary>Forces collection, reads the managed and process figures once, and emits one row per tracked object created so far.</summary>
+    /// <summary>
+    /// Forces collection, reads the managed and process figures once, and emits one row per tracked object created so far.
+    /// The GC heap figures are read from the last full blocking collection, before the liveness snapshot and before the compacting
+    /// pass, so they describe the same collection as <c>managed_bytes</c>. <c>managed_compacted_bytes</c> comes from a second,
+    /// compacting measurement that runs after the liveness snapshot, so it cannot change which objects are reported alive.
+    /// </summary>
     private static void AddRows(List<Row> rows, IReadOnlyList<Tracked> tracked, int cycle, string unloadModel, int residentModels)
     {
         GC.Collect();
@@ -131,10 +138,29 @@ public sealed class ManagedResidueProbeTests
         using var process = Process.GetCurrentProcess();
         process.Refresh();
         long privateBytes = process.PrivateMemorySize64;
-        foreach (var t in tracked)
+        GCMemoryInfo info = GC.GetGCMemoryInfo(GCKind.FullBlocking);
+        var alive = new bool[tracked.Count];
+        for (int i = 0; i < tracked.Count; i++) alive[i] = tracked[i].Ref.IsAlive;
+        long compacted = CompactedManagedBytes();
+        for (int i = 0; i < tracked.Count; i++)
         {
-            rows.Add(new Row(cycle, unloadModel, t.Kind, t.CycleCreated, t.Ref.IsAlive, t.ObjectModel, residentModels, managed, privateBytes));
+            var t = tracked[i];
+            rows.Add(new Row(cycle, unloadModel, t.Kind, t.CycleCreated, alive[i], t.ObjectModel, residentModels, managed, privateBytes,
+                info.HeapSizeBytes, info.FragmentedBytes, info.TotalCommittedBytes, compacted));
         }
+    }
+
+    /// <summary>
+    /// Managed size after a compacting full collection, with large-object-heap compaction forced once. Free space and fragmentation
+    /// left by earlier collections are returned to the pool here, so the result is closer to the bytes held by live objects.
+    /// </summary>
+    private static long CompactedManagedBytes()
+    {
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        return GC.GetTotalMemory(false);
     }
 
     /// <summary>
@@ -165,7 +191,7 @@ public sealed class ManagedResidueProbeTests
         string? dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        var lines = new List<string> { "cycle\tunload_model\tobject_kind\tcycle_created\talive\tmanaged_bytes\tprivate_bytes\tobject_model\tresident_models" };
+        var lines = new List<string> { "cycle\tunload_model\tobject_kind\tcycle_created\talive\tmanaged_bytes\tprivate_bytes\tobject_model\tresident_models\theap_size_bytes\tfragmented_bytes\ttotal_committed_bytes\tmanaged_compacted_bytes" };
         foreach (var r in rows)
         {
             lines.Add(string.Join('\t',
@@ -177,7 +203,11 @@ public sealed class ManagedResidueProbeTests
                 r.ManagedBytes.ToString(CultureInfo.InvariantCulture),
                 r.PrivateBytes.ToString(CultureInfo.InvariantCulture),
                 r.ObjectModel,
-                r.ResidentModels.ToString(CultureInfo.InvariantCulture)));
+                r.ResidentModels.ToString(CultureInfo.InvariantCulture),
+                r.HeapSizeBytes.ToString(CultureInfo.InvariantCulture),
+                r.FragmentedBytes.ToString(CultureInfo.InvariantCulture),
+                r.TotalCommittedBytes.ToString(CultureInfo.InvariantCulture),
+                r.ManagedCompactedBytes.ToString(CultureInfo.InvariantCulture)));
         }
         File.WriteAllLines(path, lines);
     }
