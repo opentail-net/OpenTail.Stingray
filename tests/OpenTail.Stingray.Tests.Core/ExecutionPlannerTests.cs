@@ -485,6 +485,68 @@ public sealed class ExecutionPlannerTests : IDisposable
         Assert.Equal(baseline, PlanTinyModel(request, extraTensors: unnamed).Placement!.GpuWeightBytes);
     }
 
+    /// <summary>
+    /// The GGUF-path twin of <see cref="Plan_GpuWeightBytes_CountsTheFamilySpecificTensorsOfALayer"/>: the same
+    /// family-specific tensors must be counted by <c>TierPlanner.Plan(GgufModel, ...)</c>, which the CLI and server
+    /// use, not only by the <c>ExecutionPlanner</c> facts path.
+    /// </summary>
+    [Fact]
+    public void Plan_GgufPath_CountsTheFamilySpecificTensorsOfALayer()
+    {
+        var metadata = new Dictionary<string, (GgufValueType, object)>
+        {
+            ["general.architecture"] = (GgufValueType.String, "llama"),
+            ["llama.block_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.context_length"] = (GgufValueType.UInt32, 2048u),
+            ["llama.embedding_length"] = (GgufValueType.UInt32, 64u),
+            ["llama.feed_forward_length"] = (GgufValueType.UInt32, 128u),
+            ["llama.attention.head_count"] = (GgufValueType.UInt32, 2u),
+            ["llama.attention.head_count_kv"] = (GgufValueType.UInt32, 2u),
+            ["llama.vocab_size"] = (GgufValueType.UInt32, 100u)
+        };
+        var baseTensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("token_embd.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("output.weight", [64, 100], DType.Float32, new byte[64 * 100 * 4]),
+            ("blk.0.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_q.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        var hybridTensors = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("blk.0.attn_qkv.weight", [64, 192], DType.Float32, new byte[64 * 192 * 4]),
+            ("blk.0.ssm_out.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.attn_gate.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+            ("blk.1.ssm_conv1d.weight", [4, 64], DType.Float32, new byte[4 * 64 * 4]),
+        };
+        var unnamed = new (string name, long[] dims, DType dtype, byte[] data)[]
+        {
+            ("blk.0.unlisted_extra.weight", [64, 64], DType.Float32, new byte[64 * 64 * 4]),
+        };
+        // VramBytes > 0 selects the GPU branch of TierPlanner.Plan; 8 GiB leaves ample room for two tiny layers.
+        var hw = new HardwareProfile(8L << 30, 32L << 30, 8, 16.0, false);
+
+        long baseline = PlanGgufGpuWeightBytes(metadata, baseTensors, hw);
+        long withHybrid = PlanGgufGpuWeightBytes(metadata, [.. baseTensors, .. hybridTensors], hw);
+        Assert.Equal(64 * 192 * 4 + 64 * 64 * 4 + 64 * 64 * 4 + 4 * 64 * 4, withHybrid - baseline);
+
+        Assert.Equal(baseline, PlanGgufGpuWeightBytes(metadata, [.. baseTensors, .. unnamed], hw));
+    }
+
+    // Writes the synthetic GGUF, opens it as a GgufModel and plans it through TierPlanner.Plan(GgufModel, ...).
+    // Every layer is pinned to the GPU, so GpuWeightBytes is the fixed embedding/output bytes plus each layer's
+    // measured bytes, with no dependence on the auto-pack budget.
+    private long PlanGgufGpuWeightBytes(
+        Dictionary<string, (GgufValueType type, object value)> metadata,
+        (string name, long[] dims, DType dtype, byte[] data)[] tensors,
+        HardwareProfile hw)
+    {
+        using var gguf = GgufModel.Open(CreateGguf(metadata, tensors));
+        var hp = ArchitectureModelResolver.ResolveHyperparams(gguf);
+        var placement = TierPlanner.Plan(gguf, hp, hw, requestedCtxSize: 512, pinGpuLayers: hp.NumLayers);
+        Assert.Equal(hp.NumLayers, placement.GpuLayers);
+        return placement.GpuWeightBytes;
+    }
+
     [Fact]
     public void Plan_CarriesRequestedDeviceIndex_ForGpuBackend()
     {
