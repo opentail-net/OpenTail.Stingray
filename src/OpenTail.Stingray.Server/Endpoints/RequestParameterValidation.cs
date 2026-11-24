@@ -12,7 +12,9 @@ internal static class RequestParameterValidation
     /// <summary>Returns the error message for the first invalid field, or null when the request is acceptable.</summary>
     public static string? ValidateOpenAi(ChatCompletionRequest r) =>
         PositiveInt("max_tokens", r.MaxTokens)
+        ?? MaxNewTokens("max_tokens", r.MaxTokens)
         ?? PositiveInt("max_completion_tokens", r.MaxCompletionTokens)
+        ?? MaxNewTokens("max_completion_tokens", r.MaxCompletionTokens)
         ?? Range("temperature", r.Temperature, 0f, 2f)
         ?? Range("top_p", r.TopP, 0f, 1f)
         ?? NonNegativeInt("top_k", r.TopK)
@@ -27,6 +29,7 @@ internal static class RequestParameterValidation
     /// </summary>
     public static string? ValidateResponses(ResponsesRequest r) =>
         PositiveInt("max_output_tokens", r.MaxOutputTokens)
+        ?? MaxNewTokens("max_output_tokens", r.MaxOutputTokens)
         ?? Range("temperature", r.Temperature, 0f, 2f)
         ?? Range("top_p", r.TopP, 0f, 1f)
         ?? (r.Tools is { ValueKind: System.Text.Json.JsonValueKind.Array } tools && tools.GetArrayLength() > 0
@@ -41,6 +44,7 @@ internal static class RequestParameterValidation
 
     public static string? ValidateAnthropic(AnthropicMessageRequest r) =>
         PositiveInt("max_tokens", r.MaxTokens)
+        ?? MaxNewTokens("max_tokens", r.MaxTokens)
         ?? Range("temperature", r.Temperature, 0f, 1f)
         ?? Range("top_p", r.TopP, 0f, 1f)
         ?? NonNegativeInt("top_k", r.TopK)
@@ -115,6 +119,13 @@ internal static class RequestParameterValidation
         string.IsNullOrEmpty(language) || (language.Length is 2 or 3 && language.All(char.IsAsciiLetter))
             ? null
             : $"language must be a two or three letter code such as 'en' (got '{language}')";
+
+    /// <summary>An output length above the engine's limit: refused here with a 400. Without this check the engine throws, which the
+    /// server answers as a 500 (an unhandled exception), so the client would be told the server failed when its request was too large.</summary>
+    private static string? MaxNewTokens(string name, int? value) =>
+        value is { } v && v > OpenTail.Stingray.Engine.ContinuousBatchingEngine.MaxNewTokensLimit
+            ? $"{name} must be at most {OpenTail.Stingray.Engine.ContinuousBatchingEngine.MaxNewTokensLimit} (got {v})"
+            : null;
 
     private static string? PositiveInt(string name, int? value) =>
         value is { } v && v < 1 ? $"{name} must be at least 1 (got {v})" : null;

@@ -1040,6 +1040,22 @@ public sealed class OpenTailStingrayJsonContextTests
     }
 
     [Fact]
+    public void MaxTokens_AboveTheEngineLimit_IsRefusedWith400NotPassedToTheEngine()
+    {
+        // The engine throws for a request above its limit, which the server would answer as a 500. The validator must refuse it first.
+        const int limit = OpenTail.Stingray.Engine.ContinuousBatchingEngine.MaxNewTokensLimit;
+        var atLimit = new ChatCompletionRequest(Model: "m", Messages: null, MaxTokens: limit, Temperature: null, TopP: null,
+            Stream: null, LogitBias: null, ResponseFormat: null);
+        var above = new ChatCompletionRequest(Model: "m", Messages: null, MaxTokens: limit + 1, Temperature: null, TopP: null,
+            Stream: null, LogitBias: null, ResponseFormat: null);
+
+        Assert.Null(RequestParameterValidation.ValidateOpenAi(atLimit));
+        var error = RequestParameterValidation.ValidateOpenAi(above);
+        Assert.NotNull(error);
+        Assert.Contains("max_tokens", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Default_UsesSnakeCaseLowerNaming()
     {
         // The wire format MUST be snake_case (OpenAI/Anthropic conventions) — guard against

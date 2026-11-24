@@ -34,6 +34,10 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     // decoder flush chunks. The transport remains non-blocking for the batcher, while this bound
     // prevents an abandoned reader from accumulating an unbounded response in its channel.
     private const int MaxBufferedOutputChunks = 4_096;
+
+    /// <summary>The most new tokens one request may ask for: the output buffer less a margin. A larger request is refused by the
+    /// engine with an exception, so the HTTP layer checks this first and answers 400 instead of 500.</summary>
+    public const int MaxNewTokensLimit = MaxBufferedOutputChunks - 4;
     private readonly IBatchedForwardPass _fwd;
     private readonly IKvCache _kvCache;
     private readonly bool _ownsKvCache;
@@ -566,7 +570,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
 
     private static void ValidateOutputBound(SamplingParams sampling)
     {
-        if (sampling.MaxNewTokens > MaxBufferedOutputChunks - 4)
+        if (sampling.MaxNewTokens > MaxNewTokensLimit)
             throw new ArgumentOutOfRangeException(nameof(sampling),
                 $"MaxNewTokens exceeds the non-blocking output limit of {MaxBufferedOutputChunks} chunks.");
     }

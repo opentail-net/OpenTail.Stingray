@@ -56,7 +56,9 @@ public sealed class ClientDisconnectTests : IDisposable
     {
         model = Model,
         messages = new[] { new { role = "user", content = "hi" } },
-        max_tokens = 5000,
+        // Long enough that the disconnect lands mid-stream. The engine refuses more than MaxNewTokensLimit (4092), and the
+        // validator now answers such a request with 400, so this stays under it.
+        max_tokens = 4000,
         stream,
     };
 
