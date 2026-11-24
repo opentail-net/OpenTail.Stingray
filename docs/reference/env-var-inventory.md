@@ -606,3 +606,45 @@ dynamically composed names.
 |---|---|---|
 | `STINGRAY_PROFILE_TOKENIZE` | diagnostic | `=1` prints a `[TokenizeProfile]` line to stderr for every tokenizer `Encode` call: characters in, tokens out and elapsed milliseconds. |
 | `STINGRAY_PROFILE_WEIGHT_READ` | diagnostic | `=1` accumulates and reports where SafeTensors weight reading spends its time (tensor lookup, disk read, conversion) and how many bytes and floats were produced. |
+
+## Owner-review candidates, 2026-11-24
+
+A mechanical pass over the 296 names in `src/OpenTail.Stingray.Core/KnownEnvironmentVariables.cs`. Each name was counted in `src/**/*.cs` (the registry excluded), in `tests/**/*.cs` and in `docs/**/*.md`. The 33 names below appear in source at most twice (one read site and one comment or help string), have no test reference, and have at most two documentation mentions. They are candidates for the owner's retirement decision. **They are not verdicts:** a person must read each read site before removal, and some may be operator-facing despite the counts. **Nothing was removed.**
+
+| Switch | Source mentions | Doc mentions |
+|---|---|---|
+| `STINGRAY_ASR_PROFILE` | 2 | 2 |
+| `STINGRAY_COSYVOICE3_TANH_GELU` | 2 | 1 |
+| `STINGRAY_CUDA_MATVEC_BENCH` | 2 | 1 |
+| `STINGRAY_DSPARK_TIMING` | 2 | 2 |
+| `STINGRAY_DUMP_CONVPOST_PATH` | 2 | 2 |
+| `STINGRAY_FA_READ_SHIFT` | 2 | 1 |
+| `STINGRAY_FLUX2_DUMP_COND_PATH` | 2 | 1 |
+| `STINGRAY_FLUX2_GPU_FP16` | 2 | 2 |
+| `STINGRAY_FORCE_CPU_EMBED` | 2 | 1 |
+| `STINGRAY_GRANITE4_DIAG` | 2 | 1 |
+| `STINGRAY_GRANITE4_PREFILL` | 2 | 1 |
+| `STINGRAY_HUNYUAN_DUMP_COND_PATH` | 2 | 1 |
+| `STINGRAY_HUNYUAN_DUMP_LATENT_PATH` | 2 | 2 |
+| `STINGRAY_HUNYUAN_DUMP_VEC_PATH` | 2 | 1 |
+| `STINGRAY_LLAMA4_DEBUG` | 2 | 1 |
+| `STINGRAY_LTX_DEBUG_STEPFRAMES_DIR` | 2 | 2 |
+| `STINGRAY_PLE_GPU_DEQUANT` | 2 | 1 |
+| `STINGRAY_PROBE_POS` | 2 | 1 |
+| `STINGRAY_PROFILE_VULKAN_UPLOADS` | 2 | 1 |
+| `STINGRAY_Q4E_EXPERT_F32` | 2 | 2 |
+| `STINGRAY_Q4E_SSMOUT_F32` | 2 | 2 |
+| `STINGRAY_QWEN_GPU_BLOCKS` | 2 | 2 |
+| `STINGRAY_QWENIMAGE_DUMP_COND_PATH` | 2 | 2 |
+| `STINGRAY_QWENIMAGE_DUMP_LATENT_PATH` | 2 | 1 |
+| `STINGRAY_QWENIMAGE_INJECT_NOISE_PATH` | 2 | 2 |
+| `STINGRAY_SD3_FORCE_GPU_WEIGHTS_F32` | 2 | 2 |
+| `STINGRAY_TRACE_DSPARK` | 2 | 1 |
+| `STINGRAY_TRACE_SNAPSHOT` | 2 | 1 |
+| `STINGRAY_TTS_PROFILE` | 2 | 2 |
+| `STINGRAY_WAN_PROFILE` | 2 | 2 |
+| `STINGRAY_WAN_SIGN` | 2 | 2 |
+| `STINGRAY_XTTS_LAYER_TRACE` | 2 | 1 |
+| `STINGRAY_XTTS_TRACE` | 2 | 1 |
+
+Method: counts taken 2026-11-24 by a script that scans the files named above. The full table of all 296 names is not committed.
