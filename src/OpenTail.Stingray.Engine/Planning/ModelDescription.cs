@@ -499,7 +499,7 @@ public sealed record ModelDescription(
         return total;
     }
 
-    private static readonly string[] LayerFamilySpecificGpuTensors =
+    internal static readonly string[] LayerFamilySpecificGpuTensors =
     [
         "attn_qkv.weight", "attn_gate.weight",
         "ssm_in.weight", "ssm_out.weight", "ssm_alpha.weight", "ssm_beta.weight", "ssm_conv1d.weight",

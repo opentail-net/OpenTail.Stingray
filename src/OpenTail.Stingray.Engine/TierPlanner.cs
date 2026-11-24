@@ -449,6 +449,12 @@ public static class TierPlanner
             total += MeasureGpuTensorBytes(model, $"blk.{layer}.attn_k_norm.weight");
         }
 
+        // Family-specific tensors: fused attn_qkv, Gated-DeltaNet / SSM projections of hybrid layers, post-norms.
+        // The same list ModelDescription counts. Without it, stingray plan under-reports hybrid-GDN layers
+        // (Qwen3.5-0.8B: about 194 MiB of projections missing; see docs/4-performance and A5).
+        foreach (var name in ModelDescription.LayerFamilySpecificGpuTensors)
+            total += MeasureGpuTensorBytes(model, $"blk.{layer}.{name}");
+
         return total;
     }
 
