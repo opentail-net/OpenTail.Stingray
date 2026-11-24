@@ -24,6 +24,18 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private readonly VkCommandBuffer _transferCmd; // main-thread staging transfers
     private readonly VkFence _fence; // main-thread fence
 
+    // Diagnostic GPU timestamps (STINGRAY_VULKAN_GPU_TIMESTAMPS=1, off by default). A mark written into a decode
+    // recording closes the segment that ends there; ReadTimestamps turns the marks into per-segment GPU nanoseconds.
+    public static readonly bool GpuTimestampsEnabled = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_GPU_TIMESTAMPS") == "1";
+    private const int TimestampCapacity = 512;
+    private VkQueryPool _tsPool;
+    private readonly List<string> _tsLabels = new();
+    private readonly List<(string Label, double Ns)> _tsSegments = new();
+
+    /// <summary>GPU segments of the most recent recording that carried timestamp marks: (label, nanoseconds). Empty unless
+    /// <see cref="GpuTimestampsEnabled"/>.</summary>
+    public IReadOnlyList<(string Label, double Ns)> LastTimestampSegments => _tsSegments;
+
     // Separate command pool/buffer/fence for background (prefetcher) uploads.
     // Vulkan requires all cmd buffer operations from a single thread per pool;
     // giving the prefetcher its own pool makes concurrent uploads safe.
@@ -96,6 +108,38 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _vkd.vkBeginCommandBuffer(_transferCmd, &begin).CheckResult();
         _recording = true;
         _recordingEpoch++;
+        if (GpuTimestampsEnabled && _tsPool.Handle != 0)
+        {
+            _vkd.vkCmdResetQueryPool(_transferCmd, _tsPool, 0, TimestampCapacity);
+            _tsLabels.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Diagnostic: write a GPU timestamp into the current recording. The first mark of a recording is the baseline;
+    /// each later mark closes the segment labelled <paramref name="label"/>. A no-op unless
+    /// <c>STINGRAY_VULKAN_GPU_TIMESTAMPS=1</c> (so the default recording is unchanged).
+    /// </summary>
+    public void TimestampMark(string label)
+    {
+        if (!GpuTimestampsEnabled || !_recording || _tsPool.Handle == 0 || _tsLabels.Count >= TimestampCapacity) return;
+        _vkd.vkCmdWriteTimestamp(_transferCmd, VkPipelineStageFlags.ComputeShader, _tsPool, (uint)_tsLabels.Count);
+        _tsLabels.Add(label);
+    }
+
+    /// <summary>Reads the marks of the submitted recording (after its fence) into <see cref="LastTimestampSegments"/>.</summary>
+    private void ReadTimestamps()
+    {
+        int count = _tsLabels.Count;
+        _tsSegments.Clear();
+        if (count < 2) return;
+        var ticks = new ulong[count];
+        fixed (ulong* p = ticks)
+            _vkd.vkGetQueryPoolResults(_tsPool, 0, (uint)count, (nuint)(count * sizeof(ulong)), p, sizeof(ulong),
+                VkQueryResultFlags.Bit64 | VkQueryResultFlags.Wait).CheckResult();
+        double periodNs = _deviceProperties.limits.timestampPeriod;
+        for (int i = 1; i < count; i++)
+            _tsSegments.Add((_tsLabels[i], (ticks[i] - ticks[i - 1]) * periodNs));
     }
 
     /// <summary>Insert a compute→compute memory barrier (all writes visible to reads).</summary>
@@ -256,6 +300,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         }
         _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
         FlushPendingScratchFrees();
+        if (GpuTimestampsEnabled && _tsPool.Handle != 0) ReadTimestamps();
         if (sw is not null)
         {
             s_profSubmitWaitMs += sw.Elapsed.TotalMilliseconds;
@@ -568,6 +613,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         VkFence fence;
         _vkd.vkCreateFence(&fenceCI, null, &fence).CheckResult();
         _fence = fence;
+
+        // 9b. Diagnostic GPU timestamp pool (STINGRAY_VULKAN_GPU_TIMESTAMPS=1 only; see TimestampMark).
+        if (GpuTimestampsEnabled)
+        {
+            VkQueryPoolCreateInfo qpCI = new() { queryType = VkQueryType.Timestamp, queryCount = TimestampCapacity };
+            VkQueryPool tsPool;
+            _vkd.vkCreateQueryPool(&qpCI, null, &tsPool).CheckResult();
+            _tsPool = tsPool;
+        }
 
         // 10. Create a separate command pool + buffer + fence for background (prefetcher) uploads.
         VkCommandPoolCreateInfo asyncPoolCI = new()
@@ -5335,6 +5389,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _disposed = true;
 
         _vkd.vkDeviceWaitIdle();
+        if (_tsPool.Handle != 0) { _vkd.vkDestroyQueryPool(_tsPool, null); _tsPool = default; }
 
         // Dispose int8 pipelines deferred by a mid-recording fallback (their fields were nulled,
         // so the per-field disposals below won't cover them). GPU is now idle.

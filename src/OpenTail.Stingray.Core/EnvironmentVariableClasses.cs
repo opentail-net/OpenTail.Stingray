@@ -223,6 +223,7 @@ public static class EnvironmentVariableClasses
         ["STINGRAY_VULKAN_MIN_FREE_RAM_MB"] = "expert",
         ["STINGRAY_VULKAN_NO_BATCHED_PREFILL"] = "experimental",
         ["STINGRAY_VULKAN_NO_FLASH_ATTN"] = "experimental",
+        ["STINGRAY_VULKAN_GPU_TIMESTAMPS"] = "diagnostic",
         ["STINGRAY_VULKAN_PREFILL_CHUNK"] = "experimental",
         ["STINGRAY_VULKAN_SPLIT_DECODE_MIN"] = "experimental",
         ["STINGRAY_DSPARK_MODEL"] = "experimental",

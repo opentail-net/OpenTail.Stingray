@@ -2161,3 +2161,30 @@ Machine: Ryzen 7 5700G, integrated AMD GPU (shared memory), Windows; devenv and 
 * **Where the decode time goes:** a SmolLM2-1.7B token reads about 0.99 GB (Q4_K layers plus the Q6_K output head). At 45 GB/s the matvecs alone would take about 22 ms per token; the measured full-GPU token takes 34 ms (29 t/s). The other roughly 12 ms is per-token overhead outside the big matvecs: 463 dispatches and 366 barriers per token (`RecordBarrier` is a full compute-to-compute memory barrier, recorded after dependent steps).
 * **Barrier experiment (invalid, recorded for the reason):** switching `RecordBarrier` off to bound its cost made the logits non-finite on the first token, and the engine's finite-logit guard refused to decode. So no timing is available from that route. The useful consequence: the barriers are guarding real dependencies, and any reduction has to be dependency-aware. The experiment's code was reverted (source diff empty).
 * **Next GPU step (recorded in the plan):** dependency-aware barrier elision in the decode recorder: skip a barrier when the next dispatch reads nothing written since the last barrier (the Q, K and V projections, and gate and up, are independent). The check is the greedy text (identical), the Vulkan parity tests and the fast suite.
+
+## Vulkan decode: barrier cost measured; the barrier hypothesis is weak (AFK loop, 2026-11-24)
+
+* **One tiny dispatch, with and without a barrier after it** (temporary test `ZzBarrierCostTmp`, not committed; `AddInPlace` of 2048 floats, 400 dispatches in one command buffer, best of five, integrated AMD GPU): 2.7 µs per dispatch with a barrier after each, 1.0 µs without. So a barrier adds about 1.7 µs.
+* **Consequence:** 366 barriers per token cost about 0.6 ms, and the dispatches themselves about 1 µs each. Together they account for under 1.5 ms of the roughly 12 ms gap between the 34 ms token and the 22 ms of matvec traffic. Barrier elision alone would not recover the gap. The plan item has been revised to point at attribution first.
+* **Attribution is missing:** `STINGRAY_PROFILE_GPU_SPLIT` reports only the total submit and fence wait (34 ms per token here), and no timestamp queries exist in the Vulkan backend. The next step is a diagnostic GPU timestamp profiler (query pool, markers in the decode recorder, a per-token breakdown), off by default.
+
+## Vulkan decode attribution with GPU timestamps (AFK loop, 2026-11-24): the token is at about 80% of the DRAM roofline
+
+**Correction to the entry above ("the matvec kernels are at the ceiling").** The 44 to 45 GB/s matvec figures came from a benchmark that reused one 9 MB matrix per shape, which can sit in cache. With 24 distinct matrices rotated (about 216 MiB, DRAM-sized, temporary test, not committed), the Q4_K matvec runs at 37.7 GB/s for the gate-shaped 8192x2048, 39.6 GB/s for the down-shaped 2048x8192, and 44.5 GB/s only for the 54 MiB case, which is partly cached. So the DRAM roofline for decode is about 38 to 40 GB/s. The earlier "at the ceiling" statement was overstated.
+
+**Profiler.** `STINGRAY_VULKAN_GPU_TIMESTAMPS=1` (diagnostic, off by default; the default recording and output are unchanged, and the greedy text is identical with it on and off) writes GPU timestamps around the decode phases and prints, every 16 tokens, the GPU time per phase.
+
+**Breakdown, SmolLM2-1.7B Q4_K_M, full GPU (`-g -1`), 64 tokens, the 64-token figures:**
+
+| Phase (segment ending at the mark) | µs per token | Share | Note |
+|---|---|---|---|
+| gate and up (copy, FFN norm, gate, up) | 13 152 | 38.7% | about 90% of the roofline for its bytes |
+| down (`ffn`) | 8 719 | 25.6% | mix of Q4_K and Q6_K layers; about 80% of the roofline |
+| QKV (attention norm to the QKV barrier) | 5 522 | 16.2% | about 76% of the roofline |
+| LM head (final norm and output projection) | 2 613 | 7.7% | close to its bytes |
+| output projection and residual (`attn`) | 1 881 | 5.5% | about 75% |
+| attention (bias, RoPE, KV append, attention) | 1 715 | 5.0% | |
+| attention norm, residual tail, SiLU, embed | about 400 | 1.2% | |
+| **total** | **34 005** | 100% | matches the submit-and-wait total of the earlier profile |
+
+**Reading.** The model's decode reads about 1.0 GB per token (the Q4_K and Q6_K layers, plus the LM head). At 38 to 40 GB/s that is about 26 ms, and the measured token takes 34 ms, so the token runs at about 80% of the roofline. The remaining headroom is roughly 6 ms, spread over the matvecs (each at 75 to 90%) and over the small-kernel chain. Barriers are not the lever: a barrier costs about 1.7 µs (earlier entry). The honest next step is matvec efficiency on the 2048-row and Q6_K shapes, and the attention and small-kernel chain, not barrier elision. The GPU decode path (28 to 29 t/s here) is slower than the CPU route (about 32 t/s) for this model because the CPU route gets more useful bandwidth from its eight threads; both are near the same DRAM ceiling.

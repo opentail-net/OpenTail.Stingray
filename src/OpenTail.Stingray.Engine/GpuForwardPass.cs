@@ -1667,6 +1667,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         // Record ALL dispatches into ONE command buffer
         long profT0 = DecodeProfile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _gpu.BeginRecord();
+        _gpu.TimestampMark("start");
 
         // Embed token (GPU lookup from cached table — no PCIe transfer)
         DispatchEmbedLookup(token);
@@ -1693,6 +1694,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             _gpu.RecordBarrier();
         }
 
+        _gpu.TimestampMark("embed");
         RunStandardLayers(position);
 
         // Final norm + output projection
@@ -1700,6 +1702,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         OutputNormInPlace(_hidden, 1);
         _gpu.RecordBarrier();
         GpuMatMul(_logits, _wOutput, _hidden);
+        _gpu.TimestampMark("lm_head");
         AddLogitBias(_logits, 1);
 
         // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
@@ -1716,6 +1719,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
         long profT1 = DecodeProfile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _gpu.EndRecordAndSubmit();
+        if (VulkanBackend.GpuTimestampsEnabled) AccumulateGpuTimestamps();
         if (DecodeProfile)
         {
             long profT2 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -1728,6 +1732,24 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         GuardFiniteLogits();
         _kvLength = Math.Max(_kvLength, position + 1);
         return _logitsBuf;
+    }
+
+    // Diagnostic (STINGRAY_VULKAN_GPU_TIMESTAMPS=1): per-phase GPU time of the decode recording, summed over the tokens so far
+    // and printed every 16 tokens. The marks come from TimestampMark; a phase is the segment that ends at its mark.
+    private readonly Dictionary<string, double> _gpuPhaseNs = new();
+    private int _gpuPhaseTokens;
+
+    private void AccumulateGpuTimestamps()
+    {
+        foreach (var (label, ns) in _gpu.LastTimestampSegments)
+            _gpuPhaseNs[label] = (_gpuPhaseNs.TryGetValue(label, out double t) ? t : 0.0) + ns;
+        if (++_gpuPhaseTokens % 16 != 0) return;
+        double total = _gpuPhaseNs.Values.Sum();
+        foreach (var kv in _gpuPhaseNs.OrderByDescending(k => k.Value))
+            Console.Error.WriteLine(FormattableString.Invariant(
+                $"[GpuTimestamps] {_gpuPhaseTokens} tokens: {kv.Key,-12} {kv.Value / _gpuPhaseTokens / 1000.0,9:F1} us/token ({100.0 * kv.Value / total,5:F1}%)"));
+        Console.Error.WriteLine(FormattableString.Invariant(
+            $"[GpuTimestamps] {_gpuPhaseTokens} tokens: total {total / _gpuPhaseTokens / 1000.0:F1} us/token of GPU time across the marked phases"));
     }
 
     private void RunStandardLayers(int position)
@@ -1761,6 +1783,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
 
             NormRows(_normBuf, _hidden, _wAttnNorm[layer], _bAttnNorm?[layer], 1);
             _gpu.RecordBarrier();
+            _gpu.TimestampMark("attn_norm");
 
             // Q/K/V all read normBuf (no conflict between them)
             GpuMatMul(_q, _wq[layer], _normBuf);
@@ -1768,6 +1791,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             GpuMatMul(_v, _wv[layer], _normBuf);
             if (_wAttnGate is not null) GpuMatMul(_attnGateBuf!, _wAttnGate[layer], _normBuf);
             _gpu.RecordBarrier(); // Q/K/V done → bias + RoPE
+            _gpu.TimestampMark("qkv");
 
             if (_hasAttnBias)
             {
@@ -2001,6 +2025,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 _gpu.SigmoidMulInPlace(_attnOut, _attnGateBuf!);
                 _gpu.RecordBarrier();
             }
+            _gpu.TimestampMark("attention");
             GpuMatMul(_hidden, _wo[layer], _attnOut);
             if (_hasAttnOutputBias)
             {
@@ -2025,6 +2050,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
 
+            _gpu.TimestampMark("attn");
             if (_hp.UseParallelResidual)
             {
                 // Parallel block (Cohere, GPT-NeoX): the FFN reads its own norm of the layer INPUT
@@ -2051,6 +2077,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
                 GpuMoeFfn(layer);
             else
                 GpuDenseFfn(layer);
+            _gpu.TimestampMark("ffn");
             _gpu.RecordBarrier(); // hidden written → add
 
             // Sandwich norm: post-FFN RmsNorm BEFORE the residual add.
@@ -2074,6 +2101,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
             }
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → next layer's compute copy reads it
+            _gpu.TimestampMark("layer_tail");
 
             CaptureHiddenTap(layer, position);
         }
@@ -3649,6 +3677,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         GpuMatMul(_dnGate, _wGate[layer], _normBuf);
         GpuMatMul(_dnUp, _wUp[layer], _normBuf);
         _gpu.RecordBarrier();
+        _gpu.TimestampMark("gate_up");
 
         // SwiGLU, or GEGLU (tanh GELU) for the Gemma family — ForwardPass.DenseFfn's choice.
         if (_hp.FfnActivation == FfnActivation.GeluApprox)
@@ -3656,6 +3685,7 @@ public sealed unsafe partial class GpuForwardPass : IForwardPass
         else
             _gpu.SiLuMul(_dnGate, _dnUp);
         _gpu.RecordBarrier();
+        _gpu.TimestampMark("silu");
 
         GpuMatMul(_hidden, _wDown[layer], _dnGate);
     }
