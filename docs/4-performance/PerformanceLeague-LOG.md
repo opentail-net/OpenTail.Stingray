@@ -2261,3 +2261,22 @@ Scratch harness (outside the repo). Dot2 takes two Q5_0 weight rows per pass and
 The harness result did not carry into the product call. The likely cause is the pair dispatch granularity or the way `KernelFor` splits 2432 pair items, but this is not measured. Reverted: `SimdKernels.cs` is back to HEAD (byte-identical), and the test file was removed. The rejected diff and test are kept in the scratchpad (`a6-2row-kernel-NOT-ADOPTED.patch`, `a6-2row-bittest.cs.txt`) for a follow-up that separates the two changes (pair dispatch with the 1-row kernel; 2-row kernel with per-row dispatch).
 
 **Correction to the earlier Qwen decode note.** The text above said the LM head reads "about 112 MB of Q6_K per token". That is wrong. `output.weight` is Q8_0 (138 MB, see the dtype map in the "Small-model CPU decode: per-kernel decomposition" section). FFN down is Q6_K. The earlier 320 MB per token figure is also withdrawn; the per-layer and LM-head sum is about 388 MB.
+
+## Q5_0 dispatch versus kernel, separated (2026-11-24, iteration 56)
+
+Four CLI builds, each from a copy of HEAD (`git archive`, scratch, not in the repo): **base** (`ff373e3a` code); **vb** (row pairs, 2-row kernel; the iteration 55 build); **va** (row pairs, 1-row kernel called twice per pair); **vc** (2-row kernel, eight consecutive pairs per work item). Qwen2.5-0.5B Q4_K_M, `-g 0`, `--temp 0`, `-n 128`, same prompt, 8 threads. Eight interleaved rounds with a rotated order. Banner `ForwardPass` in all 32 runs; generated text identical in all 32.
+
+| Variant | Median t/s | Quartiles | vs base |
+|---|---:|---:|---:|
+| base | 73.80 | 70.1 to 74.0 | |
+| va, pair dispatch, 1-row kernel | 74.05 | 73.6 to 74.6 | +0.3% (noise) |
+| vb, pair dispatch, 2-row kernel | 71.80 | 71.0 to 72.1 | -2.7% |
+| vc, 8 pairs per item, 2-row kernel | 69.10 | 68.4 to 69.6 | -6.4% |
+
+**Reading.** The pair dispatch on its own is neutral: va matches base. The 2-row kernel is what costs time in the product. vc, which makes the work items coarser, is slower than vb, so the item granularity of `KernelFor` is not the cause.
+
+**Open discrepancy.** The microbenchmark (iteration 55, single thread, cache-warm) said the 2-row kernel is about 8% faster. In the product it is 3 to 6% slower. Not explained. Untested candidates: the product's `KernelFor` path against the harness's `Parallel.For`; JIT inlining or register pressure in `DotQ5_0_Q8_0_2Row` inside the full build.
+
+**Discarded runs.** A first attempt at this rotation gave outliers of 7.6 to 23 t/s, during heavy background load (Chrome, devenv, shell builds), and its rotation table repeated two variants in two rounds. Neither is in the medians above.
+
+**Decision.** The 2-row kernel stays out of the tree. Pair dispatch is not a lever. Next: the fused gate-and-up dispatch alone (1-row kernel; one parallel region over 2 x 4864 rows; about 24 fewer dispatches per token, estimated about 1%), then a comparison of the ggml Q5_0 AVX2 inner loop with ours, by reading the source.
