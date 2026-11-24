@@ -2202,3 +2202,31 @@ Setup: Qwen2.5-0.5B-Instruct Q4_K_M (`F:\_models\qwen2.5-0.5b-instruct-q4_k_m.gg
 * **Limits:** one model, one machine, background load (devenv and Chrome open). SmolLM2-135M not measured.
 
 **Correction (same day): the fork-join hypothesis is weak.** A scratch measurement (not in the repo) of `Parallel.For` with 8 threads, the primitive the default CPU matvec path uses: an empty region of 8 indices costs 2.16 µs; a region with about 5 µs of busy work per index costs 9.70 µs, so the fork-join overhead is about 4.7 µs. Over about 170 regions per token that is about 0.5 to 0.9 ms of the 12.5 ms token, roughly 4 to 7%, not the 14% estimated above (which used the MoE sweep's empty-region figure, a different and larger region). So thread dispatch explains only a small part of the Qwen 0.5B gap. The remaining 15 to 18% is in the matvec kernels themselves (the LM head and FFN run at about 27 to 28 GB/s on this machine, against about 38 to 40 GB/s measured with distinct weights on the GPU and about 43 GB/s for the CPU streaming probe). Not yet explained.
+
+## Small-model CPU decode: per-kernel decomposition (2026-11-24, iteration 54)
+
+Scratch harness (outside the repo) calling production `SimdKernels.MatVec`, 8 threads (the product default), Windows, background load (Chrome about 70 processes, devenv open).
+
+**Dtype map of Qwen2.5-0.5B Q4_K_M (`list-tensors`).** This is not a Q4_K-dominated checkpoint. Attention q, k and o and FFN gate and up are Q5_0; attention v and `output.weight` (the LM head) are Q8_0; FFN down is Q6_K. An earlier note in this log and in the plan said the LM head was Q6_K at 27 to 28 GB/s; that was wrong and is withdrawn.
+
+**Row sweep, cache-warm (one buffer), cols 896, best of 5.** The GB/s column is MiB/s ÷ 1000.
+
+| rows | KiB (Q5_0) | Q5_0 µs | GB/s | Q8_0 µs | GB/s |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 38 | 6.0 | 6.3 | 5.4 | 10.7 |
+| 128 | 77 | 7.4 | 10.2 | 6.6 | 17.6 |
+| 256 | 154 | 10.2 | 14.8 | 8.2 | 28.3 |
+| 512 | 308 | 14.5 | 20.8 | 11.2 | 41.7 |
+| 896 | 539 | 21.6 | 24.4 | 16.0 | 50.8 |
+| 2048 | 1232 | 42.3 | 28.4 | 29.8 | 62.4 |
+| 4864 | 2926 | 86.6 | 33.0 | 63.4 | 69.7 |
+
+A linear fit over the Q5_0 column gives a slope of about 0.028 µs per KiB (about 36 GB/s) and an intercept of about 5 µs: the per-call fixed cost at 8 threads. The Parallel.For measurement earlier in this item (about 5 µs of overhead per region) agrees with it.
+
+**Rotated past the L3 (DRAM).** Three runs of the FFN gate shape (4864×896 Q5_0, 16 buffers, 46 MiB): 117.8, 94.9 and 67.6 µs, that is 25 to 44 GB/s. The Q6_K down shape (896×4864, 16 buffers, 55 MiB): 118.3 µs, 30 GB/s. The LM head (Q8_0 151936×896, 138 MiB, streamed each call): 4234 µs, 34 GB/s. Run-to-run spread on the same call is about 2× on this machine, so the GB/s figures here carry that uncertainty.
+
+**Retracted.** The first rotated run reported 1.9 GB/s for the Q5_0 gate shape (1537 µs) and 318 µs for the 896×896 attention shape. Neither reproduced: the gate shape came back at 25 to 44 GB/s on repeat, and the 896-row shape runs at 21.6 µs with one buffer. The 318 µs figure is a rotation artifact of the harness (128 separately allocated 0.54 MB buffers): decode cannot take 24 layers times 2 calls times 318 µs, which is 15 ms and more than the whole token. It is not a decode cost and was not investigated further.
+
+**Token reconstruction.** Per layer, the single-buffer and rotated figures add to about 349 µs (q 21.6, o 21.6, k 7.4, v 6.6, gate 86.6, up 86.6, down 118.3), so about 8.4 ms for 24 layers, plus the LM head at 3.5 to 4.2 ms: about 11.8 to 12.6 ms against the measured 13.2 ms token. The matvecs are about 90 to 95% of the token.
+
+**What this says.** The gap to llama.cpp (75.5 against 97.3 t/s, ratio 0.78; llama.cpp implies about 38 GB/s over the same roughly 390 MB per token) is two things: streaming efficiency of the Q5_0 and Q6_K calls (about 28 to 33 GB/s against 38 to 44 for the probe), and about 0.8 ms of per-call overhead over roughly 170 calls. Fork-join dispatch is a small part of the overhead, as measured earlier. Next: (1) a 2-row Q5_0 dot with the same per-row arithmetic, bit-identical per row as the Q4_K pair, measured by interleaved A/B on the rotated gate shape; (2) fusing gate and up into one dispatch, and Q, K and V into one, to cut the per-call count. Each needs the greedy text identical and the parity tests green before it is kept.
