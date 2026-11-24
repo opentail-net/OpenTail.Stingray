@@ -791,6 +791,16 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
         => GenerateCore(prompt, sp, ct, canonicalHistoryPrefix, imageBytes: null);
 
     /// <inheritdoc/>
+    /// <remarks>Tokenizes on the caller's thread and runs nothing. A prompt of <see cref="IForwardPass.MaxSeqLen"/> tokens or
+    /// fewer is accepted, the same rule <c>GenerateCore</c> applies before prefill (A28).</remarks>
+    public void CheckPromptFitsContext(string prompt)
+    {
+        int tokens = _tokenizer.Encode(prompt).Count;
+        if (tokens > _fwd.MaxSeqLen)
+            throw new ContextLimitExceededException(0, tokens, _fwd.MaxSeqLen);
+    }
+
+    /// <inheritdoc/>
     public IAsyncEnumerable<GenerateChunk> GenerateImageChunksAsync(
         string prompt,
         IReadOnlyList<byte[]> imageBytes,
@@ -932,6 +942,11 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     var tokens = _tokenizer.Encode(prompt).ToArray();
                     promptTokenCount = tokens.Length;
                     encodeMs = swReq.ElapsedMilliseconds;
+                    // A28/A29: a prompt longer than the window is refused before any prefill. Without this, prefill throws on
+                    // the first position past MaxSeqLen, which reached the client as a 500. A prompt of exactly MaxSeqLen is
+                    // admitted; the decode budget below is then zero, so it ends at the window with no output tokens.
+                    if (tokens.Length > _fwd.MaxSeqLen)
+                        throw new ContextLimitExceededException(0, tokens.Length, _fwd.MaxSeqLen);
                     // Surface the prompt-token count out-of-band so endpoints can report
                     // usage.prompt_tokens / input_tokens without re-tokenizing (issue #150).
                     // Emitted before any text/thinking chunk; consumers that only read text

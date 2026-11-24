@@ -416,17 +416,20 @@ public sealed class InferenceEngineChunkTests
         private readonly int[] _sequence;
         private readonly int _vocabSize;
         private readonly float[] _logits;
+        private readonly int _maxSeqLen;
         private int _step;
 
-        public ScriptedForwardPass(int[] sequence, int vocabSize)
+        /// <summary>Context window reported to the engine; 4096 unless a test sets a small one (A28/A29 tests).</summary>
+        public ScriptedForwardPass(int[] sequence, int vocabSize, int maxSeqLen = 4096)
         {
             _sequence = sequence;
             _vocabSize = vocabSize;
             _logits = new float[vocabSize];
+            _maxSeqLen = maxSeqLen;
         }
 
         public int VocabSize => _vocabSize;
-        public int MaxSeqLen => 4096;
+        public int MaxSeqLen => _maxSeqLen;
 
         private ReadOnlySpan<float> EmitNext()
         {
