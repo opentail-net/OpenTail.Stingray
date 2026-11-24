@@ -2230,3 +2230,34 @@ A linear fit over the Q5_0 column gives a slope of about 0.028 µs per KiB (abou
 **Token reconstruction.** Per layer, the single-buffer and rotated figures add to about 349 µs (q 21.6, o 21.6, k 7.4, v 6.6, gate 86.6, up 86.6, down 118.3), so about 8.4 ms for 24 layers, plus the LM head at 3.5 to 4.2 ms: about 11.8 to 12.6 ms against the measured 13.2 ms token. The matvecs are about 90 to 95% of the token.
 
 **What this says.** The gap to llama.cpp (75.5 against 97.3 t/s, ratio 0.78; llama.cpp implies about 38 GB/s over the same roughly 390 MB per token) is two things: streaming efficiency of the Q5_0 and Q6_K calls (about 28 to 33 GB/s against 38 to 44 for the probe), and about 0.8 ms of per-call overhead over roughly 170 calls. Fork-join dispatch is a small part of the overhead, as measured earlier. Next: (1) a 2-row Q5_0 dot with the same per-row arithmetic, bit-identical per row as the Q4_K pair, measured by interleaved A/B on the rotated gate shape; (2) fusing gate and up into one dispatch, and Q, K and V into one, to cut the per-call count. Each needs the greedy text identical and the parity tests green before it is kept.
+
+## 2-row Q5_0 dot: harness result (2026-11-24, iteration 55)
+
+Scratch harness (outside the repo). Dot2 takes two Q5_0 weight rows per pass and shares the activation loads; each row runs the same ops in the same order as the production 1-row dot (`SimdKernels.DotQ5_0_Q8_0_Avx2`, copied because it is private).
+
+**Identity (bit for bit):** Dot1 against the production dot: 0 of 4864 rows differ. Dot2 against Dot1: 0 of 2432 row pairs differ. The 8-thread row-pair output against the 8-thread per-row output: 0 of 4864 differ.
+
+**Timing:** four interleaved runs, FFN gate shape (4864 rows x 896 cols, Q5_0), best-of-8 samples of 100 calls each. Min and median in µs.
+
+| Variant | Min (range over 4 runs) | Median (range) |
+|---|---|---|
+| 1 thread, Dot1 | 330 to 338 | 337 to 359 |
+| 1 thread, Dot2 | 299 to 314 | 306 to 318 (one outlier at 877 in run 1) |
+| 8 threads, per row Dot1 | 62 to 80 | 80 to 131 |
+| 8 threads, row pairs Dot2 | 51 to 67 | 69 to 109 |
+| 8 threads, rotated over 16 buffers, Dot1 | 71 to 75 | 96 to 138 |
+| 8 threads, rotated over 16 buffers, Dot2 | 69 to 81 | 81 to 115 |
+
+**Reading:** a consistent single-thread gain of about 8 to 9% on the minimum. At 8 threads, cache-warm, about 16% on the minimum. The rotated minimum does not move; the rotated median is about 20% lower. The same call varied about 2x between runs (background Chrome and devenv), so the rotated result is weak. No DRAM-bandwidth claim is made.
+
+**Next:** implement as `MatVecQ5_0` pair dispatch behind a bit-identity test, then measure end to end on the Qwen CLI (interleaved, `-g 0`, greedy text equal). Decode gain is capped by the Q5_0 share of the token, about 60% of matvec time, so the expected end-to-end effect is a few percent, not the whole gap.
+
+**End-to-end A/B: NOT ADOPTED (2026-11-24, iteration 55).** The 2-row Q5_0 kernel was wired into `MatVecQ5_0` (row pairs, odd last row on the 1-row dot) and tested: `DotQ5_0_2Row_BitIdentityTests`, 10 of 10 pass, and the full Fast suite passes (1233 total, 0 failed, 16 skipped). The Qwen CLI A/B then went the other way:
+
+- Six interleaved pairs, `-g 0`, 128 greedy tokens, order alternating. Baseline (HEAD, `ff373e3a` code) 72.3, 75.3, 71.9, 73.6, 73.3, 74.1 t/s (median 73.45). 2-row build 72.2, 70.9, 70.8, 70.7, 69.9, 72.2 t/s (median 70.85). The 2-row build is slower in five of six pairs, about 3.5%.
+- Generated text is identical in all 12 runs (compared after removing load-time log lines).
+- Decode profile (`STINGRAY_PROFILE_DECODE=1`, two runs each, alternating): FFN 894 and 861 ms per 128 tokens for the baseline, 929 and 922 ms for the 2-row build (about +5%). QKV and output projection do not separate. The FFN down projection is Q6_K and was not changed, so the regression sits in the gate and up pair dispatch.
+
+The harness result did not carry into the product call. The likely cause is the pair dispatch granularity or the way `KernelFor` splits 2432 pair items, but this is not measured. Reverted: `SimdKernels.cs` is back to HEAD (byte-identical), and the test file was removed. The rejected diff and test are kept in the scratchpad (`a6-2row-kernel-NOT-ADOPTED.patch`, `a6-2row-bittest.cs.txt`) for a follow-up that separates the two changes (pair dispatch with the 1-row kernel; 2-row kernel with per-row dispatch).
+
+**Correction to the earlier Qwen decode note.** The text above said the LM head reads "about 112 MB of Q6_K per token". That is wrong. `output.weight` is Q8_0 (138 MB, see the dtype map in the "Small-model CPU decode: per-kernel decomposition" section). FFN down is Q6_K. The earlier 320 MB per token figure is also withdrawn; the per-layer and LM-head sum is about 388 MB.
