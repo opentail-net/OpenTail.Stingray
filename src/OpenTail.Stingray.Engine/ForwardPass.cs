@@ -504,6 +504,13 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (_layerRopeDim is not null)
             for (int i = 0; i < hp.NumLayers; i++)
                 if (_layerRopeDim[i] > maxRopeDim) maxRopeDim = _layerRopeDim[i];
+        // Per-layer RoPE widths (Spark-X, Laguna): the main cos/sin table serves the NON-SWA layers, so it is built at their
+        // width. RoPE frequencies are base^(-2j/n_rot): a table built at the widest (SWA) width gives full-attention layers
+        // the wrong angles (llama.cpp rotates n_rot = rope.dimension_count there). Other architectures keep maxRopeDim.
+        int mainRopeDim = maxRopeDim;
+        if (_ropeWidthPerLayer && _isSwaLayer is not null)
+            for (int i = 0; i < hp.NumLayers; i++)
+                if (!_isSwaLayer[i]) { mainRopeDim = _layerRopeDim![i]; break; }
 
         // The dense CPU pass is the only forward pass with BF16 KV readers, so it is the only one
         // that may honour STINGRAY_KV_STORE. See PagedKvCache.Bf16StoreRequested.
@@ -541,7 +548,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // Precompute RoPE cos/sin tables for all positions [0, ctxLen).
         // For Gemma 4 the global table is sized for the largest rope dim across layers;
         // the SWA table is built separately at RopeThetaSwa with its own (smaller) halfDim.
-        _ropeHalfDim = maxRopeDim / 2;
+        _ropeHalfDim = mainRopeDim / 2;
         _ropeCosTable = (float*)NativeMemory.Alloc((nuint)((long)ctxLen * _ropeHalfDim * sizeof(float)));
         _ropeSinTable = (float*)NativeMemory.Alloc((nuint)((long)ctxLen * _ropeHalfDim * sizeof(float)));
 
@@ -590,12 +597,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 float attnFactorForTable = hp.RopeYarnLogMul != 0f
                     ? 1f / (1f + 0.1f * MathF.Log(hp.RopeYarnFactor))
                     : 1f;
-                SimdKernels.BuildYarnRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta,
+                SimdKernels.BuildYarnRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, mainRopeDim, hp.RopeTheta,
                     hp.RopeYarnOrigCtxLen, freqScale: 1f / hp.RopeYarnFactor, extFactor: 1f, attnFactor: attnFactorForTable);
             }
             else
             {
-                SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta, globalFreqFactors);
+                SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, mainRopeDim, hp.RopeTheta, globalFreqFactors);
                 if (hp.RopeAttnFactor != 1f)
                 {
                     long n = (long)ctxLen * _ropeHalfDim;
