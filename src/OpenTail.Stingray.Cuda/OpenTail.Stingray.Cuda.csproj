@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Description>CUDA compute backend for OpenTail.Stingray: NVIDIA GPU inference using cuBLAS (fp32/bf16/fp16/fp8 GEMM) and NVRTC custom kernels.</Description>
   </PropertyGroup>
   <ItemGroup>

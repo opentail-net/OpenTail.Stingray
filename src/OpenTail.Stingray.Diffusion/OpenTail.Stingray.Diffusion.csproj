@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Description>Image generation pipelines for OpenTail.Stingray: Z-Image-Turbo (S3-DiT + Qwen3 + FLUX VAE) and FLUX.1 text-to-image, plus Real-ESRGAN ×4 upscaling.</Description>
     <!-- NativeAOT-compatible; AOT analyzers inherited from Directory.Build.props -->
   </PropertyGroup>

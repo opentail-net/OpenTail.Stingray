@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Description>Multimodal vision input for OpenTail.Stingray: Gemma 4 "unified" encoder-free image projector (gemma4uv mmproj) and image preprocessing (issue #250).</Description>
     <!-- NativeAOT-compatible; AOT/trim analyzers inherited from Directory.Build.props -->
   </PropertyGroup>

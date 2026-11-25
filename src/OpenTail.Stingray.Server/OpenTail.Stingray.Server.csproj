@@ -14,6 +14,8 @@
   -->
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <PackageId>OpenTail.Stingray.Server</PackageId>
     <IsPackable>true</IsPackable>
     <Description>ASP.NET Core endpoints, options, and DI extensions that expose OpenTail.Stingray as OpenAI- and Anthropic-compatible HTTP APIs. Bring your own host (Kestrel, IIS, YARP, etc.).</Description>

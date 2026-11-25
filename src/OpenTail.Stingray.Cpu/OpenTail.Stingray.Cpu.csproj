@@ -2,6 +2,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Description>CPU compute backend for OpenTail.Stingray: AVX2/AVX-512 SIMD kernels, Q4_K_M dequantization, and optional OpenBLAS GEMM acceleration.</Description>
   </PropertyGroup>
 

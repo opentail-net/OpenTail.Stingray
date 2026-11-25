@@ -9,6 +9,8 @@
   -->
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <PackageId>OpenTail.Stingray</PackageId>
     <IsPackable>true</IsPackable>
     <Description>High-performance LLM, multimodal vision, speech, and image generation inference engine in C# / .NET 10. Reads GGUF and SafeTensors models and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan, and CUDA. Includes Multimodal Vision (Qwen2.5/3-VL, DeepSeek-OCR, Pixtral, LLaVA, InternVL, MiniCPM-V, GLM-4V, Nemotron, Dots-OCR, Kimi-VL, Gemma 4), Speech (Whisper, Parakeet, Qwen3-ASR/TTS, Kokoro, F5-TTS, CosyVoice), Diffusion (SD 1.5, SDXL, Z-Image-Turbo), and Real-ESRGAN upscaling. NativeAOT-friendly.</Description>

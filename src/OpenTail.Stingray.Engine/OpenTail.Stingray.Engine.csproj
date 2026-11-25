@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Description>Forward-pass orchestration for OpenTail.Stingray: paged KV cache, temperature/top-k/top-p/min-p samplers, speculative decoding, and continuous-batching engine.</Description>
   </PropertyGroup>
 

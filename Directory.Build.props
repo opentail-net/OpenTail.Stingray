@@ -58,7 +58,7 @@
     release commit `stingray-v<Version>` to match.
   -->
   <PropertyGroup>
-    <Version>1.0.9</Version>
+    <Version>1.0.10</Version>
   </PropertyGroup>
 
   <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->

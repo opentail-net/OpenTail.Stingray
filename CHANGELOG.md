@@ -4,10 +4,17 @@ All notable user-visible changes are recorded here. The package version is the `
 `Directory.Build.props`, matched by a `stingray-v<Version>` git tag; this file provides the
 human-facing map that a raw commit graph cannot.
 
-## Unreleased
+## 1.0.10 — 2026-11-25
 
-Ported from the upstream SharpInference snapshot in `examples/SharpInference08086`. **Not part of the
-1.0.3 packages**, which were built from the release-candidate commit before this work.
+This section covers every change since the 1.0.3 entry. Versions 1.0.4 through 1.0.9 were published
+without changelog sections of their own; their changes are not reconstructed here (their tags
+`stingray-v1.0.4` … `stingray-v1.0.9` are the record). Ported from the upstream SharpInference snapshot in
+`examples/SharpInference08086`.
+
+**Compatibility limits.** The engine runs on CPU, Vulkan and CUDA as before; the change list below says
+where behaviour differs by default. A model is *admitted* only when its entry in the admitted-set
+catalogue says so; the families marked NotAdmitted below are present in the source but are not
+advertised and do not run through `stingray run`.
 
 ### Removed
 
@@ -15,10 +22,24 @@ Ported from the upstream SharpInference snapshot in `examples/SharpInference0808
 
 ### Changed
 
+- **CPU prefill default.** The batched int8 CPU prefill is no longer the default; the default prefill is the
+  per-token path, which is bit-identical to decode. Set `STINGRAY_CPU_PREFILL_Q8=1` to opt back in. The
+  speed effect of this default has not been measured in a same-session A/B; expect prompt processing on
+  CPU to differ from 1.0.9 until that measurement is recorded.
+- **Models declaring YaRN RoPE scaling change output.** A GGUF with `rope.scaling.type = yarn` (on the
+  main CPU forward path, not MLA) now applies YaRN to its full-attention layers, using the GGUF's YaRN
+  betas; before, those layers used plain RoPE. Output of such models changes. Each admitted model's golden
+  has not been re-checked individually for this change.
+- **Build.** The `global.json` pin allows SDK 11 (roll-forward `latestMajor` from 10.0.301), so the repo
+  builds with either SDK.
 - **`/metrics` names are now valid Prometheus identifiers.** The lifetime counters and gauges were emitted as `opentail-llm_*` (a hyphen is not allowed in a Prometheus metric name); they are now `opentail_llm_*`, matching the rest of the page. `stingray status` reads both spellings. Dashboards or alerts that used the hyphenated names must be updated.
 
 ### Added
 
+- **Packages target net10.0 and net11.0.** The library, Server and CLI packages, and the projects they
+  ship, build for both frameworks. `OpenTail.Stingray.Mlx` stays net10.0-only and is not in the packages.
+- **LFM3-Omni-2B text path admitted (CPU only).** `lfm3`: text generation verified against llama.cpp master
+  33aeb17 (11/11 and 10/10 exact on two prompts, the longer one past the 256-token sliding window).
 - **Telemetry (in progress, see `docs/3-product-and-runtime/2026-10-12-opentelemetry-observability-plan.md`).** New `System.Diagnostics.Metrics` instruments alongside the existing `opentailllm.*` ones: engine meter `OpenTail.Stingray.Engine` (requests, prefill/decode/first-token/generation duration and tokens, model load) and `gen_ai.server.*` request duration, time to first token and time per output token, plus `opentail.requests.active`, `opentail.queue.wait` and `opentail.requests.rejected` on the server meter. No content, paths or identifiers are recorded; no OpenTelemetry package is referenced.
 - **More telemetry** (details in `docs/guides/observability.md`, instrument table in `docs/reference/telemetry-instruments.md`). `Server.Host` exports OpenTelemetry (OTLP, or the console) only when an `OTEL_*` variable asks for it; the libraries still reference no OpenTelemetry package. New spans: `chat <model>`, `opentail.engine.generate`, `model.load` (its own trace), `model.acquire` (links to the load a request waited for). New metrics: residency and cache gauges, MTP speculative counters, per-iteration batch size and duration, audio duration and real-time factor, diffusion step timing, load wait, backend / GPU layer share / fallback at load. `opentail_timing` now also returns prompt, reused and generated token counts and encode / prefill / decode milliseconds. CLI: `STINGRAY_TELEMETRY=1` prints an instrument report at exit, `STINGRAY_STATS_JSON=<path>` writes a versioned machine-readable result file, `stingray telemetry-selftest` checks a build delivers telemetry. The published NativeAOT CLI now ships with `MetricsSupport=true` (+43 KB; without it no `Meter` data reaches a listener).
 
@@ -66,6 +87,11 @@ Ported from the upstream SharpInference snapshot in `examples/SharpInference0808
 
 ### Fixed
 
+- **Per-layer RoPE width (Spark-X, Laguna).** The main RoPE table was built at the widest layer width, so
+  full-attention layers rotated with the wrong frequencies. These two families are NotAdmitted, so admitted
+  models are unaffected.
+- **MoE routing on attention and Mamba-2 blocks (Nemotron-3.5, NotAdmitted).** The router lookup now skips
+  blocks with no FFN, and an ungated shared expert takes its width from its up projection.
 - **Accelerator admission was fed too small a figure.** The estimate left out the KV cache and scratch, and the planner's per-layer weight sum did not know the tensors of hybrid Gated-DeltaNet / SSM layers or a fused QKV (`attn_qkv`, `attn_gate`, `ssm_*`: 195 MiB of Qwen3.5-0.8B), so a hybrid model counted for about half of what the device holds. The estimate is now weights plus KV plus scratch, from one function used for both the pre-load candidate and the loaded runtime, and the per-layer sum counts those tensors when present. Still a lower bound: Vulkan holds a non-Q4_K/Q6_K/Q3_K output head as F32, which the planner does not model yet.
 - **A retained turn cancelled while queued or between prefill chunks could be recorded as Failed instead of Cancelled.** The engine completed the request's output with no exception before publishing the rolled-back turn, so a caller that woke on the completion before its own cancellation callback saw a clean end and no turn outcome ("completed without a retained turn outcome"). The channel now completes with an `OperationCanceledException` for retained requests, after their state is settled. Seen once on CI and about once in 4,000 randomly timed cancels locally.
 - **Prefix-cache reuse could rewind into compressed or overwritten KV.** Two distinct defects, both

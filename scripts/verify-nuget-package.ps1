@@ -29,6 +29,8 @@ foreach ($package in $packageProjects) {
 $smokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("opentail-nuget-smoke-" + [guid]::NewGuid().ToString('N'))
 $serverSmokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("opentail-server-smoke-" + [guid]::NewGuid().ToString('N'))
 $cliSmokeRoot = Join-Path ([IO.Path]::GetTempPath()) ("opentail-cli-smoke-" + [guid]::NewGuid().ToString('N'))
+$smokeRoot11 = Join-Path ([IO.Path]::GetTempPath()) ("opentail-nuget-smoke-net11-" + [guid]::NewGuid().ToString('N'))
+$serverSmokeRoot11 = Join-Path ([IO.Path]::GetTempPath()) ("opentail-server-smoke-net11-" + [guid]::NewGuid().ToString('N'))
 
 try {
     $versionLine = Select-String -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
@@ -83,6 +85,11 @@ try {
         'OpenTail.Stingray.Server' = @('README.md', 'THIRD_PARTY_NOTICES.md', 'lib/net10.0/OpenTail.Stingray.Server.dll')
         'OpenTail.Stingray.Cli' = @('README.md', 'THIRD_PARTY_NOTICES.md', 'tools/net10.0/any/stingray.dll')
     }
+    # Each package ships a net10.0 and a net11.0 build; require the net11.0 entry for every net10.0 entry.
+    foreach ($key in @($requiredEntriesByPackage.Keys)) {
+        $base = @($requiredEntriesByPackage[$key])
+        $requiredEntriesByPackage[$key] = @($base) + @($base | Where-Object { $_ -like '*net10.0*' } | ForEach-Object { $_ -replace 'net10\.0', 'net11.0' })
+    }
     foreach ($package in $packageProjects) {
         $archive = [IO.Compression.ZipFile]::OpenRead($packagePaths[$package.Id])
         try {
@@ -127,6 +134,37 @@ app.MapOpenTailStingray();
     & dotnet build $serverSmokeProject -c $Configuration --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Local server-consumer package compilation failed.' }
 
+    # Same two consumers against net11.0 (the net11.0 builds of the packages).
+    New-Item -ItemType Directory -Path $smokeRoot11 | Out-Null
+    & dotnet new console --framework net11.0 --output $smokeRoot11 --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the net11.0 local-consumer smoke project.' }
+    $smokeProject11 = (Get-ChildItem -LiteralPath $smokeRoot11 -Filter '*.csproj' -File | Select-Object -First 1).FullName
+    if ([string]::IsNullOrEmpty($smokeProject11)) { throw 'The net11.0 local-consumer project file was not created.' }
+    & dotnet add $smokeProject11 package OpenTail.Stingray --version $PackageVersion --source $OutputDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'net11.0 local-consumer package restore failed.' }
+    @'
+using OpenTail.Stingray.Core;
+Console.WriteLine(typeof(GgufModel).Assembly.GetName().Name);
+'@ | Set-Content -NoNewline (Join-Path $smokeRoot11 'Program.cs')
+    & dotnet run --project $smokeProject11 -c $Configuration --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'net11.0 local-consumer package execution failed.' }
+    & dotnet new web --framework net11.0 --output $serverSmokeRoot11 --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the net11.0 server-consumer smoke project.' }
+    $serverSmokeProject11 = (Get-ChildItem -LiteralPath $serverSmokeRoot11 -Filter '*.csproj' -File | Select-Object -First 1).FullName
+    if ([string]::IsNullOrEmpty($serverSmokeProject11)) { throw 'The net11.0 server-consumer project file was not created.' }
+    & dotnet add $serverSmokeProject11 package OpenTail.Stingray.Server --version $PackageVersion --source $OutputDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'net11.0 server-consumer package restore failed.' }
+    @'
+using OpenTail.Stingray.Server;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddOpenTailStingray(options => options.ModelPath = "model.gguf");
+var app = builder.Build();
+app.MapOpenTailStingray();
+'@ | Set-Content -NoNewline (Join-Path $serverSmokeRoot11 'Program.cs')
+    & dotnet build $serverSmokeProject11 -c $Configuration --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'net11.0 server-consumer package compilation failed.' }
+
     & dotnet tool install --tool-path $cliSmokeRoot OpenTail.Stingray.Cli --version $PackageVersion --add-source $OutputDirectory
     if ($LASTEXITCODE -ne 0) { throw 'CLI package installation from the local source failed.' }
     $cliCommand = Join-Path $cliSmokeRoot $(if ($IsWindows) { 'stingray.exe' } else { 'stingray' })
@@ -138,4 +176,6 @@ finally {
     if (Test-Path -LiteralPath $smokeRoot) { Remove-Item -LiteralPath $smokeRoot -Recurse -Force }
     if (Test-Path -LiteralPath $serverSmokeRoot) { Remove-Item -LiteralPath $serverSmokeRoot -Recurse -Force }
     if (Test-Path -LiteralPath $cliSmokeRoot) { Remove-Item -LiteralPath $cliSmokeRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $smokeRoot11) { Remove-Item -LiteralPath $smokeRoot11 -Recurse -Force }
+    if (Test-Path -LiteralPath $serverSmokeRoot11) { Remove-Item -LiteralPath $serverSmokeRoot11 -Recurse -Force }
 }
