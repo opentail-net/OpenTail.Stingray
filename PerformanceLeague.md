@@ -340,7 +340,7 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 > The Vulkan row for Qwen3-8B, the decode and prefill rows for Qwen2.5-0.5B and the other family-level Vulkan rows that the 2026-10-11 recheck covers are kept above. Vulkan has no llama.cpp reference in this file, so no Vulkan ratio exists.
 
 
-**MoE rows, Performance Check 2026-11-25.** The CPU 500-token rows above for the twelve MoE checkpoints that the 2026-11-25 change set could touch (per-layer capture calls on every MoE layer; see the subsection below) were re-measured with `scripts/bench-league-recheck.ps1`, best of 3, CPU only. The superseded values are in [PerformanceLeague-LOG.md](../docs/4-performance/PerformanceLeague-LOG.md) under *MoE CPU recheck (2026-11-25)*. Differences against the earlier dated values are not attributed to the change set: an interleaved A/B on OLMoE (baseline commit `dfb0a3a8` against HEAD, Release, three runs each) showed no measurable difference (within 1-3%, run-to-run spread 3-4%).
+**MoE rows, Performance Check 2026-11-25.** The CPU 500-token rows above for the twelve MoE checkpoints that the 2026-11-25 change set could touch (per-layer capture calls on every MoE layer; see the subsection below) were re-measured with `scripts/bench-league-recheck.ps1`, best of 3, CPU only. The superseded values are in [PerformanceLeague-LOG.md](docs/4-performance/PerformanceLeague-LOG.md) under *MoE CPU recheck (2026-11-25)*. Differences against the earlier dated values are not attributed to the change set: an interleaved A/B on OLMoE (baseline commit `dfb0a3a8` against HEAD, Release, three runs each) showed no measurable difference (within 1-3%, run-to-run spread 3-4%).
 
 ### MoE models, CPU, short prompt (Performance Check 2026-11-25)
 

@@ -2397,7 +2397,7 @@ Paired differences (variant minus base): 8 rounds median +0.95 t/s (+2.1%), IQR 
 
 ## MoE CPU recheck (2026-11-25): superseded league rows
 
-Values replaced in [PerformanceLeague.md](../4-performance/PerformanceLeague.md) by the 2026-11-25 recheck (`scripts/bench-league-recheck.ps1`, CPU only, 500-token scenario, best of 3). The replaced rows came from the table *Text generation, C# only (CPU and Vulkan iGPU, 2026-10-11 recheck)*; that table has no per-row dates, so they are dated by its section.
+Values replaced in [PerformanceLeague.md](../../PerformanceLeague.md) by the 2026-11-25 recheck (`scripts/bench-league-recheck.ps1`, CPU only, 500-token scenario, best of 3). The replaced rows came from the table *Text generation, C# only (CPU and Vulkan iGPU, 2026-10-11 recheck)*; that table has no per-row dates, so they are dated by its section.
 
 | Model | GB | Arch | Prompt tok | Prefill t/s | Decode t/s | Replaced by 2026-11-25 |
 |---|---:|---|---:|---:|---:|---|
