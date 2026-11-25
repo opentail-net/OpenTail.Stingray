@@ -19,7 +19,7 @@ internal static class Lfm3Architecture
         Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.ShortConv },
         UsesNeoxRope = true,
         Status = AdmissionStatus.Admitted,
-        StatusAnchor = "LFM3-Omni-2B text path (`lfm3`)",
+        StatusAnchor = "LFM3-Omni-2B text (`lfm3`)",
         EvidenceDoc = "docs/2-coverage/2026-11-24-lfm3-omni-2b-port-plan.md",
         // GatedSwa supplies the attention output gate and the SWA layer pattern. LFM3 applies RoPE on every layer and does not
         // scale the embedding, and its gate is per head: see GatedSwaPerHeadRopeOnAllLayers.
