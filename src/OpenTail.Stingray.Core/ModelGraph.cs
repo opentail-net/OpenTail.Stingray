@@ -692,11 +692,16 @@ public sealed record ModelHyperparams
         int sharedExpertDim = 0;
         if (hasSharedExpert)
             foreach (var l in new[] { 0, 1, GetInt(metadata, $"{arch}.leading_dense_block_count", 0) })
-                if (tensorSource?.FindTensor($"blk.{l}.ffn_gate_shexp.weight") is { } shx)
+            {
+                // Gated shared expert: the gate tensor's output width. Non-gated (Nemotron-3.5 ReLU²) has no gate tensor, so the
+                // up projection's output width is the same n_shared x expert dim (llama.cpp: expert_shared_feed_forward_length).
+                var shx = tensorSource?.FindTensor($"blk.{l}.ffn_gate_shexp.weight") ?? tensorSource?.FindTensor($"blk.{l}.ffn_up_shexp.weight");
+                if (shx is not null)
                 {
-                    sharedExpertDim = (int)shx.Dimensions[1];
+                    sharedExpertDim = (int)shx.Value.Dimensions[1];
                     break;
                 }
+            }
 
         // Routed-expert width. Newer GGUFs carry expert_feed_forward_length; older converts (Qwen1.5-MoE-A2.7B, qwen2moe) do not,
         // and feed_forward_length is then the DENSE width (5632 there), not the experts' (1408). The stacked expert tensor
