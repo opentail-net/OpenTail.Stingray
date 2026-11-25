@@ -43,7 +43,7 @@
 - [x] **Licence** (`other`, LFM 1.0): not a gate (owner, 2026-11-24: inference only, nothing shipped).
 - [x] **STATUS.md row**: added 2026-11-25 (`docs/STATUS.md`, text model families group).
 - [ ] **Performance and DRY pass** (CLAUDE.md rule 7): not yet done. Three timed runs are recorded above; a measured series is still to do.
-  - [x] DRY check, 2026-11-25 (commit c714ec54): the three-field override LFM3 and Spark-X both applied on `GatedSwa` (RoPE on every layer, no embedding scale, per-head attention gate) is now `FamilyModelSemantics.GatedSwaPerHeadRopeOnAllLayers`. Field values are unchanged. Verified: Tests.ForwardPass.Fast `Spark25SyntheticTests` 2/2, Tests.Core `ArchitectureDescriptorContractTests` 11/11 (Debug). Real-weight LFM3 golden re-run after this change is still open, because the machine was busy with another session's Tests.Core run.
+  - [x] DRY check, 2026-11-25 (commit c714ec54): the three-field override LFM3 and Spark-X both applied on `GatedSwa` (RoPE on every layer, no embedding scale, per-head attention gate) is now `FamilyModelSemantics.GatedSwaPerHeadRopeOnAllLayers`. Field values are unchanged. Verified: Tests.ForwardPass.Fast `Spark25SyntheticTests` 2/2, Tests.Core `ArchitectureDescriptorContractTests` 11/11 (Debug). Real-weight LFM3 golden re-run after this change: done 2026-11-25 on the Debug CLI at HEAD. Default golden 11/11 Exact (11 confident), long golden 10/10 Exact (9 confident). Same counts as before the refactor, so the numerics are unchanged.
 
 ## Notes
 
