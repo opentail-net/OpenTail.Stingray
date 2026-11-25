@@ -2315,3 +2315,30 @@ Medians in µs, 7 interleaved rounds, two runs:
 **Bytes and memory for Qwen2.5-0.5B (for the owner).** Q5_0 tensors about 165 MB; Q8_0 tensors about 141 MB (attention v and the LM head). R adds +2 bytes per block: Q5_0 +9.1% (about 15 MB per token), Q8_0 with a 36-byte block +5.9% (about 8 MB per token). Total extra streamed bytes per token about 23 MB, roughly +6% of the 388 MB traffic. Resident memory: if the loader repacks and then releases the source mapping, the extra is about 23 MB; if the source stays mapped, the repacked copy is a second resident copy of about 306 MB for this model. That is the memory trade.
 
 **Not done.** No product change and no CLI A/B. The repacked layout needs loader and decode changes, so it is a format and memory decision for the owner (decision (q) in the loop's owner list). If the owner approves, the next measurement is a scratch CLI copy with the repacked layout, A/B by the usual interleaved protocol.
+
+## Repacked Q5_0 layout: token-level A/B (2026-11-25, iteration 59)
+
+Scratch copies of HEAD `d8401fd8`, not the product. The variant repacks every Q5_0 tensor at load (inside the pre-fault walk) into 24-byte blocks (float32 scale, qh, qs) and keeps the original mapping. The Q5_0 matvec uses the repacked buffer for every call: 21,648 repacked calls, 0 original, in the run. The arithmetic is unchanged; only the layout differs. Qwen2.5-0.5B Q4_K_M, `-g 0`, `--temp 0`, `-n 128`, same prompt, 8 threads. Eight interleaved rounds, order alternating.
+
+| Round | Baseline t/s | Repacked t/s |
+|---:|---:|---:|
+| 0 | 58.0 | 64.1 |
+| 1 | 61.0 | 64.1 |
+| 2 | 49.3 | 55.0 |
+| 3 | 59.7 | 63.2 |
+| 4 | 57.1 | 60.4 |
+| 5 | 58.0 | 61.6 |
+| 6 | 59.8 | 60.3 |
+| 7 | 58.6 | 60.4 |
+
+**Result.** Baseline median 58.3 t/s (quartiles 57.1 to 59.8). Repacked median 61.0 t/s (quartiles 60.3 to 64.1). Repacked is +4.6% at the median and higher in 8 of 8 rounds; the quartile ranges do not overlap. Greedy text identical in all 16 runs; banner `ForwardPass` in all runs.
+
+**Per token and per reply.** About 17.2 ms per token becomes about 16.4 ms (-0.76 ms). A 128-token reply goes from about 2.20 s to about 2.10 s (-0.10 s).
+
+**Bytes streamed.** The variant repacks Q5_0 only. The decode-used Q5_0 tensors are about 166 MiB (about 174 MB), so the extra streamed bytes are 1/11 of that: about 16 MB per token, about +4% of the 388 MB per token. The earlier estimate of 23 MB included Q8_0 tensors, which this variant does not repack. The net effect is still a speed gain: the faster Q5_0 dot pays for the extra bytes.
+
+**Memory, as measured.** The variant keeps the original mapping and adds a full repacked copy of every Q5_0 tensor, including `token_embd` (which decode never matvecs), about 290 MB extra resident. That is the measured case, not the product layout. A product version would repack only the matvec tensors and release the source mapping: net change about +15 MiB resident (the repacked decode tensors, about 181 MiB, replace the mapped source, about 166 MiB). That product version is not built.
+
+**Machine state.** The baseline ran at 58 t/s here against 73.8 t/s in the iteration-56 A/B, so background load differs between sessions. Only the paired comparison is claimed.
+
+**Not done.** No product change. Merging the layout, releasing the source mapping and repacking Q8_0 are the owner's decision (decision (q) in the plan), and each would need its own A/B.
