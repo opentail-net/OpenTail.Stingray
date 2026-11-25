@@ -2,7 +2,9 @@ namespace OpenTail.Stingray.Engine;
 
 internal static class Lfm3Architecture
 {
-    // lfm3 (LFM3-Omni-2B, text path). PORTED, NOT ADMITTED (CLAUDE.md rule 14).
+    // lfm3 (LFM3-Omni-2B, text path). ADMITTED 2026-11-25, TEXT ONLY, CPU ONLY (CLAUDE.md rule 14). Evidence:
+    // docs/2-coverage/2026-11-24-lfm3-omni-2b-port-plan.md (golden: 11/11 exact on a chat prompt, 10/10 exact on a
+    // 394-token prompt past the 256-token sliding window; llama.cpp master 33aeb17).
     // Ported from llama.cpp src/models/lfm3.cpp and lfm-base.cpp (master, 2026-11-24; revision not pinned): the LFM2
     // short-conv hybrid (layers with head_count_kv 0 are short-conv, the rest attention), QK-norm, sandwich post-norms
     // (post_attention_norm / post_ffw_norm, both from the tensors), a per-head sigmoid attention output gate
@@ -16,10 +18,9 @@ internal static class Lfm3Architecture
         Id = "lfm3",
         Traits = new() { Hybrid = OpenTail.Stingray.Core.HybridKind.ShortConv },
         UsesNeoxRope = true,
-        Status = AdmissionStatus.NotAdmitted,
+        Status = AdmissionStatus.Admitted,
+        StatusAnchor = "LFM3-Omni-2B text path (`lfm3`)",
         EvidenceDoc = "docs/2-coverage/2026-11-24-lfm3-omni-2b-port-plan.md",
-        RefusalReason = "LFM3-Omni-2B (lfm3) is ported from llama.cpp lfm3.cpp (2026-11-24) but has no real-weight parity receipt yet; " +
-            "no llama.cpp build on this host knows the architecture. Text path only. Synthetic tests only.",
         // GatedSwa supplies the attention output gate and the SWA layer pattern. LFM3 applies RoPE on every layer and does not
         // scale the embedding, so those two Muse/afmoe defaults are overridden. The gate is per head.
         ApplyModelSemantics = ctx => FamilyModelSemantics.GatedSwa(ctx, muse: false) with

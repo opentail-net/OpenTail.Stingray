@@ -123,6 +123,7 @@ public sealed class ArchitectureDescriptorContractTests
             "starcoder", "codeshell", "jais2", "jais", "maincoder", "exaone4", "mistral3", "ministral",
             "xverse", "minicpm", "gemma4", "granite", "llama", "llama4", "muse-glimmer", "muse_glimmer",
             "qwen4exp", // admitted 2026-11-09 for text generation and tool calls (see STATUS.md)
+            "lfm3", // admitted 2026-11-25, text only, CPU only (see STATUS.md)
         };
         var actual = ArchitectureRegistry.All
             .Where(d => d.Status == AdmissionStatus.Admitted)
