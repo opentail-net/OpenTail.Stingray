@@ -2365,3 +2365,14 @@ Change, in a scratch copy of HEAD `ac0227f5` (not committed): `MatVecDual` gets 
 - Greedy text, variant against baseline: identical on five prompts at 96 tokens each, CPU banner `ForwardPass`.
 
 **Timing: not measured.** A rotated A/B would be run on a quiet machine. While this was being prepared, another session had a test process using about 30 GB (free RAM down to about 8 GB), so any timing taken then would measure that load. The repo rule is not to run heavy work alongside another session's run. The keep decision (median gain above the quartile spread) therefore waits. Until it is decided, the change stays uncommitted.
+
+**Timing, measured (2026-11-25, 02:24 to 02:25, iteration 64).** Qwen2.5-0.5B-Instruct Q4_K_M (`F:\_models\qwen2.5-0.5b-instruct-q4_k_m.gguf`; its `ffn_gate` and `ffn_up` are Q5_0), `stingray`, `--temp 0 -g 0 -n 128`, prompt "Explain how the water cycle works.", default threads. Baseline and variant built from HEAD `58ef1465`, the variant with the patch above. Eight rounds, order alternated (base first on odd rounds). The machine was quiet at the start (no OpenTail test process, 39.4 GB free); load was not sampled during the rounds.
+
+| Arm | Decode t/s, sorted | Median | Q1 | Q3 | IQR |
+|---|---|---|---|---|---|
+| Baseline | 66.8, 73.4, 74.5, 75.0, 75.6, 75.6, 76.3, 76.6 | 75.30 | 73.95 | 75.95 | 2.00 |
+| Variant | 70.3, 74.5, 75.3, 76.4, 76.5, 76.6, 76.8, 77.2 | 76.45 | 74.90 | 76.70 | 1.80 |
+
+Median gain 1.15 t/s (+1.5%). Paired per-round differences (variant minus baseline): median +1.35 t/s, IQR 1.65 t/s; the variant was faster in 6 of 8 rounds. Greedy text matched between arms in all 8 rounds (compared with the timing lines removed).
+
+**Decision: not kept.** The median gain (1.15 t/s, or 1.35 t/s paired) is below the quartile spread (1.8 to 2.0 t/s per arm, 1.65 t/s paired), so under the keep rule the result is negative: the gain is within the run-to-run spread. Round 1 baseline (66.8 t/s) is the low outlier and was not discarded; the rule gives no reason to drop it. The product change stays out of the tree. Possible follow-up: more rounds, or a model where the gate and up matrices take a larger share of decode time.
