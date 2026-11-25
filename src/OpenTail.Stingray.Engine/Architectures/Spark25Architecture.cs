@@ -30,12 +30,9 @@ internal static class Spark25Architecture
     // for SWA layers; llama-hparams.cpp n_rot(il)).
     private static ModelHyperparams ApplySpark(ModelArchitectureSemanticsContext ctx)
     {
-        var hp = FamilyModelSemantics.GatedSwa(ctx, muse: false) with
+        var hp = FamilyModelSemantics.GatedSwaPerHeadRopeOnAllLayers(ctx) with
         {
-            RopeOnlySwaLayers = false,
-            EmbeddingScale = 1f,
             FfnActivation = FfnActivation.GeluApprox,
-            AttentionOutputGatePerHead = true,
         };
         int fullRot = ctx.Int("rope.dimension_count");
         int swaRot = ctx.Int("rope.dimension_count_swa", fullRot);

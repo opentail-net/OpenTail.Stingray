@@ -22,13 +22,8 @@ internal static class Lfm3Architecture
         StatusAnchor = "LFM3-Omni-2B text path (`lfm3`)",
         EvidenceDoc = "docs/2-coverage/2026-11-24-lfm3-omni-2b-port-plan.md",
         // GatedSwa supplies the attention output gate and the SWA layer pattern. LFM3 applies RoPE on every layer and does not
-        // scale the embedding, so those two Muse/afmoe defaults are overridden. The gate is per head.
-        ApplyModelSemantics = ctx => FamilyModelSemantics.GatedSwa(ctx, muse: false) with
-        {
-            RopeOnlySwaLayers = false,
-            EmbeddingScale = 1f,
-            AttentionOutputGatePerHead = true,
-        },
+        // scale the embedding, and its gate is per head: see GatedSwaPerHeadRopeOnAllLayers.
+        ApplyModelSemantics = FamilyModelSemantics.GatedSwaPerHeadRopeOnAllLayers,
         SupportedBackends = SupportedBackends.Cpu,
         BackendLimitation = "LFM3's per-head attention output gate is supported by the CPU pass only.",
         SupportsContinuousBatching = false,

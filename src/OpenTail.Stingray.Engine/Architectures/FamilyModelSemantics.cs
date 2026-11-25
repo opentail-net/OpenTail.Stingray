@@ -107,6 +107,18 @@ internal static class FamilyModelSemantics
     }
 
     /// <summary>
+    /// GatedSwa for models that apply RoPE on every layer (not only SWA layers), do not scale the embedding, and gate
+    /// attention per head. LFM3 and Spark-X both use this shape; each adds only its own extras on top.
+    /// </summary>
+    public static ModelHyperparams GatedSwaPerHeadRopeOnAllLayers(ModelArchitectureSemanticsContext ctx) =>
+        GatedSwa(ctx, muse: false) with
+        {
+            RopeOnlySwaLayers = false,
+            EmbeddingScale = 1f,
+            AttentionOutputGatePerHead = true,
+        };
+
+    /// <summary>
     /// Muse-Glimmer and AFMoE share the attention shape: per-layer sigmoid output gate, SWA pattern from a bool array or
     /// a scalar period (default 4), RoPE only on SWA layers. Muse adds an input-embedding RMS norm and a direct-multiply
     /// logit scale; AFMoE adds muP embedding scaling.
