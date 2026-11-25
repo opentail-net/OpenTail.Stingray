@@ -131,7 +131,12 @@ public sealed class HotSessionMetricsMetadataTests
         var turn = session.RunTurnAsync("one",
             new SamplingParams { Temperature = 0f, MaxNewTokens = 4 },
             SessionRevision.Initial, SessionOperationId.New(), Digest("cancel"), cts.Token);
-        await fwd.DecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // Wait on this thread, not through a continuation: the fake decode holds a thread-pool
+        // thread while it waits for ReleaseDecode, so an async continuation here could queue behind
+        // the other parallel tests on a two-processor run and miss the fake's 10 s release window
+        // ("The test did not release decode.", CI). Cancel and release run back to back on this thread.
+        if (!fwd.DecodeStartedSignal.Wait(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("The decode step never started.");
         cts.Cancel();
         fwd.ReleaseDecode.Set();
 
@@ -176,6 +181,7 @@ public sealed class HotSessionMetricsMetadataTests
         public TaskCompletionSource PrefillStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ManualResetEventSlim ReleasePrefill { get; } = new(false);
         public TaskCompletionSource DecodeStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim DecodeStartedSignal { get; } = new(false);
         public ManualResetEventSlim ReleaseDecode { get; } = new(false);
         public bool SnapKvEnabled => false;
         public long KvBytesPerToken => 1;
@@ -220,6 +226,7 @@ public sealed class HotSessionMetricsMetadataTests
             if (BlockDecode)
             {
                 DecodeStarted.TrySetResult();
+                DecodeStartedSignal.Set();
                 if (!ReleaseDecode.Wait(TimeSpan.FromSeconds(10)))
                     throw new TimeoutException("The test did not release decode.");
             }
