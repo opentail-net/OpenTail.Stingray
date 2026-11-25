@@ -270,6 +270,15 @@ public sealed record ModelHyperparams
     /// used by the YaRN correction-range formula. Only meaningful when <see cref="RopeYarnFactor"/> &gt; 1.</summary>
     public int RopeYarnOrigCtxLen { get; init; }
 
+    /// <summary>YaRN correction-range betas ({arch}.rope.scaling.yarn_beta_fast / yarn_beta_slow). llama.cpp reads both from
+    /// the GGUF with defaults 32 and 1; they set the low/high dimension bounds of the YaRN ramp (Laguna declares 64 / 1).</summary>
+    public float RopeYarnBetaFast { get; init; } = 32f;
+    public float RopeYarnBetaSlow { get; init; } = 1f;
+
+    /// <summary>True when {arch}.rope.scaling.type is "yarn". llama.cpp then enables the YaRN ramp on the full-attention layers
+    /// (ext_factor = 1) and leaves SWA layers on plain RoPE.</summary>
+    public bool RopeScalingYarn { get; init; }
+
     /// <summary>{arch}.rope.scaling.attn_factor: magnitude scale baked into every RoPE cos/sin
     /// (llama-context.cpp multiplies it into yarn_attn_factor unconditionally). Phi-3.5 LongRoPE
     /// ships 1.19024; 1 when absent.</summary>
@@ -1072,6 +1081,9 @@ public sealed record ModelHyperparams
                 ? vMla : GetInt(metadata, $"{arch}.attention.value_length", 0),
             RopeYarnFactor = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f),
             RopeYarnOrigCtxLen = GetInt(metadata, $"{arch}.rope.scaling.original_context_length", 0),
+            RopeScalingYarn = string.Equals(GetString(metadata, $"{arch}.rope.scaling.type"), "yarn", StringComparison.Ordinal),
+            RopeYarnBetaFast = GetFloat(metadata, $"{arch}.rope.scaling.yarn_beta_fast", 32f),
+            RopeYarnBetaSlow = GetFloat(metadata, $"{arch}.rope.scaling.yarn_beta_slow", 1f),
             RopeAttnFactor = GetFloat(metadata, $"{arch}.rope.scaling.attn_factor", 1f),
             // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX] see the matching comment above -- same /0.1f
             // correction llama.cpp applies at load time, not just in the local kq_scale calc.
@@ -1168,6 +1180,9 @@ public sealed record ModelHyperparams
 
     internal static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
         m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
+
+    internal static string? GetString(IReadOnlyDictionary<string, object> m, string key) =>
+        m.TryGetValue(key, out var v) ? v as string : null;
 
     /// <summary>
     /// Reads a per-layer integer array (e.g. Gemma 4's per-layer

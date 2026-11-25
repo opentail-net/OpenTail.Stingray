@@ -583,7 +583,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             globalFreqFactors = p;
             // MLA (DeepSeek-V2/V3): YaRN-scaled table instead of the plain one. freqFactors
             // (Gemma 4's per-pair rope_freqs.weight) never coexists with MLA, so no conflict.
-            if (hp.KvLoraRank > 0 && hp.RopeYarnFactor > 1f)
+            // Also any model whose GGUF declares rope.scaling.type = yarn (Laguna: full layers rotate with YaRN factor 32;
+            // SWA layers stay plain, see the SWA table below). llama.cpp: ext_factor = 1 for YARN.
+            if ((hp.KvLoraRank > 0 || hp.RopeScalingYarn) && hp.RopeYarnFactor > 1f)
             {
                 // llama-context.cpp deliberately pre-divides cparams.yarn_attn_factor by
                 // (1 + 0.1*log(factor)) ("cancel this factor" -- discussions/7416, PR #17945)
@@ -598,7 +600,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                     ? 1f / (1f + 0.1f * MathF.Log(hp.RopeYarnFactor))
                     : 1f;
                 SimdKernels.BuildYarnRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, mainRopeDim, hp.RopeTheta,
-                    hp.RopeYarnOrigCtxLen, freqScale: 1f / hp.RopeYarnFactor, extFactor: 1f, attnFactor: attnFactorForTable);
+                    hp.RopeYarnOrigCtxLen, freqScale: 1f / hp.RopeYarnFactor, extFactor: 1f, attnFactor: attnFactorForTable,
+                    betaFast: hp.RopeYarnBetaFast, betaSlow: hp.RopeYarnBetaSlow);
             }
             else
             {
