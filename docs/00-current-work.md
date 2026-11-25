@@ -477,7 +477,7 @@ Each item here needs hardware, a second machine, a checkpoint, or a reference th
 - **CUDA and discrete GPU (rule 13):**
   - Confirm the residual and logit scale on a CUDA machine for Granite and Gemma 3 (the Vulkan guard does not cover CUDA).
   - The CUDA tensor-parallel forward pass ([4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md](4-performance/gpu/2026-11-06-cuda-tensor-parallelism-plan.md)).
-  - [9-external-hardware/90-external-hardware-work.md](9-external-hardware/90-external-hardware-work.md) (20 boxes).
+  - [9-external-hardware/2026-11-24-hardware-blocked-plan.md](9-external-hardware/2026-11-24-hardware-blocked-plan.md) (19 top-level boxes, 23 with nested sub-items).
   - [4-performance/audio/080-tts-asr-gpu-residency-checklist.md](4-performance/audio/080-tts-asr-gpu-residency-checklist.md) (31).
   - [4-performance/diffusion/diffusion-performance.md](4-performance/diffusion/diffusion-performance.md) (19).
   - [4-performance/gpu/vulkan-gemm/vulkan-gemm.md](4-performance/gpu/vulkan-gemm/vulkan-gemm.md) (11).

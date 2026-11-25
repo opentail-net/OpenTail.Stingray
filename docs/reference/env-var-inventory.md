@@ -1,6 +1,6 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-07)
 
-**Reconciled again 2026-11-08, later — `KnownEnvironmentVariables.All` now contains **296** names**
+**Reconciled again 2026-11-08, later — `KnownEnvironmentVariables.All` now contains **297** names**
 (added `STINGRAY_FFMPEG`: the operator-installed ffmpeg executable that `FfmpegVideoFrameSource` runs for video frames, read before PATH; classified expert. It was read in `src/` but unlisted, which failed `ListMatchesSource` in CI.)
 
 **Reconciled again 2026-11-08 — `KnownEnvironmentVariables.All` now contains **295** names**
@@ -465,6 +465,7 @@ dynamically composed names.
 | `STINGRAY_VULKAN_DECODE_ATTN_GQA` | expert | `=0` keeps the original one-key-per-thread split-KV decode attention kernel instead of the default GQA-aware one, on the full-GPU pass and the gpt-oss GPU pass (rollback switch). |
 | `STINGRAY_VULKAN_DECODE_PROFILE` | diagnostic | `=1` prints a `[DecodeProfile]` line to stderr for the full-GPU Vulkan pass: dispatches and barriers per token, plus stage timing. |
 | `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | `=1` swaps the fused byte-exact GDN recurrence scan for the FlashQLA chunk-parallel scan during Vulkan batched prefill. Default off. Argmax-stable, not byte-exact. Needs a device that fits the ~34 KB shared-memory tile; the end-to-end win is small while the batched trunk is capped at 8 tokens (comment in `VulkanHybridGdnForwardPass.cs`). |
+| `STINGRAY_VULKAN_GPU_TIMESTAMPS` | diagnostic | `=1` writes GPU timestamps around the Vulkan decode phases and prints the GPU time per phase every 16 tokens. Off by default; the greedy text is identical with it on and off. |
 | `STINGRAY_VULKAN_HYBRID_PREFILL_CHUNK` | expert | Positive integer (default 128). Prefill chunk size, in tokens, of the Vulkan hybrid Gated-DeltaNet pass, clamped between the pass's minimum batch chunk and the Vulkan matmul path's per-dispatch maximum. |
 | `STINGRAY_VULKAN_MIN_FREE_RAM_MB` | expert | Non-negative integer in MiB (default 2048). Before a mandatory GPU-resident upload the Vulkan hybrid Gated-DeltaNet pass checks that this much memory is still available and aborts with an error otherwise; setting a smaller value lowers the safety margin. |
 | `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | `=1` is a field kill-switch that disables batched prefill in `GpuForwardPass` (Vulkan) without a rebuild. |
