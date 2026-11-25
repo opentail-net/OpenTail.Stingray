@@ -1074,8 +1074,10 @@ public sealed unsafe partial class ForwardPass
     /// model-level <see cref="_numKvHeads"/>, so the head→KV-group ratio is computed here.
     /// </summary>
     private void Attention(PagedKvCache cache, int readLayer, int ownLayer, int position,
-        int hd, int windowSize, int kvHeads)
+        int hd, int windowSize, int kvHeads, int numHeadsL = -1)
     {
+        // Per-layer query head count (Laguna-XS: 48 on full layers, 64 on SWA layers); -1 = model-level count.
+        int nh = numHeadsL > 0 ? numHeadsL : _numHeads;
         // After SnapKV eviction (issue #51), the absolute position keeps
         // growing while the cache only stores `cache.Length` slots — `position`
         // would overshoot. The prefill loop increments cache.Length before
@@ -1098,7 +1100,7 @@ public sealed unsafe partial class ForwardPass
         // _numKvHeads): Gemma 4 12B global layers are MQA (kvHeads=1 → all _numHeads map
         // to KV head 0), SWA layers GQA (kvHeads=8). For non-per-layer models kvHeads ==
         // _numKvHeads so hpkg == _headsPerKvGroup.
-        int ctxLen = _ctxLen; int hpkg = _numHeads / kvHeads;
+        int ctxLen = _ctxLen; int hpkg = nh / kvHeads;
         // The per-layer K/V stride now lives in PagedKvCache (see its layerHeadDim parameter), so
         // both the row-major K reads below and the transposed V reads agree on it. This method
         // used to compute a slotStride here and discard it, which left the V region striding at
@@ -1107,7 +1109,7 @@ public sealed unsafe partial class ForwardPass
         int rl = readLayer; int hdLocal = hd; int startLocal = startSeq;
 
         int scoreLenAll = endSeq - startLocal;
-        int numHeadsLocal = _numHeads;
+        int numHeadsLocal = nh;
 
         // ── Score pass, parallelised over POSITION TILES rather than heads ──
         // Parallelising over heads makes head h read bytes [h*hd, h*hd+hd) of every KV row, i.e. a
@@ -1174,7 +1176,7 @@ public sealed unsafe partial class ForwardPass
         // Softmax and the weighted-V sum stay parallel over heads: the V accumulation is a
         // per-head reduction over ascending i, so splitting it by position would need per-thread
         // partials and would change the accumulation order (and the result).
-        SimdKernels.ParallelForUncapped(0, _numHeads, h =>
+        SimdKernels.ParallelForUncapped(0, nh, h =>
         {
             int kvHead = h / hpkg;
             float* outHead = attnOut + h * hdLocal;

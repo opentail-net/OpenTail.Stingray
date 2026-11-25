@@ -396,6 +396,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly TensorRef[]? _attnGate;
     private readonly float* _attnGateBuf;
     private readonly bool _attnGatePerHead; // Spark-X: one gate value per head instead of per element
+    private readonly bool _attnGateSoftplus; // Laguna: softplus gate instead of sigmoid
+    private readonly int[]? _layerNumHeads; // Laguna-XS: per-layer query head count (null = _numHeads everywhere)
     private readonly float _postNormEps;
     private readonly bool _perTokenTrunkOnly;
     private readonly float[]? _layerOutputScale;
@@ -744,6 +746,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         _postNormEps = hp.PostNormEps > 0f ? hp.PostNormEps : hp.RmsNormEps;
         _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm;
         _attnGatePerHead = hp.AttentionOutputGatePerHead;
+        _attnGateSoftplus = hp.AttentionOutputGateSoftplus;
+        if (hp.LayerNumHeads is { } lnh)
+        {
+            _layerNumHeads = new int[hp.NumLayers];
+            for (int i = 0; i < hp.NumLayers; i++) _layerNumHeads[i] = lnh[i];
+        }
         if (hp.AttentionOutputGate)
         {
             if (_layerHeadDim is not null || _isMla)

@@ -510,6 +510,19 @@ public sealed record ModelHyperparams
     public bool AttentionOutputGatePerHead { get; init; }
 
     /// <summary>
+    /// Gate activation: <c>false</c> applies sigmoid (Muse-Glimmer, afmoe, Spark-X, LFM3); <c>true</c> applies softplus
+    /// (Laguna: <c>ggml_softplus</c> on <c>attn_gate</c>, laguna.cpp). Only meaningful with <see cref="AttentionOutputGate"/>.
+    /// </summary>
+    public bool AttentionOutputGateSoftplus { get; init; }
+
+    /// <summary>
+    /// Per-layer query head count (Laguna-XS: 48 on full-attention layers, 64 on SWA layers, from the array form of
+    /// <c>attention.head_count</c>). <c>null</c> when every layer uses <see cref="NumHeads"/>; otherwise <see cref="NumHeads"/>
+    /// is the maximum, which sizes the scratch buffers.
+    /// </summary>
+    public IReadOnlyList<int>? LayerNumHeads { get; init; }
+
+    /// <summary>
     /// Per-Layer-Embedding (PLE) projection width. Gemma 4 E4B = 256. 0 when the
     /// model has no PLE table.
     /// </summary>

@@ -163,7 +163,9 @@ public sealed unsafe partial class ForwardPass
             // Per-layer KV head count (Gemma 4 12B: 8 GQA on SWA, 1 MQA on the global
             // k_eq_v layers). Falls back to the model-level count for every other arch.
             int layerKv = _hp.LayerKvHeads is { } lkv ? lkv[layer] : _numKvHeads;
-            int qDimL = _numHeads * layerHd;
+            // Per-layer query head count (Laguna-XS: 48 full / 64 SWA); the model-level count otherwise.
+            int layerHeads = _layerNumHeads is { } lnh ? lnh[layer] : _numHeads;
+            int qDimL = layerHeads * layerHd;
             int kvDimL = layerKv * layerHd;
             int kvSrc = _layerKvSrc is not null ? _layerKvSrc[layer] : -1;
             bool kvShared = kvSrc >= 0;
@@ -289,7 +291,7 @@ public sealed unsafe partial class ForwardPass
                 // Muse-Glimmer / afmoe: gate = attn_gate · attn_norm_out, applied after attention (below).
                 // Spark-X: one gate row per head (see the apply site).
                 if (_attnGate is not null)
-                    FusedMatVec(_attnGateBuf, _attnGate[layer], _normBuf, _attnGatePerHead ? _numHeads : qDimL, _embDim);
+                    FusedMatVec(_attnGateBuf, _attnGate[layer], _normBuf, _attnGatePerHead ? layerHeads : qDimL, _embDim);
             }
             if (profDecode)
             {
@@ -324,7 +326,7 @@ public sealed unsafe partial class ForwardPass
             // Llama-4 (L2 QK-norm): apply norm AFTER RoPE (per llama.cpp)
             if (_hasQkNorm && !_hp.UseL2QkNorm && !_hp.QkNormAfterRope)
             {
-                ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv);
+                ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv, layerHeads);
             }
 
             // Gemma 4: V is plain per-head RmsNorm (no learned weight) before cache.
@@ -340,26 +342,26 @@ public sealed unsafe partial class ForwardPass
 
             if (useRoPE)
             {
-                ApplyRopeLayer(_q, position, _numHeads, layer, layerHd);
+                ApplyRopeLayer(_q, position, layerHeads, layer, layerHd);
                 if (!kvShared)
                     ApplyRopeLayer(_k, position, layerKv, layer, layerHd);
             }
             else if (_hp.AttnTempScale != 0f)
             {
                 // Llama 4 attention temperature tuning on the NoPE layers (llama.cpp llm_graph_input_attn_temp).
-                SimdKernels.ScaleInPlace(_q, _hp.AttnTempFactor(position), _numHeads * layerHd);
+                SimdKernels.ScaleInPlace(_q, _hp.AttnTempFactor(position), layerHeads * layerHd);
             }
 
             // Hunyuan-Dense (weighted QK-norm): apply norm AFTER RoPE, on the already-rotated Q/K
             if (_hasQkNorm && !_hp.UseL2QkNorm && _hp.QkNormAfterRope)
             {
-                ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv);
+                ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv, layerHeads);
             }
 
             // L2 QK-norm (Llama-4): only on RoPE layers, applied after RoPE
             if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
             {
-                PerHeadPureRmsNorm(_q, _numHeads, layerHd, _hp.RmsNormEps);
+                PerHeadPureRmsNorm(_q, layerHeads, layerHd, _hp.RmsNormEps);
                 if (!kvShared)
                     PerHeadPureRmsNorm(_k, _numKvHeads, layerHd, _hp.RmsNormEps);
             }
@@ -398,7 +400,7 @@ public sealed unsafe partial class ForwardPass
             if (_tqKvCache != null)
                 TqAttention(layer, position);
             else
-                Attention(_kvCache, effLayer, layer, position, layerHd, windowSize, layerKv);
+                Attention(_kvCache, effLayer, layer, position, layerHd, windowSize, layerKv, layerHeads);
             if (profDecode)
             {
                 long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
@@ -416,10 +418,14 @@ public sealed unsafe partial class ForwardPass
             {
                 if (_attnGatePerHead)
                 {
-                    // Spark-X (spark2-5.cpp): one sigmoid per head, applied to all headDim values of that head.
-                    int headDimG = qDimL / _numHeads;
-                    SimdKernels.SigmoidInPlace(_attnGateBuf, _numHeads);
-                    for (int h = 0; h < _numHeads; h++)
+                    // Spark-X (spark2-5.cpp) / Laguna XS: one gate value per head, applied to all headDim values of that head.
+                    // Activation: sigmoid (Spark-X) or softplus (Laguna, laguna.cpp).
+                    int headDimG = qDimL / layerHeads;
+                    if (_attnGateSoftplus)
+                        SoftplusInPlace(_attnGateBuf, layerHeads);
+                    else
+                        SimdKernels.SigmoidInPlace(_attnGateBuf, layerHeads);
+                    for (int h = 0; h < layerHeads; h++)
                     {
                         float g = _attnGateBuf[h];
                         int off = h * headDimG;
@@ -683,6 +689,13 @@ public sealed unsafe partial class ForwardPass
             cos[i] = MathF.Cos(a);
             sin[i] = MathF.Sin(a);
         }
+    }
+
+    /// <summary>In-place softplus, log(1 + exp(x)), with the usual overflow cut-off (Laguna's attention output gate).</summary>
+    private static void SoftplusInPlace(float* x, int n)
+    {
+        for (int i = 0; i < n; i++)
+            x[i] = x[i] > 20f ? x[i] : MathF.Log(1f + MathF.Exp(x[i]));
     }
 
     private void ApplyRope(float* x, int pos, int heads)

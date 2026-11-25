@@ -14,6 +14,7 @@ internal static class BuiltInArchitectures
         yield return MuseGlimmerArchitecture.Descriptor;
         yield return Spark25Architecture.Descriptor;
         yield return Lfm3Architecture.Descriptor;
+        yield return LagunaArchitecture.Descriptor;
 
         yield return QwenArchitectures.Qwen;
         yield return QwenArchitectures.Qwen2;

@@ -291,17 +291,18 @@ public sealed unsafe partial class ForwardPass
     /// Per-layer-head-dim QK-norm. <paramref name="k"/> may be null on KV-share layers
     /// where the K projection didn't run (the source layer already normed its own K).
     /// </summary>
-    private void ApplyQkNormLayer(float* q, float* k, int layer, int layerHd, int kvHeads)
+    private void ApplyQkNormLayer(float* q, float* k, int layer, int layerHd, int kvHeads, int qHeads = -1)
     {
+        int nq = qHeads > 0 ? qHeads : _numHeads; // per-layer query heads (Laguna-XS), model-level otherwise
         if (_perChannelQkNorm)
         {
-            PerChannelRmsNorm(q, _qNorm[layer], _numHeads, layerHd, _hp.RmsNormEps);
+            PerChannelRmsNorm(q, _qNorm[layer], nq, layerHd, _hp.RmsNormEps);
             if (k != null)
                 PerChannelRmsNorm(k, _kNorm[layer], kvHeads, layerHd, _hp.RmsNormEps);
         }
         else
         {
-            PerHeadRmsNorm(q, _qNorm[layer], _numHeads, layerHd, _hp.RmsNormEps);
+            PerHeadRmsNorm(q, _qNorm[layer], nq, layerHd, _hp.RmsNormEps);
             if (k != null)
                 PerHeadRmsNorm(k, _kNorm[layer], kvHeads, layerHd, _hp.RmsNormEps);
         }

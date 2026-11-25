@@ -32,6 +32,7 @@ hunyuan-moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=
 internlm2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 jais|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 jais2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
+laguna|NotAdmitted|Dense|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 lfm2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 lfm2moe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 lfm3|Admitted|Dense|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=

@@ -87,6 +87,13 @@ public static partial class PreTokenizerPatterns
     private static partial Regex SparkTail();
 
     /// <summary>
+    /// Laguna's first stage (llama.cpp <c>LLAMA_VOCAB_PRE_TYPE_LAGUNA</c>): runs of non-newline characters and runs of
+    /// newlines are split apart before the Qwen-2 cascade.
+    /// </summary>
+    [GeneratedRegex("""[^\n]+|[\n]+""")]
+    private static partial Regex LagunaLines();
+
+    /// <summary>
     /// Mistral Tekken (Mistral-Nemo / Ministral / Pixtral). Taken from the model's own
     /// <c>tokenizer.json</c> <c>pre_tokenizer</c> pattern rather than llama.cpp's ASCII-approximated
     /// rewrite — llama.cpp rewrote it because <c>std::regex</c> lacks Unicode categories, and .NET
@@ -282,6 +289,11 @@ public static partial class PreTokenizerPatterns
                 patterns = [DigitRun3(), Cjk(), SparkTail(), SingleDigit()];
                 return true;
 
+            // llama.cpp LLAMA_VOCAB_PRE_TYPE_LAGUNA (llama-vocab.cpp): newline runs, then the Qwen-2 cascade.
+            case "laguna":
+                patterns = [LagunaLines(), Qwen2()];
+                return true;
+
             // llama.cpp: LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE and the cases folded onto it
             // (DEEPSEEK3_LLM, JOYAI_LLM) — distinct from plain "hunyuan" above, which uses the
             // Qwen-2 cascade instead.
@@ -387,7 +399,7 @@ public static partial class PreTokenizerPatterns
         "qwen2", "stablelm2", "hunyuan", "solar-open", "afmoe",
         "qwen35",
         "tekken",
-        "spark2_5",
+        "spark2_5", "laguna",
         "hunyuan-dense", "deepseek3-llm", "joyai-llm",
     ];
 }
