@@ -1,5 +1,7 @@
 # LFM3-Omni-2B (`lfm3`, text path) port plan
 
+> Completed items moved to [done/2026-11-24-lfm3-omni-2b-port-plan-completed-items-2026-11.md](../done/2026-11-24-lfm3-omni-2b-port-plan-completed-items-2026-11.md) on 2026-11-25. This file keeps only open work.
+
 **Status (2026-11-25): ADMITTED, TEXT ONLY, CPU ONLY** (owner decision 2026-11-25, after the golden checks below). Policy: CLAUDE.md rule 14. Parent: [2026-11-24-recent-models-support-plan.md](2026-11-24-recent-models-support-plan.md), item T1.3. Admission checklist: descriptor `Status = Admitted` with the anchor; STATUS row; admitted-set snapshot; facts baseline; golden `tests/OpenTail.Stingray.Tests.ForwardPass/Goldens/lfm3.golden.json` (two cases, `GoldenParityTests`). **Still open:** the CLAUDE.md rule-7 performance and DRY pass (not yet done; see the open items at the end).
 
 **Admission evidence (2026-11-25):** golden `default` 11/11 exact (chat prompt, 16 requested, all confident); golden `long` 10/10 exact (a 394-token chat prompt, past the 256-token sliding window; 9 confident). Both against llama.cpp master `33aeb17`, CPU, teacher-forced; stepwise and prefill agree bit for bit.
@@ -34,16 +36,12 @@
 
 ## Not verified (blocking admission)
 
-- [x] **Independent reference (resolved 2026-11-25).** The llama.cpp master build at `33aeb17` registers `lfm3`. Golden: `lfm3-omni-2b.golden.json`, teacher-forced, 16 tokens requested, chat prompt with the `<|startoftext|>` BOS (scratchpad, not the repo). `stingray admit-arch --golden`: **PASS (Exact)**, 11/11 matched, 11 confident. Stepwise and prefill agree (max |diff| 0). Our tokenizer agrees with llama-tokenize on the prompt. Not yet: timed runs, more prompts, a prompt past the 256-token window, a longer continuation, and the STATUS row (owner decision).
 - [ ] **Golden parity** with teacher forcing, including a prompt past the 256-token sliding window and a case with an image or audio token (out of scope for the text path, see below).
 - [ ] **Synthetic forward test**: none yet for LFM3 (the short-conv reference would have to be written; the Spark test pattern can be reused for the attention part).
 - [ ] **Timed runs** (one run only so far).
 - [ ] **Omni inputs** (image, audio): not ported. Text path only (owner decision O6).
 - [ ] **GPU paths**: refuse the gate (CPU only), as Spark.
-- [x] **Licence** (`other`, LFM 1.0): not a gate (owner, 2026-11-24: inference only, nothing shipped).
-- [x] **STATUS.md row**: added 2026-11-25 (`docs/STATUS.md`, text model families group).
 - [ ] **Performance and DRY pass** (CLAUDE.md rule 7): not yet done. Three timed runs are recorded above; a measured series is still to do.
-  - [x] DRY check, 2026-11-25 (commit c714ec54): the three-field override LFM3 and Spark-X both applied on `GatedSwa` (RoPE on every layer, no embedding scale, per-head attention gate) is now `FamilyModelSemantics.GatedSwaPerHeadRopeOnAllLayers`. Field values are unchanged. Verified: Tests.ForwardPass.Fast `Spark25SyntheticTests` 2/2, Tests.Core `ArchitectureDescriptorContractTests` 11/11 (Debug). Real-weight LFM3 golden re-run after this change: done 2026-11-25 on the Debug CLI at HEAD. Default golden 11/11 Exact (11 confident), long golden 10/10 Exact (9 confident). Same counts as before the refactor, so the numerics are unchanged.
 
 ## Notes
 

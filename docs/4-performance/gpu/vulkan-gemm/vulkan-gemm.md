@@ -1,5 +1,7 @@
 # Vulkan quantized GEMM: owner file
 
+> Completed items moved to [done/vulkan-gemm-completed-items-2026-11.md](../../../done/vulkan-gemm-completed-items-2026-11.md) on 2026-11-25. This file keeps only open work.
+
 > Completed items moved to [../../../done/vulkan-gemm-completed-items-2026-10.md](../../../done/vulkan-gemm-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
 
 **Owner:** this file (2026-10-30). It replaces two separate docs, kept below verbatim as parts:
@@ -586,10 +588,8 @@ Excerpts are in [research/2026-10-31-performance-snippets.md](../../research/202
 
 ### Open items
 
-- [x] Larger prefill chunks (256); check scratch buffers and batched attention/KV-append accept them. **Done 2026-11-24 (AFK loop): no gain beyond 128, default unchanged.** The Path 3 cap is already 256 by default (`STINGRAY_VK_PATH3_CHUNK` overrides it). A 1759-token SmolLM2-1.7B prefill on the full GPU path: chunk 128 gives 250.9 t/s, default 256 gives 250.5 t/s, within noise; greedy text identical in 4 of 4 pairs, so the 256-token scratch and attention path accepts the larger chunk. Controls: chunk 16 gives 70.3 t/s and chunk 64 gives 143.0 t/s, so the knob is effective and the rate saturates at 128. Record in [PerformanceLeague-LOG.md](../../PerformanceLeague-LOG.md).
 - [ ] A second dense model under Path 3 (the first measurement is Qwen3-4B only)
 - [ ] **Decode on the full GPU path: where the time goes (revised 2026-11-24).** Attribution is done with GPU timestamps (`STINGRAY_VULKAN_GPU_TIMESTAMPS=1`, diagnostic): a SmolLM2-1.7B token takes 34 ms, of which gate and up 13.2 ms, down 8.7 ms, QKV 5.5 ms, LM head 2.6 ms, output projection 1.9 ms, attention 1.7 ms. The matvecs run at about 75 to 90% of the DRAM roofline of about 38 to 40 GB/s for their bytes, so the token is at about 80% of that roofline. Barrier elision is **not** the lever: a barrier costs about 1.7 µs, and 366 of them per token are under 1 ms. Open: matvec efficiency on the 2048-row and Q6_K shapes (the down projection with 2048 rows gets the fewest workgroups), and the attention and small-kernel chain. Done when a change moves one segment by a measured amount with the greedy text identical, the Vulkan parity tests and the fast suite passing, and an interleaved A/B on the decode rate. Record in [PerformanceLeague-LOG.md](../../PerformanceLeague-LOG.md), the last two sections.
-- [x] Decode regression check on Vulkan. **Done 2026-11-24 (AFK loop).** The change to check is the A31 host-cached download staging, which is on by default and sits on the decode download path. Interleaved A/B, SmolLM2-1.7B Q4_K_M, `-g -1` (the whole model on the integrated Vulkan GPU; every run's banner was `GpuForwardPass`), 128 new tokens, greedy, six pairs: staging not host-cached 27.97 t/s (27.1 to 28.5); host-cached default 28.87 t/s (28.6 to 29.3). The default is not slower, and the text is identical in 6 of 6 pairs. No regression. Record in [PerformanceLeague-LOG.md](../../PerformanceLeague-LOG.md).
 - [ ] Confirm the per-kernel CPU-parity tests (`VulkanSgemmQuantEntryTests`, 6 cases) run in the fast suite. **Partly done 2026-11-24:** the class is `tests/OpenTail.Stingray.Tests.Diffusion` (not a `.Fast` project) and has no heavy gate, so it runs in every default run of that project. On the integrated AMD GPU it ran 6 of 6, 0 skipped, 0 failed (1.4 s). Still open: whether the project should be a `.Fast` project under the fast-suite naming rule, which is a naming decision and is left as it is.
 
 ### Decisions for the owner

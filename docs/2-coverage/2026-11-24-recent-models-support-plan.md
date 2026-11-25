@@ -1,5 +1,7 @@
 # Recent 2026 models: support plan (popular, fits this host)
 
+> Completed items moved to [done/2026-11-24-recent-models-support-plan-completed-items-2026-11.md](../done/2026-11-24-recent-models-support-plan-completed-items-2026-11.md) on 2026-11-25. This file keeps only open work.
+
 **Status: PLAN, nothing started (2026-11-24).** Evidence and numbers: [research/2026-11-24-recent-open-weight-models-research.md](research/2026-11-24-recent-open-weight-models-research.md). Policy: CLAUDE.md rule 14 (a ported family is not admitted and not advertised until a real checkpoint, an independent reference, timed runs and a STATUS row all exist), rule 15 (scout first), rule 9 (no scratch files in the repo root), rule 10 (STATUS.md stays honest).
 
 ## 1. Goal and scope
@@ -22,7 +24,6 @@ These are my assumptions, labelled as the research note labels them. The owner c
 - [ ] **O2 (A2) Host fit.** Resident limit 55 GiB (63 GiB RAM minus scout's 8 GiB reserve). Confirm the reserve, and say whether the 55 to 110 GiB paged band is ever in scope. The KV cache is not in the file-size test, so confirm that a measured run is the real gate.
 - [ ] **O3 Reference revision.** Which llama.cpp build is the independent oracle for goldens: the local source at `bed0a8566` (built here), the vendored b10306, or a newer master build? Each port records the revision it used. See blocker B1.
 - [ ] **O4 `qwen4exp` status.** The code says Admitted (2026-11-09, UD-IQ1_S). `ported-families-todo.md` and `00-current-work.md` §2 say not admitted. Reconcile before any other item: either the docs are stale, or the code admission must be reverted under rule 14.
-- [x] **O5 Licences.** Resolved by the owner 2026-11-24: the project only runs inference and ships neither weights nor binaries, so licences are not a gate. (Scout reported `other` for Nemotron-3.5-Lightning and LFM3-Omni, and `openmdw-1.1` for Laguna; none of that blocks work.)
 - [ ] **O6 Omni inputs.** LFM3-Omni: admit the text path only, with image and audio deferred? (Proposed: yes.)
 - [ ] **O7 Non-LLM popular families** (audiocpp, qwen_image, mert2, acestep-lm, and others in research §5): do any need a pipeline? Not decided here.
 
@@ -65,11 +66,9 @@ Every port, and every admission, must meet these. Sources: `docs/reference/addin
 
 ## 6. Phase 1: evidence (no code, no weights)
 
-- [x] 2026-11-24: HF listings (1,158 GGUF repos), llama.cpp master architecture lists, engine registry, and scout on 23 repos. Recorded in the research note.
 - [ ] P1.1 Re-run scout at the revision chosen in O3 for each Tier 1 and Tier 2 repo. The 2026-11-24 runs used each repo's default head at that time; the commit hash is recorded in each scout JSON. Record the revisions used in the research note.
 - [ ] P1.2 Re-fetch the llama.cpp files at the chosen revision. Compare line counts and base classes with the master figures in research §7.
 - [ ] P1.3 Confirm the popularity numbers on the day of each port (30-day figures move).
-- [x] P1.4 Licence reads: not needed (O5 resolved 2026-11-24).
 
 ## 7. Phase 2: Tier 0 (already supported architecture, no new code)
 

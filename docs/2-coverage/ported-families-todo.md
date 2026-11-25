@@ -121,7 +121,7 @@ Gaps found against these rules (re-checked 2026-11-24). These are work, so they 
   audit history (bugs fixed, tests added, the metadata-only real-weight check) is in the programme
   plan's "What changed" section and its Checklist, not repeated here.
 - [ ] `glm-dsa` real-weight parity: out of reach on this host's disk budget; rescoped to hyperparameter parsing (done 2026-11-07).
-- [ ] `glm5next` K-pool selection gating attention reads (Phase 2B of the programme plan).
+- [ ] `glm5next` K-pool selection gating attention reads (Phase 2B of the programme plan). **Not started; checked 2026-11-25:** `Architectures/Glm5NextArchitecture.cs` RefusalReason still says "K-pool sparse selection missing", so the item is real work, not a stale box.
 
 ### 3. Muse-Glimmer (`muse-glimmer`, alias `muse_glimmer`)
 - **Design:**
