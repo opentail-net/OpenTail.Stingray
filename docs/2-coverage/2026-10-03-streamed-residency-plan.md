@@ -1,6 +1,6 @@
 # Streamed residency for oversized MoE (Vulkan hybrid first)
 
-> Completed items moved to [done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md](../done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Completed items moved to [done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md](../done/2026-10-03-streamed-residency-plan-completed-items-2026-10.md) on 2026-10-30. Item completed 2026-11-24 moved to [done/2026-10-03-streamed-residency-plan-completed-items-2026-11.md](../done/2026-10-03-streamed-residency-plan-completed-items-2026-11.md) on 2026-11-25. This file keeps only open work.
 
 Written 2026-10-03. Part of the TensorSharp / SharpMind selective-port work
 (`examples/tensorsharp-parity-selective-port-plan.md`, `examples/sharpmind-parity-selective-port-plan.md`). The
@@ -102,7 +102,6 @@ The decode fix and the expert-cache correctness work are measured in section 1, 
 ## Open (checked 2026-10-30 against the status line)
 
 - [ ] Prefill on the streamed path (not done; status line)
-- [x] Leases for VulkanHybridGdnForwardPass (it used TryGetCached; defect 3 remained possible at tiny capacities). **Done 2026-11-24 (iteration 37):** `GpuMoeFfn` now takes `TryGetCachedLeased` for the current layer's experts and calls `ReleaseLeases()` at the router download of the next MoE layer, the same point `HybridForwardPass` uses (the GPU has finished the previous matmuls there). Evidence: `ExpertSlotLeaseTests` (new, `tests/OpenTail.Stingray.Tests.Vulkan`, real OLMoE Q4_K_M and a Vulkan device, heavy-gated) passes 1 of 1 in 0.7 s; with the pin removed from `ExpertSlotManager.TryGetCachedLeased` it fails with "a leased slot was evicted before its lease was released" (mutation restored, file matches HEAD). `PipelineTests.ExpertCache_PinTakenAfterAPromotion_HoldsThroughChurn_AndReleasesAfterUnpin` (GPU-free) passes; the Pipeline class is 41 of 41. `ExpertSlotManagerConcurrencyTests` still passes (p99 0.025 ms). **Open, not run:** the GDN MoE path itself has not been executed: no hybrid-GDN MoE checkpoint small enough is on the drives (the Qwen 3.8 Flash Next family is about 73 GB), so the wiring is verified by build and reading only. The CUDA mirror (`CudaHybridGdnForwardPass`) is not changed (no NVIDIA device here).
 - [ ] Residency abstraction (TensorResidency, planner, IResidencyManager), only after the prefill design exists
 - [ ] Automatic split planning that accounts for page cache, and per-chunk parallel prefault of experts
 - [ ] Larger-than-RAM run (GLM-5.3 Q2_K_XL, 236 GiB, paged, correctness only)

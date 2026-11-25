@@ -1,13 +1,12 @@
 # Plan: batched MoE prefill for the Vulkan hybrid / GPU paths
 
-> Completed items moved to [done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md](../done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md) on 2026-10-30. This file keeps only open work.
+> Completed items moved to [done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md](../done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-10.md) on 2026-10-30. Decision item approved 2026-11-24 moved to [done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-11.md](../done/2026-10-03-batched-moe-prefill-plan-completed-items-2026-11.md) on 2026-11-25. This file keeps only open work.
 
 ## Checklist (2026-10-30; code checked)
 
 - [ ] Phase 2: batched hybrid trunk with host MoE (gated on the Phase 0/1 measurements)
 - [ ] Phase 3: GPU grouped-expert prefill on Vulkan (3a and, if justified, 3b)
 - [ ] Phase 4: oversized experts, streamed per chunk (regime C)
-- [x] Decision for the user: approve Phase 0 + 1 as the first implementation (Phase 1 is done; Phases 2-5 gated on its measurements). **Approved by the owner 2026-11-24.** Phase 0, Phase 1, Phase 1b and the Phase 5 chooser were already implemented (status 2026-10-31); this approval does not reopen Phase 2, which the iteration-41 decision below rejected as written.
 
 Written 2026-10-03. Companion to [2026-10-03-streamed-residency-plan.md](2026-10-03-streamed-residency-plan.md), which lists this as its largest remaining item. **Status (updated 2026-10-31): Phase 0, Phase 1, Phase 1b and the Phase 5 measured chooser (`ExpertCalibration`, `stingray calibrate`) are implemented, but the engine does not yet read the chooser's profile; Phases 2-4 are not started. The original status, "plan only, nothing implemented", was true on 2026-10-03 and is superseded. See the thread state below.**
 
