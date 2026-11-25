@@ -171,4 +171,66 @@ public sealed unsafe class DotQ5_0_Repacked_BitIdentityTests
         }
         Assert.True(reference.Any(v => v != 0f), "every reference output is zero; the comparison would be vacuous");
     }
+
+    [Theory]
+    [InlineData(896, false)]
+    [InlineData(896, true)]
+    [InlineData(2048, true)]
+    [InlineData(4864, false)]
+    public void DotQ5_0_Q8_0_Repacked_4In_IsBitIdenticalToOriginal4In_AndToOneRowDots(int cols, bool specialScales)
+    {
+        const int rows = 64;
+        var rng = new Random(20241129 + cols + (specialScales ? 1 : 0));
+        int bytesPerRow = (cols / 32) * BlockBytes;
+        int bytesPerRowR = (cols / 32) * RepackedBlockBytes;
+        byte[] original = RandomQ5_0Rows(rng, rows, cols, specialScales);
+        byte[] repacked = Repack(original);
+
+        // Four different activation rows, each quantised into its own scratch buffer.
+        var inputs = new float[4][];
+        var scratches = new byte[4][];
+        for (int k = 0; k < 4; k++)
+        {
+            inputs[k] = RandomActivations(rng, cols);
+            scratches[k] = new byte[SimdKernels.Q8_0ScratchBytes(cols)];
+        }
+        int nonZero = 0;
+
+        fixed (byte* w = original)
+        fixed (byte* wr = repacked)
+        fixed (float* x0 = inputs[0]) fixed (float* x1 = inputs[1]) fixed (float* x2 = inputs[2]) fixed (float* x3 = inputs[3])
+        fixed (byte* s0 = scratches[0]) fixed (byte* s1 = scratches[1]) fixed (byte* s2 = scratches[2]) fixed (byte* s3 = scratches[3])
+        {
+            SimdKernels.QuantizeRowToQ8_0(x0, cols, s0);
+            SimdKernels.QuantizeRowToQ8_0(x1, cols, s1);
+            SimdKernels.QuantizeRowToQ8_0(x2, cols, s2);
+            SimdKernels.QuantizeRowToQ8_0(x3, cols, s3);
+
+            for (int r = 0; r < rows; r++)
+            {
+                byte* row = w + (long)r * bytesPerRow;
+                byte* rowR = wr + (long)r * bytesPerRowR;
+
+                SimdKernels.DotQ5_0_Q8_0_4In(row, s0, s1, s2, s3, cols, out float a0, out float a1, out float a2, out float a3);
+                SimdKernels.DotQ5_0_Q8_0_Repacked_4In(rowR, s0, s1, s2, s3, cols, out float b0, out float b1, out float b2, out float b3);
+                float c0 = SimdKernels.DotQ5_0_Q8_0_Repacked(rowR, s0, cols);
+                float c1 = SimdKernels.DotQ5_0_Q8_0_Repacked(rowR, s1, cols);
+                float c2 = SimdKernels.DotQ5_0_Q8_0_Repacked(rowR, s2, cols);
+                float c3 = SimdKernels.DotQ5_0_Q8_0_Repacked(rowR, s3, cols);
+
+                Assert.Equal(BitConverter.SingleToInt32Bits(a0), BitConverter.SingleToInt32Bits(b0));
+                Assert.Equal(BitConverter.SingleToInt32Bits(a1), BitConverter.SingleToInt32Bits(b1));
+                Assert.Equal(BitConverter.SingleToInt32Bits(a2), BitConverter.SingleToInt32Bits(b2));
+                Assert.Equal(BitConverter.SingleToInt32Bits(a3), BitConverter.SingleToInt32Bits(b3));
+                Assert.Equal(BitConverter.SingleToInt32Bits(c0), BitConverter.SingleToInt32Bits(b0));
+                Assert.Equal(BitConverter.SingleToInt32Bits(c1), BitConverter.SingleToInt32Bits(b1));
+                Assert.Equal(BitConverter.SingleToInt32Bits(c2), BitConverter.SingleToInt32Bits(b2));
+                Assert.Equal(BitConverter.SingleToInt32Bits(c3), BitConverter.SingleToInt32Bits(b3));
+                if (a0 != 0f) nonZero++;
+                if (a3 != 0f) nonZero++;
+            }
+        }
+        // Non-vacuity: identical zeros would also pass the comparisons above.
+        Assert.True(nonZero > rows / 2, $"only {nonZero} of {rows * 2} sampled outputs were non-zero; the comparison would be vacuous");
+    }
 }

@@ -6745,6 +6745,59 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
+    /// Four Q8_0 activation rows against one repacked Q5_0 weight row (see <see cref="RepackQ5_0Blocks"/>). Mirrors
+    /// <see cref="DotQ5_0_Q8_0_4In"/> step for step, so each output is bit-identical to the original-layout 4-input dot
+    /// and to <see cref="DotQ5_0_Q8_0_Repacked"/> on the same row.
+    /// </summary>
+    public static void DotQ5_0_Q8_0_Repacked_4In(byte* row, byte* s0, byte* s1, byte* s2, byte* s3, int cols,
+        out float o0, out float o1, out float o2, out float o3)
+    {
+        if (!Avx2.IsSupported || !Fma.IsSupported)
+        {
+            o0 = DotQ5_0_Q8_0_Repacked_Scalar(row, s0, cols);
+            o1 = DotQ5_0_Q8_0_Repacked_Scalar(row, s1, cols);
+            o2 = DotQ5_0_Q8_0_Repacked_Scalar(row, s2, cols);
+            o3 = DotQ5_0_Q8_0_Repacked_Scalar(row, s3, cols);
+            return;
+        }
+
+        int numBlocks = cols / 32;
+        var acc0 = Vector256<float>.Zero; var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero; var acc3 = Vector256<float>.Zero;
+        var lowMask = Vector256.Create((byte)0x0F);
+        var hiFill = Vector256.Create((byte)0xF0);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 24;
+            float dW = *(float*)blk;
+            var q128 = Sse2.LoadVector128(blk + 8);
+            var qx = Vector256.Create(q128, Sse2.ShiftRightLogical(q128.AsUInt16(), 4).AsByte()) & lowMask;
+            qx |= Avx2.AndNot(BytesFromBits32(Unsafe.ReadUnaligned<uint>(blk + 4)), hiFill);
+            var w = qx.AsSByte();
+            var ax = Avx2.Abs(w);
+
+            int off = b * 36;
+            acc0 = Q5BlockFma(ax, w, dW, s0 + off, acc0);
+            acc1 = Q5BlockFma(ax, w, dW, s1 + off, acc1);
+            acc2 = Q5BlockFma(ax, w, dW, s2 + off, acc2);
+            acc3 = Q5BlockFma(ax, w, dW, s3 + off, acc3);
+        }
+        o0 = Vector256.Sum(acc0); o1 = Vector256.Sum(acc1);
+        o2 = Vector256.Sum(acc2); o3 = Vector256.Sum(acc3);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector256<float> Q5BlockFma(Vector256<byte> ax, Vector256<sbyte> w, float dW, byte* q8Chunk, Vector256<float> acc)
+        {
+            float d = dW * *(float*)q8Chunk;
+            var y = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+            var p16 = Avx2.MultiplyAddAdjacent(ax, Avx2.Sign(y, w));
+            var p32 = Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+            return Fma.MultiplyAdd(Avx.ConvertToVector256Single(p32), Vector256.Create(d), acc);
+        }
+    }
+
+    /// <summary>
     /// y = W x for a Q5_0 matrix already repacked by <see cref="RepackQ5_0Blocks"/>. Same dispatch as <see cref="MatVecQ5_0"/>;
     /// every row is bit-identical to the original-layout result. The caller owns <paramref name="repacked"/> and must keep it
     /// alive while the call runs.
