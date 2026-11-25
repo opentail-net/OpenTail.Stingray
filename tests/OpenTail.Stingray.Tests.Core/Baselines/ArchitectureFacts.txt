@@ -46,6 +46,7 @@ ministral|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=Fa
 mistral3|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 muse-glimmer|Admitted|Dense|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=muse_glimmer
 nemotron_h|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
+nemotron_h_moe|NotAdmitted|Dense|Cpu|batch=False|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 olmo|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=False|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=
 olmo2|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=False|aliases=
 olmoe|Admitted|Dense|All|batch=True|canBatchPredicate=False|img=False|aud=False|neox=True|thinkOff=False|fallbackChat=ChatMl|chatProtocol=chatml|toolAdapter=default|semantics=True|aliases=

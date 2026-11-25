@@ -231,7 +231,13 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly TensorRef[]? _wGateShexp, _wUpShexp, _wDownShexp; // shared expert per layer
     // Qwen2-MoE: sigmoid gate on the shared expert, a [embDim] F32 vector per layer (ffn_gate_inp_shexp); null when the model has none.
     private readonly TensorRef[]? _wGateInpShexp;
-    private readonly TensorRef[]? _wGateExps, _wUpExps, _wDownExps;   // packed expert weights per layer
+    private readonly TensorRef[]? _wGateExps, _wUpExps, _wDownExps;   // packed expert weights per layer (gate absent = non-gated ReLU² experts)
+    // Nemotron-3.5 latent MoE: experts read ffn_latent_down(normBuf) [embDim -> latentDim] and their sum is
+    // projected back by ffn_latent_up. Null / 0 when the model has no latent projection.
+    private readonly TensorRef[]? _wLatentDown, _wLatentUp;
+    private readonly int _latentDim;
+    private readonly float* _latentIn;      // [latentDim]
+    private readonly float* _latentOut;     // [latentDim]
     private readonly float* _routerLogits;  // [numExperts] scratch
     private readonly float* _sharedOut;     // [embDim] shared expert output
     // Shared-expert FFN width (ModelHyperparams.SharedExpertIntermediateDim): n_shared x expert dim
@@ -728,6 +734,18 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             _expertUpAll   = Alloc(hp.NumActiveExperts * hp.ExpertIntermediateDim);
             _moeDownTemp   = Alloc(_embDim);
             _moeDownDots   = Alloc(hp.NumActiveExperts * _embDim);
+            // Latent MoE (Nemotron-3.5): the first layer that carries ffn_latent_down fixes the latent width.
+            int latentWidth = 0;
+            for (int li = 0; li < hp.NumLayers && latentWidth == 0; li++)
+                if (model.FindTensor($"blk.{li}.ffn_latent_down.weight") is { } lt && _embDim > 0)
+                    latentWidth = (int)(lt.ElementCount / _embDim);
+            _latentDim = latentWidth;
+            if (latentWidth > 0)
+            {
+                _wLatentDown = new TensorRef[L]; _wLatentUp = new TensorRef[L];
+                _latentIn = Alloc(latentWidth);
+                _latentOut = Alloc(latentWidth);
+            }
 
             if (hp.ParallelDenseMoe)
             {
@@ -744,7 +762,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasPostFfwNorm) _postFfwNorm = new TensorRef[L];
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
         _postNormEps = hp.PostNormEps > 0f ? hp.PostNormEps : hp.RmsNormEps;
-        _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm;
+        // Hybrid FFN-only MoE layers (Nemotron-3.5) run through MoeFfn per token; the batched hybrid path calls DenseFfn.
+        _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || (hp.IsMoE && hp.HybridFfnOnlyLayer is not null);
         _attnGatePerHead = hp.AttentionOutputGatePerHead;
         _attnGateSoftplus = hp.AttentionOutputGateSoftplus;
         if (hp.LayerNumHeads is { } lnh)
@@ -896,12 +915,19 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (hp.IsMoE && !hp.ParallelDenseMoe && i >= hp.LeadingDenseBlockCount)
             {
                 _wGateInp![i] = ResolveTensor($"blk.{i}.ffn_gate_inp.weight");
-                _wGateExps![i] = ResolveTensor($"blk.{i}.ffn_gate_exps.weight");
+                // Nemotron-3.5 has no ffn_gate_exps / ffn_gate_shexp: the experts and the shared expert are non-gated
+                // ReLU², so a missing gate tensor leaves the reference empty (DataPtr null) instead of failing the load.
+                _wGateExps![i] = TryResolveTensor($"blk.{i}.ffn_gate_exps.weight");
                 _wUpExps![i] = ResolveTensor($"blk.{i}.ffn_up_exps.weight");
                 _wDownExps![i] = ResolveTensor($"blk.{i}.ffn_down_exps.weight");
+                if (_wLatentDown is not null)
+                {
+                    _wLatentDown[i] = TryResolveTensor($"blk.{i}.ffn_latent_down.weight");
+                    _wLatentUp![i] = TryResolveTensor($"blk.{i}.ffn_latent_up.weight");
+                }
                 if (hp.HasSharedExpert)
                 {
-                    _wGateShexp![i] = ResolveTensor($"blk.{i}.ffn_gate_shexp.weight");
+                    _wGateShexp![i] = TryResolveTensor($"blk.{i}.ffn_gate_shexp.weight");
                     _wUpShexp![i] = ResolveTensor($"blk.{i}.ffn_up_shexp.weight");
                     _wDownShexp![i] = ResolveTensor($"blk.{i}.ffn_down_shexp.weight");
                     if (_wGateInpShexp is not null) _wGateInpShexp[i] = ResolveTensor($"blk.{i}.ffn_gate_inp_shexp.weight");

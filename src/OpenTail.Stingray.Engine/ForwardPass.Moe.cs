@@ -128,10 +128,20 @@ public sealed unsafe partial class ForwardPass
         // Shared expert width is its own tensor's (n_shared x expert dim), not ExpertIntermediateDim.
         if (_hp.HasSharedExpert)
         {
-            SimdKernels.MatVecDual(_expertGate, _wGateShexp![layer].DataPtr, _expertUp, _wUpShexp![layer].DataPtr,
-                _normBuf, _sharedExpertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
-            SimdKernels.SiLuMul(_expertGate, _expertUp, _sharedExpertDim);
-            FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, _sharedExpertDim);
+            if (_wGateShexp![layer].DataPtr is null)
+            {
+                // Non-gated shared expert (Nemotron-3.5): down(relu²(up x)) on the full-width normalised input.
+                FusedMatVec(_expertUp, _wUpShexp![layer], _normBuf, _sharedExpertDim, _embDim);
+                SimdKernels.ReluSqrInPlace(_expertUp, _sharedExpertDim);
+                FusedMatVec(_sharedOut, _wDownShexp![layer], _expertUp, _embDim, _sharedExpertDim);
+            }
+            else
+            {
+                SimdKernels.MatVecDual(_expertGate, _wGateShexp[layer].DataPtr, _expertUp, _wUpShexp![layer].DataPtr,
+                    _normBuf, _sharedExpertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
+                SimdKernels.SiLuMul(_expertGate, _expertUp, _sharedExpertDim);
+                FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, _sharedExpertDim);
+            }
             if (_wGateInpShexp is not null)
                 ScaleBySharedGate(_sharedOut, _normBuf, _wGateInpShexp[layer]);
         }
@@ -140,8 +150,10 @@ public sealed unsafe partial class ForwardPass
         MoePhaseTiming.Add(MoePhaseTiming.SharedExpert, pt2 - pt1);
         // Step 3: Selected expert(s) — 2-sweep folded execution when enabled and every expert dtype
         // has a float-input row dot (DispatchDot); otherwise the per-expert sequential loop.
-        if (MoeFoldedDecodeEnabled
-            && IsFoldedDotDType(_wGateExps![layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType)
+        // The folded path is gated-SiLU only: non-gated (Nemotron-3.5 ReLU²) and latent experts use the sequential loop below.
+        bool gatedExperts = _wGateExps![layer].DataPtr is not null;
+        if (MoeFoldedDecodeEnabled && gatedExperts && _latentDim == 0
+            && IsFoldedDotDType(_wGateExps[layer].DType) && IsFoldedDotDType(_wUpExps![layer].DType)
             && IsFoldedDotDType(_wDownExps![layer].DType))
         {
             MoeFfnFolded(
@@ -151,23 +163,51 @@ public sealed unsafe partial class ForwardPass
         }
         else
         {
-            new Span<float>(_hidden, _embDim).Clear();
+            // Latent MoE (Nemotron-3.5): experts read ffn_latent_down(normBuf) and write the latent sum; ffn_latent_up
+            // projects it back to embDim after the loop. Without a latent projection the experts read normBuf directly.
+            bool latent = _latentDim > 0;
+            float* expertIn = latent ? _latentIn : _normBuf;
+            int expertInDim = latent ? _latentDim : _embDim;
+            float* expertOut = latent ? _latentOut : _hidden;
+            int expertOutDim = latent ? _latentDim : _embDim;
+            if (latent)
+                FusedMatVec(_latentIn, _wLatentDown![layer], _normBuf, _latentDim, _embDim);
+            new Span<float>(expertOut, expertOutDim).Clear();
             for (int k = 0; k < numActive; k++)
             {
                 int expertIdx = selectedExperts[k];
                 float weight = expertWeights[k];
-                ExpertMatVecDual(_expertGate, _wGateExps![layer], _expertUp, _wUpExps![layer],
-                    expertIdx, expertDim, _embDim, _normBuf);
-                if (_hp.UseSigmoidGating)
+                float* act;
+                if (gatedExperts)
                 {
-                    // Llama-4: apply sigmoid weight before FFN (scale gate/up ≡ scaling input)
-                    SimdKernels.ScaleInPlace(_expertGate, weight, expertDim);
-                    SimdKernels.ScaleInPlace(_expertUp, weight, expertDim);
-                    weight = 1.0f;
+                    ExpertMatVecDual(_expertGate, _wGateExps![layer], _expertUp, _wUpExps![layer],
+                        expertIdx, expertDim, expertInDim, expertIn);
+                    if (_hp.UseSigmoidGating)
+                    {
+                        // Llama-4: apply sigmoid weight before FFN (scale gate/up ≡ scaling input)
+                        SimdKernels.ScaleInPlace(_expertGate, weight, expertDim);
+                        SimdKernels.ScaleInPlace(_expertUp, weight, expertDim);
+                        weight = 1.0f;
+                    }
+                    SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
+                    act = _expertGate;
                 }
-                SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
-                ExpertMatVecDown(_hidden, _wDownExps![layer], expertIdx, _embDim, expertDim, _expertGate, weight);
+                else
+                {
+                    // Non-gated experts (Nemotron-3.5): down(relu²(up x)).
+                    ExpertMatVec(_expertUp, _wUpExps![layer], expertIdx, expertDim, expertInDim, expertIn);
+                    if (_hp.UseSigmoidGating)
+                    {
+                        SimdKernels.ScaleInPlace(_expertUp, weight, expertDim);
+                        weight = 1.0f;
+                    }
+                    SimdKernels.ReluSqrInPlace(_expertUp, expertDim);
+                    act = _expertUp;
+                }
+                ExpertMatVecDown(expertOut, _wDownExps![layer], expertIdx, expertOutDim, expertDim, act, weight);
             }
+            if (latent)
+                FusedMatVec(_hidden, _wLatentUp![layer], _latentOut, _embDim, _latentDim);
         }
 
         long pt3 = MoePhaseTiming.Now();

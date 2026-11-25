@@ -202,6 +202,13 @@ public sealed unsafe partial class ForwardPass
         return new TensorRef(name, info, info.DType, _model.GetTensorDataPtr(info));
     }
 
+    /// <summary>
+    /// Like <see cref="ResolveTensor"/>, but an absent tensor yields an empty reference (<c>DataPtr</c> null), which
+    /// callers test to choose the non-gated code path (Nemotron-3.5 experts and shared expert).
+    /// </summary>
+    private TensorRef TryResolveTensor(string name) =>
+        _model.FindTensor(name) is null ? default : ResolveTensor(name);
+
     private float LoadScalarF32(string name)
     {
         var info = _model.FindTensor(name)
