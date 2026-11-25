@@ -2376,3 +2376,20 @@ Change, in a scratch copy of HEAD `ac0227f5` (not committed): `MatVecDual` gets 
 Median gain 1.15 t/s (+1.5%). Paired per-round differences (variant minus baseline): median +1.35 t/s, IQR 1.65 t/s; the variant was faster in 6 of 8 rounds. Greedy text matched between arms in all 8 rounds (compared with the timing lines removed).
 
 **Decision: not kept.** The median gain (1.15 t/s, or 1.35 t/s paired) is below the quartile spread (1.8 to 2.0 t/s per arm, 1.65 t/s paired), so under the keep rule the result is negative: the gain is within the run-to-run spread. Round 1 baseline (66.8 t/s) is the low outlier and was not discarded; the rule gives no reason to drop it. The product change stays out of the tree. Possible follow-up: more rounds, or a model where the gate and up matrices take a larger share of decode time.
+
+## Fused QKV for Q4_K on OLMoE (A3, 2026-11-25, iteration 65): not kept, below the keep threshold
+
+Change, in a scratch copy of HEAD `e080bc0f` (not committed; saved as `a3-fused-qkv.patch` in the scratchpad): `SimdKernels.MatVecQ4KTriple` quantises the input once and runs one parallel region over the concatenated rows of Q and K, and of V when V is Q4_K, using the same row pairing as `MatVecQ4K`. The decode plain path (no MLA, no KV sharing, no per-layer head_dim, not the GEMM route) uses it when Q and K are Q4_K; a Q6_K V is computed separately. OLMoE-1B-7B-0924-Instruct Q4_K_M: Q and K are Q4_K in all 16 layers; V is Q4_K in layers 2, 3, 5, 6, 7, 9, 10, 12 and Q6_K in the other 8.
+
+**Correctness.** `MatVecQ4KTripleBitIdentityTests` 7 of 7: bit-identical to three `MatVecQ4K` calls, covering odd row counts, a zero third matrix, the serial fallback and the parallel path. `DotQ4K2RowBitIdentityTests` 3 of 3. Greedy text identical in all 24 timed rounds (compared with the timing lines removed).
+
+**Timing.** OLMoE Q4_K_M, `stingray --temp 0 -g 0 -n 128`, prompt "Explain how the water cycle works.", default threads, Release builds from the same HEAD. The machine had no OpenTail test process at the start (41.8 GB free); load was not sampled during the rounds.
+
+| Run | Arm | Median (t/s) | Q1 | Q3 | IQR (t/s) | Variant faster in |
+|---|---|---|---|---|---|---|
+| 8 rounds | base / variant | 42.45 / 43.35 | 42.15 / 42.95 | 42.90 / 43.55 | 0.75 / 0.60 | 6 of 8 |
+| 16 rounds | base / variant | 42.90 / 43.30 | 42.80 / 43.05 | 43.00 / 43.55 | 0.20 / 0.50 | 13 of 16 |
+
+Paired differences (variant minus base): 8 rounds median +0.95 t/s (+2.1%), IQR 1.00 t/s; 16 rounds median +0.40 t/s (+0.9%), IQR 0.70 t/s.
+
+**Decision: not kept.** The 16-round median gain (0.40 t/s) is below the variant's own quartile spread (0.50 t/s) and the paired spread (0.70 t/s). The 8-round paired gain is below its paired spread too. The direction is consistent (13 of 16 rounds faster), so the effect may be small and positive, but this A/B does not resolve it on this machine. The product change stays out of the tree.
