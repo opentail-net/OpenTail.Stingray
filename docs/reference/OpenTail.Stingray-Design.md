@@ -1,4 +1,5 @@
 # OpenTail.Stingray — Design Document
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 > Completed items moved to [../done/OpenTail.Stingray-Design-completed-items-2026-10.md](../done/OpenTail.Stingray-Design-completed-items-2026-10.md) on 2026-11-01. This file keeps only the open items; a finished item that still has an open child stays here with it.
 

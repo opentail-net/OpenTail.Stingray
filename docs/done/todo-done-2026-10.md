@@ -1,4 +1,5 @@
 # TODO: completed items split from docs/done/todo-merged-2026-11-01.md (2026-10-30)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > Open items stay in [../todo.md](todo-merged-2026-11-01.md).
 
 Finished items moved verbatim out of [../todo.md](todo-merged-2026-11-01.md). Items still open stay there.

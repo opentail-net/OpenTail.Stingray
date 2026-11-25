@@ -1,4 +1,5 @@
 # Troubleshooting
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 Common problems, what causes them and what to do. Every item here was met while running the
 models in [RUNNING.md](RUNNING.md). If yours is not listed, start with the three diagnostic commands

@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **ARCHIVED 2026-08-08.** Both halves of the release decision are now evidenced: the quality
 > half (paired corpus perplexity, all-control-prompt exemption) and the performance half
 > (interleaved arms, 3.48x median). **Carried forward:** the one deterministic known failure,

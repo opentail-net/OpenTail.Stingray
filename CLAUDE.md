@@ -14,6 +14,13 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
 
 ## Critical Rules & Traps (Do Not Break)
 
+## OpenBLAS: NEVER USE IT (owner directive, 2026-11-25)
+
+- **Never load, run, measure, benchmark or enable OpenBLAS in this project.** Do not set `STINGRAY_USE_OPENBLAS=1`, do not run `scripts/setup-openblas.ps1`, and do not compare against any build with OpenBLAS on.
+- **The opt-in gate stays.** The gate in `src/OpenTail.Stingray.Cpu/BlasInterop.cs` (OpenBLAS loads only when `STINGRAY_USE_OPENBLAS=1`) is kept as a guard so it can never load by accident. Every other reference to OpenBLAS in code, scripts, docs and project files must state that it is never to be used. Do not add new references, and do not treat an OpenBLAS path as a valid baseline or comparison.
+- **Do not delete anything under `tools/` to do this.** Removal is a separate, owner-approved step.
+- If a task seems to need OpenBLAS, stop and ask the owner instead of using it.
+
 ## Git workflow (owner rule)
 
 - Work directly on `main`. Commit and push to `origin/main` when the relevant tests pass. If there are none, commit and ask before pushing.

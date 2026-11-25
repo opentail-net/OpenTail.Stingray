@@ -1,4 +1,5 @@
 # Bug (FIXED): concurrent prefill output depended on how many OTHER sessions were packed alongside it
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Status: fixed.** Root cause was **not** decode's kernel tiering (the original hypothesis below,
 now disproven) — it was `ForwardPass.PrefillPackedMulti` letting OpenBLAS SGEMM engage or not

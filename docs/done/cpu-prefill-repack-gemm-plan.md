@@ -1,4 +1,5 @@
 # CPU prefill, phase 2 — repacked-weight GEMM
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Status:** checkpoint 1 (§9), eligibility/budget report (§10), scalar GEMV port (§11, found to
 be llama.cpp's non-SIMD fallback, ~8× slower than baseline, §12), and four rounds of AVX2

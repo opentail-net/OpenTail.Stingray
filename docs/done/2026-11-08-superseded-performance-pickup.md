@@ -1,4 +1,5 @@
 # Performance work: where to pick up (paused 2026-10-30)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 Performance work was paused on 2026-10-30 at the owner's request. This page is the starting point for resuming it: what
 is left, ranked; what was already tried; and how to measure without repeating anything. The numbers are in

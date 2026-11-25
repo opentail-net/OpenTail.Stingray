@@ -1,4 +1,5 @@
 # OpenBLAS: fire it from a canon into space
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Measured:** 2026-08-20, Ryzen 7 5700G, CPU backend, SmolLM2-1.7B-Instruct-Q4_K_M, 518-token
 prompt, 24 tokens generated, greedy, interleaved runs against a known-good prior working copy of

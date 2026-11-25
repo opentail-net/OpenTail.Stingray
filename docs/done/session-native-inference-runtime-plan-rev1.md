@@ -1,4 +1,5 @@
 # OpenTail.Stingray — session-native inference runtime plan
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Status:** implementation plan, revision 1  
 **Basis:** current OpenTail.Stingray fork, informed by the SharpInference-derived session plan  

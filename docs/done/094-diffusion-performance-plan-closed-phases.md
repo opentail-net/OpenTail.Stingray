@@ -1,4 +1,5 @@
 # 094 — Diffusion Stack Performance Plan: closed phases
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 > **ARCHIVED 2026-09-27.** Phases moved verbatim out of
 > [../094-diffusion-performance-plan.md](../4-performance/diffusion/diffusion-performance.md), which keeps Phases 6

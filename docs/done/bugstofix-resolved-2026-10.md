@@ -1,4 +1,5 @@
 # Correctness backlog — items closed through 2026-10-01
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 Split verbatim out of [../1-correctness/bugstofix.md](../1-correctness/bugstofix.md) on 2026-10-01 because every item here is closed. Per-item plans were moved alongside this file in `docs/done/` (`01-real-weight-...` through `17-ggml-op-...`). Older resolved entries: [bugstofix-resolved-2026-08.md](bugstofix-resolved-2026-08.md).
 

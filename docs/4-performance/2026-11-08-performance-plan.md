@@ -1,4 +1,5 @@
 # Performance plan
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 > **REOPENED 2026-11-24 by the owner.** Performance work is active again ("fair game, as long as it achieves something"). Part A is open and starts with the items in order; the work is recorded per item here and in [PerformanceLeague-LOG.md](PerformanceLeague-LOG.md). The 2026-11-24 prefill decision closes only prefill speed on the default route, not performance as a whole.
 

@@ -1,4 +1,5 @@
 # CPU prefill performance — plan
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Status:** the `_4In` int8 batched-prefill path (§12) is implemented, gated off by default,
 and measured at ~1.3× on top of runtime tuning — gap to llama.cpp was **~4.6×**. Extended to

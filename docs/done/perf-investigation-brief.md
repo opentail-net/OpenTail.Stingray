@@ -1,4 +1,5 @@
 # Brief: independent investigation of OpenTail.Stingray CPU prefill performance
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **For:** a second AI working independently of the session that produced today's results.
 **Goal:** find remaining CPU prefill performance in OpenTail.Stingray, and challenge the conclusions

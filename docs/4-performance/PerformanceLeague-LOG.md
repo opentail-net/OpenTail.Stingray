@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **LOG / archive.** Complete history of `PerformanceLeague.md` as it stood before the 2026-11-03 split. Every superseded run, narrative, sweep log and methodology note is kept here unedited. For the current numbers see [PerformanceLeague.md](../../PerformanceLeague.md).
 
 # PerformanceLeague

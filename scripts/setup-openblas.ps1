@@ -1,3 +1,4 @@
+# OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.
 # Downloads and extracts OpenBLAS for Windows x64.
 # Only bin/libopenblas.dll is needed for P/Invoke at runtime.
 

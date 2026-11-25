@@ -1,4 +1,5 @@
 # Running models well
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 How to get the best result from a model on real hardware: the command to use, how much memory it
 really needs, and how fast it runs. [MODELS.md](MODELS.md) says which models to pick and

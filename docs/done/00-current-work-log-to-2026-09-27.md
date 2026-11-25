@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **ARCHIVED 2026-09-27.** The full backlog file as it stood on 2026-09-27, moved verbatim. It had grown into a working log (fixed bugs, measurements, histories). Every item still open was extracted into the new, open-items-only ../00-current-work.md.
 
 # Current work

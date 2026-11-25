@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **STATUS 2026-09-28 (DONE).** Numeric parity verified against audio.cpp q8_0 reference
 > (latent cosine 0.994, waveform 0.99999, <|endoftext|> gap closed; docs/103 item 14).
 > VAE decode accelerated 13.5x via Conv1dGemm (docs/103 item 15). Moved to docs/done/.

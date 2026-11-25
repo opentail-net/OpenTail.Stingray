@@ -1,4 +1,5 @@
 # CPU speculative decoding — measured findings
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Machine:** Ryzen 7 5700G (Zen 3, 6c/12t, AVX2/FMA only, no VNNI/AVX-512), 36.8 GB/s measured
 DRAM ceiling. **Target:** `Qwen3-8B-Q4_K_M` (4.68 GiB). **Draft:** `Qwen3-0.6B-Q8_0`.

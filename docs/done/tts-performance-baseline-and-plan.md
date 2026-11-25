@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **ARCHIVED 2026-09-27.** Closed: the follow-up rounds happened but were never written back here.
 > QwenTTS Turn 2 (e2d42f1, 2.15x), the all-engine audio pass (ce6a914, 2026-09-05) and an optional
 > Vulkan backend for CosyVoice3's DiT (e2dd46f, item 5 below). STATUS's TTS table, re-measured

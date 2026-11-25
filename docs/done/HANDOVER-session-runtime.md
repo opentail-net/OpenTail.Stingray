@@ -1,4 +1,5 @@
 # Handover — OpenTail.Stingray session-native runtime work
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Written for whoever picks this up next (human or AI).** Read this before touching anything.
 Everything here is stated as of the handover; verify rather than trust, for the reasons in §6.

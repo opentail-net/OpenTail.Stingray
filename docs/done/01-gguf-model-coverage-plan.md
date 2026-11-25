@@ -1,4 +1,5 @@
 # GGUF model coverage — run any GGUF from Hugging Face
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Goal:** a user points OpenTail.Stingray at an arbitrary GGUF from Hugging Face and it either runs
 correctly or refuses with a specific, actionable reason. Breadth of models is the priority;

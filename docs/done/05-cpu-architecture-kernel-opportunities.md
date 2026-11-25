@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **CLOSED 2026-09-28.** Actionable x86 CPU performance and kernel opportunities are complete:
 > - Ordered item 1 (Flash attention 128/256 vs fallback): measured & shipped (opt-in; see Backlog D).
 > - Ordered item 2 (Q6_K AVX2): dispatch complete, multi-input dots operational and verified.

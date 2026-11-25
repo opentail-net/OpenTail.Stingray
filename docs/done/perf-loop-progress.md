@@ -1,4 +1,5 @@
 # CPU performance optimization loop — progress log
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Read this file first on every hourly firing.** This is the source of truth across firings, not
 conversation memory (cron firings may not carry full context forward). Update it before ending

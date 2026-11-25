@@ -1,4 +1,5 @@
 # Completed items split from OpenTail.Stingray-Design.md (2026-11-01)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 Finished items moved verbatim out of [../reference/OpenTail.Stingray-Design.md](../reference/OpenTail.Stingray-Design.md). Open items stay there. Each block is preceded by the heading it sat under. Relative links inside the blocks were rebased for this folder.
 

@@ -1,4 +1,5 @@
 # CpuSgemm vs OpenBLAS (2026-10-03)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Decision:** `CpuBackend.Sgemm` (C[M,N] = A[M,K]·B[N,K]ᵀ, F32) runs on `CpuSgemm`, a pure-C# BLIS-style
 packed GEMM ported from TensorSharp (`src/OpenTail.Stingray.Cpu/CpuSgemm.cs`, BSD-3). It replaces

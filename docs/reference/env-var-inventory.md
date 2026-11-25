@@ -1,4 +1,5 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-07)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Reconciled again 2026-11-08, later — `KnownEnvironmentVariables.All` now contains **297** names**
 (added `STINGRAY_FFMPEG`: the operator-installed ffmpeg executable that `FfmpegVideoFrameSource` runs for video frames, read before PATH; classified expert. It was read in `src/` but unlisted, which failed `ListMatchesSource` in CI.)

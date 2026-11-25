@@ -1,3 +1,4 @@
+// OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.
 // Ported from TensorSharp (https://github.com/zhongkaifu/TensorSharp), TensorSharp.Core/Cpu/CpuSgemm.cs,
 // Copyright (c) Zhongkai Fu, BSD 3-Clause License (see THIRD_PARTY_NOTICES.md). Adapted for OpenTail.Stingray:
 // fork/join on Parallel.For over the logical cores (TensorSharp's CpuParallel runner), the ISA checks

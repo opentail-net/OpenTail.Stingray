@@ -1,4 +1,5 @@
 # scripts/
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 Helper scripts for building, verifying, benchmarking and investigating OpenTail.Stingray. Most are
 PowerShell 7 for Windows; the vision/diffusion reference oracles are Python.

@@ -1,3 +1,4 @@
+// OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.
 using System.Runtime.InteropServices;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;

@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **ARCHIVED, 2026-08-15.** Resolved entries split out of [../bugstofix.md](../1-correctness/bugstofix.md),
 > which keeps only the still-open items. Two of these (the `ForwardPass.cs:5606` batch-tier
 > divergence and the Q8-vs-F32 replay-oracle investigation) have their own full writeups already

@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > **ARCHIVED 2026-08-08.** The SharpInference port audit is complete and its final full-suite
 > run is recorded at the end of this file. **Carried forward:** the single known ForwardPass
 > failure and the CI test-count floors, both now stated in

@@ -1,4 +1,5 @@
 # DeepSeek-V2-Lite MLA/YaRN/MoE-routing investigation — CLOSED, 2026-08-27
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 > Full investigation trail, moved out of `docs/1-correctness/bugstofix.md` once concluded, following the
 > established pattern for closed investigations (see 029/031 for siblings). Original entries

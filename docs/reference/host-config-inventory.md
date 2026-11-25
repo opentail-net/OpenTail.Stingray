@@ -1,4 +1,5 @@
 # Host configuration inventory
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Generated:** 2026-07-26 from `OpenTailStingrayServerOptions`. **41 bindable keys.**
 The options type also has two deliberately non-bindable programmatic hooks

@@ -1,3 +1,4 @@
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 > Superseded 2026-11-01: the open items were merged into [00-current-work.md](../00-current-work.md) (section 5 and item 4b/20). This file is kept as history; its earlier moves are in [todo-done-2026-10.md](todo-done-2026-10.md) and [todo-completed-items-2026-11.md](todo-completed-items-2026-11.md).
 
 > Finished items moved to [done/todo-done-2026-10.md](todo-done-2026-10.md) on 2026-10-30. This file keeps only the open work.

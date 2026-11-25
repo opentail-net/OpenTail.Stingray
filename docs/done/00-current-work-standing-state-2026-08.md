@@ -1,4 +1,5 @@
 # Archived "Standing state, not plans" log from docs/00-current-work.md
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 This is the completed-work/historical-log section that used to live at the bottom of
 `docs/00-current-work.md`, moved here per that file's own Archive rule ("Move a document or

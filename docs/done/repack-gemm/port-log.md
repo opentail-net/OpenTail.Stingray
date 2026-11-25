@@ -1,4 +1,5 @@
 # Path 2 — faithful C# port of `ggml_gemm_q4_K_8x8_q8_K` (AVX2 arm)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Mission.** Port llama.cpp's AVX2 GEMM (`ggml/src/ggml-cpu/arch/x86/repack.cpp` lines 2816–3487,
 ~670 live lines) into C# as **Path 2**, selectable at runtime, with the existing kernels preserved

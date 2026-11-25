@@ -1,4 +1,5 @@
 # Current work: closed sections (archived 2026-09-27)
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 > **ARCHIVED 2026-09-27.** Sections moved verbatim out of [../00-current-work.md](../00-current-work.md)
 > under its Archive rule. Each is closed per its STATUS row: the Z-Image-Turbo regression (fixed

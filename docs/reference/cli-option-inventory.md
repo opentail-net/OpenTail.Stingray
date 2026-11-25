@@ -1,4 +1,5 @@
 # CLI option inventory — generated from source
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-10-09**, recording

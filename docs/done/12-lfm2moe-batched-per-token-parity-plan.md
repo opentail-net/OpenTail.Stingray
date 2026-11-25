@@ -1,4 +1,5 @@
 # Plan: LFM2-MoE batched/per-token parity and architecture admission
+> **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
 **Entry in:** `docs/1-correctness/bugstofix.md`, item **12** (LFM2-MoE `lfm2moe` batched/per-token parity and admission).
 
