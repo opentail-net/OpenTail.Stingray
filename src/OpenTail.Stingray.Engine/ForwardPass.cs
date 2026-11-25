@@ -912,7 +912,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
                 _postFfwNorm1![i] = ResolveTensor($"blk.{i}.post_ffw_norm_1.weight");
                 _postFfwNorm2![i] = ResolveTensor($"blk.{i}.post_ffw_norm_2.weight");
             }
-            if (hp.IsMoE && !hp.ParallelDenseMoe && i >= hp.LeadingDenseBlockCount)
+            // Nemotron-H single-sublayer blocks: attention and Mamba-2 blocks carry no router, so they must skip the MoE branch
+            // (noFfnLayer is the per-layer mask; it is null for every other architecture).
+            if (hp.IsMoE && !hp.ParallelDenseMoe && i >= hp.LeadingDenseBlockCount && !noFfnLayer)
             {
                 _wGateInp![i] = ResolveTensor($"blk.{i}.ffn_gate_inp.weight");
                 // Nemotron-3.5 has no ffn_gate_exps / ffn_gate_shexp: the experts and the shared expert are non-gated
