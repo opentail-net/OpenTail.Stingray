@@ -2354,3 +2354,14 @@ Product change, correctness first. `SimdKernels` gains the repacked Q5_0 layout 
 **Not wired, and why.** The loader hook (repack at load, route decode, release the source) lives in `ForwardPass.cs`, which has another session's uncommitted edits, so it is not touched here. A pointer-keyed cache of repacked copies would also be unsafe on its own: a freed model address can be reused, and a stale repacked copy would then give wrong results. The safe wiring ties each repacked copy to the tensor's lifetime (repack and free with the model). The owner decision (q) on memory still applies before that wiring is merged.
 
 **Four-input repacked dot (iteration 60, follow-up).** `DotQ5_0_Q8_0_Repacked_4In` mirrors `DotQ5_0_Q8_0_4In` step for step, which prefill's batched Q5_0 path uses on the original bytes. Tests: 22 of 22 pass in `DotQ5_0_Repacked_BitIdentityTests`, including four-input outputs bit-identical to the original 4-input dot and to four separate repacked 1-row dots on every row (inf, NaN, zero and subnormal scales included). Fast suite: 1247 total, 0 failed, 16 skipped. Still not wired: the batched prefill path has to route to the repacked 4-input dot before the source can be released.
+
+## Fused Q5_0 gate and up in MatVecDual (2026-11-25, iteration 59): correctness done, timing deferred
+
+Change, in a scratch copy of HEAD `ac0227f5` (not committed): `MatVecDual` gets a `case DType.Q5_0` for equal-dtype pairs (gate and up). One input quantisation and one parallel region over 2 x rows, each output the 1-row `DotQ5_0_Q8_0`, so the arithmetic is the one MatVec already runs. The change is saved as `a6-fused-gateup-variant.patch` in the scratchpad.
+
+**Correctness.**
+- New bit-identity test (`MatVecDualQ5_0BitIdentityTests`): 8 of 8 pass. Both outputs equal two separate `MatVec` calls bit for bit on every row, at serial and parallel row counts (1 to 4864, odd counts included), with inf, NaN, zero and subnormal scales.
+- Full Fast suite on the variant: 1255 total, 0 failed, 17 skipped. The one extra skip (`Q8ActivationQuantizationTests.InTestGgmlPort_...`) is environmental: the test looks for `tools/llama.cpp/ggml-base.dll` by walking up from the test binary, and that folder is git-ignored and absent from the scratch copy.
+- Greedy text, variant against baseline: identical on five prompts at 96 tokens each, CPU banner `ForwardPass`.
+
+**Timing: not measured.** A rotated A/B would be run on a quiet machine. While this was being prepared, another session had a test process using about 30 GB (free RAM down to about 8 GB), so any timing taken then would measure that load. The repo rule is not to run heavy work alongside another session's run. The keep decision (median gain above the quartile spread) therefore waits. Until it is decided, the change stays uncommitted.
