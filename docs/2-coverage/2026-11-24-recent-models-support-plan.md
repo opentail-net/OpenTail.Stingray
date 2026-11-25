@@ -23,7 +23,7 @@ These are my assumptions, labelled as the research note labels them. The owner c
 - [ ] **O1 (A1) Popularity.** Family sum of 30-day downloads at least 100,000, or primary repo at least 100,000. Decide whether all-time downloads should count too. Under the current rule, mistral4 (88k), step35 (39k), mistral-large4 (53k) and kimi-k31 (28k) are out.
 - [ ] **O2 (A2) Host fit.** Resident limit 55 GiB (63 GiB RAM minus scout's 8 GiB reserve). Confirm the reserve, and say whether the 55 to 110 GiB paged band is ever in scope. The KV cache is not in the file-size test, so confirm that a measured run is the real gate.
 - [ ] **O3 Reference revision.** Which llama.cpp build is the independent oracle for goldens: the local source at `bed0a8566` (built here), the vendored b10306, or a newer master build? Each port records the revision it used. See blocker B1.
-- [ ] **O4 `qwen4exp` status.** The code says Admitted (2026-11-09, UD-IQ1_S). `ported-families-todo.md` and `00-current-work.md` §2 say not admitted. Reconcile before any other item: either the docs are stale, or the code admission must be reverted under rule 14.
+- [x] **O4 `qwen4exp` status.** **Resolved 2026-11-25: admitted 2026-11-09 under D4.** The descriptor, the STATUS row and the Qwen 3.8 plan agree; the stale "not admitted" statements in `ported-families-todo.md` and `00-current-work.md` §2 are corrected. Earlier note: the code says Admitted (2026-11-09, UD-IQ1_S). `ported-families-todo.md` and `00-current-work.md` §2 say not admitted. Reconcile before any other item: either the docs are stale, or the code admission must be reverted under rule 14.
 - [ ] **O6 Omni inputs.** LFM3-Omni: admit the text path only, with image and audio deferred? (Proposed: yes.)
 - [ ] **O7 Non-LLM popular families** (audiocpp, qwen_image, mert2, acestep-lm, and others in research §5): do any need a pipeline? Not decided here.
 
@@ -31,7 +31,7 @@ These are my assumptions, labelled as the research note labels them. The owner c
 
 - [ ] **B1 No independent reference on this machine.** `tools/llama.cpp/llama-server.exe` and `llama-cli.exe` are 9,216-byte stubs (checked 2026-11-24). Goldens cannot be captured until a real llama-server exists at the revision chosen in O3. The local `examples/llama.cpp` checkout is pinned to `bed0a8566`. Building it is heavy: check free RAM and running processes first, and do not stop a process this task did not start.
 - [ ] **B2 Disk.** Checkpoints go to `E:\_models` (121.8 GB free at check). C: has 39.2 GB and is not used for models. One candidate at a time (memory: disk constraint). Largest planned file: Qwen3-Coder-Next Q4_K_M, 45.2 GiB.
-- [ ] **B3 Local stale docs.** Until O4 is resolved, do not edit STATUS.md for any architecture.
+- [x] **B3 Local stale docs.** Closed 2026-11-25 with O4: STATUS.md may be edited again. (Earlier rule: until O4 is resolved, do not edit STATUS.md for any architecture.)
 
 ## 4. Contracts this must satisfy
 

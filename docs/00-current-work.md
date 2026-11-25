@@ -276,9 +276,9 @@ Each item here needs hardware, a second machine, a checkpoint, or a reference th
 - **Ported but not verified (rule 14):** these families stay internal and unadvertised. Status in [2-coverage/ported-families-todo.md](2-coverage/ported-families-todo.md).
 - **Parked by owner:** the HTTP image API stays at 501 (`/v1/images/generations` and `/edits` are not connected to the real pipelines); Gemma 2 GPU soft-capping; the Qwen3-Coder NaN hunt (keep the canary line; reopen only if it fires); the browser UI for the local server.
 
-### 2. Qwen 3.8 Flash Next (`qwen4exp`), in progress
+### 2. Qwen 3.8 Flash Next (`qwen4exp`), admitted 2026-11-09, Phase 8 items open
 
-Source: [2026-11-08-qwen38-remaining-work-plan](2-coverage/2026-11-08-qwen38-remaining-work-plan.md). Qwen 3.8 stays not admitted and not advertised until Phase 8 (CLAUDE.md rule 14). Its owner decisions (parity criterion, unsloth fork reference, validator behaviour, admission) are in that plan.
+Source: [2026-11-08-qwen38-remaining-work-plan](2-coverage/2026-11-08-qwen38-remaining-work-plan.md). Admitted 2026-11-09 under decision D4 for CPU text generation and tool calls on the UD-IQ1_S checkpoint (STATUS.md row). Image input, video input and product MTP speculation are not admitted. The items waived under D4 and the owner decisions (parity criterion, unsloth fork reference, validator behaviour, Qwen licence for a hosted service) stay in that plan.
 
 The parent of its open items is that plan's unchecked boxes. They are not copied here.
 

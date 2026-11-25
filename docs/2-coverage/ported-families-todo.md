@@ -94,6 +94,8 @@ Gaps found against these rules (re-checked 2026-11-24). These are work, so they 
 ## Families
 
 ### 1. Qwen 3.8 Flash Next (`qwen4exp`)
+
+- **Status (2026-11-25):** admitted 2026-11-09 under D4 for CPU text generation and tool calls, verified on the paged UD-IQ1_S checkpoint (STATUS.md row; [2026-11-08-qwen38-remaining-work-plan.md](2026-11-08-qwen38-remaining-work-plan.md)). This section records the design only.
 - **Design** (from TensorSharp's card):
   - hybrid MoE: GatedDeltaNet recurrent layers interleaved with full-attention layers, some behind
     Qwen Sparse Attention's indexer;
@@ -101,7 +103,7 @@ Gaps found against these rules (re-checked 2026-11-24). These are work, so they 
   - x4 hyper-connection streams;
   - 512-expert MoE;
   - image input through an mmproj.
-- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total; smallest quant ~72.5 GB; synthetic gate only on this host, see the programme plan for the paged run).
+- **Weights:** `unsloth/Qwen3.8-Flash-Next-GGUF` (~180B total; smallest quant ~72.5 GB; the paged run on this host is recorded in the Qwen 3.8 plan).
 - **Reuse:** Stingray's `GdnKernels` (GDN FP32 recurrence), MoE primitives (512 experts, top-10 + 1 shared); distinct `GatedResidual` (HC) and QSA/PLE subsystems.
 - **References:** llama.cpp `src/models/qwen4exp.cpp` (local source), TensorSharp `Models/Qwen4Exp`.
 - [ ] Broader real-weight verification before promotion: more fixed prompts, incremental decode, a
