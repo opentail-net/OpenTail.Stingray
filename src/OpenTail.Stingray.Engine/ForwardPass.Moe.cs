@@ -144,6 +144,7 @@ public sealed unsafe partial class ForwardPass
             }
             if (_wGateInpShexp is not null)
                 ScaleBySharedGate(_sharedOut, _normBuf, _wGateInpShexp[layer]);
+            StageCapture.Record("cpu", layer, StageCapture.Stages.SharedExpert, new ReadOnlySpan<float>(_sharedOut, _embDim));
         }
 
         long pt2 = MoePhaseTiming.Now();
@@ -211,6 +212,7 @@ public sealed unsafe partial class ForwardPass
         }
 
         long pt3 = MoePhaseTiming.Now();
+        StageCapture.Record("cpu", layer, StageCapture.Stages.MoeOut, new ReadOnlySpan<float>(_hidden, _embDim));
         // Step 4: Add shared expert output
         if (_hp.HasSharedExpert)
             SimdKernels.AddInPlace(_hidden, _sharedOut, _embDim);

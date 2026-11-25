@@ -63,6 +63,12 @@ internal static class StageCapture
 
         /// <summary>Router logits before softmax/sigmoid (A32): compared to see whether a top-k expert set differs between backends.</summary>
         public const string Router = "router";
+
+        /// <summary>Routed-expert sum of a MoE block, before the shared expert is added (and before any latent up-projection).</summary>
+        public const string MoeOut = "moe_out";
+
+        /// <summary>Shared expert output of a MoE block (ungated or gated), before it is added to the routed sum.</summary>
+        public const string SharedExpert = "shared_expert";
     }
 
     /// <summary>Enables recording. Callers must reset <see cref="Records"/> themselves.</summary>
