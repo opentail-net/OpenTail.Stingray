@@ -6664,6 +6664,113 @@ public static unsafe class SimdKernels
         return Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
     }
 
+    /// <summary>
+    /// Repacks Q5_0 blocks (22 bytes: fp16 scale, qh, qs) into 24-byte blocks: float32 scale, qh, qs. The scale is converted
+    /// once with <see cref="HalfConv"/>, the conversion the 22-byte dot uses, so the repacked dot reads identical floats and
+    /// gives bit-identical results. <paramref name="dst"/> must hold <paramref name="blockCount"/> * 24 bytes.
+    /// </summary>
+    public static void RepackQ5_0Blocks(byte* src, byte* dst, long blockCount)
+    {
+        for (long b = 0; b < blockCount; b++)
+        {
+            byte* s = src + b * 22;
+            byte* d = dst + b * 24;
+            *(float*)d = HalfConv.ToFloat(s);
+            Buffer.MemoryCopy(s + 2, d + 4, 20, 20);
+        }
+    }
+
+    /// <summary>
+    /// Q5_0 x Q8_0 dot over repacked (24-byte) blocks. Same operations, in the same order, as <see cref="DotQ5_0_Q8_0"/>,
+    /// so the result is bit-identical to the dot over the original bytes.
+    /// </summary>
+    public static float DotQ5_0_Q8_0_Repacked(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Fma.IsSupported)
+            return DotQ5_0_Q8_0_Repacked_Avx2(row, scratch, cols);
+        return DotQ5_0_Q8_0_Repacked_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ5_0_Q8_0_Repacked_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        var acc = Vector256<float>.Zero;
+        var lowMask = Vector256.Create((byte)0x0F);
+        var hiFill = Vector256.Create((byte)0xF0);
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 24;
+            byte* q8Chunk = scratch + b * 36;
+            float d = *(float*)blk * *(float*)q8Chunk;
+            var q128 = Sse2.LoadVector128(blk + 8);
+            var qx = Vector256.Create(q128, Sse2.ShiftRightLogical(q128.AsUInt16(), 4).AsByte()) & lowMask;
+            var bitSet = BytesFromBits32(Unsafe.ReadUnaligned<uint>(blk + 4));
+            qx |= Avx2.AndNot(bitSet, hiFill);
+            var w = qx.AsSByte();
+            var y = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+            var p16 = Avx2.MultiplyAddAdjacent(Avx2.Abs(w), Avx2.Sign(y, w));
+            var p32 = Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+            acc = Fma.MultiplyAdd(Avx.ConvertToVector256Single(p32), Vector256.Create(d), acc);
+        }
+        return Vector256.Sum(acc);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ5_0_Q8_0_Repacked"/>; mirrors <see cref="DotQ5_0_Q8_0_Scalar"/> step for step.</summary>
+    internal static float DotQ5_0_Q8_0_Repacked_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 24;
+            float dW = *(float*)blk;
+            uint qh = (uint)(blk[4] | (blk[5] << 8) | (blk[6] << 16) | (blk[7] << 24));
+            byte* qs = blk + 8;
+            byte* q8Chunk = scratch + b * 36;
+            float dA = *(float*)q8Chunk;
+            sbyte* q8 = (sbyte*)(q8Chunk + 4);
+
+            int sumi = 0;
+            for (int j = 0; j < 16; j++)
+            {
+                int xh0 = (int)((qh >> j) & 1) << 4;
+                int xh1 = (int)((qh >> (j + 16)) & 1) << 4;
+                int x0 = ((qs[j] & 0xF) | xh0) - 16;
+                int x1 = ((qs[j] >> 4) | xh1) - 16;
+                sumi += x0 * q8[j] + x1 * q8[j + 16];
+            }
+            accum += dW * dA * sumi;
+        }
+        return accum;
+    }
+
+    /// <summary>
+    /// y = W x for a Q5_0 matrix already repacked by <see cref="RepackQ5_0Blocks"/>. Same dispatch as <see cref="MatVecQ5_0"/>;
+    /// every row is bit-identical to the original-layout result. The caller owns <paramref name="repacked"/> and must keep it
+    /// alive while the call runs.
+    /// </summary>
+    public static void MatVecQ5_0Repacked(float* output, byte* repacked, float* input, int rows, int cols)
+    {
+        int bytesPerRowR = (cols / 32) * 24;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = repacked; var s = scratch; var outp = output; int c = cols;
+            KernelFor(0, rows, i =>
+            {
+                outp[i] = DotQ5_0_Q8_0_Repacked(w + (long)i * bytesPerRowR, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ5_0_Q8_0_Repacked(repacked + (long)i * bytesPerRowR, scratch, cols);
+        }
+    }
+
     public static void MatVecQ5_0(float* output, byte* weights, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 32) * 22;

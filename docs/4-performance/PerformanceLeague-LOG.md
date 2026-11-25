@@ -2342,3 +2342,13 @@ Scratch copies of HEAD `d8401fd8`, not the product. The variant repacks every Q5
 **Machine state.** The baseline ran at 58 t/s here against 73.8 t/s in the iteration-56 A/B, so background load differs between sessions. Only the paired comparison is claimed.
 
 **Not done.** No product change. Merging the layout, releasing the source mapping and repacking Q8_0 are the owner's decision (decision (q) in the plan), and each would need its own A/B.
+
+## Repacked Q5_0 layout: kernels and correctness (2026-11-25, iteration 60)
+
+Product change, correctness first. `SimdKernels` gains the repacked Q5_0 layout (24-byte blocks: float32 scale, qh, qs): `RepackQ5_0Blocks` (converts each scale once with `HalfConv`, the same conversion the 22-byte dot uses), `DotQ5_0_Q8_0_Repacked` (AVX2, with a scalar mirror of the original scalar step for step), and `MatVecQ5_0Repacked` (the same dispatch as `MatVecQ5_0`). Nothing calls them yet: the loader wiring is deferred (see below), so behaviour is unchanged.
+
+**Tests.** `DotQ5_0_Repacked_BitIdentityTests`: 18 of 18 pass. The repack matches the original scale bits and the qh and qs bytes field by field; the dot is bit-identical to the original on every row (AVX2 dispatch, and the scalar path against the original scalar); the matvec is bit-identical at 1, 2, 3, 63, 64, 65 and 129 rows (serial and parallel). Random rows include inf, -inf, NaN, zero and subnormal scales. Fast suite: 1243 total, 0 failed, 16 skipped.
+
+**Greedy text, scratch variant (the A/B build from iteration 59, same kernels).** Five prompts, 96 greedy tokens each, baseline against repacked: identical on all five.
+
+**Not wired, and why.** The loader hook (repack at load, route decode, release the source) lives in `ForwardPass.cs`, which has another session's uncommitted edits, so it is not touched here. A pointer-keyed cache of repacked copies would also be unsafe on its own: a freed model address can be reused, and a stale repacked copy would then give wrong results. The safe wiring ties each repacked copy to the tensor's lifetime (repack and free with the model). The owner decision (q) on memory still applies before that wiring is merged.
