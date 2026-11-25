@@ -2393,3 +2393,24 @@ Change, in a scratch copy of HEAD `e080bc0f` (not committed; saved as `a3-fused-
 Paired differences (variant minus base): 8 rounds median +0.95 t/s (+2.1%), IQR 1.00 t/s; 16 rounds median +0.40 t/s (+0.9%), IQR 0.70 t/s.
 
 **Decision: not kept.** The 16-round median gain (0.40 t/s) is below the variant's own quartile spread (0.50 t/s) and the paired spread (0.70 t/s). The 8-round paired gain is below its paired spread too. The direction is consistent (13 of 16 rounds faster), so the effect may be small and positive, but this A/B does not resolve it on this machine. The product change stays out of the tree.
+
+## MoE CPU recheck (2026-11-25): superseded league rows
+
+Values replaced in [PerformanceLeague.md](../4-performance/PerformanceLeague.md) by the 2026-11-25 recheck (`scripts/bench-league-recheck.ps1`, CPU only, 500-token scenario, best of 3). The replaced rows came from the table *Text generation, C# only (CPU and Vulkan iGPU, 2026-10-11 recheck)*; that table has no per-row dates, so they are dated by its section.
+
+| Model | GB | Arch | Prompt tok | Prefill t/s | Decode t/s | Replaced by 2026-11-25 |
+|---|---:|---|---:|---:|---:|---|
+| DeepSeek-V2-Lite-Chat.Q2_K | 5.99 | deepseek2 | 508 | 45.5 | 19.3 | yes |
+| GLM-4.5-Air-Q2_K | 42.21 | glm4moe | 470 | 4.1 | 4.9 | yes |
+| LFM2-8B-A1B-Q4_K_M | 4.7 | lfm2moe | 516 | 118.3 | 24.0 | yes |
+| Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S | 24.91 | llama | 582 | 11.9 | 4.8 | yes |
+| Phi-3.5-MoE-instruct-Q3_K_M | 18.66 | phimoe | 587 | 18.2 | 9.4 | yes |
+| Qwen1.5-MoE-A2.7B-Chat.Q4_K_M | 8.84 | qwen2moe | 493 | 102.2 | 15.6 | yes |
+| TinyLLama-4x1.1B-MoE.Q4_K_M | 1.9 | llama | 595 | 112.0 | 22.9 | yes |
+| Trinity-Mini-Q4_K_M | 14.84 | afmoe | 443 | 15.0 | 14.7 | yes |
+| granite-3.0-1b-a400m-instruct-Q8_0 | 1.32 | granitemoe | 534 | 261.6 | 45.4 | yes |
+| kimi-vl-a3b-thinking-Q2_K | 6.13 | deepseek2 | 506 | 49.9 | 17.1 | yes |
+
+Rows added on 2026-11-25 (no earlier CPU row existed): OLMoE-1B-7B-0924-Instruct-Q4_K_M (516 tok), Qwen3-Coder-30B-A3B-Instruct-Q4_K_M (482 tok).
+
+**Cross-date note.** The 2026-11-25 values differ from the earlier ones by more than the OLMoE A/B spread for several models (for example Qwen1.5-MoE prefill 102.2 → 64.3, DeepSeek-V2-Lite prefill 45.5 → 57.0). That is not attributed to the change set, since the OLMoE A/B showed no measurable difference. The cause is not established: the earlier values were measured on other dates, and a same-session A/B on each model would be needed to attribute any of it.

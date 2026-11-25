@@ -219,7 +219,7 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | SmolLM2-1.7B-Instruct-Q5_K_M | 1.14 | llama | vulkan | 555 | 22.3 | 20.1 |
 | LFM2-1.2B-Q8_0 | 1.16 | lfm2 | cpu | 516 | 108.1 | 24.3 |
 | OLMo-1B.Q8_0 | 1.17 | olmo | cpu | 529 | 27.5 | 24.7 |
-| granite-3.0-1b-a400m-instruct-Q8_0 | 1.32 | granitemoe | cpu | 534 | 261.6 | 45.4 |
+| granite-3.0-1b-a400m-instruct-Q8_0 | 1.32 | granitemoe | cpu | 534 | 323.6 | 54.2 |
 | granite-3.0-1b-a400m-instruct-Q8_0 | 1.32 | granitemoe | vulkan | 534 | 34.7 | 32.5 |
 | ibm-granite_granite-3.3-2b-instruct-Q4_K_M | 1.44 | granite | cpu | 534 | 120.6 | 17.9 |
 | ibm-granite_granite-3.3-2b-instruct-Q4_K_M | 1.44 | granite | vulkan | 534 | 150.7 | 18.7 |
@@ -244,7 +244,7 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | SmolLM3-Q4_K_M | 1.78 | smollm3 | vulkan | 705 | 138.2 | 15.2 |
 | Falcon3-3B-Instruct-Q4_K_M | 1.87 | llama | cpu | 507 | 126.4 | 15.3 |
 | Falcon3-3B-Instruct-Q4_K_M | 1.87 | llama | vulkan | 507 | 55.0 | 16.9 |
-| TinyLLama-4x1.1B-MoE.Q4_K_M | 1.9 | llama | cpu | 595 | 112.0 | 22.9 |
+| TinyLLama-4x1.1B-MoE.Q4_K_M | 1.9 | llama | cpu | 595 | 91.6 | 28.0 |
 | TinyLLama-4x1.1B-MoE.Q4_K_M | 1.9 | llama | vulkan | 595 | 25.2 | 24.4 |
 | rwkv7-g1h-2.9b-20260710-ctx10240.i1-Q4_K_M | 1.91 | rwkv7 | cpu | 504 | 38.1 | 13.5 |
 | rwkv7-g1h-2.9b-20260710-ctx10240.i1-Q4_K_M | 1.91 | rwkv7 | vulkan | 504 | 50.8 | 15.5 |
@@ -272,6 +272,7 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | ggml-model-q4_k | 3.8 | llama | cpu | 587 | 60.0 | 7.0 |
 | ggml-model-q4_k | 3.8 | llama | vulkan | 587 | 62.5 | 7.6 |
 | OLMoE-1B-7B-0924-Instruct-Q4_K_M | 3.92 | olmoe | vulkan | 516 | 133.1 | 21.8 |
+| OLMoE-1B-7B-0924-Instruct-Q4_K_M | 3.92 | olmoe | cpu | 516 | 130.6 | 35.4 |
 | Mistral-7B-Instruct-v0.3-Q4_K_M | 4.07 | llama | vulkan | 577 | 57.0 | 7.7 |
 | xverse-7b-chat-q4_k_m | 4.16 | xverse | cpu | 843 | 51.8 | 6.9 |
 | xverse-7b-chat-q4_k_m | 4.16 | xverse | vulkan | 843 | 63.7 | 6.6 |
@@ -288,7 +289,7 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | gemma-4-E4B-it-Q4_K_M | 4.64 | gemma4 | vulkan | 495 | 51.8 | 8.5 |
 | Qwen3-8B-Q4_K_M | 4.68 | qwen3 | cpu | 493 | 50.5 | 6.6 |
 | Qwen3-8B-Q4_K_M | 4.68 | qwen3 | vulkan | 493 | 60.3 | 6.9 |
-| LFM2-8B-A1B-Q4_K_M | 4.7 | lfm2moe | cpu | 516 | 118.3 | 24.0 |
+| LFM2-8B-A1B-Q4_K_M | 4.7 | lfm2moe | cpu | 516 | 106.6 | 31.2 |
 | swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M | 4.71 | apertus | cpu | 546 | 43.5 | 7.3 |
 | swiss-ai.Apertus-8B-Instruct-2509.Q4_K_M | 4.71 | apertus | vulkan | 546 | 52.2 | 6.8 |
 | c4ai-command-r7b-12-2024-Q4_K_M | 4.71 | cohere2 | cpu | 500 | 44.3 | 6.1 |
@@ -305,11 +306,11 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | Ternary-Bonsai-2-27B-PTQ1_0 | 5.54 | qwen35 | cpu | 522 | 7.7 | 0.5 |
 | THUDM_GLM-4-9B-0414-Q4_K_M | 5.74 | glm4 | cpu | 470 | 36.9 | 6.0 |
 | THUDM_GLM-4-9B-0414-Q4_K_M | 5.74 | glm4 | vulkan | 470 | 3.9 | 3.7 |
-| DeepSeek-V2-Lite-Chat.Q2_K | 5.99 | deepseek2 | cpu | 508 | 45.5 | 19.3 |
+| DeepSeek-V2-Lite-Chat.Q2_K | 5.99 | deepseek2 | cpu | 508 | 57.0 | 23.5 |
 | DeepSeek-V2-Lite-Chat.Q2_K | 5.99 | deepseek2 | vulkan | 508 | 10.2 | 8.5 |
-| kimi-vl-a3b-thinking-Q2_K | 6.13 | deepseek2 | cpu | 506 | 49.9 | 17.1 |
+| kimi-vl-a3b-thinking-Q2_K | 6.13 | deepseek2 | cpu | 506 | 56.4 | 19.8 |
 | gemma-4-12b-it-Q4_K_M | 6.63 | gemma4 | vulkan | 499 | 4.4 | 4.1 |
-| Qwen1.5-MoE-A2.7B-Chat.Q4_K_M | 8.84 | qwen2moe | cpu | 493 | 102.2 | 15.6 |
+| Qwen1.5-MoE-A2.7B-Chat.Q4_K_M | 8.84 | qwen2moe | cpu | 493 | 64.3 | 19.3 |
 | Qwen1.5-MoE-A2.7B-Chat.Q4_K_M | 8.84 | qwen2moe | vulkan | 493 | 90.7 | 12.6 |
 | GLM-4.7-Flash-Q2_K | 10.57 | deepseek2 | cpu | 470 | 31.7 | 9.3 |
 | granite-4.0-h-small-Q2_K | 10.97 | granitehybrid | cpu | 493 | 13.9 | 8.2 |
@@ -319,23 +320,44 @@ Other rows from the 2026-10-11 all-checkpoint sweep (CPU and Vulkan, 500-token p
 | Mistral-Small-3.2-24B-Instruct-2506-Q4_K_S | 12.62 | llama | vulkan | 1032 | 2.7 | 2.7 |
 | Muse-Glimmer-30B-UD-Q4_K_XL | 14.79 | muse-glimmer | cpu | 503 | 2.3 | 2.3 |
 | Muse-Glimmer-30B-UD-Q4_K_XL | 14.79 | muse-glimmer | vulkan | 503 | 2.4 | 2.2 |
-| Trinity-Mini-Q4_K_M | 14.84 | afmoe | cpu | 443 | 15.0 | 14.7 |
+| Trinity-Mini-Q4_K_M | 14.84 | afmoe | cpu | 443 | 16.1 | 15.4 |
 | Trinity-Mini-Q4_K_M | 14.84 | afmoe | vulkan | 443 | 10.4 | 10.8 |
 | DeepSeek-V2-Lite-Chat.Q8_0 | 15.56 | deepseek2 | cpu | 508 | 45.3 | 11.7 |
 | Qwen3-Coder-30B-A3B-Instruct-Q4_K_M | 17.28 | qwen3moe | vulkan | 482 | 11.0 | 10.8 |
-| Phi-3.5-MoE-instruct-Q3_K_M | 18.66 | phimoe | cpu | 587 | 18.2 | 9.4 |
+| Qwen3-Coder-30B-A3B-Instruct-Q4_K_M | 17.28 | qwen3moe | cpu | 482 | 51.4 | 15.3 |
+| Phi-3.5-MoE-instruct-Q3_K_M | 18.66 | phimoe | cpu | 587 | 20.6 | 10.8 |
 | Phi-3.5-MoE-instruct-Q3_K_M | 18.66 | phimoe | vulkan | 587 | 19.2 | 5.7 |
 | EXAONE-4.5-33B-Q4_K_M | 18.67 | exaone4 | cpu | 481 | 11.6 | 1.9 |
-| Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S | 24.91 | llama | cpu | 582 | 11.9 | 4.8 |
+| Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S | 24.91 | llama | cpu | 582 | 11.2 | 4.9 |
 | Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S | 24.91 | llama | vulkan | 582 | 4.2 | 4.1 |
 | Qwen3.6-35B-A3B-UD-Q6_K | 27.3 | qwen35moe | cpu | 480 | 61.3 | 3.0 |
 | Qwen3.6-35B-A3B-UD-Q6_K | 27.3 | qwen35moe | vulkan | 480 | 3.1 | 3.0 |
 | tencent.Hunyuan-A13B-Instruct.Q3_K_S | 32.4 | hunyuan-moe | cpu | 476 | 10.2 | 6.5 |
 | tencent.Hunyuan-A13B-Instruct.Q3_K_S | 32.4 | hunyuan-moe | vulkan | 476 | 2.8 | 2.8 |
 | cerebras_GLM-4.5-Air-REAP-82B-A12B-Q2_K | 33.28 | glm4moe | cpu | 470 | 7.4 | 4.5 |
-| GLM-4.5-Air-Q2_K | 42.21 | glm4moe | cpu | 470 | 4.1 | 4.9 |
+| GLM-4.5-Air-Q2_K | 42.21 | glm4moe | cpu | 470 | 10.5 | 5.7 |
 
 > The Vulkan row for Qwen3-8B, the decode and prefill rows for Qwen2.5-0.5B and the other family-level Vulkan rows that the 2026-10-11 recheck covers are kept above. Vulkan has no llama.cpp reference in this file, so no Vulkan ratio exists.
+
+
+**MoE rows, Performance Check 2026-11-25.** The CPU 500-token rows above for the twelve MoE checkpoints that the 2026-11-25 change set could touch (per-layer capture calls on every MoE layer; see the subsection below) were re-measured with `scripts/bench-league-recheck.ps1`, best of 3, CPU only. The superseded values are in [PerformanceLeague-LOG.md](../docs/4-performance/PerformanceLeague-LOG.md) under *MoE CPU recheck (2026-11-25)*. Differences against the earlier dated values are not attributed to the change set: an interleaved A/B on OLMoE (baseline commit `dfb0a3a8` against HEAD, Release, three runs each) showed no measurable difference (within 1-3%, run-to-run spread 3-4%).
+
+### MoE models, CPU, short prompt (Performance Check 2026-11-25)
+
+| Model | GB | Arch | Prompt tok | Prefill t/s | Decode t/s |
+|---|---:|---|---:|---:|---:|
+| DeepSeek-V2-Lite-Chat.Q2_K | 5.99 | deepseek2 | 17 | 39.7 | 29.4 |
+| GLM-4.5-Air-Q2_K | 42.21 | glm4moe | 16 | 6.7 | 5.7 |
+| LFM2-8B-A1B-Q4_K_M | 4.7 | lfm2moe | 20 | 65.8 | 33.8 |
+| Nous-Hermes-2-Mixtral-8x7B-DPO.i1-Q4_K_S | 24.91 | llama | 21 | 9.8 | 5.0 |
+| OLMoE-1B-7B-0924-Instruct-Q4_K_M | 3.92 | olmoe | 23 | 83.2 | 41.8 |
+| Phi-3.5-MoE-instruct-Q3_K_M | 18.66 | phimoe | 20 | 17.7 | 11.7 |
+| Qwen1.5-MoE-A2.7B-Chat.Q4_K_M | 8.84 | qwen2moe | 30 | 47.6 | 21.6 |
+| Qwen3-Coder-30B-A3B-Instruct-Q4_K_M | 17.28 | qwen3moe | 19 | 35.7 | 17.0 |
+| TinyLLama-4x1.1B-MoE.Q4_K_M | 1.9 | llama | 28 | 69.5 | 31.1 |
+| Trinity-Mini-Q4_K_M | 14.84 | afmoe | 20 | 15.4 | 16.2 |
+| granite-3.0-1b-a400m-instruct-Q8_0 | 1.32 | granitemoe | 18 | 143.6 | 67.1 |
+| kimi-vl-a3b-thinking-Q2_K | 6.13 | deepseek2 | 26 | 44.5 | 23.8 |
 
 ## Text generation, Vulkan iGPU, SmolLM2-1.7B-Instruct Q4_K_M (2026-08 / 2026-09-28)
 
