@@ -869,6 +869,21 @@ Reading: the exact row-major int8 path reproduces the decode arithmetic bit for 
 
 Scratch harness and raw results are in the performance scratch folder, not the repo.
 
+## CPU prefill default: exact row-major int8 (Performance Check 2026-11-26)
+
+Owner direction, 2026-11-26: the exact row-major int8 path is the default (`STINGRAY_CPU_PREFILL_Q8` on; `=0` opts out to the per-token MatVec path). Same-day runs, Release CLI, CPU, SmolLM2-1.7B-Instruct Q4_K_M, 516-token benchmark prompt, 48 greedy tokens, three interleaved rounds per arm. Values are median with min–max.
+
+| Run | Arm | Prefill t/s |
+|---|---|---:|
+| Kernel-arms run (section above) | per-token MatVec tier (old default) | 88.7 (87.6–89.7) |
+| Kernel-arms run (section above) | exact row-major int8 (`STINGRAY_CPU_PREFILL_Q8=1`, Q4_K and Q6_K) | 122.0 (116.2–122.2) |
+| Default-check run | per-token (`STINGRAY_CPU_PREFILL_Q8=0`) | 81.0 (80.7–81.6) |
+| Default-check run | exact row-major int8 (new default) | 119.7 (117.5–120.5) |
+
+The two runs give a 1.37x and a 1.48x speedup, so treat the ratio as about 1.3–1.5x. Greedy text is identical between the per-token path and the new default on both the 516-token prompt and the short prompt in the default-check run. Kernel level, from the section above: exact row-major Q4_K and Q6_K show zero differing elements against the decode MatVec.
+
+Not measured under this change: perplexity; models other than SmolLM2; the fp32 dequant route at call sites other than the ones checked for SmolLM2. The repacked Q4_K x8 GEMM and the Q6_K group GEMM remain opt-in (`STINGRAY_CPU_PREFILL_FAST_GEMM=1`) because they change greedy text.
+
 ## Sweeps and experiments (CPU, 2026-10)
 
 ### Smoke-test workload, CPU, 256×256 `stingray image` (2026-10-30)

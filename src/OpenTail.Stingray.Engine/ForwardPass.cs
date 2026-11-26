@@ -1683,7 +1683,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull. TryMatMulBatchedQ4Kx8
         // handles any batch size — its ragged tail uses the single-token repacked kernel, which
         // still gets the 8-row win — so there is no reason to have a threshold at all.
-        if (SimdKernels.Q8PrefillEnabled)
+        if (SimdKernels.Q8PrefillFastGemm)
         {
             byte* packed = GetRepackedQ4Kx8(in w, rows, cols);
             if (packed != null &&
@@ -1734,7 +1734,8 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             return false;
         if (SimdKernels.Q8PrefillEnabled)
         {
-            if (w.DType == DType.Q4_K && GetRepackedQ4Kx8(in w, rows, cols) != null) return false;
+            // Q4_K always takes the exact int8 path under this gate, so the fp32 dequant route must not take it.
+            if (w.DType == DType.Q4_K) return false;
             if (w.DType == DType.Q6_K && N >= SimdKernels.MinBatchForQ8Prefill) return false;
             // Int8 batched path (TryMatMulBatchedQ8) beats a one-off F32 copy of the matrix.
             if (w.DType == DType.Q5_0) return false;
@@ -1766,7 +1767,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         // repacked path for one and dual-Q8 for the other would mix quantisation schemes within a
         // single FFN.
         byte* packed1, packed2;
-        if (!useCache1 && !useCache2 && SimdKernels.Q8PrefillEnabled
+        if (!useCache1 && !useCache2 && SimdKernels.Q8PrefillFastGemm
             && (packed1 = GetRepackedQ4Kx8(in w1, rows, cols)) != null
             && (packed2 = GetRepackedQ4Kx8(in w2, rows, cols)) != null)
         {

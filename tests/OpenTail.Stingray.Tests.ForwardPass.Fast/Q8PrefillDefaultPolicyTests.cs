@@ -3,14 +3,19 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 public sealed class Q8PrefillDefaultPolicyTests
 {
     [Fact]
-    public void BatchedQ8Prefill_IsOptInToPreservePerTokenNumerics()
+    public void ExactInt8Prefill_IsOnByDefault_AndOptOutWithZero()
     {
-        Assert.Equal(
-            SimdKernels.ResolveQ8PrefillDefault(Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8")),
-            SimdKernels.Q8PrefillEnabled);
-        Assert.False(SimdKernels.ResolveQ8PrefillDefault(null));
+        // Pure resolver checks only: Q8PrefillEnabled is a process-wide static that other tests set and restore.
+        Assert.True(SimdKernels.ResolveQ8PrefillDefault(null));
         Assert.False(SimdKernels.ResolveQ8PrefillDefault("0"));
         Assert.True(SimdKernels.ResolveQ8PrefillDefault("1"));
-        Assert.False(SimdKernels.ResolveQ8PrefillDefault("true"));
+    }
+
+    [Fact]
+    public void FastGemm_IsOptInOnly()
+    {
+        Assert.Equal(
+            Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_FAST_GEMM") == "1",
+            SimdKernels.Q8PrefillFastGemm);
     }
 }

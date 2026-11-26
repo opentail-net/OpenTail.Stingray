@@ -432,45 +432,46 @@ public static unsafe class SimdKernels
         Environment.GetEnvironmentVariable("STINGRAY_BATCHED_MATVEC_TIER") != "0";
 
     /// <summary>
-    /// Whether the int8 (Q8_K/Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
+    /// Whether the int8 (Q8_KS) batched-prefill path in <see cref="MatMulBatched"/> is live.
     ///
-    /// <para><b>Default off (user decision 2026-11-18, docs/reference/adr-0003-cpu-int8-prefill-default.md).</b>
-    /// Quantizing activation rows lets each weight row be read once and dotted against 8 tokens per
-    /// call (the <c>_8In</c>/<c>_4In</c> kernels) instead of once per token. It is the same technique
-    /// llama.cpp's CPU backend uses for its own prompt processing (src1 quantized to the weight's
-    /// <c>vec_dot_type</c>, Q8_K/Q8_0). It is faster, but not bit-identical to the per-token
-    /// decode kernels. The default preserves that exact path; opt into the batched path with
-    /// <c>STINGRAY_CPU_PREFILL_Q8=1</c> when throughput is preferred.</para>
+    /// <para><b>Default on (owner decision 2026-11-26).</b> This is the exact row-major int8 path: every
+    /// token's activations are quantised to Q8_KS exactly as the per-token decode matvec quantises them,
+    /// and the <c>_8In</c>/<c>_4In</c> kernels reproduce the decode dot bit for bit (pinned by
+    /// <c>MatMulBatchedQ8EquivalenceTests</c>). A weight row is read once per 8 or 4 tokens instead of once
+    /// per token. Measured 2026-11-26 on SmolLM2-1.7B Q4_K_M, 516-token prompt: prefill 88.7 -&gt; 122 t/s
+    /// (median of interleaved rounds) with identical greedy text on two prompts. See
+    /// PerformanceLeague.md (repo root), section "CPU prefill kernel arms".</para>
     ///
-    /// <para>The batched int8 dots are NOT byte-exact with the per-token decode kernels, so prefill
-    /// logits differ slightly from a token-by-token run. ("F32 prefill" was a misnomer: for K-quant
-    /// weights the per-token decode matvec also quantizes activations, to Q8_KS; the difference is
-    /// grouping and kernel, not int8 vs float.) Measured cost: SmolLM2-1.7B wikitext PPL 6.9437 -> 6.9891 (+0.69%),
-    /// Qwen2.5-0.5B 11.9702 -> 11.9693 (neutral); DeepSeek-V2-Lite matched llama-server greedily
-    /// with this on and departed at token 9 with it off (before e7b7aa8a, which flips that same
-    /// knife-edge token either way: docs/1-correctness/bugstofix.md item 24); Granite-4-H-Small PPL 26.42 (on) vs 26.55
-    /// (off) vs llama.cpp 26.11. Routed MoE experts are NOT covered by this gate: they also need
-    /// <c>STINGRAY_MOE_PREFILL_Q8=1</c> (default off; the 2026-10-01 Granite MoE per-token NLL
-    /// investigation, docs/done/13-granite4-h-small-moe-ppl-parity-plan.md).</para>
+    /// <para>Opt out with <c>STINGRAY_CPU_PREFILL_Q8=0</c> to run the per-token MatVec tier for every batch.</para>
     ///
-    /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
-    /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
-    /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
-    /// <para><b>Status (2026-11-26): off by default, and off the menu.</b> The default was switched from on
-    /// to off on 2026-11-18 (commit 7bfcebcf). A same-session A/B on 2026-11-26 (Release, CPU, 516-token
-    /// benchmark prompt, median of three interleaved rounds) measured prefill at SmolLM2-1.7B Q4_K_M
-    /// 212.9 -&gt; 82.9 t/s (-61%) and OLMoE-1B-7B Q4_K_M 177.8 -&gt; 133.0 t/s (-25%) with the default off;
-    /// decode was unchanged. With <c>STINGRAY_CPU_PREFILL_Q8=1</c> prefill was 228.1 and 178.5 t/s. Greedy
-    /// text also differs between the two paths on a short prompt for both models (identical on the 516-token
-    /// prompt). The batched path is kept, documented and opt-in. It is not to be turned on by default;
-    /// reopening needs a new measurement and an owner decision (performance league, "CPU prefill default A/B",
-    /// 2026-11-26).</para>
+    /// <para><b>Not on this path, opt-in only:</b> the repacked Q4_K x8 GEMM and the Q6_K group GEMM, enabled
+    /// by <see cref="Q8PrefillFastGemm"/>. The repacked GEMM quantises activations per 256 values
+    /// (llama.cpp's Q8_K, the coarser format the 2026-10-02 numerics note rejected) and changes greedy text;
+    /// the Q6_K GEMM differs from decode in float summation order and also changed greedy text.</para>
     ///
+    /// <para>Routed MoE experts are NOT covered by this gate: they also need <c>STINGRAY_MOE_PREFILL_Q8=1</c>
+    /// (default off; docs/done/13-granite4-h-small-moe-ppl-parity-plan.md). All-control-token prompts still
+    /// use the sequential F32 path (ForwardPass detects that input).</para>
+    ///
+    /// <para><b>History.</b> The default was off from 2026-11-18 (commit 7bfcebcf, ADR-0003) because the
+    /// batched path of that time was not bit-identical to decode. The perplexity figures recorded in older
+    /// notes (SmolLM2-1.7B 6.9437 -&gt; 6.9891; Granite-4-H-Small 26.42 vs 26.55 vs llama.cpp 26.11) were taken on
+    /// that batched form, before the exact row-major split; they are history and should be re-measured for
+    /// the current default before being cited.</para>
     /// </summary>
     public static bool Q8PrefillEnabled { get; set; } =
         ResolveQ8PrefillDefault(Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8"));
 
-    internal static bool ResolveQ8PrefillDefault(string? setting) => setting == "1";
+    /// <summary>
+    /// Opt-in (<c>STINGRAY_CPU_PREFILL_FAST_GEMM=1</c>): route Q4_K through the repacked x8 GEMM and Q6_K
+    /// through the group GEMM when <see cref="Q8PrefillEnabled"/> is on. Faster (about 1.5x to 2.5x on the
+    /// measured shapes) but NOT bit-identical to decode; see the note on <see cref="Q8PrefillEnabled"/>.
+    /// </summary>
+    public static bool Q8PrefillFastGemm { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_FAST_GEMM") == "1";
+
+    /// <summary>Anything but an explicit <c>0</c> turns the exact int8 prefill on.</summary>
+    internal static bool ResolveQ8PrefillDefault(string? setting) => setting != "0";
 
     /// <summary>
     /// Experiment (2026-10-03, TensorSharp ManagedQuantGemm idea): run the dense CPU decode's

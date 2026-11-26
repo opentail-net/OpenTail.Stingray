@@ -22,12 +22,14 @@ advertised and do not run through `stingray run`.
 
 ### Changed
 
-- **CPU prefill default.** The batched int8 CPU prefill is no longer the default; the default prefill is the
-  per-token path, which is bit-identical to decode. Measured on 1.0.10 (same session, 516-token prompt):
-  prefill is slower by default, SmolLM2-1.7B 212.9 -> 82.9 t/s and OLMoE-1B-7B 177.8 -> 133.0 t/s; decode
-  is unchanged. `STINGRAY_CPU_PREFILL_Q8=1` restores the batched path (228.1 and 178.5 t/s). Greedy text
-  differs between the two paths on some prompts. The batched path stays off the default; see the code
-  comments on `SimdKernels.Q8PrefillEnabled`.
+- **CPU prefill default: exact row-major int8.** The default CPU prefill is the exact row-major int8 path
+  (owner direction, 2026-11-26). Each token's activations are quantised as the per-token decode matvec
+  quantises them, and for Q4_K and Q6_K the batched kernels reproduce the decode dot with zero differing
+  elements at kernel level. Measured on SmolLM2-1.7B Q4_K_M, 516-token prompt, same day: prefill 81.0 -> 119.7 t/s
+  (medians of three interleaved rounds, a second run 88.7 -> 122.0 t/s), with identical greedy text on two
+  prompts. `STINGRAY_CPU_PREFILL_Q8=0` returns to the per-token MatVec path. The repacked Q4_K x8 GEMM and the
+  Q6_K group GEMM are opt-in only (`STINGRAY_CPU_PREFILL_FAST_GEMM=1`), because they change greedy text on the
+  short prompt. Perplexity under this default is not yet re-measured, and only SmolLM2 has been checked.
 - **Models declaring YaRN RoPE scaling change output.** A GGUF with `rope.scaling.type = yarn` (on the
   main CPU forward path, not MLA) now applies YaRN to its full-attention layers, using the GGUF's YaRN
   betas; before, those layers used plain RoPE. Output of such models changes. Each admitted model's golden

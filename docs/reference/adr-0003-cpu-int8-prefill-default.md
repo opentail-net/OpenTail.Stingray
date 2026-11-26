@@ -1,8 +1,8 @@
 # ADR-0003: policy for int8 activation prefill on CPU
 
-**Status:** 2026-10-02 decision superseded by the user on 2026-11-18. Confirmed 2026-11-26 by the user: the batched int8 CPU prefill stays off the menu (off by default, opt-in only). The 2026-11-26 same-session A/B (prefill 212.9 -> 82.9 t/s on SmolLM2-1.7B, 177.8 -> 133.0 t/s on OLMoE-1B-7B with the default off; decode unchanged) is in `PerformanceLeague.md`. Reopening needs a new measurement and an owner decision.
+**Status:** Superseded 2026-11-26 by owner direction. The 2026-10-02 int8 default was turned off on 2026-11-18. On 2026-11-26 the owner chose the exact row-major int8 path and asked for it to be the default. The per-token path stays available with `STINGRAY_CPU_PREFILL_Q8=0`. The repacked Q4_K x8 GEMM and the Q6_K group GEMM stay opt-in (`STINGRAY_CPU_PREFILL_FAST_GEMM=1`). Measurements are in `PerformanceLeague.md`, sections "CPU prefill default" and "CPU prefill kernel arms". An earlier revision of this file recorded an "off the menu" status later on 2026-11-26; the owner direction above supersedes it.
 **Original decision date:** 2026-10-02
-**Current switch:** `STINGRAY_CPU_PREFILL_Q8` (default off; `=1` opts into batched int8 prefill)
+**Current switch:** `STINGRAY_CPU_PREFILL_Q8` (default on: exact row-major int8; `=0` opts out to the per-token MatVec path). `STINGRAY_CPU_PREFILL_FAST_GEMM=1` opts into the faster repacked GEMMs, which are not bit-identical to decode.
 **Code:** `SimdKernels.Q8PrefillEnabled` (`src/OpenTail.Stingray.Cpu/SimdKernels.cs`)
 
 ## Context
@@ -82,7 +82,8 @@ kernel rewrite `e7b7aa8a` later flips that same knife-edge token on both paths; 
 
 ## Decision
 
-- **Current decision (2026-11-18):** `STINGRAY_CPU_PREFILL_Q8` defaults **off**. The default prefill uses the per-token kernels and is bit-identical to sequential decode. Set `STINGRAY_CPU_PREFILL_Q8=1` to opt into faster batched int8 prefill.
+- **Current decision (2026-11-26, owner direction):** `STINGRAY_CPU_PREFILL_Q8` defaults **on** and selects the exact row-major int8 path. Each token's activations are quantised as the per-token decode matvec quantises them, and the `_8In`/`_4In` kernels reproduce that dot. Set `STINGRAY_CPU_PREFILL_Q8=0` to return to the per-token MatVec path (the 2026-11-18 default).
+- The repacked Q4_K x8 GEMM and the Q6_K group GEMM are **opt-in only** (`STINGRAY_CPU_PREFILL_FAST_GEMM=1`). They are faster but change greedy text on the short prompt.
 - Routed MoE experts are **not** affected. They take int8 only when
   `STINGRAY_MOE_PREFILL_Q8=1` is also set (default off,
   `MoeBatchedExperts.Q8PrefillEnabled`), so the Granite MoE finding that motivated 2026-10-01
@@ -91,14 +92,13 @@ kernel rewrite `e7b7aa8a` later flips that same knife-edge token on both paths; 
 
 Why:
 - The user prioritized deterministic numerical consistency between batched prefill and per-token decode for the default path.
-- The measured 2.2-2.9x speedup on Q4_K dense models remains available as an explicit opt-in; this policy does not discard that path.
+- The exact row-major path keeps that consistency at kernel level (Q4_K and Q6_K: zero differing elements against decode) and recovers most of the speed: SmolLM2-1.7B prefill 81.0 -> 119.7 t/s and 88.7 -> 122.0 t/s in two same-day runs (`PerformanceLeague.md`, 2026-11-26).
 - Historical PPL evidence ranges from neutral to +0.69% versus llama.cpp, and the synthetic per-weight dot study found lower activation error for Q8_KS than Q8_K in the tested rows. The direct SmolLM2 per-token versus batched-int8 delta measured 2026-11-18 is +0.074% in the `[1024,+)` bucket. Per-position NLL and greedy parity remain open under correctness item 25 in `docs/1-correctness/bugstofix.md`.
 - Bit-identical prefill and decode is an internal consistency property, not a guarantee of greater fidelity to llama.cpp. The current choice is a default-policy decision; item 25 measures the quality tradeoff separately.
 
 ## Consequences
 
-- With `STINGRAY_CPU_PREFILL_Q8=1`, prefill logits on dense CPU models are no longer bit-identical
-  to a token-by-token decode run. Tests that pin the exact path still set
+- On the default exact row-major int8 path, kernel bit diffs against decode are zero for Q4_K and Q6_K (`PerformanceLeague.md`, "CPU prefill kernel arms"). Other int8-routed types (Q5_0, Q8_0, Q3_K) are not re-checked at engine level under this default, and perplexity is not re-measured. The batched form measured 2026-10-02 to 2026-11-17 was not bit-identical to decode. Tests that pin the exact path still set
   `SimdKernels.Q8PrefillEnabled = false` explicitly. These
   are `MatMulBatchedEquivalenceTests`, `ContinuousBatchingTests`, `PrefillDecodeSelfConsistencyTests`
   (its strict arm) and the MoE strict arms. The int8 arms already had calibrated budgets
@@ -115,8 +115,8 @@ Why:
   - **RWKV is not verified:** no RWKV checkpoint is on this machine. Re-check the repeated-token
     case when one is available.
 - Rows in `docs/RUNNING.md` / `PerformanceLeague.md` measured 2026-10-01..02 used the per-token
-  default. Rows measured 2026-10-02 through 2026-11-17 used the batched-int8 default. The current
-  per-token default was restored on 2026-11-18; the historical measurements remain labelled by
+  default. Rows measured 2026-10-02 through 2026-11-17 used the batched-int8 default. The per-token
+  default was restored on 2026-11-18, and the exact row-major int8 default on 2026-11-26; the historical measurements remain labelled by
   their test setting.
 
 ## Known gap (follow-up, not a blocker)
@@ -159,7 +159,7 @@ would be a decode-kernel change with no measured benefit and is not planned.
 
 ## Usage
 
-`STINGRAY_CPU_PREFILL_Q8=1` opts into batched int8 prefill for the process; leave it unset or set
-it to `0` for the per-token path (bit-identical to sequential decode). Item 25 in
+`STINGRAY_CPU_PREFILL_Q8` is on by default (exact row-major int8). Set it to `0` for the per-token
+MatVec path. `STINGRAY_CPU_PREFILL_FAST_GEMM=1` also enables the repacked Q4_K x8 and Q6_K GEMMs, which change greedy text. Item 25 in
 `docs/1-correctness/bugstofix.md` tracks the model-level PPL and greedy-parity follow-up that could
 change this default again.
