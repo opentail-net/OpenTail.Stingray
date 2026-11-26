@@ -60,7 +60,7 @@ The engine code I read is careful. The GGUF parser bounds every length against t
 - `benchmarks/OpenTail.Stingray.Bench/InferenceBenchmark.cs:1417` compares against OpenBLAS.
 - `benchmarks/OpenTail.Stingray.Bench/ContinuousBatchingHarness.cs:58` prints OpenBLAS status.
 
-The gate itself is correct: `BlasInterop.cs:52` returns false unless `STINGRAY_USE_OPENBLAS=1`. Across tracked files there are 312 OpenBLAS lines in 76 files. The owner's personal memory says every reference is to be removed, while CLAUDE.md says keep the gate and state never-use. These differ; see section 7.
+The gate itself is correct: `BlasInterop.cs:52` returns false unless `STINGRAY_USE_OPENBLAS=1`. Across tracked files there are 312 OpenBLAS lines in 76 files. A separate owner instruction says every reference is to be removed, while CLAUDE.md says keep the gate and state never-use. These differ; see section 7.
 
 **S5. A public number has no date or command.** The README's "Hardware and speed" table says "~60-70 tokens/s (Qwen2.5 0.5B)" (`README.md:299`). The repo's own measurements for this model are 28.2 t/s (decode, 2026-09-28, `docs/4-performance/PerformanceLeague-LOG.md:648`) and 75.48 t/s at 8 threads (2026-11-24, `docs/4-performance/2026-11-08-performance-plan.md:56`). Public text must match its evidence: date the figure, cite the command, or reconcile it.
 
@@ -72,7 +72,7 @@ The gate itself is correct: `BlasInterop.cs:52` returns false unless `STINGRAY_U
 
 **S9. Silent `catch { }` blocks.** At least 45 single-line empty catches are in `src/`. Most are cleanup or `finally` guards (for example `ControlNetModel.cs:579`, `ZImagePipeline.cs:273`, `CudaBackend.cs:7350`), which is acceptable. The ones that could hide a real failure from the caller need a log line or a comment saying why. I did not check `ImageCommand.cs:186` and `:216`.
 
-**S10. Git state.** Six commits on `origin/main` came after the last green run (`9ef49a8f`), and CI ran only on the last one (`3cfcc60b`). Two commits are unpushed. A second worktree at `C:/Git-Public/OpenTail.Stingray-backlog` (branch `backlog/2026-11-08-other`) and `stash@{0}` ("WIP on main") remain. The global rule is no worktrees or branches unless asked. I did not touch any of them. Push only after M1 and M2 are fixed and the Core suite passes locally.
+**S10. Git state.** Six commits on `origin/main` came after the last green run (`9ef49a8f`), and CI ran only on the last one (`3cfcc60b`). Two commits are unpushed. A second worktree (branch `backlog/2026-11-08-other`) and `stash@{0}` ("WIP on main") remain. The global rule is no worktrees or branches unless asked. I did not touch any of them. Push only after M1 and M2 are fixed and the Core suite passes locally.
 
 ## 5. Notes
 
@@ -104,7 +104,7 @@ The gate itself is correct: `BlasInterop.cs:52` returns false unless `STINGRAY_U
 
 ## 7. Owner decisions needed
 
-1. **OpenBLAS:** keep the gate and state "never used" on the remaining references (CLAUDE.md), or remove the references (the personal memory)?
+1. **OpenBLAS:** keep the gate and state "never used" on the remaining references (CLAUDE.md), or remove the references (the separate owner instruction)?
 2. **AOT and net11:** fix M1 with net10 only, or ship AOT for both targets?
 3. **Removal from git:** approve removing the 29 `Zz*Tmp.cs` files (S1), the 8 `zz_scratch` dumps (S2), `.mcp.json` (S3), and the 12 `*_ref.py` scripts (N4)?
 4. **Git cleanup:** the backlog worktree and `stash@{0}` (S10).
