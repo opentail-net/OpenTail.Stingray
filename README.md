@@ -8,7 +8,7 @@ your GPU through Vulkan or CUDA. (The native pieces that can still be involved a
 and ONNX Runtime for the ONNX-based speech engines such as Piper.)
 
 [![NuGet](https://img.shields.io/nuget/v/OpenTail.Stingray.svg)](https://www.nuget.org/packages/OpenTail.Stingray)
-[![.NET 10](https://img.shields.io/badge/.NET-10-blue)](https://dotnet.microsoft.com/)
+[![.NET 10 and 11](https://img.shields.io/badge/.NET-10%20%7C%2011-blue)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ```text
@@ -25,7 +25,7 @@ Sampling is random, so the wording differs from run to run.
 
 ## Quick start: chat from C#
 
-You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) and a 64-bit x86 CPU with AVX2
+You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) (the packages also target .NET 11; building that target needs the [.NET 11 SDK](https://dotnet.microsoft.com/download)) and a 64-bit x86 CPU with AVX2
 (most PCs from 2015 on). A GPU is optional.
 
 **1. Create a project and add the package**

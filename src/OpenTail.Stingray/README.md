@@ -2,12 +2,12 @@
 
 > **Ever wanted to try local AI beyond LLMs?**
 >
-> OpenTail.Stingray brings text, vision, speech, image generation, audio and video diffusion into one .NET 10 library. Run models locally from C# on CPU, Vulkan or CUDA — without a Python runtime or an external inference server.
+> OpenTail.Stingray brings text, vision, speech, image generation, audio and video diffusion into one .NET library (targets .NET 10 and .NET 11). Run models locally from C# on CPU, Vulkan or CUDA — without a Python runtime or an external inference server.
 
 **One library. Multiple AI modalities. Native .NET deployment.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
+[![.NET 10 and 11](https://img.shields.io/badge/.NET-10%20%7C%2011-blue)]()
 [![NativeAOT](https://img.shields.io/badge/NativeAOT-ready-green)]()
 [![NuGet](https://img.shields.io/nuget/v/OpenTail.Stingray.svg)](https://www.nuget.org/packages/OpenTail.Stingray)
 
@@ -20,7 +20,7 @@ Built by [opentail.net](https://opentail.net)
 dotnet add package OpenTail.Stingray
 ```
 
-Requires .NET 10 and a 64-bit x86 CPU with AVX2 (most PCs from 2015 on). ARM64 has SIMD kernels but is not yet measured by the project. A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
+Requires .NET 10 or .NET 11 and a 64-bit x86 CPU with AVX2 (most PCs from 2015 on). ARM64 has SIMD kernels but is not yet measured by the project. A GPU is optional: any Vulkan-capable card, or NVIDIA with CUDA 12.
 
 **What you do and do not need.** Stingray's own inference code (tensor kernels, tokenizers, KV caches, samplers, diffusion schedulers) is managed C#. You do not need Python, llama.cpp, ggml or a separate inference server. Some execution paths still load native code that is not Stingray's: the GPU driver (Vulkan loader, or the CUDA 12 runtime for the CUDA backend), and ONNX Runtime, which this package depends on for the ONNX-based speech engines such as Piper. A CPU run may still initialise the Vulkan backend at start-up and print a few diagnostic lines to stderr (for example the Vulkan device limits); they are not errors.
 

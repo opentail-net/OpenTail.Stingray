@@ -3,7 +3,7 @@
 `stingray` is the command-line front door to OpenTail.Stingray: install a recommended model for a task and run it without typing a path (`setup`, `chat`, `speak`, `transcribe`), or point it at any GGUF and tune the run yourself. It also generates images, computes embeddings, and carries the tools for checking and admitting new models (`scout`, `pull`, `inspect`, `admit-arch`). Runs on CPU (AVX2/AVX-512) or GPU (Vulkan / CUDA). No Python, no llama.cpp, no sidecar process.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
+[![.NET 10 and 11](https://img.shields.io/badge/.NET-10%20%7C%2011-blue)]()
 
 > **Built by [opentail.net](https://opentail.net)**
 
@@ -135,8 +135,9 @@ Run `stingray --help` or view the [CLI Option Inventory](../../docs/reference/cl
 
 ## Requirements
 
-- .NET 10 runtime — the tool installs framework-dependent
+- .NET 10 or .NET 11 runtime — the tool installs framework-dependent
 - x86-64 CPU with **AVX2**
+- ONNX-based speech engines (for example Piper) load from this tool package on **Windows x64** only; the package ships the Windows x64 ONNX Runtime natives alone, to stay under the NuGet size limit
 - GPU inference is optional: any Vulkan-capable GPU (AMD / Intel / NVIDIA), or an NVIDIA GPU with
   **CUDA 12.x** — the CUDA path is pinned to the 12.x runtime SONAMEs (`cudart64_12`, `cublas64_12`)
 
