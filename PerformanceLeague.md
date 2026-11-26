@@ -827,6 +827,23 @@ Out of this file's LLM/TTS/ASR focus (pipeline `OpenTail.Stingray.Diffusion`). S
 
 > Dropped to the LOG, because each was superseded by a newer run of the same config, or was a pre-fix run with noise output: the Z-Image 512² CPU and Vulkan timings from 2026-09-10 and 2026-09-11, the HunyuanVideo 4-step zero-conditioning and real-conditioning runs (434.0 s and 599.5 s, 2026-09-19, noise output, before the 2026-09-25 fixes), and the older Wan2.1 512² GPU runs.
 
+## CPU prefill default: batched int8 vs per-token (7bfcebcf, Performance Check 2026-11-26)
+
+Same-session A/B, Release builds, CPU, 500-token prompt (`docs/reference/benchmark-prompt.txt`, 516 tokens) and short prompt (decode, 64 tokens), three interleaved rounds, one model at a time with a guard that waits for any other OpenTail.Stingray test process. Arms: `c7f1e918` (before the default change, batched int8 prefill on by default), `7bfcebcf` (default change: per-token prefill), and `7bfcebcf` with `STINGRAY_CPU_PREFILL_Q8=1`. Values are median with min–max.
+
+| Model | Scenario | before (c7f1e918) | after (7bfcebcf) | after + `STINGRAY_CPU_PREFILL_Q8=1` |
+|---|---|---:|---:|---:|
+| SmolLM2-1.7B Q4_K_M | prefill, 516 tok (t/s) | 212.9 (197.7–222.0) | 82.9 (82.8–89.6) | 228.1 (223.7–228.9) |
+| SmolLM2-1.7B Q4_K_M | decode, short, 64 tok (t/s) | 30.2 (29.5–31.1) | 30.9 (29.2–31.7) | 30.9 (30.5–31.2) |
+| OLMoE-1B-7B Q4_K_M | prefill, 516 tok (t/s) | 177.8 (175.8–179.2) | 133.0 (131.3–133.6) | 178.5 (176.7–178.7) |
+| OLMoE-1B-7B Q4_K_M | decode, short, 64 tok (t/s) | 42.7 (42.6–42.9) | 42.5 (42.5–42.8) | 42.8 (42.7–43.0) |
+
+Prefill on the default path is materially slower after the change (−61% on SmolLM2, −25% on OLMoE, ranges do not overlap). Decode is unchanged within noise.
+
+Output: greedy text (48 new tokens, temperature 0) is identical between the two defaults on the 516-token prompt for both models. On the short prompt ("Explain in two sentences why the sky is blue.") the two defaults diverge after the first sentence for both models, so the default change is visible in generated text for some prompts.
+
+Raw results are in the performance scratch folder (not the repo). The change itself is recorded in `docs/reference/adr-0003-cpu-int8-prefill-default.md`.
+
 ## Sweeps and experiments (CPU, 2026-10)
 
 ### Smoke-test workload, CPU, 256×256 `stingray image` (2026-10-30)
