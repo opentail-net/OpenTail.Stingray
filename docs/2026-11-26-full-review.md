@@ -4,6 +4,17 @@
 - **Size:** 3,520 tracked files. About 348k lines of C# in `src/` (13 projects, the largest being Engine at 86k) and about 208k in `tests/` (23 projects).
 - **Prepared by:** Claude (Haiku 5.5), review only. No code or docs were changed apart from this file.
 
+## 0. Status after fixes (2026-11-26)
+
+| ID | Status | Commit |
+|---|---|---|
+| M1, AOT publish fails (NETSDK1129) | Fixed: `-f net10.0` on the AOT publishes (CI, `scripts/check-aot-telemetry.ps1`, CLAUDE.md). Win-x64 publish and `telemetry-selftest` verified locally; the Linux publish is verified only by CI. Owner decision open: also ship AOT for net11? | `0206002a` |
+| M2, unregistered env var | Fixed: `STINGRAY_CPU_PREFILL_FAST_GEMM` registered as experimental (registry, class map, inventory, count 298). Core suite 1705 total, 0 failed. | `0206002a` |
+| M3, admission-queue stall | Fixed. Cause: a woken waiter's load was reserved but not claimed, so a fresh caller could evict the finished load, and the waiter was re-queued with nothing to wake it. Regression test `AcquireAsync_WokenWinnerLoad_IsNotEvictedBeforeTheWinnerTakesIt` fails before the change and passes after it. The stall itself was not reproduced under stress on the previous code (40 of 40 runs passed on the fix). | `8bc04055` |
+| M4, DNS-rebinding exposure | Fixed: `AllowedHosts` is `localhost;127.0.0.1;[::1]`. Verified before the change: `Host: evil.example:8080` returned 200. After it, 400. Test `HostFilteringTests`. | `eb4ca985` |
+
+Still open: the section 7 owner decisions, and the should-fix items S1 to S10 and notes N1 to N11, none of which this change addresses. The body below is the review as it was written, before these fixes.
+
 ## 1. Verdict
 
 The engine code I read is careful. The GGUF parser bounds every length against the file, the torch reader will not run arbitrary pickle callables, and the download path checks where files land. The project is **not releasable today**:
