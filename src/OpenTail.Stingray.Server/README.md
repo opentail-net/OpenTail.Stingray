@@ -36,6 +36,11 @@ app.Run();
 authentication scheme for the host. The bundled demo host therefore listens only on
 `127.0.0.1:8080` and admits one generation at a time by default.
 
+The demo host's `AllowedHosts` admits only the loopback names `localhost`, `127.0.0.1` and `[::1]`.
+A request whose `Host` header names anything else gets HTTP 400. That stops DNS rebinding, where a web
+page resolves its own domain to `127.0.0.1` and reads responses from the local server. The list is not
+authentication: widening it does not make the host safe to expose.
+
 Do not bind it directly to a LAN or public interface without an authentication boundary.
 For remote use, place it behind an authenticated reverse proxy, or add your application's
 authentication/authorization middleware and protect the mapped routes before calling `Run()`.
