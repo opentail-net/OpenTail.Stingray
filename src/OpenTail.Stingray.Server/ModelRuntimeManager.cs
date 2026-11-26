@@ -112,6 +112,11 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         public required AcceleratorTarget? CandidateAcceleratorTarget { get; init; }
         public required DateTimeOffset EnqueuedAt { get; init; }
         public TaskCompletionSource WakeSignal { get; set; } = null!;
+
+        /// <summary>The load <see cref="WakeOldestAdmissibleQueuedWaiter"/> reserved for this waiter. It is already
+        /// counted in the load's <see cref="PendingLoad.AwaitingCallers"/>. The waiter's next attempt takes it, or
+        /// <see cref="ReleaseReservedLocked"/> gives it back if the wait ends first.</summary>
+        public PendingLoad? ReservedLoad { get; set; }
     }
 
     private readonly Func<ModelId, LoadedEngine> _loader;
@@ -134,6 +139,13 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     /// to wait, just before it takes the residency signal, so a test can release a handle at exactly that point.
     /// </summary>
     internal Action? SingleSlotWaitHookForTests { get; set; }
+
+    /// <summary>
+    /// Test seam for the wake-then-evict race (M3, 2026-11-26), null in production. Runs inside <c>_lock</c> in
+    /// <see cref="RunLoad"/> right after a successful load is published and before any caller has claimed it, so a
+    /// test can make a competing caller arrive at exactly that point.
+    /// </summary>
+    internal Action<ModelId>? LoadPublishedHookForTests { get; set; }
 
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
@@ -298,14 +310,22 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 // NotifyResidencyChanged), so a waiter that sees the handle still held cannot miss the release.
                 var residencyChanged = Volatile.Read(ref _residencyChanged).Task;
 
+                // The load WakeOldestAdmissibleQueuedWaiter reserved for this waiter. It is already counted in
+                // AwaitingCallers, so this attempt joins it without counting again. It is taken before the fast paths
+                // so the reservation is always consumed, even when the model is already resident.
+                if (myWaiter?.ReservedLoad is { } reserved)
+                {
+                    myWaiter.ReservedLoad = null;
+                    pendingLoad = reserved.Tcs.Task;
+                    waitedLoad = reserved;
+                }
                 // Fast path: already resident. Handle creation happens while still holding the
                 // lock (via the ctor's OnHandleAcquired) so this can never race the eviction path
                 // below, which also mutates _resident only under this same lock — the
                 // acquire-vs-evict linearization point docs/032 calls for.
-                if (_resident.TryGetValue(model, out var resident) && resident.State != ModelRuntimeState.Disposed)
+                else if (_resident.TryGetValue(model, out var resident) && resident.State != ModelRuntimeState.Disposed)
                     return new ModelRuntimeHandle(this, resident);
-
-                if (_pendingLoads.TryGetValue(model, out var pending))
+                else if (_pendingLoads.TryGetValue(model, out var pending))
                 {
                     pendingLoad = pending.Tcs.Task;
                     waitedLoad = pending;
@@ -373,6 +393,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
 
             if (waitForResidencyChange is not null)
             {
+                bool woke = false;
                 try
                 {
                     // Cancelling THIS wait only stops this caller from waiting — it never touches
@@ -399,6 +420,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                             throw admissionFailure;
                         }
                     }
+                    woke = true;
                 }
                 finally
                 {
@@ -408,10 +430,15 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     // successful wake already removed it via WakeOldestAdmissibleQueuedWaiter, so
                     // this is a harmless no-op in that case (List<T>.Remove on a reference type
                     // that's no longer present just returns false).
-                    if (admissionFailure is not null)
+                    bool wakeWaiters = false;
+                    lock (_lock)
                     {
-                        lock (_lock) { _admissionQueue.Remove(myWaiter!); }
+                        if (admissionFailure is not null) _admissionQueue.Remove(myWaiter!);
+                        // A waiter that leaves without being woken gives back any load WakeOldest reserved for it. This is
+                        // under the same lock as the queue removal, so no reservation can be made after this point.
+                        if (!woke && myWaiter is not null) wakeWaiters = ReleaseReservedLocked(myWaiter);
                     }
+                    if (wakeWaiters) NotifyResidencyChanged(mayHaveFreedResources: true);
                 }
                 continue;
             }
@@ -557,10 +584,35 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             // fast paths in AcquireAsync, and starting a second concurrent load here would break
             // single-flight.
             if (!_resident.ContainsKey(winner.Model) && !_pendingLoads.ContainsKey(winner.Model))
-                StartLoadLocked(winner.Model);
+            {
+                // The winner's own claim is taken with the reservation, before the load can publish. A finished load
+                // with no claim is evictable, so without this a fresh caller could evict it in the gap before the
+                // winner rejoins, and the winner would then be re-queued with nothing left to wake it (M3).
+                StartLoadLocked(winner.Model, out PendingLoad reserved);
+                reserved.AwaitingCallers++;
+                winner.ReservedLoad = reserved;
+            }
         }
 
         winner.WakeSignal.TrySetResult();
+    }
+
+    /// <summary>Caller must hold <see cref="_lock"/>. Gives back the load that <see cref="WakeOldestAdmissibleQueuedWaiter"/>
+    /// reserved for <paramref name="waiter"/>, when the waiter leaves its wait without taking it. The load still finishes
+    /// and stays resident. Its protection is dropped once no caller counts it, which is the state of a load with no caller
+    /// at all. Returns true when the claim was dropped, so the caller runs the admission scan after releasing the lock.</summary>
+    private bool ReleaseReservedLocked(AdmissionWaiter waiter)
+    {
+        if (waiter.ReservedLoad is not { } reserved) return false;
+        waiter.ReservedLoad = null;
+        reserved.AwaitingCallers--;
+        if (reserved.AwaitingCallers == 0 && _awaitingClaim.TryGetValue(waiter.Model, out var claim)
+            && ReferenceEquals(claim, reserved))
+        {
+            _awaitingClaim.Remove(waiter.Model);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Caller must hold <see cref="_lock"/>.</summary>
@@ -748,6 +800,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     _resident[model] = runtime;
                     // A caller is awaiting this load and must claim it before anything may evict it.
                     if (finished is not null && finished.AwaitingCallers > 0) _awaitingClaim[model] = finished;
+                    LoadPublishedHookForTests?.Invoke(model);
                 }
             }
             if (managerDisposed)

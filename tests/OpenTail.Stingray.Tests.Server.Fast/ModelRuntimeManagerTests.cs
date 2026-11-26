@@ -1546,6 +1546,50 @@ public sealed class ModelRuntimeManagerTests
         Assert.Equal(Id("interloper"), interloperHandle.Runtime.Id);
     }
 
+    [Fact]
+    public async Task AcquireAsync_WokenWinnerLoad_IsNotEvictedBeforeTheWinnerTakesIt()
+    {
+        // M3 (2026-11-26). When the slot is freed, the winner's load is reserved, but the winner only counts
+        // itself as an awaiting caller when it rejoins. If the load publishes first, it is idle and unclaimed,
+        // so a fresh caller that arrives in that gap evicts it and takes the slot. The winner is then re-queued
+        // with nothing left to wake it, which is the 30 s stall CI reported. The hook runs under the manager
+        // lock at the moment the load publishes, so the fresh caller arrives there on every run.
+        ModelRuntimeManager? manager = null;
+        var budget = new CapacityFakeResourceBudget(() => manager!.Snapshot(), capacitySlots: 1);
+        manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30),
+            ResourceBudget = budget,
+        };
+
+        var holder = await manager.AcquireAsync(Id("holder"));
+        var older = manager.AcquireAsync(Id("older")).AsTask();
+        await WaitUntilQueuedAsync(manager, 1);
+
+        Task<ModelRuntimeHandle>? interloper = null;
+        var interloperStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.LoadPublishedHookForTests = id =>
+        {
+            if (!id.Equals(Id("older")) || interloper is not null) return;
+            interloper = manager.AcquireAsync(Id("interloper")).AsTask();
+            interloperStarted.SetResult();
+        };
+
+        holder.Dispose(); // wakes "older" and reserves its load, which publishes under the hook above
+        await interloperStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // The fresh caller must queue behind the published load, not evict it.
+        var stillWaiting = await Task.WhenAny(interloper!, Task.Delay(200));
+        Assert.NotSame(interloper, stillWaiting);
+
+        using var olderHandle = await older.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(Id("older"), olderHandle.Runtime.Id);
+
+        olderHandle.Dispose(); // frees the slot again, so "interloper" gets its turn
+        using var interloperHandle = await interloper!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(Id("interloper"), interloperHandle.Runtime.Id);
+    }
+
     // ── SessionModelRegistry integration (docs/032 Phase 4/7 gap fix) ───────
 
     [Fact]
