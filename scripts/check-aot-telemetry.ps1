@@ -20,7 +20,8 @@ $repo = Split-Path -Parent $PSScriptRoot
 Push-Location $repo
 try {
   if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
-  dotnet publish src/OpenTail.Stingray.Cli -c Release -r $Rid -o $OutDir
+  # -f: the CLI targets net10.0 and net11.0, and publish needs exactly one framework (NETSDK1129).
+  dotnet publish src/OpenTail.Stingray.Cli -c Release -r $Rid -f net10.0 -o $OutDir
   if ($LASTEXITCODE -ne 0) { throw "AOT publish failed (exit $LASTEXITCODE)" }
   $exe = Join-Path $OutDir ($(if ($Rid -like "win-*") { "stingray.exe" } else { "stingray" }))
   & $exe telemetry-selftest

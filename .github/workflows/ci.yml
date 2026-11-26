@@ -119,7 +119,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
       - name: Publish the CLI (NativeAOT) and run the telemetry self-test
         run: |
-          dotnet publish src/OpenTail.Stingray.Cli -c Release -r linux-x64 -o aot-out
+          # -f net10.0: the CLI targets net10.0 and net11.0; publish needs exactly one framework (NETSDK1129).
+          dotnet publish src/OpenTail.Stingray.Cli -c Release -r linux-x64 -f net10.0 -o aot-out
           ./aot-out/stingray telemetry-selftest
 
   # Windows x64 lane (added 2026-11-01). Windows is the primary target and the machine every measurement comes from, but both
@@ -180,7 +181,7 @@ jobs:
       - name: Publish the CLI (NativeAOT, win-x64) and run the telemetry self-test
         shell: pwsh
         run: |
-          dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64 -o aot-out
+          dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64 -f net10.0 -o aot-out
           if ($LASTEXITCODE -ne 0) { throw 'AOT publish failed' }
           ./aot-out/stingray.exe telemetry-selftest
           if ($LASTEXITCODE -ne 0) { throw 'telemetry self-test failed' }

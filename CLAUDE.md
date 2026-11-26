@@ -93,7 +93,7 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- -m models/SmolLM2-1
 STINGRAY_MODEL=models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf dotnet run --project src/OpenTail.Stingray.Server.Host -c Release
 
 # NativeAOT Publish
-dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64
+dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64 -f net10.0
 dotnet publish src/OpenTail.Stingray.Server.Host -c Release -r win-x64
 ```
 

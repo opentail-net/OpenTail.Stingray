@@ -1,6 +1,9 @@
 # `STINGRAY_*` environment-variable inventory — name-complete and classified (re-verified 2026-11-07)
 > **OpenBLAS: never use it. It must not be loaded, run, measured or enabled in OpenTail.Stingray (owner directive 2026-11-25; see CLAUDE.md). The opt-in gate in BlasInterop.cs stays as a guard.**
 
+**Reconciled again 2026-11-26 — `KnownEnvironmentVariables.All` now contains **298** names**
+(added `STINGRAY_CPU_PREFILL_FAST_GEMM`: the opt-in repacked Q4_K and Q6_K prefill GEMM, classified experimental. Commit `3cfcc60b` read it in `src/` without listing it, which failed `ListMatchesSource` in CI and made the server print a false "will have no effect" warning.)
+
 **Reconciled again 2026-11-08, later — `KnownEnvironmentVariables.All` now contains **297** names**
 (added `STINGRAY_FFMPEG`: the operator-installed ffmpeg executable that `FfmpegVideoFrameSource` runs for video frames, read before PATH; classified expert. It was read in `src/` but unlisted, which failed `ListMatchesSource` in CI.)
 
@@ -232,6 +235,7 @@ dynamically composed names.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CPU_PREFILL_Q8` | experimental | Default **OFF** (user decision 2026-11-18; see [ADR-0003](adr-0003-cpu-int8-prefill-default.md)). `=1` opts into the faster int8 batched-prefill dispatch tier (measured 2.2-2.9x prefill on Q4_K dense models). Unset or `=0` uses the per-token path, bit-identical to sequential decode (not "F32": decode matvec also int8-quantizes activations for K-quant weights). Routed MoE experts additionally need `STINGRAY_MOE_PREFILL_Q8=1` (default off). Model-level PPL follow-up: correctness item 25. |
+| `STINGRAY_CPU_PREFILL_FAST_GEMM` | experimental | Opt-in, and only while `STINGRAY_CPU_PREFILL_Q8` is on (its default). `=1` routes Q4_K through the repacked x8 GEMM and Q6_K through the group GEMM. Faster on the measured shapes, but not bit-identical to decode and it changes greedy text, so it stays off by default. See `Q8PrefillFastGemm` in `src/OpenTail.Stingray.Cpu/SimdKernels.cs` and PerformanceLeague.md, "CPU prefill kernel arms". |
 | `STINGRAY_Q5K_DECODE_Q8K` | experimental | Default-OFF. `=1` quantizes the activation to Q8_K for the Q5_K attention-output (`wo`) matvec in non-MLA CPU decode, as ggml does (`ggml_vec_dot_q5_K_q8_K`). Experiment for the GLM-4.5 PPL gap (bugstofix item 09). Measured 2026-10-01: improves paired-NLL fidelity on 5 of 6 Q5_K models but costs decode speed (SmolLM2 -37%, phi-2 -16%), so it stays default-off. |
 | `STINGRAY_PREFILL_ATTN_WIDE_HEADS` | experimental | `1` admits head dims 128/256 to the Flash-64 prefill path. **Off by default by decision, not by omission**: the wikitext-2 gate measured +0.52% perplexity for +14% prefill throughput (6.0579 -> 6.0896), which is worse than the exact sequential path and two orders of magnitude above the ~0% precedent set by the Q4Kx8 repack. A real speed/quality trade for the model owner to opt into, not a default. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER` | expert | `0` restores the per-query-tile prefill-attention schedule. The KV-outer reorder packs each KV tile once per group of query tiles and is ON by default: measured +1.6% alone and +4.0% with `STINGRAY_CPU_KPACK_SIMD`, bit-exactness pinned by `Flash64KvOuterTests`. |

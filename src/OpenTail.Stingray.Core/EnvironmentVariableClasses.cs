@@ -53,6 +53,7 @@ public static class EnvironmentVariableClasses
         ["STINGRAY_SPEC_SAMPLE"] = "experimental",
         ["STINGRAY_MTP_BATCH_MAX"] = "expert",
         ["STINGRAY_CPU_PREFILL_Q8"] = "experimental",
+        ["STINGRAY_CPU_PREFILL_FAST_GEMM"] = "experimental",
         ["STINGRAY_Q5K_DECODE_Q8K"] = "experimental",
         ["STINGRAY_PREFILL_ATTN_WIDE_HEADS"] = "experimental",
         ["STINGRAY_PREFILL_ATTN_KV_OUTER"] = "expert",
