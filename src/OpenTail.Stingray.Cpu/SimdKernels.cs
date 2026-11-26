@@ -456,6 +456,16 @@ public static unsafe class SimdKernels
     /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
     /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
     /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
+    /// <para><b>Status (2026-11-26): off by default, and off the menu.</b> The default was switched from on
+    /// to off on 2026-11-18 (commit 7bfcebcf). A same-session A/B on 2026-11-26 (Release, CPU, 516-token
+    /// benchmark prompt, median of three interleaved rounds) measured prefill at SmolLM2-1.7B Q4_K_M
+    /// 212.9 -&gt; 82.9 t/s (-61%) and OLMoE-1B-7B Q4_K_M 177.8 -&gt; 133.0 t/s (-25%) with the default off;
+    /// decode was unchanged. With <c>STINGRAY_CPU_PREFILL_Q8=1</c> prefill was 228.1 and 178.5 t/s. Greedy
+    /// text also differs between the two paths on a short prompt for both models (identical on the 516-token
+    /// prompt). The batched path is kept, documented and opt-in. It is not to be turned on by default;
+    /// reopening needs a new measurement and an owner decision (performance league, "CPU prefill default A/B",
+    /// 2026-11-26).</para>
+    ///
     /// </summary>
     public static bool Q8PrefillEnabled { get; set; } =
         ResolveQ8PrefillDefault(Environment.GetEnvironmentVariable("STINGRAY_CPU_PREFILL_Q8"));

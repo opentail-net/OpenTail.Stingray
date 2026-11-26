@@ -1,6 +1,6 @@
 # ADR-0003: policy for int8 activation prefill on CPU
 
-**Status:** 2026-10-02 decision superseded by the user on 2026-11-18
+**Status:** 2026-10-02 decision superseded by the user on 2026-11-18. Confirmed 2026-11-26 by the user: the batched int8 CPU prefill stays off the menu (off by default, opt-in only). The 2026-11-26 same-session A/B (prefill 212.9 -> 82.9 t/s on SmolLM2-1.7B, 177.8 -> 133.0 t/s on OLMoE-1B-7B with the default off; decode unchanged) is in `PerformanceLeague.md`. Reopening needs a new measurement and an owner decision.
 **Original decision date:** 2026-10-02
 **Current switch:** `STINGRAY_CPU_PREFILL_Q8` (default off; `=1` opts into batched int8 prefill)
 **Code:** `SimdKernels.Q8PrefillEnabled` (`src/OpenTail.Stingray.Cpu/SimdKernels.cs`)
