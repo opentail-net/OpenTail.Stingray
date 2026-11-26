@@ -844,6 +844,31 @@ Output: greedy text (48 new tokens, temperature 0) is identical between the two 
 
 Raw results are in the performance scratch folder (not the repo). The change itself is recorded in `docs/reference/adr-0003-cpu-int8-prefill-default.md`.
 
+## CPU prefill kernel arms: which int8 path keeps the output (Performance Check 2026-11-26)
+
+Same session, Release CLI, SmolLM2-1.7B-Instruct Q4_K_M, 516-token benchmark prompt (555 tokens with the template), 48 greedy tokens, three interleaved rounds per arm, a guard against other test runs. Prefill t/s is the median with the range. The exact arm was measured in a second interleaved run with its own default reference (88.4 to 89.3 t/s).
+
+| Arm | Environment | Prefill t/s | Greedy text vs default |
+|---|---|---:|---|
+| Default: per-token `MatVec4In` tier (exact) | none | 88.7 (87.6-89.7) | reference |
+| Exact row-major int8, Q4_K and Q6_K | `STINGRAY_CPU_PREFILL_Q8=1 STINGRAY_Q4KX8_CACHE_MB=0 STINGRAY_Q6K_GEMM=0` | 122.0 (116.2-122.2) | identical on both prompts |
+| Path 1 repacked Q4_K (Q8_KS) + Q6_K group GEMM | `STINGRAY_CPU_PREFILL_Q8=1 STINGRAY_GEMM_PATH=1` | 130.8 (119.8-133.0) | differs on the short prompt |
+| Path 2 repacked Q4_K (llama.cpp Q8_K) + Q6_K group GEMM | `STINGRAY_CPU_PREFILL_Q8=1` | 218.7 (211.8-226.6) | differs on the short prompt |
+
+Kernel level, same inputs, decode per-token MatVec as the reference (Q4_K 8192 x 2048, Q6_K 2048 x 8192, N = 516; median of 7 timed runs after a warm-up, min in brackets):
+
+| Kernel | Q4_K ms | Q4_K error vs reference (max, over output scale) | Q6_K ms | Q6_K error vs reference |
+|---|---:|---|---:|---|
+| Exact tier (default) | 47.0 (46.3) | 0 (bit-identical) | 40.9 (38.6) | 0 (bit-identical) |
+| Row-major int8 `_8In` / `_4In` | 48.0 (39.1) | 0 (bit-identical) | 30.8 (23.6) | 0 (bit-identical) |
+| Repacked, Q8_KS (Path 1) | 34.4 (32.8) | 3.7e-7 | n/a | n/a |
+| Repacked, llama.cpp Q8_K (Path 2) | 17.2 (16.4) | 5.0e-3 | n/a | n/a |
+| Q6_K group GEMM | n/a | n/a | 22.3 (20.6) | 4.4e-7 |
+
+Reading: the exact row-major int8 path reproduces the decode arithmetic bit for bit, and it is 1.37x faster than the default end to end. The Q8_KS repacked path and the Q6_K group GEMM differ from decode only in float summation order (about 4e-7 of the output scale), yet on the short prompt that was enough to change the greedy text. Path 2 is the fastest, but it quantises activations with llama.cpp's Q8_K (one scale per 256 values), which the 2026-10-02 numerics investigation measured as 1.4-3.1x less accurate than Q8_KS on Q4_K rows (docs/1-correctness/2026-10-02-prefill-numerics-investigation.md). Engine-level bit identity of the exact arm was checked by greedy text on two prompts and by the kernel bit comparisons above. No teacher-forced logit comparison exists for this 1.7B checkpoint on this machine.
+
+Scratch harness and raw results are in the performance scratch folder, not the repo.
+
 ## Sweeps and experiments (CPU, 2026-10)
 
 ### Smoke-test workload, CPU, 256×256 `stingray image` (2026-10-30)
