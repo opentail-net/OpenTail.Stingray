@@ -128,5 +128,21 @@
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cli" />
   </ItemGroup>
 
+  <!--
+    Keep the dotnet tool package under NuGet's 250 MB limit. Microsoft.ML.OnnxRuntime ships native
+    libraries for every platform (about 249 MB per target framework). This tool keeps only the
+    win-x64 natives, so ONNX-based engines (for example Piper) do not load from the tool package on
+    other platforms. Applies to this project only; the library packages are unchanged.
+  -->
+  <!-- dotnet pack for a tool globs the publish folder in PackTool, after PackToPublishDependencyIndirection,
+       so prune both the build and publish outputs there. -->
+  <!-- Targets run once per build, so the output-folder and publish-folder prunes are separate targets. -->
+  <Target Name="PruneOnnxNativesInOutputDir" AfterTargets="CopyFilesToOutputDirectory">
+    <RemoveDir Directories="$(OutDir)runtimes\android;$(OutDir)runtimes\ios;$(OutDir)runtimes\linux-arm64;$(OutDir)runtimes\linux-x64;$(OutDir)runtimes\osx-arm64;$(OutDir)runtimes\osx-x64;$(OutDir)runtimes\win-arm64;$(OutDir)runtimes\win-x86" />
+  </Target>
+  <Target Name="PruneOnnxNativesInPublishDir" AfterTargets="CopyFilesToPublishDirectory;PackToPublishDependencyIndirection">
+    <RemoveDir Directories="$(PublishDir)runtimes\android;$(PublishDir)runtimes\ios;$(PublishDir)runtimes\linux-arm64;$(PublishDir)runtimes\linux-x64;$(PublishDir)runtimes\osx-arm64;$(PublishDir)runtimes\osx-x64;$(PublishDir)runtimes\win-arm64;$(PublishDir)runtimes\win-x86" />
+  </Target>
+
 </Project>
 
