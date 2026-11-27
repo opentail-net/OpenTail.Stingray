@@ -216,7 +216,14 @@ public sealed unsafe partial class ForwardPass
             // residual scale / residual add / FFN path below.
             if (_m2 is not null && IsMamba2Layer(layer))
             {
+                long mixStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 Mamba2Step(layer, _normBuf, _hidden);
+                if (profDecode)
+                {
+                    long d = System.Diagnostics.Stopwatch.GetTimestamp() - mixStart;
+                    DecodeProfileTimers.Add(DecodeProfileTimers.Category.Mixer, d);
+                    namedTicks += d;
+                }
                 AppendZeroKv(layer);
                 goto AfterAttentionBlock;
             }
@@ -233,8 +240,15 @@ public sealed unsafe partial class ForwardPass
             if (_hp.HybridFfnOnlyLayer is { } ffnOnly && ffnOnly[layer])
             {
                 AppendZeroKv(layer);
+                long ffnOnlyStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 // Nemotron-3.5: the FFN-only blocks are MoE layers (ffn_gate_inp present); Nemotron-H dense blocks stay dense.
                 if (IsMoeLayer(layer)) MoeFfn(layer); else DenseFfn(layer);
+                if (profDecode)
+                {
+                    long d = System.Diagnostics.Stopwatch.GetTimestamp() - ffnOnlyStart;
+                    DecodeProfileTimers.Add(DecodeProfileTimers.Category.Ffn, d);
+                    namedTicks += d;
+                }
                 SimdKernels.AddInPlace(_hidden, _residual, _embDim);
                 goto AfterFfnBlock;
             }

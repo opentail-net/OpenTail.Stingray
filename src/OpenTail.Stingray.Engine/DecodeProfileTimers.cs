@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Engine;
 /// </summary>
 public static class DecodeProfileTimers
 {
-    public enum Category { QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, Other, Count }
+    public enum Category { QkvProj, Attention, OutProj, Ffn, RmsNorm, RoPE, Mixer, Other, Count }
 
     public static readonly bool Enabled =
         Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
@@ -32,7 +32,7 @@ public static class DecodeProfileTimers
 
     private static readonly string[] s_names =
     [
-        "QKV projection", "Attention", "Output projection", "FFN", "RmsNorm", "RoPE", "Other (residuals/PLE/misc)"
+        "QKV projection", "Attention", "Output projection", "FFN", "RmsNorm", "RoPE", "Mamba-2 / short-conv mixer", "Other (residuals/PLE/misc)"
     ];
 
     public static void Add(Category c, long elapsedTicks) => s_ticks[(int)c] += elapsedTicks;
