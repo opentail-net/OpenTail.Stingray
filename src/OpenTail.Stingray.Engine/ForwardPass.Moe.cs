@@ -794,7 +794,7 @@ public sealed unsafe partial class ForwardPass
             MoeBatchedExperts.Run(numExperts, expStart, pairP, na, batchNorm, _embDim, expertDim,
                 gateExps.DataPtr, gateExps.DType, bprGate, upExps.DataPtr, upExps.DType, bprUp,
                 downExps.DataPtr, downExps.DType, bprDown,
-                inputScale: _hp.UseSigmoidGating ? _moeBatchWts : null, _moeBatchDown);
+                inputScale: _hp.UseSigmoidGating ? _moeBatchWts : null, _moeBatchDown, nonGated: gateExps.DataPtr is null);
 
         // ── 4. Reduce per token, in TOP-K SLOT ORDER ──────────────────────────────────────
         // Not expert order, which is what the CSR loop above naturally produces. FP32 addition
@@ -819,10 +819,20 @@ public sealed unsafe partial class ForwardPass
         if (_hp.HasSharedExpert)
         {
             int sd = _sharedExpertDim;
-            MatMulBatchedCached(_moeBatchGate, in _wGateShexp![layer], batchNorm, n, sd, _embDim);
-            MatMulBatchedCached(_moeBatchUp, in _wUpShexp![layer], batchNorm, n, sd, _embDim);
-            SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, n * sd);
-            MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchGate, n, _embDim, sd);
+            if (_wGateShexp![layer].DataPtr is null)
+            {
+                // Non-gated shared expert (Nemotron-3.5): down(relu²(up x)), as the per-token MoeFfn does.
+                MatMulBatchedCached(_moeBatchUp, in _wUpShexp![layer], batchNorm, n, sd, _embDim);
+                SimdKernels.ReluSqrInPlace(_moeBatchUp, n * sd);
+                MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchUp, n, _embDim, sd);
+            }
+            else
+            {
+                MatMulBatchedCached(_moeBatchGate, in _wGateShexp[layer], batchNorm, n, sd, _embDim);
+                MatMulBatchedCached(_moeBatchUp, in _wUpShexp![layer], batchNorm, n, sd, _embDim);
+                SimdKernels.SiLuMul(_moeBatchGate, _moeBatchUp, n * sd);
+                MatMulBatchedCached(_moeBatchDown, in _wDownShexp![layer], _moeBatchGate, n, _embDim, sd);
+            }
             for (int t = 0; t < n; t++)
             {
                 if (_wGateInpShexp is not null)

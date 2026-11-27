@@ -773,8 +773,9 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (hp.HasPostFfwNorm) _postFfwNorm = new TensorRef[L];
         if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
         _postNormEps = hp.PostNormEps > 0f ? hp.PostNormEps : hp.RmsNormEps;
-        // Hybrid FFN-only MoE layers (Nemotron-3.5) run through MoeFfn per token; the batched hybrid path calls DenseFfn.
-        _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm || (hp.IsMoE && hp.HybridFfnOnlyLayer is not null);
+        // Hybrid FFN-only MoE layers (Nemotron-3.5) take the batched trunk: the FFN branch sends MoE layers to MoeFfnBatched,
+        // which handles the non-gated ReLU² experts and shared expert. Was per-token only before 2026-11-27.
+        _perTokenTrunkOnly = hp.AttentionOutputGate || hp.InputEmbeddingRmsNorm;
         _attnGatePerHead = hp.AttentionOutputGatePerHead;
         _attnGateSoftplus = hp.AttentionOutputGateSoftplus;
         if (hp.LayerNumHeads is { } lnh)
