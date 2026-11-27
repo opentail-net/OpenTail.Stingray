@@ -40,11 +40,14 @@ public sealed unsafe partial class ForwardPass
             return;
         }
 
+        bool prof = DecodeProfileTimers.Enabled;
+        long fp0 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         if (SimdKernels.DecodeUsesGemm && SimdKernels.Q8PrefillEnabled)
             MatMulBatchedDualCached(_ffnGate, in _wGate[layer], _ffnUp, in _wUp[layer], _normBuf, 1, _intermDim, _embDim);
         else
             SimdKernels.MatVecDual(_ffnGate, _wGate[layer].DataPtr, _ffnUp, _wUp[layer].DataPtr,
                 _normBuf, _intermDim, _embDim, _wGate[layer].DType, _wUp[layer].DType);
+        long fp1 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         // Gated FFN with biases (jais): act(Wg x + bg) * (Wu x + bu), then Wd h + bd.
         if (_hasFfnBias)
         {
@@ -55,7 +58,15 @@ public sealed unsafe partial class ForwardPass
             SimdKernels.GeluTanhMul(_ffnGate, _ffnUp, _ffnGate, _intermDim);
         else
             SimdKernels.SiLuMul(_ffnGate, _ffnUp, _intermDim);
+        long fp2 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         FusedMatVec(_hidden, _wDown[layer], _ffnGate, _embDim, _intermDim);
+        if (prof)
+        {
+            long fp3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            DecodeProfileTimers.AddFfnPart(0, fp1 - fp0);
+            DecodeProfileTimers.AddFfnPart(1, fp2 - fp1);
+            DecodeProfileTimers.AddFfnPart(2, fp3 - fp2);
+        }
         if (_hasFfnBias && _bFfnDown is not null && _bFfnDown[layer] != null)
             SimdKernels.AddInPlace(_hidden, _bFfnDown[layer], _embDim);
     }

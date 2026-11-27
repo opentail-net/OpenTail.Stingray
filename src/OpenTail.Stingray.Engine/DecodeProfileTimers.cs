@@ -45,6 +45,12 @@ public static class DecodeProfileTimers
 
     public static void AddMambaPart(int part, long elapsedTicks) => s_mambaPartTicks[part] += elapsedTicks;
 
+    // "Of which" breakdown of the gated dense FFN (not added into s_ticks).
+    public static readonly string[] FfnPartNames = ["FFN gate+up matvec", "FFN activation (SiLU·mul)", "FFN down matvec"];
+    private static readonly long[] s_ffnPartTicks = new long[3];
+
+    public static void AddFfnPart(int part, long elapsedTicks) => s_ffnPartTicks[part] += elapsedTicks;
+
     public static void CountToken() => s_tokenCount++;
 
     public static void Report(TextWriter w)
@@ -61,6 +67,12 @@ public static class DecodeProfileTimers
             double ms = Stopwatch.GetElapsedTime(0, s_ticks[i]).TotalMilliseconds;
             double pct = total > 0 ? 100.0 * s_ticks[i] / total : 0;
             w.WriteLine($"  {s_names[i],-28} {ms,10:F2}ms  {pct,6:F2}%");
+        }
+        for (int i = 0; i < s_ffnPartTicks.Length; i++)
+        {
+            double ms = Stopwatch.GetElapsedTime(0, s_ffnPartTicks[i]).TotalMilliseconds;
+            double pct = total > 0 ? 100.0 * s_ffnPartTicks[i] / total : 0;
+            w.WriteLine($"    of which {FfnPartNames[i],-27} {ms,10:F2}ms  {pct,6:F2}%");
         }
         for (int i = 0; i < s_mambaPartTicks.Length; i++)
         {
