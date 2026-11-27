@@ -174,15 +174,6 @@ public sealed unsafe partial class ForwardPass
             if (latent)
                 FusedMatVec(_latentIn, _wLatentDown![layer], _normBuf, _latentDim, _embDim);
             new Span<float>(expertOut, expertOutDim).Clear();
-            bool batchedNonGated = MoeNonGatedBatchedEnabled && !gatedExperts && !latent
-                && _wUpExps![layer].DType == DType.Q4_0 && _wDownExps![layer].DType == DType.Q4_0;
-            if (batchedNonGated)
-            {
-                fixed (int* selP = selectedExperts)
-                fixed (float* wP = expertWeights)
-                    NonGatedExpertsBatched(layer, selP, wP, numActive, expertDim, expertIn, expertInDim, expertOut, expertOutDim);
-            }
-            else
             for (int k = 0; k < numActive; k++)
             {
                 int expertIdx = selectedExperts[k];
@@ -503,65 +494,6 @@ public sealed unsafe partial class ForwardPass
     {
         MaxDegreeOfParallelism = SimdKernels.CpuThreads
     };
-
-    /// <summary>
-    /// Master switch for the batched non-gated routed-expert path (Nemotron-3.5 ReLU², Q4_0 experts, no latent).
-    /// Default is true. When false, those experts run the per-expert sequential loop. Settable so the two arms
-    /// can be compared in one process.
-    /// </summary>
-    public static bool MoeNonGatedBatchedEnabled { get; set; } = true;
-
-    /// <summary>
-    /// Routed experts for a non-gated Q4_0 MoE layer, as one sweep per stage instead of one sweep per expert:
-    /// (1) every expert's up rows in one parallel sweep, (2) the optional sigmoid scale and ReLU² per expert in
-    /// expert order, (3) every expert's down rows in one parallel sweep, (4) the weighted accumulate in expert order.
-    /// Each row's value is the same <see cref="SimdKernels.DotQ4_0"/> the per-expert <c>MatVec</c> computes, and the
-    /// accumulation order is unchanged, so the output is bit-identical to the sequential loop.
-    /// </summary>
-    private unsafe void NonGatedExpertsBatched(int layer, int* selected, float* weights, int numActive, int expertDim,
-        float* input, int inputDim, float* output, int outputDim)
-    {
-        int upRowB = RowBytes(DType.Q4_0, inputDim);
-        int downRowB = RowBytes(DType.Q4_0, expertDim);
-        long upExpB = (long)expertDim * upRowB;
-        long downExpB = (long)outputDim * downRowB;
-        byte* upBase = _wUpExps![layer].DataPtr;
-        byte* downBase = _wDownExps![layer].DataPtr;
-        float* upAll = _expertUpAll;
-        float* downAll = _moeDownDots;
-        bool sigmoid = _hp.UseSigmoidGating;
-        float* downW = stackalloc float[numActive];
-        for (int k = 0; k < numActive; k++) downW[k] = sigmoid ? 1.0f : weights[k];
-
-        // (1) up rows, all experts, one sweep.
-        int ed = expertDim, id = inputDim, od = outputDim;
-        SimdKernels.ParallelForCapped(0, numActive * ed, idx =>
-        {
-            int k = idx / ed;
-            int r = idx - k * ed;
-            upAll[idx] = SimdKernels.DotQ4_0(upBase + selected[k] * upExpB + (long)r * upRowB, input, id);
-        });
-
-        // (2) sigmoid scale (if any) and ReLU², per expert, in expert order.
-        for (int k = 0; k < numActive; k++)
-        {
-            float* act = upAll + k * ed;
-            if (sigmoid) SimdKernels.ScaleInPlace(act, weights[k], ed);
-            SimdKernels.ReluSqrInPlace(act, ed);
-        }
-
-        // (3) down rows, all experts, one sweep.
-        SimdKernels.ParallelForCapped(0, numActive * od, idx =>
-        {
-            int k = idx / od;
-            int r = idx - k * od;
-            downAll[idx] = SimdKernels.DotQ4_0(downBase + selected[k] * downExpB + (long)r * downRowB, upAll + k * ed, ed);
-        });
-
-        // (4) weighted accumulate, in expert order.
-        for (int k = 0; k < numActive; k++)
-            SimdKernels.WeightedAddInPlace(output, downAll + k * od, downW[k], od);
-    }
 
     private static bool IsFoldedDotDType(DType dtype) =>
         dtype is DType.IQ4_NL or DType.Q2_K or DType.Q3_K or DType.Q4_K or DType.Q5_0 or DType.Q5_K or DType.Q6_K or DType.Q8_0 or DType.Float32;
