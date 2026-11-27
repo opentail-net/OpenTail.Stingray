@@ -109,9 +109,20 @@ public sealed unsafe partial class ForwardPass
     private void Mamba2Step(int layer, float* input, float* output)
     {
         var c = _m2!;
+        bool prof = DecodeProfileTimers.Enabled;
+        long t0 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         FusedMatVec(_m2Proj, _m2In![layer], input, c.InProjDim, _embDim);
+        long t1 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         Mamba2Mix(layer, _m2Proj, 1, _m2Y, _m2Xbc);
+        long t2 = prof ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         FusedMatVec(output, _m2Out![layer], _m2Y, _embDim, c.InnerSize);
+        if (prof)
+        {
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            DecodeProfileTimers.AddMambaPart(0, t1 - t0);
+            DecodeProfileTimers.AddMambaPart(1, t2 - t1);
+            DecodeProfileTimers.AddMambaPart(2, t3 - t2);
+        }
         StageCapture.Record("cpu", layer, StageCapture.Stages.OProj, new ReadOnlySpan<float>(output, _embDim));
     }
 

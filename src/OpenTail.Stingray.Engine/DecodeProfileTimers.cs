@@ -39,6 +39,12 @@ public static class DecodeProfileTimers
 
     public static void AddNonTrunk(long elapsedTicks) => s_nonTrunkTicks += elapsedTicks;
 
+    // "Of which" breakdown of the Mamba-2 mixer total (not added into s_ticks, so the trunk percentages are unchanged).
+    public static readonly string[] MambaPartNames = ["Mamba-2 in-projection", "Mamba-2 conv + SSM scan", "Mamba-2 out-projection"];
+    private static readonly long[] s_mambaPartTicks = new long[3];
+
+    public static void AddMambaPart(int part, long elapsedTicks) => s_mambaPartTicks[part] += elapsedTicks;
+
     public static void CountToken() => s_tokenCount++;
 
     public static void Report(TextWriter w)
@@ -55,6 +61,12 @@ public static class DecodeProfileTimers
             double ms = Stopwatch.GetElapsedTime(0, s_ticks[i]).TotalMilliseconds;
             double pct = total > 0 ? 100.0 * s_ticks[i] / total : 0;
             w.WriteLine($"  {s_names[i],-28} {ms,10:F2}ms  {pct,6:F2}%");
+        }
+        for (int i = 0; i < s_mambaPartTicks.Length; i++)
+        {
+            double ms = Stopwatch.GetElapsedTime(0, s_mambaPartTicks[i]).TotalMilliseconds;
+            double pct = total > 0 ? 100.0 * s_mambaPartTicks[i] / total : 0;
+            w.WriteLine($"    of which {MambaPartNames[i],-27} {ms,10:F2}ms  {pct,6:F2}%");
         }
         w.WriteLine($"[DecodeProfile] Non-trunk per-token overhead (sampling/stream-decode/console-write): {nonTrunkMs:F2}ms ({(s_tokenCount > 0 ? nonTrunkMs / s_tokenCount : 0):F3}ms/token)");
         w.WriteLine($"[DecodeProfile] Grand total (trunk + non-trunk): {grandTotalMs:F2}ms ({(s_tokenCount > 0 ? grandTotalMs / s_tokenCount : 0):F3}ms/token); non-trunk share = {(grandTotalMs > 0 ? 100.0 * nonTrunkMs / grandTotalMs : 0):F2}%");
